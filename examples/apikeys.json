@@ -1,0 +1,14 @@
+{
+  "sk-test-alice": {
+    "UserID": "alice",
+    "APIKeyID": "ak_alice_001",
+    "Group": "default",
+    "ExternalUser": false
+  },
+  "sk-test-bob": {
+    "UserID": "bob",
+    "APIKeyID": "ak_bob_001",
+    "Group": "default",
+    "ExternalUser": true
+  }
+}
