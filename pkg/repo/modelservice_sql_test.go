@@ -3,10 +3,27 @@ package repo
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 )
+
+// jsonEqual 比较两个 JSON byte slice 的语义相等（不在意空格 / 字段顺序）。
+// MySQL JSON 列存进去会 re-format，byte 不等但语义相等。
+func jsonEqual(t *testing.T, got, want []byte) bool {
+	t.Helper()
+	var g, w any
+	if err := json.Unmarshal(got, &g); err != nil {
+		t.Errorf("got not valid JSON: %v (raw: %s)", err, got)
+		return false
+	}
+	if err := json.Unmarshal(want, &w); err != nil {
+		t.Errorf("want not valid JSON: %v", err)
+		return false
+	}
+	return reflect.DeepEqual(g, w)
+}
 
 func TestSQLModelServiceRepo_CreateAndGet(t *testing.T) {
 	r := NewSQLModelServiceRepo(newTestDB(t))
@@ -34,7 +51,7 @@ func TestSQLModelServiceRepo_CreateAndGet(t *testing.T) {
 	if got.ServiceID != "openai/gpt-4o" || got.Tpm != 100000 || got.Rpm != 600 {
 		t.Errorf("got %+v", got)
 	}
-	if string(got.SpecDetail) != `{"unit":"token"}` {
+	if !jsonEqual(t, got.SpecDetail, []byte(`{"unit":"token"}`)) {
 		t.Errorf("SpecDetail = %s", got.SpecDetail)
 	}
 }

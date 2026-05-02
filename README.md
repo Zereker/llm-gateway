@@ -40,14 +40,19 @@ ai-gateway/
 
 ## Quick start
 
-The two services are independent binaries. **Boot order: admin first**
-(it owns the DB schema), then gateway.
+The two services are independent binaries. **Boot order: stack → admin → gateway**.
+Admin owns the DB schema (runs `Migrate` on boot); gateway only reads.
 
 ```sh
-# 1. Start admin (creates configs/local/gateway.db + tables on first run).
-go run ./cmd/admin -config ./configs/local/admin.yaml
+# 1. Start the local stack (MySQL + Redis + Redpanda) via Docker.
+docker compose up -d
+# (or: make stack)
 
-# 2. Insert a model_service + an endpoint via the admin REST API.
+# 2. Start admin — connects to MySQL + creates tables.
+make run-admin
+# (or: go run ./cmd/admin -config ./configs/local/admin.yaml)
+
+# 3. Insert a model_service + an endpoint via the admin REST API.
 TOKEN=local-dev-token
 
 curl -X POST http://localhost:8081/admin/v1/modelservices \
@@ -60,8 +65,15 @@ curl -X POST http://localhost:8081/admin/v1/endpoints \
        "url":"https://api.openai.com/v1/chat/completions",
        "api_key":"sk-REPLACE-ME"}'
 
-# 3. Start gateway (Open + repo.CheckSchema; fails fast if step 1 was skipped).
-go run ./cmd/gateway -config ./configs/local/gateway.yaml
+# 4. Start gateway — Open + repo.CheckSchema; fails fast if step 2 was skipped.
+make run-gateway
+```
+
+### Tests
+
+```sh
+make test               # unit tests; SQL tests skip without MYSQL_DSN
+make test-integration   # bring up stack, run all tests including SQL/outbox
 ```
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the
@@ -95,8 +107,9 @@ curl http://localhost:8080/v1/chat/completions \
 ```
 
 The gateway authenticates `sk-test-alice` against `configs/local/apikeys.json`,
-forwards to the OpenAI endpoint stored in `configs/local/gateway.db`, and writes
-a usage event to `/tmp/ai-gateway-usage.log`.
+forwards to the OpenAI endpoint stored in MySQL (`ai_gateway.endpoints`), and
+writes a usage event to `/tmp/ai-gateway-usage.log` (file outbox; switch to
+Kafka via `outbox.driver: kafka` in gateway.yaml).
 
 ### Configuration files
 
@@ -105,10 +118,12 @@ Per-environment configs live under [`configs/`](configs/) (see
 recommendations).
 
 A single environment directory contains:
-- `gateway.yaml` — server / middleware / paths / database
+- `gateway.yaml` — server / middleware / paths / database / outbox
+- `admin.yaml` — admin server config (separate binary, port :8081)
 - `apikeys.json` — `{apiKeyString: UserIdentity}` map (still file-based)
-- `gateway.db` — sqlite database holding `model_services` + `endpoints`
-  (auto-created on first boot via `pkg/infra.Migrate`)
+
+`model_services` and `endpoints` live in MySQL — `cmd/admin` owns the schema
+(runs `infra.Migrate` on boot) and exposes CRUD over `/admin/v1/...`.
 
 `paths.apikeys` and sqlite `database.dsn` are resolved relative to the yaml
 file's location, so the directory is portable.

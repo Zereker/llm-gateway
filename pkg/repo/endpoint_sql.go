@@ -25,19 +25,22 @@ func NewSQLEndpointRepo(db *sqlx.DB) *SQLEndpointRepo {
 }
 
 // dbEndpoint 是行级表示。
+//
+// Capabilities / Extra 用 sql.NullString：MySQL JSON 列可能是 NULL（jsonOrNil
+// 写入），string 直接扫会 "converting NULL to string is unsupported"。
 type dbEndpoint struct {
-	ID           string `db:"id"`
-	Vendor       string `db:"vendor"`
-	URL          string `db:"url"`
-	APIKey       string `db:"api_key"`
-	GroupName    string `db:"group_name"`
-	Model        string `db:"model"`
-	Weight       int    `db:"weight"`
-	RPM          int64  `db:"rpm"`
-	TPM          int64  `db:"tpm"`
-	RPS          int64  `db:"rps"`
-	Capabilities string `db:"capabilities"`
-	Extra        string `db:"extra"`
+	ID           string         `db:"id"`
+	Vendor       string         `db:"vendor"`
+	URL          string         `db:"url"`
+	APIKey       string         `db:"api_key"`
+	GroupName    string         `db:"group_name"`
+	Model        string         `db:"model"`
+	Weight       int            `db:"weight"`
+	RPM          int64          `db:"rpm"`
+	TPM          int64          `db:"tpm"`
+	RPS          int64          `db:"rps"`
+	Capabilities sql.NullString `db:"capabilities"`
+	Extra        sql.NullString `db:"extra"`
 }
 
 const epColumns = `id, vendor, url, api_key, group_name, model, weight, rpm, tpm, rps, capabilities, extra`
@@ -120,7 +123,7 @@ func (r *SQLEndpointRepo) Create(ctx context.Context, ep *domain.Endpoint) error
 		`INSERT INTO endpoints (`+epColumns+`)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		ep.ID, ep.Vendor, ep.URL, string(ep.APIKey), groupName, ep.Model,
-		ep.Weight, ep.RPM, ep.TPM, ep.RPS, string(caps), string(ep.Extra),
+		ep.Weight, ep.RPM, ep.TPM, ep.RPS, jsonOrNil(caps), jsonOrNil(ep.Extra),
 	)
 	if err != nil {
 		return fmt.Errorf("endpoint: create: %w", err)
@@ -147,7 +150,7 @@ func (r *SQLEndpointRepo) Update(ctx context.Context, ep *domain.Endpoint) error
 		 weight = ?, rpm = ?, tpm = ?, rps = ?, capabilities = ?, extra = ?
 		 WHERE id = ?`),
 		ep.Vendor, ep.URL, string(ep.APIKey), groupName, ep.Model,
-		ep.Weight, ep.RPM, ep.TPM, ep.RPS, string(caps), string(ep.Extra),
+		ep.Weight, ep.RPM, ep.TPM, ep.RPS, jsonOrNil(caps), jsonOrNil(ep.Extra),
 		ep.ID,
 	)
 	if err != nil {
@@ -179,24 +182,24 @@ func (r *SQLEndpointRepo) Delete(ctx context.Context, id string) error {
 
 func rowToEndpoint(row dbEndpoint) (*domain.Endpoint, error) {
 	ep := &domain.Endpoint{
-		ID:        row.ID,
-		Vendor:    row.Vendor,
-		URL:       row.URL,
-		APIKey:    domain.Secret(row.APIKey),
-		Group:     row.GroupName,
-		Model:     row.Model,
-		Weight:    row.Weight,
-		RPM:       row.RPM,
-		TPM:       row.TPM,
-		RPS:       row.RPS,
+		ID:     row.ID,
+		Vendor: row.Vendor,
+		URL:    row.URL,
+		APIKey: domain.Secret(row.APIKey),
+		Group:  row.GroupName,
+		Model:  row.Model,
+		Weight: row.Weight,
+		RPM:    row.RPM,
+		TPM:    row.TPM,
+		RPS:    row.RPS,
 	}
-	if row.Capabilities != "" {
-		if err := json.Unmarshal([]byte(row.Capabilities), &ep.Capabilities); err != nil {
+	if row.Capabilities.Valid && row.Capabilities.String != "" {
+		if err := json.Unmarshal([]byte(row.Capabilities.String), &ep.Capabilities); err != nil {
 			return nil, fmt.Errorf("endpoint: parse capabilities for %q: %w", row.ID, err)
 		}
 	}
-	if row.Extra != "" {
-		ep.Extra = json.RawMessage(row.Extra)
+	if row.Extra.Valid && row.Extra.String != "" {
+		ep.Extra = json.RawMessage(row.Extra.String)
 	}
 	return ep, nil
 }

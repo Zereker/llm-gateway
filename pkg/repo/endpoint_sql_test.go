@@ -39,7 +39,7 @@ func TestSQLEndpointRepo_CreateAndPick(t *testing.T) {
 	if !got.Capabilities.PrefixCacheEnabled {
 		t.Error("Capabilities not round-tripped")
 	}
-	if string(got.Extra) != `{"region":"us-east-1"}` {
+	if !jsonEqual(t, got.Extra, []byte(`{"region":"us-east-1"}`)) {
 		t.Errorf("Extra = %s", got.Extra)
 	}
 }

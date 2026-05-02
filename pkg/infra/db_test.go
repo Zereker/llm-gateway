@@ -2,11 +2,24 @@ package infra
 
 import (
 	"context"
+	"os"
 	"testing"
 )
 
-func TestOpen_SQLiteInMemory(t *testing.T) {
-	db, err := Open(DBConfig{Driver: DriverSQLite, DSN: ":memory:"})
+// mysqlDSN 拿环境变量；没设就 t.Skip。整个 infra 测试都走真 MySQL。
+func mysqlDSN(t *testing.T) string {
+	t.Helper()
+	dsn := os.Getenv("MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("MYSQL_DSN not set; skipping MySQL integration test " +
+			"(set to e.g. root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4)")
+	}
+	return dsn
+}
+
+func TestOpen_MySQL(t *testing.T) {
+	dsn := mysqlDSN(t)
+	db, err := Open(DBConfig{Driver: DriverMySQL, DSN: dsn})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -25,7 +38,8 @@ func TestOpen_UnknownDriver(t *testing.T) {
 }
 
 func TestMigrate_Idempotent(t *testing.T) {
-	db, err := Open(DBConfig{Driver: DriverSQLite, DSN: ":memory:"})
+	dsn := mysqlDSN(t)
+	db, err := Open(DBConfig{Driver: DriverMySQL, DSN: dsn})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -40,9 +54,13 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("Migrate (2nd): %v", err)
 	}
 
+	// MySQL 查 information_schema.tables 验证表存在
 	var tables []string
 	if err := db.Select(&tables,
-		`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`,
+		`SELECT table_name FROM information_schema.tables
+		 WHERE table_schema = DATABASE()
+		   AND table_name IN ('model_services', 'endpoints')
+		 ORDER BY table_name`,
 	); err != nil {
 		t.Fatalf("query tables: %v", err)
 	}
@@ -60,7 +78,8 @@ func TestMigrate_Idempotent(t *testing.T) {
 }
 
 func TestMigrate_TableShape(t *testing.T) {
-	db, err := Open(DBConfig{Driver: DriverSQLite, DSN: ":memory:"})
+	dsn := mysqlDSN(t)
+	db, err := Open(DBConfig{Driver: DriverMySQL, DSN: dsn})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -68,6 +87,13 @@ func TestMigrate_TableShape(t *testing.T) {
 
 	if err := Migrate(context.Background(), db); err != nil {
 		t.Fatalf("Migrate: %v", err)
+	}
+
+	// 测试前清空，避免唯一约束冲突
+	for _, table := range []string{"endpoints", "model_services"} {
+		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
+			t.Fatalf("TRUNCATE %s: %v", table, err)
+		}
 	}
 
 	_, err = db.Exec(

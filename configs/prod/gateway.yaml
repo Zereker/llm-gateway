@@ -24,13 +24,12 @@ paths:
   apikeys: /etc/ai-gateway/apikeys.json
 
 database:
-  # 生产推荐 postgres；本机起步也可继续用 sqlite，文件路径自管。
-  driver: postgres
-  dsn: postgres://ai_gateway:CHANGE_ME@db:5432/ai_gateway?sslmode=disable
+  # 生产 MySQL；用户名密码从 secret 注入（环境变量 / k8s Secret 渲染）。
+  driver: mysql
+  dsn: "ai_gateway:CHANGE_ME@tcp(db:3306)/ai_gateway?parseTime=true&charset=utf8mb4&tls=preferred"
 
 outbox:
   # 生产建议 kafka：usage 事件流入下游计费 / 审计 / 监控管道。
-  # 同步 ack=1，失败立即上报；高吞吐场景可在 pkg/infra/kafka.go 切 Async=true。
   driver: kafka
   kafka:
     brokers: ["broker1:9092", "broker2:9092", "broker3:9092"]

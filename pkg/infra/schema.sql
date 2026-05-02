@@ -1,39 +1,47 @@
--- v0.1 schema：sqlite 方言，所有 DDL 用 IF NOT EXISTS 保证 Migrate 幂等。
--- 后续接入 Postgres 时按需拆分 schema_postgres.sql；当前 CRUD 简单到双方言基本一致。
+-- v0.1 schema：MySQL 8.0+ 方言。
+-- 全部 DDL 用 IF NOT EXISTS 保证 Migrate 幂等，反复 Run 不报错。
+-- charset / collation 统一 utf8mb4 / utf8mb4_unicode_ci，避免 emoji / 中文索引问题。
+--
+-- 设计要点：
+--   - id：BIGINT UNSIGNED AUTO_INCREMENT，business 唯一标识用 UNIQUE 索引（service_id / model）
+--   - 字符串字段都用 VARCHAR + 明确长度（不用 TEXT，方便走索引）；
+--     VARCHAR(191) 对应 utf8mb4 4 bytes/char × 191 = 764 字节，落在索引前缀长度限制内
+--   - JSON blob 字段（spec_detail / capabilities / extra）用 MySQL 8.0 原生 JSON 类型，
+--     未来 admin 想按 JSON 字段筛选可以 JSON_EXTRACT(...)
+--   - update_time：DEFAULT CURRENT_TIMESTAMP；不加 ON UPDATE，让 Go 代码显式控制 update 语义
 
 -- =====================================================================
 -- model_services：M5 ModelService middleware 查询的"模型路由配置"
--- 主键 id 自增；查询入口是 model（客户端传过来的模型名）。
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS model_services (
-    id           INTEGER PRIMARY KEY,
-    service_id   TEXT      NOT NULL UNIQUE,                          -- 业务唯一标识，如 "openai/gpt-4o"
-    model        TEXT      NOT NULL UNIQUE,                          -- 客户端可见的模型名，如 "gpt-4o"
-    update_time  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,       -- 与 id 共同构成 PricingSnapshot 指纹
-    spec_detail  TEXT      NOT NULL DEFAULT '',                      -- JSON: 计量计价详细规格
-    group_name   TEXT      NOT NULL DEFAULT 'default',               -- 默认 endpoint 组
-    tpm          INTEGER   NOT NULL DEFAULT 0,                       -- 默认每分钟 token 限额
-    rpm          INTEGER   NOT NULL DEFAULT 0                        -- 默认每分钟请求数限额
-);
+    id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    service_id   VARCHAR(191) NOT NULL,
+    model        VARCHAR(191) NOT NULL,
+    update_time  TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    spec_detail  JSON         DEFAULT NULL,
+    group_name   VARCHAR(64)  NOT NULL DEFAULT 'default',
+    tpm          BIGINT       NOT NULL DEFAULT 0,
+    rpm          BIGINT       NOT NULL DEFAULT 0,
+    UNIQUE KEY uk_service_id (service_id),
+    UNIQUE KEY uk_model (model)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
 -- endpoints：M7 Schedule middleware 选路的"上游接入点"
--- 主键 id 是 caller 提供的字符串（如 "openai_main"）。
--- 查询热路径：按 (model, group_name) 选第一个匹配。
+-- 主键 id 是 caller 提供的字符串（如 "openai_main"），不自增。
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS endpoints (
-    id            TEXT    PRIMARY KEY,                               -- 业务侧手起的 ID，如 "openai_main"
-    vendor        TEXT    NOT NULL,                                  -- 与 adapter.Vendor 对应
-    url           TEXT    NOT NULL,                                  -- 上游 base URL
-    api_key       TEXT    NOT NULL DEFAULT '',                       -- 凭证；明文存（v0.1）；prod 应外置 KMS
-    group_name    TEXT    NOT NULL DEFAULT 'default',                -- 与 UserIdentity.Group 匹配
-    model         TEXT    NOT NULL,                                  -- 该 endpoint 服务的模型名
-    weight        INTEGER NOT NULL DEFAULT 100,                      -- 加权随机的基础权重
-    rpm           INTEGER NOT NULL DEFAULT 0,                        -- endpoint 层每分钟请求数硬上限
-    tpm           INTEGER NOT NULL DEFAULT 0,                        -- endpoint 层每分钟 token 硬上限
-    rps           INTEGER NOT NULL DEFAULT 0,                        -- endpoint 层每秒请求数硬上限
-    capabilities  TEXT    NOT NULL DEFAULT '{}',                     -- JSON: EndpointCapabilities
-    extra         TEXT    NOT NULL DEFAULT ''                        -- JSON: 厂商专有配置，Adapter 自行解析
-);
-
-CREATE INDEX IF NOT EXISTS idx_endpoints_model_group ON endpoints(model, group_name);
+    id            VARCHAR(128) NOT NULL PRIMARY KEY,
+    vendor        VARCHAR(64)  NOT NULL,
+    url           VARCHAR(512) NOT NULL,
+    api_key       VARCHAR(512) NOT NULL DEFAULT '',
+    group_name    VARCHAR(64)  NOT NULL DEFAULT 'default',
+    model         VARCHAR(191) NOT NULL,
+    weight        INT          NOT NULL DEFAULT 100,
+    rpm           BIGINT       NOT NULL DEFAULT 0,
+    tpm           BIGINT       NOT NULL DEFAULT 0,
+    rps           BIGINT       NOT NULL DEFAULT 0,
+    capabilities  JSON         DEFAULT NULL,
+    extra         JSON         DEFAULT NULL,
+    INDEX idx_endpoints_model_group (model, group_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

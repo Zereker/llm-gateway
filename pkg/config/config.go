@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -96,11 +95,8 @@ type KafkaOutboxSection struct {
 //	configs/local/gateway.yaml 里写 "apikeys: apikeys.json"
 //	→ 实际指向 configs/local/apikeys.json，与 CWD 无关
 //
-// UsageLog 通常是绝对路径（/tmp/... 或 /var/log/...），不做解析以免误把
-// /tmp/foo 解释成 configs/local/tmp/foo。
-//
-// Database.DSN 仅 sqlite 文件路径会做相对解析；":memory:" 与 postgres URL
-// 原样保留。
+// UsageLog / Database.DSN 都按 URL/字符串原样保留——MySQL DSN 是连接字符串，
+// 不是路径。
 func Load(path string) (*Config, error) {
 	if path == "" {
 		return nil, errors.New("config: empty path")
@@ -117,8 +113,7 @@ func Load(path string) (*Config, error) {
 
 	base := filepath.Dir(path)
 	c.Paths.APIKeys = resolveRelative(base, c.Paths.APIKeys)
-	// UsageLog 不解析（约定绝对路径）
-	c.Database.DSN = resolveDatabaseDSN(base, c.Database.Driver, c.Database.DSN)
+	// UsageLog / Database.DSN 不解析（约定绝对路径 / 连接 URL）
 
 	return &c, nil
 }
@@ -128,21 +123,6 @@ func resolveRelative(base, p string) string {
 		return p
 	}
 	return filepath.Join(base, p)
-}
-
-// resolveDatabaseDSN 仅对 sqlite 的文件路径做相对解析；":memory:" 和 postgres URL 原样返回。
-func resolveDatabaseDSN(base string, driver infra.Driver, dsn string) string {
-	if dsn == "" || dsn == ":memory:" {
-		return dsn
-	}
-	if driver != infra.DriverSQLite {
-		return dsn // postgres URL / 其它 dialect URL 不动
-	}
-	// sqlite driver 也可能传 URL 形态（"file:..."），原样保留
-	if strings.Contains(dsn, "://") || strings.HasPrefix(dsn, "file:") {
-		return dsn
-	}
-	return resolveRelative(base, dsn)
 }
 
 // ApplyDefaults 给所有未设置的字段填默认值。
@@ -168,10 +148,10 @@ func (c *Config) ApplyDefaults() {
 		c.Paths.APIKeys = "apikeys.json"
 	}
 	if c.Database.Driver == "" {
-		c.Database.Driver = "sqlite"
+		c.Database.Driver = infra.DriverMySQL
 	}
 	if c.Database.DSN == "" {
-		c.Database.DSN = "gateway.db"
+		c.Database.DSN = "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
 	}
 	if c.Outbox.Driver == "" {
 		c.Outbox.Driver = "file"

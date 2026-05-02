@@ -1,0 +1,78 @@
+# 本地开发 stack：MySQL 8.0 + Redis 7 + Redpanda（Kafka 兼容）
+#
+# 起：    docker compose up -d
+# 停：    docker compose down
+# 全清：  docker compose down -v
+#
+# 启动后默认连接：
+#   MYSQL_DSN=root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4
+#   redis://localhost:6379
+#   kafka://localhost:9092
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ai-gateway-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"   # 仅本地开发；生产必须设密码
+      MYSQL_DATABASE: ai_gateway
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-gateway-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redpanda:
+    # Redpanda：Kafka 协议 100% 兼容，单二进制无 JVM 无 ZK，本地启动 < 1s。
+    # segmentio/kafka-go 直连。
+    image: redpandadata/redpanda:latest
+    container_name: ai-gateway-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mysql-data:
+  redis-data:
+  redpanda-data:

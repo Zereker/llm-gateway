@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
-	"path/filepath"
+	"os"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -16,21 +16,33 @@ import (
 
 const testToken = "test-admin-token"
 
-// newTestEngine 起一份独立 sqlite + 完整 admin engine。
+// newTestEngine 起一份连到本地 MySQL 的 *sqlx.DB（Migrate + TRUNCATE）+ 完整 admin engine。
 //
 // 直接用 NewEngine + 真实 SQL repo（而不是 stub），因为 admin 的整个价值就是
 // "从 HTTP 把请求落到 DB"——stub repo 等于绕开测试目标。
+//
+// MYSQL_DSN 没设就 t.Skip。本地：`docker compose up -d mysql` 后导出 env。
 func newTestEngine(t *testing.T) *gin.Engine {
 	t.Helper()
-	dir := t.TempDir()
 
-	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverSQLite, DSN: filepath.Join(dir, "admin.db")})
+	dsn := os.Getenv("MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("MYSQL_DSN not set; skipping admin integration test")
+	}
+
+	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
 	if err != nil {
 		t.Fatalf("infra.Open: %v", err)
 	}
 	if err := infra.Migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		t.Fatalf("infra.Migrate: %v", err)
+	}
+	for _, table := range []string{"endpoints", "model_services"} {
+		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
+			_ = db.Close()
+			t.Fatalf("TRUNCATE %s: %v", table, err)
+		}
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -94,9 +106,11 @@ func TestAuth_OpsBypassToken(t *testing.T) {
 
 func TestAuth_EmptyConfiguredTokenRefusesAll(t *testing.T) {
 	// 即便 caller 也送了 token，服务侧 token 没配就拒（防误配上线）。
-	dir := t.TempDir()
-	db, _ := infra.Open(infra.DBConfig{Driver: infra.DriverSQLite, DSN: filepath.Join(dir, "x.db")})
-	_ = infra.Migrate(context.Background(), db)
+	// 复用 newTestEngine 起 stack 然后构造一个 token 为空的新 engine。
+	_ = newTestEngine(t) // 确保 MYSQL 在线 + skip 行为一致
+
+	dsn := os.Getenv("MYSQL_DSN")
+	db, _ := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
 	t.Cleanup(func() { _ = db.Close() })
 	engine := NewEngine(Deps{
 		Token:            "",

@@ -1,7 +1,7 @@
 # admin.yaml — ai-gateway-admin 本地启动配置
 #
 # admin 是控制平面：通过 HTTP CRUD 维护 model_services / endpoints。
-# 跟 gateway 共享同一份 sqlite 文件（dsn 必须与 gateway.yaml 一致）。
+# 跟 gateway 共享同一份 MySQL（dsn 必须与 gateway.yaml 一致）。
 #
 # 运行：
 #   go run ./cmd/admin -config ./configs/local/admin.yaml
@@ -23,5 +23,5 @@ admin:
 
 database:
   # 与 configs/local/gateway.yaml 的 database 段一致；admin 拥有 schema 演进。
-  driver: sqlite
-  dsn: gateway.db
+  driver: mysql
+  dsn: "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"

@@ -12,25 +12,29 @@
 //
 // 应用层在 main 调一次 Open + Migrate，进程内共享一份 *sqlx.DB；
 // pkg/repo 的 SQL 实现接受 *sqlx.DB 作为依赖，自己不打开连接。
+//
+// **v0.1 只支持 MySQL 8.0+**。Postgres / SQLite 等其它方言以后通过新增 driver
+// 常量 + 新 schema_<dialect>.sql 文件支持，目前不做。
 package infra
 
 import (
 	"context"
 	"embed"
 	"fmt"
+	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql" // driver name "mysql"
 	"github.com/jmoiron/sqlx"
-
-	_ "modernc.org/sqlite" // 纯 Go sqlite driver；driver name "sqlite"
 )
 
 // Driver 标识当前使用的 SQL 驱动。
+//
+// v0.1 只支持 MySQL；以后扩展 Postgres 等只需在此加常量 + 新 schema 文件。
 type Driver string
 
 const (
-	DriverSQLite   Driver = "sqlite"   // 默认；适合本地 / 单实例 / OSS 零安装
-	DriverPostgres Driver = "postgres" // v0.1 占位；正式接入时 import lib/pq
+	DriverMySQL Driver = "mysql"
 )
 
 // DBConfig SQL 数据库连接配置。
@@ -38,10 +42,11 @@ const (
 // pkg/config 通过引用本类型把字段暴露给 yaml；用户 yaml 写：
 //
 //	database:
-//	  driver: sqlite
-//	  dsn: gateway.db
+//	  driver: mysql
+//	  dsn: root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4
 //
-// 直接落到 *Config.Database 字段。
+// 直接落到 *Config.Database 字段。DSN 必须带 `parseTime=true`，否则
+// time.Time 字段读取会出错。
 type DBConfig struct {
 	Driver Driver `yaml:"driver"`
 	DSN    string `yaml:"dsn"`
@@ -79,6 +84,9 @@ var schemaFS embed.FS
 // schema.sql 全部用 IF NOT EXISTS / DEFAULT 写法，可以反复 Run；
 // boot 时调一次即可。
 //
+// MySQL go-sql-driver 默认不允许单次 Exec 多语句（multiStatements=false），
+// 这里按 `;` 拆开逐条执行；schema.sql 不能用"字符串里含 ;"这种构造。
+//
 // v0.1 不引入 golang-migrate / goose；schema 演进到需要 versioning
 // （多版本上线、需要回滚、跨服务共享 schema）时再升级。
 func Migrate(ctx context.Context, db *sqlx.DB) error {
@@ -86,8 +94,36 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 	if err != nil {
 		return fmt.Errorf("infra: read schema: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, string(raw)); err != nil {
-		return fmt.Errorf("infra: apply schema: %w", err)
+	for _, stmt := range splitSQL(string(raw)) {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("infra: apply schema: %w\n--- stmt ---\n%s", err, stmt)
+		}
 	}
 	return nil
+}
+
+// splitSQL 按 ; 切分语句，过滤纯空白 / 纯注释行。简单实现：不解析字符串字面量，
+// schema.sql 不允许出现"字符串内含 ;"。
+func splitSQL(raw string) []string {
+	var out []string
+	for _, chunk := range strings.Split(raw, ";") {
+		stmt := stripCommentsAndTrim(chunk)
+		if stmt != "" {
+			out = append(out, stmt)
+		}
+	}
+	return out
+}
+
+// stripCommentsAndTrim 去掉行注释 + trim 整体空白；剩下空字符串则该语句被跳过。
+func stripCommentsAndTrim(s string) string {
+	var keep []string
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "--") {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.TrimSpace(strings.Join(keep, "\n"))
 }

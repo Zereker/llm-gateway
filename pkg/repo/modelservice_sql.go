@@ -29,15 +29,18 @@ func NewSQLModelServiceRepo(db *sqlx.DB) *SQLModelServiceRepo {
 }
 
 // dbModelService 是行级表示，column 名跟 schema.sql 对齐。
+//
+// SpecDetail 用 sql.NullString：JSON 列可能是 NULL（由 jsonOrNil 写入），
+// 直接扫到 string 会 "converting NULL to string is unsupported"。
 type dbModelService struct {
-	ID         int64     `db:"id"`
-	ServiceID  string    `db:"service_id"`
-	Model      string    `db:"model"`
-	UpdateTime time.Time `db:"update_time"`
-	SpecDetail string    `db:"spec_detail"`
-	GroupName  string    `db:"group_name"`
-	Tpm        int64     `db:"tpm"`
-	Rpm        int64     `db:"rpm"`
+	ID         int64          `db:"id"`
+	ServiceID  string         `db:"service_id"`
+	Model      string         `db:"model"`
+	UpdateTime time.Time      `db:"update_time"`
+	SpecDetail sql.NullString `db:"spec_detail"`
+	GroupName  string         `db:"group_name"`
+	Tpm        int64          `db:"tpm"`
+	Rpm        int64          `db:"rpm"`
 }
 
 const msColumns = `id, service_id, model, update_time, spec_detail, group_name, tpm, rpm`
@@ -88,7 +91,7 @@ func (r *SQLModelServiceRepo) Create(ctx context.Context, snap *domain.ModelServ
 	res, err := r.db.ExecContext(ctx, r.db.Rebind(
 		`INSERT INTO model_services (service_id, model, update_time, spec_detail, group_name, tpm, rpm)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`),
-		snap.ServiceID, snap.Model, snap.UpdateTime, string(snap.SpecDetail),
+		snap.ServiceID, snap.Model, snap.UpdateTime, jsonOrNil(snap.SpecDetail),
 		groupName, snap.Tpm, snap.Rpm,
 	)
 	if err != nil {
@@ -116,7 +119,7 @@ func (r *SQLModelServiceRepo) Update(ctx context.Context, snap *domain.ModelServ
 		`UPDATE model_services
 		 SET service_id = ?, update_time = ?, spec_detail = ?, group_name = ?, tpm = ?, rpm = ?
 		 WHERE model = ?`),
-		snap.ServiceID, snap.UpdateTime, string(snap.SpecDetail),
+		snap.ServiceID, snap.UpdateTime, jsonOrNil(snap.SpecDetail),
 		groupName, snap.Tpm, snap.Rpm, snap.Model,
 	)
 	if err != nil {
@@ -156,8 +159,8 @@ func rowToModelService(row dbModelService) *domain.ModelServiceSnapshot {
 		Tpm:        row.Tpm,
 		Rpm:        row.Rpm,
 	}
-	if row.SpecDetail != "" {
-		snap.SpecDetail = json.RawMessage(row.SpecDetail)
+	if row.SpecDetail.Valid && row.SpecDetail.String != "" {
+		snap.SpecDetail = json.RawMessage(row.SpecDetail.String)
 	}
 	return snap
 }

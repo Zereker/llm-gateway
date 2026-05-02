@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/zereker-labs/ai-gateway/pkg/infra"
 )
 
 func TestLoad_AppliesDefaults(t *testing.T) {
@@ -30,13 +32,11 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	if cfg.Server.ReadHeaderTimeout != 10*time.Second {
 		t.Errorf("ReadHeaderTimeout = %v", cfg.Server.ReadHeaderTimeout)
 	}
-	if cfg.Database.Driver != "sqlite" {
-		t.Errorf("Database.Driver = %q, want sqlite", cfg.Database.Driver)
+	if cfg.Database.Driver != infra.DriverMySQL {
+		t.Errorf("Database.Driver = %q, want mysql", cfg.Database.Driver)
 	}
-	// gateway.db 是默认值，相对路径 → 解析为相对 yaml 目录
-	wantDSN := filepath.Join(dir, "gateway.db")
-	if cfg.Database.DSN != wantDSN {
-		t.Errorf("Database.DSN = %q, want %q", cfg.Database.DSN, wantDSN)
+	if cfg.Database.DSN == "" {
+		t.Error("Database.DSN empty after defaults")
 	}
 }
 
@@ -53,8 +53,8 @@ middleware:
 paths:
   apikeys: /etc/x/apikeys.json
 database:
-  driver: postgres
-  dsn: postgres://u:p@localhost:5432/db?sslmode=disable
+  driver: mysql
+  dsn: user:pwd@tcp(db.example.com:3306)/prod?parseTime=true
 outbox:
   driver: kafka
   kafka:
@@ -84,12 +84,12 @@ outbox:
 	if cfg.Paths.APIKeys != "/etc/x/apikeys.json" {
 		t.Errorf("Paths.APIKeys = %q", cfg.Paths.APIKeys)
 	}
-	if cfg.Database.Driver != "postgres" {
+	if cfg.Database.Driver != infra.DriverMySQL {
 		t.Errorf("Database.Driver = %q", cfg.Database.Driver)
 	}
-	// postgres URL 不应被相对解析
-	if cfg.Database.DSN != "postgres://u:p@localhost:5432/db?sslmode=disable" {
-		t.Errorf("Database.DSN was resolved unexpectedly: %q", cfg.Database.DSN)
+	// MySQL DSN 是连接字符串，不应被相对解析
+	if cfg.Database.DSN != "user:pwd@tcp(db.example.com:3306)/prod?parseTime=true" {
+		t.Errorf("Database.DSN was rewritten unexpectedly: %q", cfg.Database.DSN)
 	}
 	if cfg.Outbox.Driver != "kafka" {
 		t.Errorf("Outbox.Driver = %q", cfg.Outbox.Driver)
@@ -113,42 +113,6 @@ func TestLoad_OutboxDefaultsToFile(t *testing.T) {
 	}
 	if cfg.Outbox.File.Path != "/tmp/ai-gateway-usage.log" {
 		t.Errorf("Outbox.File.Path = %q", cfg.Outbox.File.Path)
-	}
-}
-
-func TestLoad_SQLiteDSN_RelativeResolved(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "gateway.yaml")
-	_ = os.WriteFile(p, []byte("database:\n  driver: sqlite\n  dsn: my.db\n"), 0o644)
-
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	want := filepath.Join(dir, "my.db")
-	if cfg.Database.DSN != want {
-		t.Errorf("DSN = %q, want %q", cfg.Database.DSN, want)
-	}
-}
-
-func TestLoad_SQLiteDSN_MemoryAndAbsolute(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "gateway.yaml")
-	_ = os.WriteFile(p, []byte("database:\n  driver: sqlite\n  dsn: \":memory:\"\n"), 0o644)
-
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Database.DSN != ":memory:" {
-		t.Errorf("DSN = %q, want :memory:", cfg.Database.DSN)
-	}
-
-	// 绝对路径也不应被改
-	_ = os.WriteFile(p, []byte("database:\n  driver: sqlite\n  dsn: /tmp/abs.db\n"), 0o644)
-	cfg, _ = Load(p)
-	if cfg.Database.DSN != "/tmp/abs.db" {
-		t.Errorf("DSN = %q, want /tmp/abs.db", cfg.Database.DSN)
 	}
 }
 
@@ -189,12 +153,11 @@ func TestLoadAdmin_AppliesDefaults(t *testing.T) {
 	if cfg.Admin.Token != "my-token" {
 		t.Errorf("Admin.Token = %q", cfg.Admin.Token)
 	}
-	if cfg.Database.Driver != "sqlite" {
+	if cfg.Database.Driver != infra.DriverMySQL {
 		t.Errorf("Database.Driver = %q", cfg.Database.Driver)
 	}
-	want := filepath.Join(dir, "gateway.db")
-	if cfg.Database.DSN != want {
-		t.Errorf("Database.DSN = %q, want %q", cfg.Database.DSN, want)
+	if cfg.Database.DSN == "" {
+		t.Error("Database.DSN empty after defaults")
 	}
 }
 
@@ -207,8 +170,8 @@ server:
 admin:
   token: secret-tok
 database:
-  driver: postgres
-  dsn: postgres://u:p@h:5432/db
+  driver: mysql
+  dsn: user:pwd@tcp(db.example.com:3306)/prod?parseTime=true
 `), 0o644)
 
 	cfg, err := LoadAdmin(p)
@@ -221,8 +184,8 @@ database:
 	if cfg.Admin.Token != "secret-tok" {
 		t.Errorf("Admin.Token = %q", cfg.Admin.Token)
 	}
-	if cfg.Database.DSN != "postgres://u:p@h:5432/db" {
-		t.Errorf("Database.DSN = %q (postgres URL should pass through)", cfg.Database.DSN)
+	if cfg.Database.DSN != "user:pwd@tcp(db.example.com:3306)/prod?parseTime=true" {
+		t.Errorf("Database.DSN was rewritten unexpectedly: %q", cfg.Database.DSN)
 	}
 }
 
@@ -247,10 +210,7 @@ func TestApplyDefaults_OnZeroConfig(t *testing.T) {
 	if c.Middleware.BodyLimitBytes == 0 {
 		t.Error("BodyLimitBytes zero after ApplyDefaults")
 	}
-	if c.Database.Driver != "sqlite" {
-		t.Errorf("Database.Driver = %q, want sqlite", c.Database.Driver)
-	}
-	if c.Database.DSN != "gateway.db" {
-		t.Errorf("Database.DSN = %q, want gateway.db", c.Database.DSN)
+	if c.Database.Driver != infra.DriverMySQL {
+		t.Errorf("Database.Driver = %q, want mysql", c.Database.Driver)
 	}
 }

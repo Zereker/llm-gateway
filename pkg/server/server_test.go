@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,8 +64,12 @@ func TestServer_CloseIsIdempotent(t *testing.T) {
 }
 
 func TestServer_OpenDBRegistersClose(t *testing.T) {
+	dsn := os.Getenv("MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("MYSQL_DSN not set; skipping OpenDB integration test")
+	}
 	s := New(silent())
-	db, err := s.OpenDB(infra.DBConfig{Driver: infra.DriverSQLite, DSN: ":memory:"})
+	db, err := s.OpenDB(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}

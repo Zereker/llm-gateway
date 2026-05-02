@@ -18,5 +18,5 @@ admin:
 
 database:
   # 与 gateway 的 prod yaml 一致；admin 启动时 Migrate 建表 + 后续 schema 演进。
-  driver: postgres
-  dsn: postgres://ai_gateway:CHANGE_ME@db:5432/ai_gateway?sslmode=disable
+  driver: mysql
+  dsn: "ai_gateway:CHANGE_ME@tcp(db:3306)/ai_gateway?parseTime=true&charset=utf8mb4&tls=preferred"

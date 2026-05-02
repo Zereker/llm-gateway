@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -28,8 +27,9 @@ type AdminSection struct {
 	Token string `yaml:"token"` // X-Admin-Token header 校验值；空时 admin 拒所有请求
 }
 
-// LoadAdmin 加载 admin.yaml；行为与 Load 一致（路径相对解析、应用默认值），
-// schema 是 AdminConfig。
+// LoadAdmin 加载 admin.yaml；行为与 Load 一致（应用默认值），schema 是 AdminConfig。
+//
+// MySQL DSN 是连接字符串，不做相对解析。
 func LoadAdmin(path string) (*AdminConfig, error) {
 	if path == "" {
 		return nil, errors.New("config: empty path")
@@ -43,9 +43,6 @@ func LoadAdmin(path string) (*AdminConfig, error) {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
 	}
 	c.ApplyDefaults()
-
-	base := filepath.Dir(path)
-	c.Database.DSN = resolveDatabaseDSN(base, c.Database.Driver, c.Database.DSN)
 	return &c, nil
 }
 
@@ -64,9 +61,9 @@ func (c *AdminConfig) ApplyDefaults() {
 		c.Server.ShutdownTimeout = 30 * time.Second
 	}
 	if c.Database.Driver == "" {
-		c.Database.Driver = "sqlite"
+		c.Database.Driver = infra.DriverMySQL
 	}
 	if c.Database.DSN == "" {
-		c.Database.DSN = "gateway.db"
+		c.Database.DSN = "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
 	}
 }

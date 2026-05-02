@@ -112,12 +112,18 @@ func TestE2E_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// writeTestConfig 在 t.TempDir() 准备好 apikeys.json + 一个独立 sqlite 文件
-// （Migrate + 注入 svc_gpt4o + openai_main），返回 cfg 让 buildEngine 自己再开一次连接。
+// writeTestConfig 在 t.TempDir() 准备好 apikeys.json + outbox 输出路径，
+// 把 Database 段指向本地 MySQL（MYSQL_DSN env），然后 seedDB 写入测试数据。
 //
-// SQLite 支持同时多连接读同一文件；测试结束 t.TempDir 自动清理。
+// 没设 MYSQL_DSN 直接 t.Skip 整组 e2e 测试。
 func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	t.Helper()
+
+	dsn := os.Getenv("MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("MYSQL_DSN not set; skipping gateway e2e test")
+	}
+
 	dir := t.TempDir()
 
 	apikeys := map[string]domain.UserIdentity{
@@ -125,16 +131,15 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	}
 	mustWriteJSON(t, filepath.Join(dir, "apikeys.json"), apikeys)
 
-	dbPath := filepath.Join(dir, "test.db")
-	seedDB(t, dbPath, upstreamURL)
+	seedDB(t, dsn, upstreamURL)
 
 	cfg := &config.Config{
 		Paths: config.PathsConfig{
 			APIKeys: filepath.Join(dir, "apikeys.json"),
 		},
 		Database: infra.DBConfig{
-			Driver: infra.DriverSQLite,
-			DSN:    dbPath,
+			Driver: infra.DriverMySQL,
+			DSN:    dsn,
 		},
 		Outbox: config.OutboxConfig{
 			Driver: "file",
@@ -149,11 +154,11 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	return cfg
 }
 
-// seedDB 打开 sqlite 文件、Migrate、写一组测试用 ModelService + Endpoint，然后关闭。
-// buildEngine 之后会重新打开同一个文件，读到我们写入的数据。
-func seedDB(t *testing.T, dbPath, upstreamURL string) {
+// seedDB 连本地 MySQL，Migrate + TRUNCATE + 写测试用 ModelService + Endpoint。
+// buildEngine 后续会再开一次连接，读到这些数据。
+func seedDB(t *testing.T, dsn, upstreamURL string) {
 	t.Helper()
-	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverSQLite, DSN: dbPath})
+	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
 	if err != nil {
 		t.Fatalf("infra.Open seed: %v", err)
 	}
@@ -162,6 +167,11 @@ func seedDB(t *testing.T, dbPath, upstreamURL string) {
 	ctx := context.Background()
 	if err := infra.Migrate(ctx, db); err != nil {
 		t.Fatalf("infra.Migrate seed: %v", err)
+	}
+	for _, table := range []string{"endpoints", "model_services"} {
+		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
+			t.Fatalf("TRUNCATE %s: %v", table, err)
+		}
 	}
 
 	msRepo := repo.NewSQLModelServiceRepo(db)
