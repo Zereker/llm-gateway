@@ -42,8 +42,8 @@ type RequestContext struct {
 	LimitSpec *LimitSpec
 
 	// === M7 Schedule 写入 ===
-	Endpoint *Endpoint
-	Adapter  Adapter // 最小接口，实现在 pkg/adapter.Adapter
+	Endpoint       *Endpoint
+	AdapterSession AdapterSession // 由 adapter.Get(ep.Vendor).NewSession(...) 创建
 
 	// === 响应阶段写入（M7 内部 / Adapter） ===
 	Usage              *Usage
