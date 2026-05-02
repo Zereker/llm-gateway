@@ -101,7 +101,7 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 		return nil, nil, fmt.Errorf("load apikeys: %w", err)
 	}
 
-	sqldb, err := infra.Open(infra.Driver(cfg.Database.Driver), cfg.Database.DSN)
+	sqldb, err := infra.Open(cfg.Database)
 	if err != nil {
 		return nil, nil, fmt.Errorf("infra.Open: %w", err)
 	}
@@ -150,11 +150,11 @@ func buildOutbox(cfg config.OutboxConfig) (usage.OutboxPublisher, func() error, 
 		}
 		return ob, ob.Close, nil
 	case "kafka":
-		producer, err := infra.NewKafkaProducer(cfg.Kafka.Brokers, cfg.Kafka.Topic)
+		producer, err := infra.NewKafkaProducer(cfg.Kafka.KafkaConfig)
 		if err != nil {
 			return nil, nil, err
 		}
-		ob := usage.NewKafkaOutbox(producer)
+		ob := usage.NewKafkaOutbox(producer, cfg.Kafka.Topic)
 		return ob, ob.Close, nil
 	default:
 		return nil, nil, fmt.Errorf("unknown outbox driver %q (want file|kafka)", cfg.Driver)

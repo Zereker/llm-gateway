@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/zereker-labs/ai-gateway/pkg/infra"
 )
 
 // AdminConfig admin（控制平面）服务的启动配置（admin.yaml 的根）。
@@ -18,7 +20,7 @@ import (
 type AdminConfig struct {
 	Server   ServerConfig   `yaml:"server"`
 	Admin    AdminSection   `yaml:"admin"`
-	Database DatabaseConfig `yaml:"database"`
+	Database infra.DBConfig `yaml:"database"` // schema 在 pkg/infra
 }
 
 // AdminSection admin 服务专属字段（不与 gateway 共享）。

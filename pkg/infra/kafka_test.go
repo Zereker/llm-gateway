@@ -9,23 +9,28 @@ import (
 )
 
 func TestNewKafkaProducer_RejectsEmptyBrokers(t *testing.T) {
-	if _, err := NewKafkaProducer(nil, "topic"); err == nil {
-		t.Fatal("want error for nil brokers")
-	}
-	if _, err := NewKafkaProducer([]string{}, "topic"); err == nil {
+	if _, err := NewKafkaProducer(KafkaConfig{}); err == nil {
 		t.Fatal("want error for empty brokers")
+	}
+	if _, err := NewKafkaProducer(KafkaConfig{Brokers: []string{}}); err == nil {
+		t.Fatal("want error for empty brokers slice")
 	}
 }
 
-func TestNewKafkaProducer_RejectsEmptyTopic(t *testing.T) {
-	if _, err := NewKafkaProducer([]string{"localhost:9092"}, ""); err == nil {
+func TestKafkaProducer_WriteRejectsEmptyTopic(t *testing.T) {
+	p, err := NewKafkaProducer(KafkaConfig{Brokers: []string{"localhost:9092"}})
+	if err != nil {
+		t.Fatalf("NewKafkaProducer: %v", err)
+	}
+	defer func() { _ = p.Close() }()
+	if err := p.Write(context.Background(), "", []byte("k"), []byte("v")); err == nil {
 		t.Fatal("want error for empty topic")
 	}
 }
 
 func TestKafkaProducer_CloseNeverUsed(t *testing.T) {
 	// kafka.Writer 是 lazy connect；从没 Write 过的 Close 应该是 no-op 不报错。
-	p, err := NewKafkaProducer([]string{"localhost:9092"}, "topic")
+	p, err := NewKafkaProducer(KafkaConfig{Brokers: []string{"localhost:9092"}})
 	if err != nil {
 		t.Fatalf("NewKafkaProducer: %v", err)
 	}
@@ -51,7 +56,7 @@ func TestKafkaProducer_WriteIntegration(t *testing.T) {
 		topic = "ai-gateway-test"
 	}
 
-	p, err := NewKafkaProducer(strings.Split(brokers, ","), topic)
+	p, err := NewKafkaProducer(KafkaConfig{Brokers: strings.Split(brokers, ",")})
 	if err != nil {
 		t.Fatalf("NewKafkaProducer: %v", err)
 	}
@@ -59,7 +64,7 @@ func TestKafkaProducer_WriteIntegration(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := p.Write(ctx, []byte("test-key"), []byte(`{"hello":"world"}`)); err != nil {
+	if err := p.Write(ctx, topic, []byte("test-key"), []byte(`{"hello":"world"}`)); err != nil {
 		t.Errorf("Write: %v", err)
 	}
 }

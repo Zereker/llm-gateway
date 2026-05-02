@@ -3,8 +3,11 @@
 //   - config.go  →  Config  + Load        （gateway / 数据平面 → gateway.yaml）
 //   - admin.go   →  AdminConfig + LoadAdmin（admin / 控制平面 → admin.yaml）
 //
-// 两个 *Config 完全独立、各自独立 yaml；只共享纯数据类型（ServerConfig /
-// DatabaseConfig）以避免重复定义——不是"两个服务耦合"，而是数据 schema 复用。
+// 两个 *Config 完全独立、各自独立 yaml。
+//
+// **infra 子系统的 Config 类型住在 pkg/infra**（infra.DBConfig / infra.KafkaConfig
+// 等），pkg/config 通过 import 引用——这样新增 infra 时 schema 演进的所有权
+// 集中在 infra 那边，pkg/config 只是 yaml 编排层。
 //
 // 区分于 pkg/repo —— pkg/repo 是 admin 可增删改的"业务记录"
 // （ModelService / Endpoint）；pkg/config 是启动时一次性读入的"进程本身的设置"
@@ -22,6 +25,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/zereker-labs/ai-gateway/pkg/infra"
 )
 
 // Config 是 gateway.yaml 的根。
@@ -31,7 +36,7 @@ type Config struct {
 	Server     ServerConfig     `yaml:"server"`
 	Middleware MiddlewareConfig `yaml:"middleware"`
 	Paths      PathsConfig      `yaml:"paths"`
-	Database   DatabaseConfig   `yaml:"database"`
+	Database   infra.DBConfig   `yaml:"database"` // schema 在 pkg/infra
 	Outbox     OutboxConfig     `yaml:"outbox"`
 }
 
@@ -71,20 +76,18 @@ type FileOutboxSection struct {
 	Path string `yaml:"path"` // JSONL 追加路径；约定绝对路径，不做相对解析
 }
 
-// KafkaOutboxSection driver=kafka 时的字段。
-type KafkaOutboxSection struct {
-	Brokers []string `yaml:"brokers"` // "host:port" 列表
-	Topic   string   `yaml:"topic"`
-}
-
-// DatabaseConfig 业务记录的存储层（ModelService / Endpoint）。
+// KafkaOutboxSection driver=kafka 时的字段：嵌入 infra.KafkaConfig（brokers
+// 等连接字段）+ Topic（业务侧关切，不属于 infra）。
 //
-//	driver: sqlite | postgres
-//	dsn:    sqlite → 文件路径（相对路径相对 yaml 目录）或 ":memory:"
-//	        postgres → "postgres://user:pass@host:5432/db?sslmode=disable"
-type DatabaseConfig struct {
-	Driver string `yaml:"driver"`
-	DSN    string `yaml:"dsn"`
+// yaml `,inline` 让嵌入字段直接出现在 outbox.kafka 这一级，不嵌套：
+//
+//	outbox:
+//	  kafka:
+//	    brokers: [...]   # 来自 infra.KafkaConfig
+//	    topic: ...       # 本类型独有
+type KafkaOutboxSection struct {
+	infra.KafkaConfig `yaml:",inline"`
+	Topic             string `yaml:"topic"`
 }
 
 // Load 从 YAML 文件读入 Config，应用默认值，并把相对路径解析为
@@ -128,11 +131,11 @@ func resolveRelative(base, p string) string {
 }
 
 // resolveDatabaseDSN 仅对 sqlite 的文件路径做相对解析；":memory:" 和 postgres URL 原样返回。
-func resolveDatabaseDSN(base, driver, dsn string) string {
+func resolveDatabaseDSN(base string, driver infra.Driver, dsn string) string {
 	if dsn == "" || dsn == ":memory:" {
 		return dsn
 	}
-	if driver != "sqlite" {
+	if driver != infra.DriverSQLite {
 		return dsn // postgres URL / 其它 dialect URL 不动
 	}
 	// sqlite driver 也可能传 URL 形态（"file:..."），原样保留

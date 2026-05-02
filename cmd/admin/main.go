@@ -91,7 +91,7 @@ func run(configPath string) error {
 func buildEngine(cfg *config.AdminConfig) (*gin.Engine, func(), error) {
 	ctx := context.Background()
 
-	sqldb, err := infra.Open(infra.Driver(cfg.Database.Driver), cfg.Database.DSN)
+	sqldb, err := infra.Open(cfg.Database)
 	if err != nil {
 		return nil, nil, fmt.Errorf("infra.Open: %w", err)
 	}

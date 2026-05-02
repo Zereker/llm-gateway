@@ -14,15 +14,16 @@ type stubWriter struct {
 }
 
 type writtenMsg struct {
+	Topic string
 	Key   string
 	Value string
 }
 
-func (s *stubWriter) Write(_ context.Context, k, v []byte) error {
+func (s *stubWriter) Write(_ context.Context, topic string, k, v []byte) error {
 	if s.err != nil {
 		return s.err
 	}
-	s.writes = append(s.writes, writtenMsg{Key: string(k), Value: string(v)})
+	s.writes = append(s.writes, writtenMsg{Topic: topic, Key: string(k), Value: string(v)})
 	return nil
 }
 
@@ -31,9 +32,9 @@ func (s *stubWriter) Close() error {
 	return nil
 }
 
-func TestKafkaOutbox_PublishForwardsKeyAndPayload(t *testing.T) {
+func TestKafkaOutbox_PublishForwardsTopicKeyAndPayload(t *testing.T) {
 	sw := &stubWriter{}
-	o := NewKafkaOutbox(sw)
+	o := NewKafkaOutbox(sw, "ai-gateway.usage")
 
 	err := o.Publish(context.Background(), &OutboxEvent{
 		Key:     "ep_openai_main",
@@ -45,40 +46,49 @@ func TestKafkaOutbox_PublishForwardsKeyAndPayload(t *testing.T) {
 	if len(sw.writes) != 1 {
 		t.Fatalf("len writes = %d, want 1", len(sw.writes))
 	}
-	if sw.writes[0].Key != "ep_openai_main" {
-		t.Errorf("key = %q", sw.writes[0].Key)
+	got := sw.writes[0]
+	if got.Topic != "ai-gateway.usage" {
+		t.Errorf("topic = %q", got.Topic)
 	}
-	if sw.writes[0].Value != `{"trace_id":"abc","total":15}` {
-		t.Errorf("value = %q", sw.writes[0].Value)
+	if got.Key != "ep_openai_main" {
+		t.Errorf("key = %q", got.Key)
+	}
+	if got.Value != `{"trace_id":"abc","total":15}` {
+		t.Errorf("value = %q", got.Value)
 	}
 }
 
 func TestKafkaOutbox_PublishPropagatesError(t *testing.T) {
 	sw := &stubWriter{err: errors.New("broker down")}
-	o := NewKafkaOutbox(sw)
+	o := NewKafkaOutbox(sw, "topic")
 	err := o.Publish(context.Background(), &OutboxEvent{Key: "k", Payload: []byte("v")})
 	if err == nil {
 		t.Fatal("want propagated error")
 	}
-	if !errors.Is(err, sw.err) {
-		// 不强制 errors.Is（KafkaOutbox 直接 return underlying err，是 unwrap-able 的）
-		// 但至少应该出现在 chain 里
-		if err.Error() != sw.err.Error() {
-			t.Errorf("err = %v, want chain-equivalent to %v", err, sw.err)
-		}
+	if err.Error() != sw.err.Error() {
+		t.Errorf("err = %v, want %v", err, sw.err)
 	}
 }
 
 func TestKafkaOutbox_RejectsNilEvent(t *testing.T) {
-	o := NewKafkaOutbox(&stubWriter{})
+	o := NewKafkaOutbox(&stubWriter{}, "topic")
 	if err := o.Publish(context.Background(), nil); err == nil {
 		t.Fatal("want error for nil event")
 	}
 }
 
+func TestKafkaOutbox_RejectsEmptyTopic(t *testing.T) {
+	// 防御性：调用方误用 NewKafkaOutbox(producer, "") 时也要给清晰错误
+	o := NewKafkaOutbox(&stubWriter{}, "")
+	err := o.Publish(context.Background(), &OutboxEvent{Key: "k", Payload: []byte("v")})
+	if err == nil {
+		t.Fatal("want error for empty topic")
+	}
+}
+
 func TestKafkaOutbox_CloseDelegates(t *testing.T) {
 	sw := &stubWriter{}
-	o := NewKafkaOutbox(sw)
+	o := NewKafkaOutbox(sw, "topic")
 	if err := o.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -88,10 +98,9 @@ func TestKafkaOutbox_CloseDelegates(t *testing.T) {
 }
 
 func TestKafkaOutbox_ManyConcurrentPublish(t *testing.T) {
-	// 简单并发烟雾测：stub 本身非并发安全，所以只是确认 Publish 没引入 race
-	// 在串行情况下的语义。真并发安全靠底层 *kafka.Writer 提供。
+	// 简单串行烟雾测；真并发安全靠底层 *kafka.Writer 提供。
 	sw := &stubWriter{}
-	o := NewKafkaOutbox(sw)
+	o := NewKafkaOutbox(sw, "topic")
 	for i := 0; i < 100; i++ {
 		_ = o.Publish(context.Background(), &OutboxEvent{Key: "k", Payload: []byte("v")})
 	}

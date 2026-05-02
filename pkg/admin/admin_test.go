@@ -24,7 +24,7 @@ func newTestEngine(t *testing.T) *gin.Engine {
 	t.Helper()
 	dir := t.TempDir()
 
-	db, err := infra.Open(infra.DriverSQLite, filepath.Join(dir, "admin.db"))
+	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverSQLite, DSN: filepath.Join(dir, "admin.db")})
 	if err != nil {
 		t.Fatalf("infra.Open: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestAuth_OpsBypassToken(t *testing.T) {
 func TestAuth_EmptyConfiguredTokenRefusesAll(t *testing.T) {
 	// 即便 caller 也送了 token，服务侧 token 没配就拒（防误配上线）。
 	dir := t.TempDir()
-	db, _ := infra.Open(infra.DriverSQLite, filepath.Join(dir, "x.db"))
+	db, _ := infra.Open(infra.DBConfig{Driver: infra.DriverSQLite, DSN: filepath.Join(dir, "x.db")})
 	_ = infra.Migrate(context.Background(), db)
 	t.Cleanup(func() { _ = db.Close() })
 	engine := NewEngine(Deps{

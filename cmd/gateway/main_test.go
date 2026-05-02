@@ -132,8 +132,8 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 		Paths: config.PathsConfig{
 			APIKeys: filepath.Join(dir, "apikeys.json"),
 		},
-		Database: config.DatabaseConfig{
-			Driver: "sqlite",
+		Database: infra.DBConfig{
+			Driver: infra.DriverSQLite,
 			DSN:    dbPath,
 		},
 		Outbox: config.OutboxConfig{
@@ -153,7 +153,7 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 // buildEngine 之后会重新打开同一个文件，读到我们写入的数据。
 func seedDB(t *testing.T, dbPath, upstreamURL string) {
 	t.Helper()
-	db, err := infra.Open(infra.DriverSQLite, dbPath)
+	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverSQLite, DSN: dbPath})
 	if err != nil {
 		t.Fatalf("infra.Open seed: %v", err)
 	}

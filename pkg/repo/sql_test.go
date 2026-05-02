@@ -14,7 +14,7 @@ import (
 // 给 modelservice_sql_test.go / endpoint_sql_test.go 共用。
 func newTestDB(t *testing.T) *sqlx.DB {
 	t.Helper()
-	db, err := infra.Open(infra.DriverSQLite, ":memory:")
+	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverSQLite, DSN: ":memory:"})
 	if err != nil {
 		t.Fatalf("infra.Open: %v", err)
 	}

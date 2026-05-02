@@ -6,27 +6,26 @@ import (
 )
 
 func TestOpen_SQLiteInMemory(t *testing.T) {
-	db, err := Open(DriverSQLite, ":memory:")
+	db, err := Open(DBConfig{Driver: DriverSQLite, DSN: ":memory:"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	// Ping 应在 Open 内部已通过
 	if err := db.Ping(); err != nil {
 		t.Errorf("Ping: %v", err)
 	}
 }
 
 func TestOpen_UnknownDriver(t *testing.T) {
-	_, err := Open(Driver("nope"), "")
+	_, err := Open(DBConfig{Driver: "nope", DSN: ""})
 	if err == nil {
 		t.Fatal("want error for unknown driver")
 	}
 }
 
 func TestMigrate_Idempotent(t *testing.T) {
-	db, err := Open(DriverSQLite, ":memory:")
+	db, err := Open(DBConfig{Driver: DriverSQLite, DSN: ":memory:"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -37,7 +36,6 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate (1st): %v", err)
 	}
-	// 再跑一次：CREATE IF NOT EXISTS 必须不报错
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate (2nd): %v", err)
 	}
@@ -62,7 +60,7 @@ func TestMigrate_Idempotent(t *testing.T) {
 }
 
 func TestMigrate_TableShape(t *testing.T) {
-	db, err := Open(DriverSQLite, ":memory:")
+	db, err := Open(DBConfig{Driver: DriverSQLite, DSN: ":memory:"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -72,7 +70,6 @@ func TestMigrate_TableShape(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 
-	// 简单插入 / 读回，验证字段都对得上
 	_, err = db.Exec(
 		`INSERT INTO model_services (service_id, model, group_name, tpm, rpm)
 		 VALUES (?, ?, ?, ?, ?)`,
