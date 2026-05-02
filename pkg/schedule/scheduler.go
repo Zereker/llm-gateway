@@ -1,6 +1,5 @@
-// Package schedule 实现端点选择主调度链 + 加权随机 + Profile。
+// Package schedule 端点选择全家桶：Scheduler + Filter + RetryExecutor + Cooldown + Health。
 //
-// 各 Filter 实现见 pkg/schedule/filter；RetryExecutor 见 pkg/retry。
 // 详见 docs/architecture/03-endpoint-scheduling.md。
 package schedule
 
@@ -12,7 +11,7 @@ import (
 
 // Scheduler 调度链路的入口；输入候选池 + 上下文，输出一个 endpoint。
 //
-// 调用方（pkg/retry.Executor）在 fallback 时通过 PickInput.Excluded 排除已尝试的 endpoint。
+// 调用方（RetryExecutor）在 fallback 时通过 PickInput.Excluded 排除已尝试的 endpoint。
 type Scheduler interface {
 	Pick(c context.Context, in PickInput) (*ctx.Endpoint, *ctx.SchedulingDecision, error)
 }
@@ -27,9 +26,6 @@ type PickInput struct {
 }
 
 // Profile 每个 model 的调度策略；通过 ConfigStore 下发，秒级生效。
-//
-// RetryPolicy 不放在这里（避免 schedule → retry 循环依赖）；
-// pkg/retry 自带 DefaultPolicy，运行时由 cmd 装配组合。
 type Profile struct {
 	EnablePrefixCache  bool
 	EnableBusy         bool
@@ -39,6 +35,7 @@ type Profile struct {
 	PrefixHashLength   int      // prompt 前 N 字符
 	GroupStrict        bool
 	FilterChain        []string // 自定义 Filter 顺序；空时用默认
+	RetryPolicy        RetryPolicy
 }
 
 // DefaultProfile 给新模型用的默认 profile。
@@ -50,4 +47,5 @@ var DefaultProfile = Profile{
 	EnableRPMScheduler: true,
 	PrefixHashLength:   32,
 	GroupStrict:        true,
+	RetryPolicy:        DefaultRetryPolicy,
 }

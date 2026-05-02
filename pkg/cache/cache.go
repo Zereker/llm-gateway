@@ -1,4 +1,8 @@
-package store
+// Package cache 定义 KV + 原子计数 + 限流脚本的存储后端抽象。
+//
+// 默认实现支持内存（单实例 / 测试）和 Redis（多实例共享）；
+// 详见 docs/architecture/06-pluggable-infra.md。
+package cache
 
 import (
 	"context"
@@ -6,9 +10,6 @@ import (
 )
 
 // Cache 限流 Lua 脚本 / Cooldown Manager / 配置二级缓存的存储后端抽象。
-//
-// 默认实现支持内存（单实例 / 测试）和 Redis（多实例共享）；
-// 详见 docs/architecture/06-pluggable-infra.md。
 type Cache interface {
 	// 基础 KV
 	Get(c context.Context, key string) ([]byte, error) // 不存在返回 nil, nil

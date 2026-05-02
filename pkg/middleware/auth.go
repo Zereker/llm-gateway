@@ -1,7 +1,4 @@
-// Package auth 定义 M2 Auth middleware 的依赖：身份解析。
-//
-// 内置默认实现包含 APIKey（file / in-memory）和 JWT（HS256 / RS256）。
-package auth
+package middleware
 
 import (
 	"context"
@@ -17,6 +14,8 @@ type Credentials struct {
 }
 
 // IdentityProvider M2 Auth middleware 的依赖接口。
+//
+// 内置默认实现包含 APIKey（file / in-memory）和 JWT（HS256 / RS256）。
 type IdentityProvider interface {
 	Resolve(c context.Context, creds *Credentials) (*ctx.UserIdentity, error)
 }
