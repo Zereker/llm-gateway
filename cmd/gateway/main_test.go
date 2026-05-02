@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 // e2e: 用 httptest 模拟 OpenAI 上游，把 gateway 的全套 middleware 串起来跑一遍。
@@ -109,7 +112,10 @@ func TestE2E_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// writeTestConfig 在 t.TempDir() 写一份完整 config，返回 *config.Config 指向该目录。
+// writeTestConfig 在 t.TempDir() 准备好 apikeys.json + 一个独立 sqlite 文件
+// （Migrate + 注入 svc_gpt4o + openai_main），返回 cfg 让 buildEngine 自己再开一次连接。
+//
+// SQLite 支持同时多连接读同一文件；测试结束 t.TempDir 自动清理。
 func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	t.Helper()
 	dir := t.TempDir()
@@ -119,25 +125,17 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	}
 	mustWriteJSON(t, filepath.Join(dir, "apikeys.json"), apikeys)
 
-	mustWriteJSON(t, filepath.Join(dir, "kv", "modelservice", "svc_gpt4o.json"), domain.ModelServiceSnapshot{
-		ID: 1, ServiceID: "openai/gpt-4o", Model: "gpt-4o", Group: "default",
-	})
-
-	endpointJSON := []byte(`{
-  "ID": "openai_main",
-  "Vendor": "openai",
-  "URL": ` + jsonString(upstreamURL) + `,
-  "APIKey": "sk-upstream-key",
-  "Group": "default",
-  "Model": "gpt-4o"
-}`)
-	mustWriteFile(t, filepath.Join(dir, "kv", "endpoint", "openai_main.json"), endpointJSON)
+	dbPath := filepath.Join(dir, "test.db")
+	seedDB(t, dbPath, upstreamURL)
 
 	cfg := &config.Config{
 		Paths: config.PathsConfig{
 			APIKeys:  filepath.Join(dir, "apikeys.json"),
-			KVRoot:   filepath.Join(dir, "kv"),
 			UsageLog: filepath.Join(dir, "usage.log"),
+		},
+		Database: config.DatabaseConfig{
+			Driver: "sqlite",
+			DSN:    dbPath,
 		},
 		Middleware: config.MiddlewareConfig{
 			BodyLimitBytes: 10 << 20,
@@ -148,9 +146,41 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	return cfg
 }
 
-func jsonString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
+// seedDB 打开 sqlite 文件、Migrate、写一组测试用 ModelService + Endpoint，然后关闭。
+// buildEngine 之后会重新打开同一个文件，读到我们写入的数据。
+func seedDB(t *testing.T, dbPath, upstreamURL string) {
+	t.Helper()
+	db, err := infra.Open(infra.DriverSQLite, dbPath)
+	if err != nil {
+		t.Fatalf("infra.Open seed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	if err := infra.Migrate(ctx, db); err != nil {
+		t.Fatalf("infra.Migrate seed: %v", err)
+	}
+
+	msRepo := repo.NewSQLModelServiceRepo(db)
+	if err := msRepo.Create(ctx, &domain.ModelServiceSnapshot{
+		ServiceID: "openai/gpt-4o",
+		Model:     "gpt-4o",
+		Group:     "default",
+	}); err != nil {
+		t.Fatalf("seed model_service: %v", err)
+	}
+
+	epRepo := repo.NewSQLEndpointRepo(db)
+	if err := epRepo.Create(ctx, &domain.Endpoint{
+		ID:     "openai_main",
+		Vendor: "openai",
+		URL:    upstreamURL,
+		APIKey: domain.Secret("sk-upstream-key"),
+		Group:  "default",
+		Model:  "gpt-4o",
+	}); err != nil {
+		t.Fatalf("seed endpoint: %v", err)
+	}
 }
 
 func mustWriteJSON(t *testing.T, path string, v any) {
@@ -159,11 +189,6 @@ func mustWriteJSON(t *testing.T, path string, v any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustWriteFile(t, path, data)
-}
-
-func mustWriteFile(t *testing.T, path string, data []byte) {
-	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}

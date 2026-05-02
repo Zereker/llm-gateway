@@ -1,9 +1,0 @@
-{
-  "ID": 1,
-  "ServiceID": "openai/gpt-4o",
-  "Model": "gpt-4o",
-  "UpdateTime": "2026-05-02T00:00:00Z",
-  "Group": "default",
-  "Tpm": 100000,
-  "Rpm": 600
-}

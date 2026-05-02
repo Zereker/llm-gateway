@@ -2,12 +2,12 @@
 //
 // 用法（最小起步）：
 //
-//	go run ./cmd/gateway -config ./examples/gateway.yaml
+//	go run ./cmd/gateway -config ./configs/local/gateway.yaml
 //
-// gateway.yaml 见 examples/gateway.yaml；包含 server / middleware / paths 三段。
+// gateway.yaml 见 configs/local/gateway.yaml；包含 server / middleware / paths / database 四段。
 //
-// 路由与 middleware 装配在 pkg/router；
-// 数据文件（apikeys.json / kv/modelservice/* / kv/endpoint/*）由 paths 指定路径。
+// 路由与 middleware 装配在 pkg/router；DB（model_services / endpoints）由
+// admin 进程通过 cmd/admin 维护，gateway 启动期 Migrate + 读全量。
 package main
 
 import (
@@ -26,10 +26,10 @@ import (
 
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker-labs/ai-gateway/pkg/infra"
 	"github.com/zereker-labs/ai-gateway/pkg/middleware"
 	"github.com/zereker-labs/ai-gateway/pkg/repo"
 	"github.com/zereker-labs/ai-gateway/pkg/router"
-	"github.com/zereker-labs/ai-gateway/pkg/store"
 	"github.com/zereker-labs/ai-gateway/pkg/trace"
 	"github.com/zereker-labs/ai-gateway/pkg/usage"
 
@@ -89,6 +89,9 @@ func run(configPath string) error {
 }
 
 // buildEngine 构造所有 deps 并装配 router.NewEngine。
+//
+// 启动期会跑 Migrate 把 schema 建上；DB 里没有 model_service / endpoint 时
+// gateway 仍能启动，等 admin 后续 CRUD 即可（请求过来时 M5 / M7 会 404 / 503）。
 func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 	ctx := context.Background()
 
@@ -97,22 +100,21 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 		return nil, nil, fmt.Errorf("load apikeys: %w", err)
 	}
 
-	kv, err := store.NewFileKV(cfg.Paths.KVRoot)
+	sqldb, err := infra.Open(infra.Driver(cfg.Database.Driver), cfg.Database.DSN)
 	if err != nil {
-		return nil, nil, fmt.Errorf("new file kv: %w", err)
+		return nil, nil, fmt.Errorf("infra.Open: %w", err)
+	}
+	if err := infra.Migrate(ctx, sqldb); err != nil {
+		_ = sqldb.Close()
+		return nil, nil, fmt.Errorf("infra.Migrate: %w", err)
 	}
 
-	msp, err := repo.NewKVModelServiceProvider(ctx, kv, "modelservice")
-	if err != nil {
-		return nil, nil, fmt.Errorf("modelservice provider: %w", err)
-	}
-	epp, err := repo.NewKVEndpointProvider(ctx, kv, "endpoint")
-	if err != nil {
-		return nil, nil, fmt.Errorf("endpoint provider: %w", err)
-	}
+	msRepo := repo.NewSQLModelServiceRepo(sqldb)
+	epRepo := repo.NewSQLEndpointRepo(sqldb)
 
 	outbox, err := usage.NewFileOutbox(cfg.Paths.UsageLog)
 	if err != nil {
+		_ = sqldb.Close()
 		return nil, nil, fmt.Errorf("usage outbox: %w", err)
 	}
 
@@ -122,12 +124,15 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 
 		Auth:         middleware.AuthDeps{Provider: repo.NewAPIKeyProvider(apiKeys)},
 		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
-		ModelService: middleware.ModelServiceDeps{Provider: msp},
-		Schedule:     middleware.ScheduleDeps{Endpoints: epp},
+		ModelService: middleware.ModelServiceDeps{Provider: msRepo},
+		Schedule:     middleware.ScheduleDeps{Endpoints: epRepo},
 		Tracing:      middleware.TracingDeps{Outbox: outbox, Tracer: trace.NewSlogTracer(slog.Default())},
 	})
 
-	cleanup := func() { _ = outbox.Close() }
+	cleanup := func() {
+		_ = outbox.Close()
+		_ = sqldb.Close()
+	}
 	return engine, cleanup, nil
 }
 

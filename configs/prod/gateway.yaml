@@ -1,13 +1,15 @@
 # gateway.yaml — production 模板
 #
-# **不要把真实密钥提交到 git**：apikeys.json 和 kv/endpoint/*.json 由部署侧
-# 从 secret store / k8s Secret / Docker volume 挂载到 paths 指定位置；
+# **不要把真实密钥提交到 git**：apikeys.json 由部署侧从 secret store /
+# k8s Secret / Docker volume 挂载到 paths 指定位置；
+# 业务记录（model_services / endpoints）由 admin 进程管理，存 DB。
 # 本目录只持有这份 yaml + README。
 #
 # 部署：
 #   1. 把本 yaml 拷到目标机：/etc/ai-gateway/gateway.yaml
-#   2. 把真实数据挂到 paths 指定目录
-#   3. 启动：ai-gateway -config /etc/ai-gateway/gateway.yaml
+#   2. 把 apikeys.json 挂到指定路径
+#   3. 启动 admin（cmd/admin）建表 + 录入 model_services / endpoints
+#   4. 启动 gateway：ai-gateway -config /etc/ai-gateway/gateway.yaml
 
 server:
   addr: ":8080"
@@ -20,5 +22,9 @@ middleware:
 
 paths:
   apikeys: /etc/ai-gateway/apikeys.json
-  kv_root: /etc/ai-gateway/kv
   usage_log: /var/log/ai-gateway/usage.log
+
+database:
+  # 生产推荐 postgres；本机起步也可继续用 sqlite，文件路径自管。
+  driver: postgres
+  dsn: postgres://ai_gateway:CHANGE_ME@db:5432/ai_gateway?sslmode=disable
