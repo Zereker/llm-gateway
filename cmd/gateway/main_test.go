@@ -52,7 +52,7 @@ func TestE2E_OpenAIChatCompletions(t *testing.T) {
 		t.Errorf("upstream Authorization = %q", capturedAuth)
 	}
 
-	usageLog, _ := os.ReadFile(cfg.Paths.UsageLog)
+	usageLog, _ := os.ReadFile(cfg.Outbox.File.Path)
 	if !strings.Contains(string(usageLog), `"Total":15`) {
 		t.Errorf("usage log missing Total:15; got: %s", usageLog)
 	}
@@ -130,12 +130,15 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 
 	cfg := &config.Config{
 		Paths: config.PathsConfig{
-			APIKeys:  filepath.Join(dir, "apikeys.json"),
-			UsageLog: filepath.Join(dir, "usage.log"),
+			APIKeys: filepath.Join(dir, "apikeys.json"),
 		},
 		Database: config.DatabaseConfig{
 			Driver: "sqlite",
 			DSN:    dbPath,
+		},
+		Outbox: config.OutboxConfig{
+			Driver: "file",
+			File:   config.FileOutboxSection{Path: filepath.Join(dir, "usage.log")},
 		},
 		Middleware: config.MiddlewareConfig{
 			BodyLimitBytes: 10 << 20,

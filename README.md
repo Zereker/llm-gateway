@@ -21,7 +21,7 @@ ai-gateway/
 ├── pkg/
 │   ├── config/          gateway.yaml loader (boot config)
 │   ├── domain/          shared domain types (RequestContext, Endpoint, ...)
-│   ├── infra/           infrastructure adapters (sqlx Open + schema; future kafka/redis/...)
+│   ├── infra/           infrastructure adapters (sqlx + schema, kafka producer)
 │   ├── repo/            data-access layer: Reader/Writer interfaces + sqlx impls
 │   ├── middleware/      M1-M10 + helpers + default impls
 │   ├── router/          gin engine + per-modality route registration
@@ -30,7 +30,7 @@ ai-gateway/
 │   │   └── openai/      OpenAI / OpenAI-compatible adapter
 │   ├── schedule/        endpoint selection abstractions (v0.5+ full impl)
 │   ├── ratelimit/       rate-limit checker abstractions (v0.5+ full impl)
-│   ├── usage/           Usage extraction + outbox + pricing
+│   ├── usage/           Usage extraction + outbox (file | kafka) + pricing
 │   ├── trace/           Tracer abstraction + SlogTracer default
 │   └── metric/          Prometheus metric name constants
 ├── docs/architecture/   design docs (00-overview through 07-roadmap)

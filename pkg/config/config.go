@@ -32,6 +32,7 @@ type Config struct {
 	Middleware MiddlewareConfig `yaml:"middleware"`
 	Paths      PathsConfig      `yaml:"paths"`
 	Database   DatabaseConfig   `yaml:"database"`
+	Outbox     OutboxConfig     `yaml:"outbox"`
 }
 
 // ServerConfig HTTP 服务器层配置。
@@ -47,12 +48,33 @@ type MiddlewareConfig struct {
 	Timeout        time.Duration `yaml:"timeout"`
 }
 
-// PathsConfig 文件型数据路径（apikeys 仍是文件，usage 仍是文件追加）。
+// PathsConfig 文件型数据路径。
 //
-// ModelService / Endpoint 已迁到 DB；不再需要 KV 根目录。
+// ModelService / Endpoint 已迁到 DB（由 admin 管理）；usage 输出已迁到 outbox 段。
 type PathsConfig struct {
-	APIKeys  string `yaml:"apikeys"`   // map[apiKey]UserIdentity 的 JSON 文件
-	UsageLog string `yaml:"usage_log"` // pkg/usage.FileOutbox 输出文件
+	APIKeys string `yaml:"apikeys"` // map[apiKey]UserIdentity 的 JSON 文件
+}
+
+// OutboxConfig M10 Tracing 输出 usage 事件的下游通道选择。
+//
+//	driver: file | kafka
+//	driver=file 时取 file.path；driver=kafka 时取 kafka.{brokers, topic}；
+//	另一分支字段被忽略。
+type OutboxConfig struct {
+	Driver string             `yaml:"driver"`
+	File   FileOutboxSection  `yaml:"file"`
+	Kafka  KafkaOutboxSection `yaml:"kafka"`
+}
+
+// FileOutboxSection driver=file 时的字段。
+type FileOutboxSection struct {
+	Path string `yaml:"path"` // JSONL 追加路径；约定绝对路径，不做相对解析
+}
+
+// KafkaOutboxSection driver=kafka 时的字段。
+type KafkaOutboxSection struct {
+	Brokers []string `yaml:"brokers"` // "host:port" 列表
+	Topic   string   `yaml:"topic"`
 }
 
 // DatabaseConfig 业务记录的存储层（ModelService / Endpoint）。
@@ -142,13 +164,17 @@ func (c *Config) ApplyDefaults() {
 	if c.Paths.APIKeys == "" {
 		c.Paths.APIKeys = "apikeys.json"
 	}
-	if c.Paths.UsageLog == "" {
-		c.Paths.UsageLog = "/tmp/ai-gateway-usage.log"
-	}
 	if c.Database.Driver == "" {
 		c.Database.Driver = "sqlite"
 	}
 	if c.Database.DSN == "" {
 		c.Database.DSN = "gateway.db"
 	}
+	if c.Outbox.Driver == "" {
+		c.Outbox.Driver = "file"
+	}
+	if c.Outbox.File.Path == "" {
+		c.Outbox.File.Path = "/tmp/ai-gateway-usage.log"
+	}
+	// Outbox.Kafka 不给默认（driver=kafka 时必须显式配置）
 }

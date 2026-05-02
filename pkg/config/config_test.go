@@ -52,10 +52,14 @@ middleware:
   timeout: 30s
 paths:
   apikeys: /etc/x/apikeys.json
-  usage_log: /var/log/x.log
 database:
   driver: postgres
   dsn: postgres://u:p@localhost:5432/db?sslmode=disable
+outbox:
+  driver: kafka
+  kafka:
+    brokers: ["broker1:9092","broker2:9092"]
+    topic: ai-gateway.usage
 `
 	if err := os.WriteFile(p, []byte(yamlBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -86,6 +90,29 @@ database:
 	// postgres URL 不应被相对解析
 	if cfg.Database.DSN != "postgres://u:p@localhost:5432/db?sslmode=disable" {
 		t.Errorf("Database.DSN was resolved unexpectedly: %q", cfg.Database.DSN)
+	}
+	if cfg.Outbox.Driver != "kafka" {
+		t.Errorf("Outbox.Driver = %q", cfg.Outbox.Driver)
+	}
+	if len(cfg.Outbox.Kafka.Brokers) != 2 || cfg.Outbox.Kafka.Topic != "ai-gateway.usage" {
+		t.Errorf("Outbox.Kafka = %+v", cfg.Outbox.Kafka)
+	}
+}
+
+func TestLoad_OutboxDefaultsToFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "gateway.yaml")
+	_ = os.WriteFile(p, []byte(""), 0o644)
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Outbox.Driver != "file" {
+		t.Errorf("Outbox.Driver = %q, want file", cfg.Outbox.Driver)
+	}
+	if cfg.Outbox.File.Path != "/tmp/ai-gateway-usage.log" {
+		t.Errorf("Outbox.File.Path = %q", cfg.Outbox.File.Path)
 	}
 }
 

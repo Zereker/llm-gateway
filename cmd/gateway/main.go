@@ -113,7 +113,7 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 	msRepo := repo.NewSQLModelServiceRepo(sqldb)
 	epRepo := repo.NewSQLEndpointRepo(sqldb)
 
-	outbox, err := usage.NewFileOutbox(cfg.Paths.UsageLog)
+	outbox, closeOutbox, err := buildOutbox(cfg.Outbox)
 	if err != nil {
 		_ = sqldb.Close()
 		return nil, nil, fmt.Errorf("usage outbox: %w", err)
@@ -131,10 +131,34 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 	})
 
 	cleanup := func() {
-		_ = outbox.Close()
+		_ = closeOutbox()
 		_ = sqldb.Close()
 	}
 	return engine, cleanup, nil
+}
+
+// buildOutbox 按 cfg.Outbox.Driver 构造 OutboxPublisher + 它的 close 函数。
+//
+// 接口（OutboxPublisher）只声明 Publish；Close 走 io.Closer 是另一回事。
+// 这里同时返回两者，省掉调用方做 io.Closer 类型断言的体操。
+func buildOutbox(cfg config.OutboxConfig) (usage.OutboxPublisher, func() error, error) {
+	switch cfg.Driver {
+	case "file":
+		ob, err := usage.NewFileOutbox(cfg.File.Path)
+		if err != nil {
+			return nil, nil, err
+		}
+		return ob, ob.Close, nil
+	case "kafka":
+		producer, err := infra.NewKafkaProducer(cfg.Kafka.Brokers, cfg.Kafka.Topic)
+		if err != nil {
+			return nil, nil, err
+		}
+		ob := usage.NewKafkaOutbox(producer)
+		return ob, ob.Close, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown outbox driver %q (want file|kafka)", cfg.Driver)
+	}
 }
 
 func loadAPIKeys(path string) (map[string]domain.UserIdentity, error) {

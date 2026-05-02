@@ -14,13 +14,21 @@ middleware:
   timeout: 60s
 
 paths:
-  # map[apiKey]UserIdentity 的 JSON 文件（仍然 file-based；Stage 4+ 可考虑迁 DB）
+  # map[apiKey]UserIdentity 的 JSON 文件（仍然 file-based；可考虑迁 DB）
   apikeys: apikeys.json
-  # pkg/usage.FileOutbox 写入路径（计量事件 JSONL）
-  usage_log: /tmp/ai-gateway-usage.log
 
 database:
-  # ModelService / Endpoint 的存储；admin 增删改、gateway 启动期 Migrate + 读。
+  # ModelService / Endpoint 的存储；admin 增删改、gateway 启动期 CheckSchema + 读。
   # sqlite 文件路径相对本 yaml 所在目录解析（→ configs/local/gateway.db）。
   driver: sqlite
   dsn: gateway.db
+
+outbox:
+  # M10 Tracing 输出 usage 事件去哪：file 或 kafka。
+  # 本地默认 file（JSONL 追加），生产建议 kafka。
+  driver: file
+  file:
+    path: /tmp/ai-gateway-usage.log
+  # kafka:
+  #   brokers: ["localhost:9092"]
+  #   topic: ai-gateway.usage
