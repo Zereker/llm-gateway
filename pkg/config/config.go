@@ -1,10 +1,16 @@
-// Package config 加载网关启动配置（gateway.yaml）。
+// Package config 加载两个独立服务的启动配置：
+//
+//   - config.go  →  Config  + Load        （gateway / 数据平面 → gateway.yaml）
+//   - admin.go   →  AdminConfig + LoadAdmin（admin / 控制平面 → admin.yaml）
+//
+// 两个 *Config 完全独立、各自独立 yaml；只共享纯数据类型（ServerConfig /
+// DatabaseConfig）以避免重复定义——不是"两个服务耦合"，而是数据 schema 复用。
 //
 // 区分于 pkg/repo —— pkg/repo 是 admin 可增删改的"业务记录"
-// （ModelService / Endpoint）；pkg/config 是启动时一次性读入的"网关进程本身的设置"
-// （监听端口、超时、apikeys 文件、DB 连接、日志路径等）。
+// （ModelService / Endpoint）；pkg/config 是启动时一次性读入的"进程本身的设置"
+// （监听端口、超时、apikeys 文件、DB 连接、日志路径、admin token 等）。
 //
-// 示例 gateway.yaml 见 configs/local/gateway.yaml。
+// 示例：configs/local/gateway.yaml + configs/local/admin.yaml。
 package config
 
 import (

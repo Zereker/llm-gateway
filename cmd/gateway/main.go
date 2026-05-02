@@ -90,8 +90,9 @@ func run(configPath string) error {
 
 // buildEngine 构造所有 deps 并装配 router.NewEngine。
 //
-// 启动期会跑 Migrate 把 schema 建上；DB 里没有 model_service / endpoint 时
-// gateway 仍能启动，等 admin 后续 CRUD 即可（请求过来时 M5 / M7 会 404 / 503）。
+// gateway 不拥有 schema：启动只 Open + repo.CheckSchema 验证表存在；缺表
+// 直接报错退出（schema 由 cmd/admin 维护）。DB 里没有 model_service /
+// endpoint 时 gateway 仍能启动，请求过来时 M5 / M7 会 404 / 503。
 func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 	ctx := context.Background()
 
@@ -104,9 +105,9 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("infra.Open: %w", err)
 	}
-	if err := infra.Migrate(ctx, sqldb); err != nil {
+	if err := repo.CheckSchema(ctx, sqldb); err != nil {
 		_ = sqldb.Close()
-		return nil, nil, fmt.Errorf("infra.Migrate: %w", err)
+		return nil, nil, err
 	}
 
 	msRepo := repo.NewSQLModelServiceRepo(sqldb)

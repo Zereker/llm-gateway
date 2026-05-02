@@ -15,8 +15,9 @@ roadmap to v1.0.
 ```
 ai-gateway/
 ├── cmd/
-│   ├── gateway/         data plane: server lifecycle + e2e tests
-│   └── admin/           control plane: CRUD APIs (placeholder, v0.5+)
+│   ├── gateway/         data plane: serves /v1/* LLM requests, reads DB
+│   └── admin/           control plane: CRUD APIs over model_services / endpoints,
+│                          owns schema (runs Migrate on boot)
 ├── pkg/
 │   ├── config/          gateway.yaml loader (boot config)
 │   ├── domain/          shared domain types (RequestContext, Endpoint, ...)
@@ -38,19 +39,28 @@ ai-gateway/
 
 ## Quick start
 
-```sh
-# 1. Start the gateway (creates configs/local/gateway.db on first run).
-go run ./cmd/gateway -config ./configs/local/gateway.yaml
+The two services are independent binaries. **Boot order: admin first**
+(it owns the DB schema), then gateway.
 
-# 2. Use cmd/admin (Stage 4) to insert a model_service + endpoint, OR seed
-#    the DB directly with sqlite3:
-sqlite3 configs/local/gateway.db <<SQL
-INSERT INTO model_services (service_id, model, group_name)
-  VALUES ('openai/gpt-4o', 'gpt-4o', 'default');
-INSERT INTO endpoints (id, vendor, url, api_key, model, group_name)
-  VALUES ('openai_main', 'openai', 'https://api.openai.com/v1/chat/completions',
-          'sk-REPLACE-ME', 'gpt-4o', 'default');
-SQL
+```sh
+# 1. Start admin (creates configs/local/gateway.db + tables on first run).
+go run ./cmd/admin -config ./configs/local/admin.yaml
+
+# 2. Insert a model_service + an endpoint via the admin REST API.
+TOKEN=local-dev-token
+
+curl -X POST http://localhost:8081/admin/v1/modelservices \
+  -H "X-Admin-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"service_id":"openai/gpt-4o","model":"gpt-4o","group":"default"}'
+
+curl -X POST http://localhost:8081/admin/v1/endpoints \
+  -H "X-Admin-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"id":"openai_main","vendor":"openai","model":"gpt-4o","group":"default",
+       "url":"https://api.openai.com/v1/chat/completions",
+       "api_key":"sk-REPLACE-ME"}'
+
+# 3. Start gateway (Open + repo.CheckSchema; fails fast if step 1 was skipped).
+go run ./cmd/gateway -config ./configs/local/gateway.yaml
 ```
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the

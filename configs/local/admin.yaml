@@ -1,0 +1,27 @@
+# admin.yaml — ai-gateway-admin 本地启动配置
+#
+# admin 是控制平面：通过 HTTP CRUD 维护 model_services / endpoints。
+# 跟 gateway 共享同一份 sqlite 文件（dsn 必须与 gateway.yaml 一致）。
+#
+# 运行：
+#   go run ./cmd/admin -config ./configs/local/admin.yaml
+#
+# 调用示例：
+#   curl -X POST http://localhost:8081/admin/v1/modelservices \
+#     -H "X-Admin-Token: local-dev-token" \
+#     -H "Content-Type: application/json" \
+#     -d '{"service_id":"openai/gpt-4o","model":"gpt-4o","group":"default"}'
+
+server:
+  addr: ":8081"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+admin:
+  # X-Admin-Token header 校验值；本地随便。生产从 secret 注入，**不要 commit 真实 token**。
+  token: local-dev-token
+
+database:
+  # 与 configs/local/gateway.yaml 的 database 段一致；admin 拥有 schema 演进。
+  driver: sqlite
+  dsn: gateway.db
