@@ -18,8 +18,8 @@ import (
 // 未来接 image Adapter 时会换 multipart Parser。
 func registerImageRoutes(api *gin.RouterGroup, deps Deps) {
 	image := api.Group("/",
-		bodyLimitMW(deps.BodyLimit),
-		timeoutMW(deps.Timeout),
+		middleware.BodyLimit(deps.BodyLimit),
+		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
 		middleware.Recover(),
 		middleware.Auth(middleware.AuthDeps{Provider: deps.IdentityProvider}),

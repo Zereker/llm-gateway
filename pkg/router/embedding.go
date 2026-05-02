@@ -15,8 +15,8 @@ import (
 // 配一个 embedding model + endpoint 就能用。
 func registerEmbeddingRoutes(api *gin.RouterGroup, deps Deps) {
 	embed := api.Group("/",
-		bodyLimitMW(deps.BodyLimit),
-		timeoutMW(deps.Timeout),
+		middleware.BodyLimit(deps.BodyLimit),
+		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
 		middleware.Recover(),
 		middleware.Auth(middleware.AuthDeps{Provider: deps.IdentityProvider}),

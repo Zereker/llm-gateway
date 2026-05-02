@@ -17,8 +17,8 @@ import (
 // ASR-only ParamSpec 等）。当前 v0.1 各模态链恰好一致，但代码上独立。
 func registerChatRoutes(api *gin.RouterGroup, deps Deps) {
 	chat := api.Group("/",
-		bodyLimitMW(deps.BodyLimit),
-		timeoutMW(deps.Timeout),
+		middleware.BodyLimit(deps.BodyLimit),
+		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
 		middleware.Recover(),
 		middleware.Auth(middleware.AuthDeps{Provider: deps.IdentityProvider}),

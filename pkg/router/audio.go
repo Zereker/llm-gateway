@@ -17,8 +17,8 @@ import (
 // translations 是 multipart 请求，同 image。
 func registerAudioRoutes(api *gin.RouterGroup, deps Deps) {
 	audio := api.Group("/",
-		bodyLimitMW(deps.BodyLimit),
-		timeoutMW(deps.Timeout),
+		middleware.BodyLimit(deps.BodyLimit),
+		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
 		middleware.Recover(),
 		middleware.Auth(middleware.AuthDeps{Provider: deps.IdentityProvider}),
