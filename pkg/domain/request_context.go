@@ -43,8 +43,9 @@ type RequestContext struct {
 
 	// === M7 Schedule 写入 ===
 	Endpoint *Endpoint
-	// 注意：AdapterSession 不挂在 RC 上 —— 仅在 RetryExecutor 内活到 Finalize；
+	// 注意：adapter.Session 不挂在 RC 上 —— 仅在 RetryExecutor 内活到 Finalize；
 	// 输出（Usage / Error / SchedulingDecision）已通过下面的字段返还给 RC。
+	// 需要在 trace / metric 中标注厂商时，从 Endpoint.Vendor + ModelService.Model 取。
 
 	// === 响应阶段写入（M7 内部 / Adapter） ===
 	Usage              *Usage

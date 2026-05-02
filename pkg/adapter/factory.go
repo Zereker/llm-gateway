@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"io"
 	"net/http"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
@@ -14,6 +15,8 @@ import (
 //   - 路由层根据 SupportedModalities 做能力过滤
 //   - 调度日志 / metric 标签
 type Metadata struct {
+	// Vendor 是开放集合（运维 / Admin 在 ConfigStore 注册任意名字 + Adapter 实现 init() 注册同名 Factory），
+	// 故意不做 enum；与 domain.Endpoint.Vendor 字段对齐。
 	Vendor              string
 	NativeProtocol      domain.Protocol
 	SupportedModalities []domain.Modality
@@ -28,27 +31,59 @@ type Factory interface {
 
 	// NewSession 创建本次请求专属的 Session。
 	//
-	// 返回的 Session 已完成对 endpoint 凭证 / URL / 请求体形态的初始化；
-	// 调用方按 Session 的契约（先 BuildRequest，再 Feed*，最后 Finalize）使用。
+	// 实现负责按 ep.URL / ep.APIKey 等初始化内部状态；
+	// 调用方按 Session 的契约（见 Session doc）使用。
 	NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (Session, error)
 }
 
-// Session 承载单次上游调用的全部状态：请求构造 + 流式响应处理。
+// Session 承载单次上游调用的全部状态：请求构造 + 流式响应处理 + 资源清理。
 //
-// 调用顺序（不可乱序）：
+// 调用方（dispatch layer = M7 RetryExecutor / pkg/middleware/schedule）的标准流程：
 //
-//  1. BuildRequest() 一次  → 产出待发上游的 *http.Request（URL + Headers + Body 一次性组装）。
-//  2. 实际 HTTP 调用由调用方做（dispatch 层），把 response.Body 的 chunk 喂回 Feed。
-//  3. Feed(chunk) 多次     → 每次返回应写给客户端的字节（流式翻译 / 透传 / 审核）；
-//     非流式场景仅 Feed(整个 body) 一次，返回值通常为空。
-//  4. Finalize() 一次      → 返回终态 FinalizeResult（Usage + Response + Error）。
+//	sess, err := factory.NewSession(ctx, ep, env)
+//	if err != nil { return err }
+//	defer sess.Close()  // 异常 / 提前结束 / panic 路径都要释放
 //
-// Session 实例只在 M7 Schedule 内的 executor 中存活到 Finalize；不需要挂到 RequestContext。
-// 实现只在单 goroutine 内被使用（与 gin handler 同协程），无需自加锁。
+//	req, err := sess.BuildRequest()
+//	if err != nil { return err }
+//	resp, err := httpClient.Do(req)
+//	if err != nil { return err }
+//	defer resp.Body.Close()
+//
+//	// dispatch layer 负责读 resp.Body，把字节切片喂回 Feed。
+//	// chunk 边界由 dispatch 决定（按 SSE event / 固定大小 / Read 一次的实际长度均可）；
+//	// Session 实现负责内部累积 / 重组（如 SSE event 跨 chunk 时 buffer）。
+//	buf := make([]byte, 4096)
+//	for {
+//	    n, rerr := resp.Body.Read(buf)
+//	    if n > 0 {
+//	        out, err := sess.Feed(buf[:n])
+//	        if err != nil { return err }
+//	        writer.Write(out)  // 写客户端
+//	    }
+//	    if rerr == io.EOF { break }
+//	    if rerr != nil    { return rerr }
+//	}
+//
+//	result := sess.Finalize()
+//	rc.Usage = result.Usage
+//	rc.Error = result.Error
+//
+// 契约：
+//   - 单 goroutine 使用（与 gin handler 同协程）；实现无需自加锁。
+//   - BuildRequest → Feed* → Finalize 顺序调用；违反契约时实现可 panic / 返回错误，行为未定义。
+//   - Close 在**所有**路径上必须调用（defer），包括 BuildRequest 失败 / Feed 中途出错 / panic；幂等。
+//   - Session 三方法刻意合并到一个接口，便于共享私有 buffer / 解析器状态；按 phase 拆会逼出复杂的状态传递。
+//
+// Feed 返回字节的生命周期：
+//   - 返回的 []byte 在**下次 Feed / Finalize / Close 之前**有效。
+//   - 调用方必须在该窗口内 Write 出去；不要长期持有。
+//   - 实现可借此复用底层 buffer（sync.Pool 等），避免每次 alloc。
 type Session interface {
 	BuildRequest() (*http.Request, error)
 	Feed(chunk []byte) ([]byte, error)
 	Finalize() FinalizeResult
+	io.Closer // Close 释放 Session 持有的资源；必须由 dispatch defer 调用；幂等
 }
 
 // FinalizeResult 是 Session.Finalize 的终态。

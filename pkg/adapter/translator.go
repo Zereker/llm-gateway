@@ -1,6 +1,10 @@
 package adapter
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import (
+	"fmt"
+
+	"github.com/zereker-labs/ai-gateway/pkg/domain"
+)
 
 // Translator 把请求 / 响应在两个协议族之间双向翻译。
 //
@@ -21,8 +25,14 @@ type translatorKey struct {
 var translatorRegistry = map[translatorKey]Translator{}
 
 // RegisterTranslator 注册 (src → dst) Translator。各 Translator 包通过 init() 调用。
+//
+// 契约同 Register：MUST 在 init() 阶段调用；同 (src, dst) 重复注册 panic。
 func RegisterTranslator(src, dst domain.Protocol, t Translator) {
-	translatorRegistry[translatorKey{src, dst}] = t
+	k := translatorKey{src, dst}
+	if _, ok := translatorRegistry[k]; ok {
+		panic(fmt.Sprintf("translator: (%s → %s) already registered", src, dst))
+	}
+	translatorRegistry[k] = t
 }
 
 // GetTranslator 返回 (src → dst) 的 Translator。src == dst 时返回 identity（透传）。

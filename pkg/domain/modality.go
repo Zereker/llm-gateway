@@ -4,7 +4,7 @@ package domain
 type Modality int
 
 const (
-	ModalityChat      Modality = iota // 含 Anthropic Messages
+	ModalityChat Modality = iota // 含 Anthropic Messages
 	ModalityEmbedding
 	ModalityImage // 含文生图、图生图、Inpaint，Adapter 内部按 Parsed 分发
 	ModalityRerank
