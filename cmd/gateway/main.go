@@ -27,6 +27,7 @@ import (
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 	"github.com/zereker-labs/ai-gateway/pkg/middleware"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 	"github.com/zereker-labs/ai-gateway/pkg/router"
 	"github.com/zereker-labs/ai-gateway/pkg/store"
 	"github.com/zereker-labs/ai-gateway/pkg/trace"
@@ -101,11 +102,11 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 		return nil, nil, fmt.Errorf("new file kv: %w", err)
 	}
 
-	msp, err := middleware.NewKVModelServiceProvider(ctx, kv, "modelservice")
+	msp, err := repo.NewKVModelServiceProvider(ctx, kv, "modelservice")
 	if err != nil {
 		return nil, nil, fmt.Errorf("modelservice provider: %w", err)
 	}
-	epp, err := middleware.NewKVEndpointProvider(ctx, kv, "endpoint")
+	epp, err := repo.NewKVEndpointProvider(ctx, kv, "endpoint")
 	if err != nil {
 		return nil, nil, fmt.Errorf("endpoint provider: %w", err)
 	}
@@ -119,7 +120,7 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 		BodyLimit: cfg.Middleware.BodyLimitBytes,
 		Timeout:   cfg.Middleware.Timeout,
 
-		Auth:         middleware.AuthDeps{Provider: middleware.NewAPIKeyProvider(apiKeys)},
+		Auth:         middleware.AuthDeps{Provider: repo.NewAPIKeyProvider(apiKeys)},
 		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
 		ModelService: middleware.ModelServiceDeps{Provider: msp},
 		Schedule:     middleware.ScheduleDeps{Endpoints: epp},

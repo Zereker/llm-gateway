@@ -1,34 +1,18 @@
 package middleware
 
 import (
-	"context"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 	"github.com/zereker-labs/ai-gateway/pkg/metric"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
-
-// Credentials 从请求头提取的鉴权凭证。
-type Credentials struct {
-	APIKey      string            // "Authorization: Bearer xxx" 或 "X-API-Key: xxx" 提取
-	BearerToken string            // JWT 形态时使用
-	Headers     map[string]string // 完整透传，自定义实现可用
-}
-
-// IdentityProvider M2 Auth middleware 的依赖接口。
-//
-// 内置默认实现包含 APIKey（file / in-memory）和 JWT（HS256 / RS256）。
-//
-// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
-type IdentityProvider interface {
-	Resolve(c context.Context, creds *Credentials) (*domain.UserIdentity, error)
-}
 
 // AuthDeps M2 Auth middleware 的依赖。
 type AuthDeps struct {
-	Provider IdentityProvider
+	Provider repo.IdentityProvider
 }
 
 // Auth 是 M2：从 header 提取凭证 → 调 IdentityProvider → 写 rc.Identity。
@@ -70,15 +54,15 @@ func Auth(deps AuthDeps) gin.HandlerFunc {
 // extractCredentials 从请求头提取 Credentials。
 //
 // 优先级（同字段被覆盖时后者胜）：
-//   1. Authorization: Bearer xxx → BearerToken（兼容 OpenAI / Anthropic SDK）
-//      若 X-API-Key 未设置，同时也填入 APIKey（OpenAI 习惯把 sk-xxx 放 Bearer）
-//   2. X-API-Key: xxx → APIKey（覆盖上面 Bearer 同步过来的值）
+//  1. Authorization: Bearer xxx → BearerToken（兼容 OpenAI / Anthropic SDK）
+//     若 X-API-Key 未设置，同时也填入 APIKey（OpenAI 习惯把 sk-xxx 放 Bearer）
+//  2. X-API-Key: xxx → APIKey（覆盖上面 Bearer 同步过来的值）
 //
 // Headers 全量保留，便于自定义 Provider 用其他 header（如 X-User-Id 等）。
 //
 // 没有任何凭证时返回 nil。
-func extractCredentials(c *gin.Context) *Credentials {
-	creds := &Credentials{Headers: make(map[string]string, len(c.Request.Header))}
+func extractCredentials(c *gin.Context) *repo.Credentials {
+	creds := &repo.Credentials{Headers: make(map[string]string, len(c.Request.Header))}
 	for k, v := range c.Request.Header {
 		if len(v) > 0 {
 			creds.Headers[k] = v[0]

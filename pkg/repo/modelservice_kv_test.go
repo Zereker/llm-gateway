@@ -1,4 +1,4 @@
-package middleware
+package repo
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/zereker-labs/ai-gateway/pkg/store"
 )
 
-// minimal in-memory store.KV for tests.
+// minimal in-memory store.KV for tests; shared by modelservice_kv_test and endpoint_kv_test.
 type memKV struct {
 	data map[string]json.RawMessage
 }

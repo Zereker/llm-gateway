@@ -1,4 +1,4 @@
-package middleware
+package repo
 
 import (
 	"context"
@@ -84,10 +84,10 @@ func TestKVEndpointProvider_RejectsEmptyModel(t *testing.T) {
 
 func TestKVEndpointProvider_RejectsBadConfig(t *testing.T) {
 	cases := map[string]string{
-		"bad json":         `{not json}`,
-		"missing ID":       `{"Vendor":"openai","Model":"x"}`,
-		"missing Model":    `{"ID":"x","Vendor":"openai"}`,
-		"missing Vendor":   `{"ID":"x","Model":"x"}`,
+		"bad json":       `{not json}`,
+		"missing ID":     `{"Vendor":"openai","Model":"x"}`,
+		"missing Model":  `{"ID":"x","Vendor":"openai"}`,
+		"missing Vendor": `{"ID":"x","Model":"x"}`,
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -133,5 +133,5 @@ func TestKVEndpointProvider_Reload(t *testing.T) {
 	if _, err := p.PickForModel(context.Background(), "m2", "default"); err != nil {
 		t.Errorf("after Reload: %v", err)
 	}
-	_ = strings.Builder{} // prevent unused import (strings only used elsewhere)
+	_ = strings.Builder{} // prevent unused import
 }

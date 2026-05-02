@@ -1,27 +1,15 @@
 package middleware
 
 import (
-	"context"
-
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
-
-// ModelServiceProvider M5 ModelService middleware 的依赖接口。
-//
-// 内置默认实现 KVModelServiceProvider 走 pkg/store.KV + 内存缓存（首选）；
-// 也可以自定义实现接入数据库 / 远程 API。
-//
-// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
-type ModelServiceProvider interface {
-	GetByModel(c context.Context, model string) (*domain.ModelServiceSnapshot, error)
-	List(c context.Context) ([]*domain.ModelServiceSnapshot, error)
-}
 
 // ModelServiceDeps M5 ModelService middleware 的依赖。
 type ModelServiceDeps struct {
-	Provider ModelServiceProvider
+	Provider repo.ModelServiceProvider
 }
 
 // ModelService 是 M5：根据 rc.Envelope.Parsed.Model 加载 ModelServiceSnapshot + Pricing 指纹。

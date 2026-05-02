@@ -8,11 +8,12 @@ import (
 
 	"github.com/zereker-labs/ai-gateway/pkg/adapter"
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 // ScheduleDeps M7 Schedule middleware 的依赖。
 type ScheduleDeps struct {
-	Endpoints  EndpointProvider
+	Endpoints  repo.EndpointProvider
 	GetFactory func(vendor string) adapter.Factory // nil = 使用 adapter.Get
 	HTTPClient *http.Client                        // nil = 使用 http.DefaultClient
 }

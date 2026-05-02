@@ -1,4 +1,4 @@
-package middleware
+package repo
 
 import (
 	"context"
@@ -20,9 +20,9 @@ type KVEndpointProvider struct {
 	kv     store.KV
 	prefix string
 
-	mu       sync.RWMutex
-	all      []*domain.Endpoint
-	byModel  map[string][]*domain.Endpoint
+	mu      sync.RWMutex
+	all     []*domain.Endpoint
+	byModel map[string][]*domain.Endpoint
 }
 
 // NewKVEndpointProvider 构造并立即拉一次全量。

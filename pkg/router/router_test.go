@@ -8,6 +8,7 @@ import (
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 	"github.com/zereker-labs/ai-gateway/pkg/middleware"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 // stubMSProvider for tests.
@@ -32,7 +33,7 @@ func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 
 func minDeps() Deps {
 	return Deps{
-		Auth:         middleware.AuthDeps{Provider: middleware.NewAPIKeyProvider(nil)},
+		Auth:         middleware.AuthDeps{Provider: repo.NewAPIKeyProvider(nil)},
 		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
 		ModelService: middleware.ModelServiceDeps{Provider: stubMSProvider{}},
 		Schedule:     middleware.ScheduleDeps{Endpoints: stubEPProvider{}},

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 // stubProvider returns the configured user / err regardless of creds.
@@ -18,7 +19,7 @@ type stubProvider struct {
 	err  error
 }
 
-func (p stubProvider) Resolve(_ context.Context, _ *Credentials) (*domain.UserIdentity, error) {
+func (p stubProvider) Resolve(_ context.Context, _ *repo.Credentials) (*domain.UserIdentity, error) {
 	return p.user, p.err
 }
 
