@@ -42,8 +42,9 @@ type RequestContext struct {
 	LimitSpec *LimitSpec
 
 	// === M7 Schedule 写入 ===
-	Endpoint       *Endpoint
-	AdapterSession AdapterSession // 由 adapter.Get(ep.Vendor).NewSession(...) 创建
+	Endpoint *Endpoint
+	// 注意：AdapterSession 不挂在 RC 上 —— 仅在 RetryExecutor 内活到 Finalize；
+	// 输出（Usage / Error / SchedulingDecision）已通过下面的字段返还给 RC。
 
 	// === 响应阶段写入（M7 内部 / Adapter） ===
 	Usage              *Usage
