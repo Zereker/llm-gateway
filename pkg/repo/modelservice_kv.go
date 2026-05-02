@@ -84,5 +84,5 @@ func (p *KVModelServiceProvider) List(_ context.Context) ([]*domain.ModelService
 	return out, nil
 }
 
-// 编译期断言。
-var _ ModelServiceProvider = (*KVModelServiceProvider)(nil)
+// 编译期断言：KV 实现只覆盖 Reader（不提供写）。
+var _ ModelServiceReader = (*KVModelServiceProvider)(nil)

@@ -9,7 +9,7 @@ import (
 
 // ModelServiceDeps M5 ModelService middleware 的依赖。
 type ModelServiceDeps struct {
-	Provider repo.ModelServiceProvider
+	Provider repo.ModelServiceReader
 }
 
 // ModelService 是 M5：根据 rc.Envelope.Parsed.Model 加载 ModelServiceSnapshot + Pricing 指纹。

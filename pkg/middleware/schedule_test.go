@@ -77,6 +77,10 @@ func (s stubEPProvider) PickForModel(_ context.Context, _, _ string) (*domain.En
 	return s.ep, s.err
 }
 
+func (s stubEPProvider) GetByID(_ context.Context, _ string) (*domain.Endpoint, error) {
+	return s.ep, s.err
+}
+
 func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 	if s.ep == nil {
 		return nil, nil

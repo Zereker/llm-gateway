@@ -100,7 +100,22 @@ func (p *KVEndpointProvider) PickForModel(_ context.Context, model, group string
 	return nil, fmt.Errorf("endpoint: no endpoint for model %q in group %q", model, group)
 }
 
-// List 实现 EndpointProvider.List。
+// GetByID 线性扫描 all；KV 实现仅作 Stage 3 前的兼容，规模不大。
+func (p *KVEndpointProvider) GetByID(_ context.Context, id string) (*domain.Endpoint, error) {
+	if id == "" {
+		return nil, errors.New("endpoint: empty id")
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, ep := range p.all {
+		if ep.ID == id {
+			return ep, nil
+		}
+	}
+	return nil, fmt.Errorf("endpoint: not found: %s", id)
+}
+
+// List 实现 EndpointReader.List。
 func (p *KVEndpointProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -109,5 +124,5 @@ func (p *KVEndpointProvider) List(_ context.Context) ([]*domain.Endpoint, error)
 	return out, nil
 }
 
-// 编译期断言。
-var _ EndpointProvider = (*KVEndpointProvider)(nil)
+// 编译期断言：KV 实现只覆盖 Reader（不提供写）。
+var _ EndpointReader = (*KVEndpointProvider)(nil)

@@ -27,6 +27,9 @@ type stubEPProvider struct{ ep *domain.Endpoint }
 func (s stubEPProvider) PickForModel(_ context.Context, _, _ string) (*domain.Endpoint, error) {
 	return s.ep, nil
 }
+func (s stubEPProvider) GetByID(_ context.Context, _ string) (*domain.Endpoint, error) {
+	return s.ep, nil
+}
 func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 	return []*domain.Endpoint{s.ep}, nil
 }

@@ -13,7 +13,7 @@ import (
 
 // ScheduleDeps M7 Schedule middleware 的依赖。
 type ScheduleDeps struct {
-	Endpoints  repo.EndpointProvider
+	Endpoints  repo.EndpointReader
 	GetFactory func(vendor string) adapter.Factory // nil = 使用 adapter.Get
 	HTTPClient *http.Client                        // nil = 使用 http.DefaultClient
 }
