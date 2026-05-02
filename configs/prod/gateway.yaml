@@ -1,0 +1,24 @@
+# gateway.yaml — production 模板
+#
+# **不要把真实密钥提交到 git**：apikeys.json 和 kv/endpoint/*.json 由部署侧
+# 从 secret store / k8s Secret / Docker volume 挂载到 paths 指定位置；
+# 本目录只持有这份 yaml + README。
+#
+# 部署：
+#   1. 把本 yaml 拷到目标机：/etc/ai-gateway/gateway.yaml
+#   2. 把真实数据挂到 paths 指定目录
+#   3. 启动：ai-gateway -config /etc/ai-gateway/gateway.yaml
+
+server:
+  addr: ":8080"
+  read_header_timeout: 10s
+  shutdown_timeout: 60s         # 生产留更长 drain 时间给长连接
+
+middleware:
+  body_limit_bytes: 5242880     # 5 MiB（生产保守）
+  timeout: 90s                  # 长 LLM 响应留余量
+
+paths:
+  apikeys: /etc/ai-gateway/apikeys.json
+  kv_root: /etc/ai-gateway/kv
+  usage_log: /var/log/ai-gateway/usage.log

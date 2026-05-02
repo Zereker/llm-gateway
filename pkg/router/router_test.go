@@ -114,22 +114,6 @@ func TestNewEngine_AllModalityRoutes(t *testing.T) {
 	}
 }
 
-func TestBuildChain_OptionalMiddlewareSkippedWhenNil(t *testing.T) {
-	deps := minDeps()
-	chain := buildChain(deps)
-	// M1 + M9 + M2 + M3 + M5 + M7 + M10 = 7
-	if len(chain) != 7 {
-		t.Errorf("chain length = %d, want 7 (core only)", len(chain))
-	}
-}
-
-func TestBuildChain_BodyLimitAndTimeoutPrepended(t *testing.T) {
-	deps := minDeps()
-	deps.BodyLimit = 1 << 20
-	deps.Timeout = 1
-	chain := buildChain(deps)
-	// 7 core + 2 pre = 9
-	if len(chain) != 9 {
-		t.Errorf("chain length = %d, want 9 (core + bodyLimit + timeout)", len(chain))
-	}
-}
+// 删除 TestBuildChain_*：buildChain 已废弃（每个 modality 自己列 middleware）。
+// 通过 TestNewEngine_AllModalityRoutes 间接验证各模态注册了 middleware（
+// 没有 Authorization → 401 而非 404，说明 Auth middleware 跑了）。

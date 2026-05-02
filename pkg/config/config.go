@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -45,7 +46,14 @@ type PathsConfig struct {
 	UsageLog string `yaml:"usage_log"` // pkg/usage.FileOutbox 输出文件
 }
 
-// Load 从 YAML 文件读入 Config，并应用默认值。
+// Load 从 YAML 文件读入 Config，应用默认值，并把相对路径解析为
+// "相对 yaml 文件所在目录"。这样目录可整体迁移：
+//   configs/local/gateway.yaml 里写 "apikeys: apikeys.json"
+//   → 实际指向 configs/local/apikeys.json，与 CWD 无关
+//
+// UsageLog 通常是绝对路径（/tmp/... 或 /var/log/...），不做解析以免误把
+// /tmp/foo 解释成 configs/local/tmp/foo。Path.IsAbs 判定是 OS 相关的，
+// 但绝对路径开头是 "/" 在所有支持平台都满足。
 func Load(path string) (*Config, error) {
 	if path == "" {
 		return nil, errors.New("config: empty path")
@@ -59,7 +67,20 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
 	}
 	c.ApplyDefaults()
+
+	base := filepath.Dir(path)
+	c.Paths.APIKeys = resolveRelative(base, c.Paths.APIKeys)
+	c.Paths.KVRoot = resolveRelative(base, c.Paths.KVRoot)
+	// UsageLog 不解析
+
 	return &c, nil
+}
+
+func resolveRelative(base, p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(base, p)
 }
 
 // ApplyDefaults 给所有未设置的字段填默认值。
@@ -82,10 +103,10 @@ func (c *Config) ApplyDefaults() {
 		c.Middleware.Timeout = 60 * time.Second
 	}
 	if c.Paths.APIKeys == "" {
-		c.Paths.APIKeys = "./examples/apikeys.json"
+		c.Paths.APIKeys = "apikeys.json"
 	}
 	if c.Paths.KVRoot == "" {
-		c.Paths.KVRoot = "./examples/kv"
+		c.Paths.KVRoot = "kv"
 	}
 	if c.Paths.UsageLog == "" {
 		c.Paths.UsageLog = "/tmp/ai-gateway-usage.log"

@@ -32,16 +32,16 @@ ai-gateway/
 │   ├── trace/           Tracer abstraction + SlogTracer default
 │   └── metric/          Prometheus metric name constants
 ├── docs/architecture/   design docs (00-overview through 07-roadmap)
-└── examples/            zero-deps starter config (gateway.yaml + apikeys + kv/)
+└── configs/            per-environment configurations (local / prod / ...)
 ```
 
 ## Quick start
 
 ```sh
-# 1. Edit examples/kv/endpoint/openai_main.json to put your real OpenAI key
+# 1. Edit configs/kv/endpoint/openai_main.json to put your real OpenAI key
 #    in the APIKey field.
 # 2. Run:
-go run ./cmd/gateway -config ./examples/gateway.yaml
+go run ./cmd/gateway -config ./configs/local/gateway.yaml
 ```
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit) and the
@@ -74,18 +74,26 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi!"}]}'
 ```
 
-The gateway authenticates `sk-test-alice` against `examples/apikeys.json`,
+The gateway authenticates `sk-test-alice` against `configs/apikeys.json`,
 forwards to the OpenAI endpoint configured in
-`examples/kv/endpoint/openai_main.json`, and writes a usage event to
+`configs/kv/endpoint/openai_main.json`, and writes a usage event to
 `/tmp/ai-gateway-usage.log`.
 
 ### Configuration files
 
-- `examples/apikeys.json` — `{apiKeyString: UserIdentity}` map for the default
-  `APIKeyProvider`.
-- `examples/kv/modelservice/<id>.json` — one file per `domain.ModelServiceSnapshot`.
-- `examples/kv/endpoint/<id>.json` — one file per `domain.Endpoint`. Put the real
-  upstream API key in `APIKey`.
+Per-environment configs live under [`configs/`](configs/) (see
+[`configs/README.md`](configs/README.md) for layout + secret-management
+recommendations).
+
+A single environment directory contains:
+- `gateway.yaml` — server / middleware / paths
+- `apikeys.json` — `{apiKeyString: UserIdentity}` map
+- `kv/modelservice/<id>.json` — one file per `domain.ModelServiceSnapshot`
+- `kv/endpoint/<id>.json` — one file per `domain.Endpoint` (contains real
+  upstream API key)
+
+Paths in `gateway.yaml` are resolved relative to the yaml file's location, so
+the directory is portable.
 
 Reload requires restart in v0.1; hot-reload via fsnotify / etcd is in v0.5+.
 

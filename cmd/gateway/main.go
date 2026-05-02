@@ -37,7 +37,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "./examples/gateway.yaml", "path to gateway YAML config")
+	configPath := flag.String("config", "./configs/local/gateway.yaml", "path to gateway YAML config")
 	flag.Parse()
 
 	if err := run(*configPath); err != nil {
