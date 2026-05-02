@@ -1,7 +1,8 @@
-package main
+package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,27 +10,35 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/zereker-labs/ai-gateway/pkg/config"
+	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 const testToken = "test-admin-token"
 
-// newTestEngine 起一份独立 sqlite + 完整 admin engine，token 固定 testToken。
+// newTestEngine 起一份独立 sqlite + 完整 admin engine。
+//
+// 直接用 NewEngine + 真实 SQL repo（而不是 stub），因为 admin 的整个价值就是
+// "从 HTTP 把请求落到 DB"——stub repo 等于绕开测试目标。
 func newTestEngine(t *testing.T) *gin.Engine {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := &config.AdminConfig{
-		Server:   config.ServerConfig{Addr: ":0"},
-		Admin:    config.AdminSection{Token: testToken},
-		Database: config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(dir, "admin.db")},
-	}
-	cfg.ApplyDefaults()
-	engine, cleanup, err := buildEngine(cfg)
+
+	db, err := infra.Open(infra.DriverSQLite, filepath.Join(dir, "admin.db"))
 	if err != nil {
-		t.Fatalf("buildEngine: %v", err)
+		t.Fatalf("infra.Open: %v", err)
 	}
-	t.Cleanup(cleanup)
-	return engine
+	if err := infra.Migrate(context.Background(), db); err != nil {
+		_ = db.Close()
+		t.Fatalf("infra.Migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	return NewEngine(Deps{
+		Token:            testToken,
+		ModelServiceRepo: repo.NewSQLModelServiceRepo(db),
+		EndpointRepo:     repo.NewSQLEndpointRepo(db),
+	})
 }
 
 func do(t *testing.T, engine *gin.Engine, method, path string, body any) *httptest.ResponseRecorder {
@@ -80,6 +89,27 @@ func TestAuth_OpsBypassToken(t *testing.T) {
 		if w.Code != 200 {
 			t.Errorf("%s: status = %d", p, w.Code)
 		}
+	}
+}
+
+func TestAuth_EmptyConfiguredTokenRefusesAll(t *testing.T) {
+	// 即便 caller 也送了 token，服务侧 token 没配就拒（防误配上线）。
+	dir := t.TempDir()
+	db, _ := infra.Open(infra.DriverSQLite, filepath.Join(dir, "x.db"))
+	_ = infra.Migrate(context.Background(), db)
+	t.Cleanup(func() { _ = db.Close() })
+	engine := NewEngine(Deps{
+		Token:            "",
+		ModelServiceRepo: repo.NewSQLModelServiceRepo(db),
+		EndpointRepo:     repo.NewSQLEndpointRepo(db),
+	})
+
+	req := httptest.NewRequest("GET", "/admin/v1/modelservices", nil)
+	req.Header.Set(adminTokenHeader, "anything")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != 500 {
+		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
 

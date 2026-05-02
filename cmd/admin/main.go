@@ -10,6 +10,9 @@
 //
 // 部署假设：admin 服务**只暴露内网 / loopback**；X-Admin-Token 是次要保险，
 // 主防线是网络隔离。
+//
+// 本文件只做 lifecycle（加载 config、连 DB、Migrate、装配 engine、启动监听、
+// 优雅退出）；admin 业务逻辑全部在 pkg/admin。
 package main
 
 import (
@@ -25,6 +28,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker-labs/ai-gateway/pkg/admin"
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/infra"
 	"github.com/zereker-labs/ai-gateway/pkg/repo"
@@ -80,7 +84,7 @@ func run(configPath string) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// buildEngine 装配 gin engine：连 DB → Migrate → 注册路由。
+// buildEngine 把 cfg → DB → repo → admin.Engine。
 //
 // admin 是 schema 的所有者：启动期 infra.Migrate 一定要跑。
 // gateway 启动只 Open + repo.CheckSchema 验证，不再 Migrate。
@@ -96,22 +100,11 @@ func buildEngine(cfg *config.AdminConfig) (*gin.Engine, func(), error) {
 		return nil, nil, fmt.Errorf("infra.Migrate: %w", err)
 	}
 
-	msRepo := repo.NewSQLModelServiceRepo(sqldb)
-	epRepo := repo.NewSQLEndpointRepo(sqldb)
-
-	if gin.Mode() == gin.DebugMode {
-		gin.SetMode(gin.ReleaseMode)
-	}
-	engine := gin.New()
-	engine.Use(gin.Recovery())
-
-	// ops endpoints 不走 admin 鉴权
-	engine.GET("/healthz", func(c *gin.Context) { c.String(200, "ok") })
-	engine.GET("/readyz", func(c *gin.Context) { c.String(200, "ok") })
-
-	api := engine.Group("/admin/v1", adminAuthMW(cfg.Admin.Token))
-	registerModelServiceRoutes(api, msRepo)
-	registerEndpointRoutes(api, epRepo)
+	engine := admin.NewEngine(admin.Deps{
+		Token:            cfg.Admin.Token,
+		ModelServiceRepo: repo.NewSQLModelServiceRepo(sqldb),
+		EndpointRepo:     repo.NewSQLEndpointRepo(sqldb),
+	})
 
 	cleanup := func() { _ = sqldb.Close() }
 	return engine, cleanup, nil
