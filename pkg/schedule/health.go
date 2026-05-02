@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/ctx"
+	"github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 // HealthChecker 健康检查器接口。
@@ -12,7 +12,7 @@ import (
 // 自部署：合并主动 probe + 被动 fail count；
 // 厂商：仅被动 fail count。
 type HealthChecker interface {
-	IsHealthy(c context.Context, ep *ctx.Endpoint) bool
+	IsHealthy(c context.Context, ep *domain.Endpoint) bool
 }
 
 // HealthProber 主动 probe（仅 FormSelfHosted）。独立 goroutine 周期性 GET。

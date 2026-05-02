@@ -1,4 +1,4 @@
-package ctx
+package domain
 
 // Secret 是凭证 / 密钥的字符串别名，自带屏蔽实现：
 //

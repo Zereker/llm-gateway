@@ -1,4 +1,4 @@
-package ctx
+package domain
 
 // Adapter 是 RequestContext 字段所需的最小 Adapter 接口。
 //

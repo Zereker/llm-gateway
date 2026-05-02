@@ -1,12 +1,12 @@
 package usage
 
-import "github.com/zereker-labs/ai-gateway/pkg/ctx"
+import "github.com/zereker-labs/ai-gateway/pkg/domain"
 
 // PriceCalculator 把 Usage + PricingSpec 转换成 per-request cost。
 //
 // 内置：Default（rates × ratios 公式）和 CEL（用户自定义表达式覆盖）。
 type PriceCalculator interface {
-	Calculate(u *ctx.Usage, spec *PricingSpec) (cost float64, formulas []CostFormula, err error)
+	Calculate(u *domain.Usage, spec *PricingSpec) (cost float64, formulas []CostFormula, err error)
 }
 
 // CostFormula 输出一个维度的细分成本（key / value / unit / rate / subtotal）。

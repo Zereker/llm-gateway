@@ -1,4 +1,4 @@
-package ctx
+package domain
 
 // UserIdentity M2 Auth middleware 的产物。
 type UserIdentity struct {

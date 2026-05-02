@@ -1,6 +1,6 @@
 package usage
 
-// PricingSpec 解码 ctx.ModelServiceSnapshot.SpecDetail JSON 后的计价规格。
+// PricingSpec 解码 domain.ModelServiceSnapshot.SpecDetail JSON 后的计价规格。
 //
 // 详见 docs/architecture/05-metering-billing.md 第 5 节。
 type PricingSpec struct {

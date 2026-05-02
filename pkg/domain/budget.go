@@ -1,4 +1,4 @@
-package ctx
+package domain
 
 // BudgetStatus M4 Budget middleware 的产物。
 type BudgetStatus int

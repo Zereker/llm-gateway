@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/zereker-labs/ai-gateway/pkg/ctx"
+	"github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 // Extractor 工厂：每次请求新建一个 ExtractSession。
@@ -16,7 +16,7 @@ import (
 // （如 OpenAI / Azure / DeepSeek 都用 openai_compat）。
 type Extractor interface {
 	Name() string
-	NewSession(c context.Context, meta ctx.UsageMeta) ExtractSession
+	NewSession(c context.Context, meta domain.UsageMeta) ExtractSession
 }
 
 // ExtractSession 流式 / 非流式统一接口。
@@ -25,7 +25,7 @@ type Extractor interface {
 // 非流式：Feed(fullBody) 一次；然后 Finalize
 type ExtractSession interface {
 	Feed(chunk []byte) error
-	Finalize() (*ctx.Usage, error)
+	Finalize() (*domain.Usage, error)
 }
 
 var extractorRegistry = map[string]Extractor{}

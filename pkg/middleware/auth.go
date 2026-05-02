@@ -3,7 +3,7 @@ package middleware
 import (
 	"context"
 
-	"github.com/zereker-labs/ai-gateway/pkg/ctx"
+	"github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 // Credentials 从请求头提取的鉴权凭证。
@@ -17,5 +17,5 @@ type Credentials struct {
 //
 // 内置默认实现包含 APIKey（file / in-memory）和 JWT（HS256 / RS256）。
 type IdentityProvider interface {
-	Resolve(c context.Context, creds *Credentials) (*ctx.UserIdentity, error)
+	Resolve(c context.Context, creds *Credentials) (*domain.UserIdentity, error)
 }

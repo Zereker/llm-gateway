@@ -1,4 +1,4 @@
-package ctx
+package domain
 
 // Modality 请求模态。
 type Modality int

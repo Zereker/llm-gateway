@@ -1,4 +1,4 @@
-package ctx
+package domain
 
 // LimitSpec M6 Limit middleware 为本次请求构建的三层阈值快照。
 type LimitSpec struct {
