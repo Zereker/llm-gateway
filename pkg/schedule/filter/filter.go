@@ -1,7 +1,6 @@
-// Package filter 定义端点选择的过滤器接口与各类 Filter 实现位置。
+// Package filter 定义端点选择的过滤器接口与各类 Filter 实现。
 //
-// TODO: 各 Filter 具体实现（Cooldown / Group / Health / PrefixCache / Busy / Rps/Tpm/Rpm）
-// 见 step 5+。
+// 内置 Filter：Cooldown / Group / Health / PrefixCache / Busy / Rps/Tpm/Rpm。
 package filter
 
 import (

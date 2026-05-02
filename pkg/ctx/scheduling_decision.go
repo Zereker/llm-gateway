@@ -26,10 +26,36 @@ type FilterRecord struct {
 
 // Attempt 单次请求尝试。
 type Attempt struct {
-	Index      int    // 第几次尝试（1 起）
+	Index      int // 第几次尝试（1 起）
 	EndpointID string
-	Outcome    string    // "success" / "retry" / "fallback" / "fail"
+	Outcome    AttemptOutcome
 	LatencyMs  int64
-	ErrorClass string    // ErrorClass.String()，成功时为空
+	ErrorClass string // ErrorClass.String()，成功时为空
 	Started    time.Time
+}
+
+// AttemptOutcome 尝试的结果分类。
+type AttemptOutcome int
+
+const (
+	AttemptUnknown  AttemptOutcome = iota
+	AttemptSuccess                  // 上游返回成功
+	AttemptRetry                    // 同 endpoint 重试中（中间状态）
+	AttemptFallback                 // 失败，已切到下一 endpoint
+	AttemptFail                     // 终态失败
+)
+
+func (o AttemptOutcome) String() string {
+	switch o {
+	case AttemptSuccess:
+		return "success"
+	case AttemptRetry:
+		return "retry"
+	case AttemptFallback:
+		return "fallback"
+	case AttemptFail:
+		return "fail"
+	default:
+		return "unknown"
+	}
 }

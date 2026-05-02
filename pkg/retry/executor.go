@@ -8,7 +8,7 @@ import "github.com/gin-gonic/gin"
 
 // Executor M7 Schedule middleware 的执行体。
 //
-// TODO: 完整实现在 step 5+；这里只是接口定义。
+// 接口仅声明 Run；具体实现需要持有 Scheduler / AdapterFactory / CooldownManager 等依赖。
 type Executor interface {
 	Run(c *gin.Context) error
 }

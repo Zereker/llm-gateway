@@ -1,5 +1,7 @@
 package ctx
 
+import "net/http"
+
 // ErrorClass 错误分类。决定 RetryExecutor 的行为与默认 HTTP 状态码。
 type ErrorClass int
 
@@ -46,14 +48,14 @@ func (e *AdapterError) Unwrap() error { return e.Cause }
 func DefaultHTTPStatus(class ErrorClass) int {
 	switch class {
 	case ErrInvalid:
-		return 400
+		return http.StatusBadRequest
 	case ErrPermanent:
-		return 403
+		return http.StatusForbidden
 	case ErrRateLimit:
-		return 429
+		return http.StatusTooManyRequests
 	case ErrTransient:
-		return 502
+		return http.StatusBadGateway
 	default:
-		return 500
+		return http.StatusInternalServerError
 	}
 }

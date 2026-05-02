@@ -7,4 +7,4 @@ package middleware
 //	M1 TraceContext → M9 Recover → M2 Auth → M3 Envelope → M4 Budget →
 //	M5 ModelService → M6 Limit → M8 ContentModeration → M7 Schedule → M10 Tracing
 //
-// TODO: 完整实现（含 Deps struct 与 Validate 自检）在 step 7。
+// Register / Deps struct / Validate 自检 在 cmd/gateway 装配时实现。

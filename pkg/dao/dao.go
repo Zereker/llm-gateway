@@ -1,4 +1,4 @@
-// Package dao 定义新表的数据访问层（model_service_spec_history、API key 表等）。
+// Package dao 定义数据访问层（model_service_spec_history、API key 表等）。
 //
-// TODO: 各 DAO 实现在 step 5+。
+// 各 DAO 接口与实现按需添加。
 package dao

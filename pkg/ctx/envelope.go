@@ -48,9 +48,10 @@ type CanonicalRequest struct {
 	Reasoning *Reasoning `json:"reasoning,omitempty"`
 	Thinking  *Thinking  `json:"thinking,omitempty"`
 
-	// 多模态
-	Modalities []string      `json:"modalities,omitempty"`
-	Audio      *AudioOptions `json:"audio,omitempty"`
+	// 多模态输出（OpenAI chat 完整响应可声明多模态：["text", "audio"] 等）。
+	// 字段名与 Modality 类型刻意不同，避免命名冲突；JSON 仍是 modalities。
+	OutputModalities []string      `json:"modalities,omitempty"`
+	Audio            *AudioOptions `json:"audio,omitempty"`
 }
 
 // Message 消息体（OpenAI / Anthropic 通用）。

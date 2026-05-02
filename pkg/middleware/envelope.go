@@ -16,4 +16,4 @@ type Parser interface {
 	Parse(raw []byte, proto ctx.Protocol, mod ctx.Modality) (ctx.CanonicalRequest, error)
 }
 
-// TODO: Envelope() gin.HandlerFunc 实现在 step 4。
+// Envelope() gin.HandlerFunc 实现待补；接口已就位，可独立实现 + 单测。

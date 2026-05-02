@@ -1,6 +1,7 @@
 // Package budget 定义 M4 Budget middleware 的依赖：预算 / 配额检查（gate）。
 //
-// 默认实现 alwayspass（永远放行）见 step 2；接入外部计费系统可自定义实现。
+// 内置默认实现 alwayspass（永远放行，适合无付费体系场景）；
+// 接入外部计费系统时实现自定义 Gate。
 package budget
 
 import (

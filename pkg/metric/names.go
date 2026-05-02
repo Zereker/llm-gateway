@@ -1,7 +1,7 @@
 // Package metric 集中定义 Prometheus metric 命名常量与封装。
 //
 // 命名规约：ai_gateway.<component>.<name>{labels}
-// 各业务包通过 metric.Inc / metric.Observe 等 API（TODO: 在 step 2+ 加）走本包。
+// 各业务包通过 metric.Inc / metric.Observe 等 API 走本包。
 package metric
 
 // === Middleware 通用 metric ===

@@ -1,6 +1,6 @@
 // Package auth 定义 M2 Auth middleware 的依赖：身份解析。
 //
-// 默认实现：APIKey (file/in-memory)、JWT (HS256/RS256) 见 step 2。
+// 内置默认实现包含 APIKey（file / in-memory）和 JWT（HS256 / RS256）。
 package auth
 
 import (

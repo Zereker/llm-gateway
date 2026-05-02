@@ -1,6 +1,6 @@
-// Package calculator 实现 PricingSpec → cost 的计算（默认公式 + CEL）。
+// Package calculator 实现 PricingSpec → cost 的计算。
 //
-// TODO: Default 实现 + CEL 实现见 step 5+。
+// 内置：Default（rates × ratios 公式）和 CEL（用户自定义表达式覆盖）。
 package calculator
 
 import (

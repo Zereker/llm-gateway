@@ -1,7 +1,7 @@
 // Package outbox 定义计量事件发布通道：本地日志 + Kafka。
 //
 // M10 Tracing middleware 通过 Publisher 发送 Usage 事件；
-// 默认 file 实现 + Kafka 可选实现见 step 2+。
+// 内置实现：file (JSONL append) 和 kafka (sync ack=1)。
 //
 // 详见 docs/architecture/05-metering-billing.md 第 6 节（同步两阶段：本地日志 + Kafka）。
 package outbox

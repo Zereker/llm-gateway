@@ -7,13 +7,13 @@ type Endpoint struct {
 	ID     string
 	Vendor string // 与 adapter.Vendor 对应
 	URL    string // 上游 base URL
-	APIKey string // 凭证
+	APIKey Secret // 凭证；自带 dump / log 屏蔽，调上游前用 APIKey.Reveal()
 	Group  string // 与 UserIdentity.Group 匹配；默认 "default"
 	Model  string // 该 endpoint 服务的模型名
 	Weight int    // 加权随机的基础权重；> 0
-	RPM    int    // endpoint 层每分钟请求数硬上限
-	TPM    int    // endpoint 层每分钟 token 硬上限
-	RPS    int    // endpoint 层每秒请求数硬上限
+	RPM    int64  // endpoint 层每分钟请求数硬上限；与 LayerSpec 对齐
+	TPM    int64  // endpoint 层每分钟 token 硬上限
+	RPS    int64  // endpoint 层每秒请求数硬上限
 
 	Capabilities EndpointCapabilities
 	Extra        json.RawMessage // 厂商专有配置，Adapter 自行解析

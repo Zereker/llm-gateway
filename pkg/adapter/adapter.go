@@ -39,6 +39,6 @@ type EndpointConfig struct {
 	ID     string
 	Vendor string
 	URL    string
-	APIKey string
+	APIKey ctx.Secret // 自带 dump / log 屏蔽；调上游前用 APIKey.Reveal()
 	Extra  json.RawMessage
 }

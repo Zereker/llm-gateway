@@ -1,20 +1,15 @@
 package ratelimit
 
-import (
-	"context"
+import "github.com/zereker-labs/ai-gateway/pkg/ctx"
 
-	"github.com/zereker-labs/ai-gateway/pkg/ctx"
-)
-
-// Store 限流的底层存储抽象。
+// ConfigStore 限流配置查询接口（用户层 / 模型层 / endpoint 层阈值）。
 //
-// 默认实现支持内存（单实例 / 测试）和 Redis（多实例共享）；
+// 默认实现走 pkg/config.Store + 内存 LRU 缓存；
 // 详见 docs/architecture/06-pluggable-infra.md。
-type Store interface {
-	// EvalLimit 原子比较 + 自增。incr=0 时仅读 + 比较，不写。
-	EvalLimit(c context.Context, key string, capLimit, incr, ttlSec int64) (current int64, blocked bool, err error)
-
-	// 配置查询：从 ConfigStore 加载并缓存。
+//
+// 限流的原子计数（INCR + 比较）走 pkg/store.Cache.EvalLimit，不在本接口；
+// Checker 实现同时持有 ConfigStore + store.Cache。
+type ConfigStore interface {
 	GetAPIKeyLimit(apiKeyID, serviceID string) *ctx.LayerSpec
 	GetUserLimit(userID, serviceID string) *ctx.LayerSpec
 	GetServiceDefaultUserLimit(serviceID string) *ctx.LayerSpec
@@ -22,7 +17,7 @@ type Store interface {
 	GetEndpointLimit(endpointID string) *ctx.LayerSpec // endpoint 层硬上限
 }
 
-// Config ConfigStore 中限流相关配置的统一形态。
+// Config ConfigStore 中限流相关配置的统一形态（运维 / Admin 用）。
 type Config struct {
 	APIKey  map[string]map[string]ctx.LayerSpec // /ratelimit/apikey/{api_key_id}/{service_id}
 	User    map[string]map[string]ctx.LayerSpec // /ratelimit/user/{user_id}/{service_id}
