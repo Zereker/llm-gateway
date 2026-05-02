@@ -37,3 +37,22 @@ func TryGetRequestContext(c *gin.Context) *domain.RequestContext {
 func AttachRequestContext(c *gin.Context, rc *domain.RequestContext) {
 	c.Set(domain.RequestContextKey, rc)
 }
+
+// abort 是早期 middleware（M2-M8）拒绝请求的统一出口：
+//   1. 把 AdapterError 写到 rc.Error
+//   2. c.Abort() 阻断后续 middleware
+//   3. M9 Recover 在 defer 后看到 rc.Error 写出 JSON 响应
+//
+// 这样所有早期拒绝走同一份"错误响应格式"，避免每个 middleware 自己 c.JSON。
+//
+// status == 0 时由 domain.DefaultHTTPStatus 按 class 推导。
+func abort(c *gin.Context, status int, class domain.ErrorClass, message string) {
+	if rc := TryGetRequestContext(c); rc != nil {
+		rc.Error = &domain.AdapterError{
+			Class:      class,
+			HTTPStatus: status,
+			Message:    message,
+		}
+	}
+	c.Abort()
+}
