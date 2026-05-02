@@ -11,8 +11,10 @@
 // 部署假设：admin 服务**只暴露内网 / loopback**；X-Admin-Token 是次要保险，
 // 主防线是网络隔离。
 //
-// lifecycle（infra Open + 信号处理 + 倒序 close）走 pkg/server，本文件只做
-// 配置加载 + 业务装配 + 把 engine 交给 server。
+// 数据层：
+//   - infra.Open 拿 *sqlx.DB（用于 Migrate 跑 raw SQL）
+//   - gorm.Open 复用同一份 *sql.DB（用于 admin 的 CRUD store）
+//   - 两套库共用一份连接池
 package main
 
 import (
@@ -23,11 +25,12 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
+	gormmysql "gorm.io/driver/mysql"
+	"gorm.io/gorm"
 
 	"github.com/zereker-labs/ai-gateway/pkg/admin"
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/infra"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
 	"github.com/zereker-labs/ai-gateway/pkg/server"
 )
 
@@ -55,10 +58,10 @@ func run(configPath string) error {
 	return srv.Serve(cfg.Server.Addr, engine, cfg.Server.ReadHeaderTimeout, cfg.Server.ShutdownTimeout)
 }
 
-// buildEngine 把 cfg → DB → repo → admin.NewEngine，并把 *server.Server 一并返回。
+// buildEngine 把 cfg → DB → gorm Stores → admin.NewEngine。
 //
-// admin 是 schema 的所有者：启动期 infra.Migrate 一定要跑。
-// gateway 启动只 OpenDB + repo.CheckSchema 验证，不再 Migrate。
+// admin 是 schema 的所有者：启动期 infra.Migrate 一定要跑（用 *sqlx.DB）。
+// CRUD 走 gorm，gorm 复用 *sqlx.DB.DB（同一份 *sql.DB 连接池）。
 //
 // 任意中间步骤失败时 defer 把已 open 的 infra 一并 Close（avoid leak）。
 func buildEngine(cfg *config.AdminConfig) (engine *gin.Engine, srv *server.Server, err error) {
@@ -77,10 +80,15 @@ func buildEngine(cfg *config.AdminConfig) (engine *gin.Engine, srv *server.Serve
 		return nil, nil, fmt.Errorf("infra.Migrate: %w", err)
 	}
 
+	gdb, err := gorm.Open(gormmysql.New(gormmysql.Config{Conn: sqldb.DB}), &gorm.Config{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("gorm.Open: %w", err)
+	}
+
 	engine = admin.NewEngine(admin.Deps{
-		Token:            cfg.Admin.Token,
-		ModelServiceRepo: repo.NewSQLModelServiceRepo(sqldb),
-		EndpointRepo:     repo.NewSQLEndpointRepo(sqldb),
+		Token:             cfg.Admin.Token,
+		ModelServiceStore: admin.NewModelServiceStore(gdb),
+		EndpointStore:     admin.NewEndpointStore(gdb),
 	})
 
 	return engine, srv, nil

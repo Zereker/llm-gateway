@@ -9,19 +9,17 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 
 	"github.com/zereker-labs/ai-gateway/pkg/infra"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 const testToken = "test-admin-token"
 
-// newTestEngine 起一份连到本地 MySQL 的 *sqlx.DB（Migrate + TRUNCATE）+ 完整 admin engine。
+// newTestEngine 起 gorm.DB（连本地 MySQL）+ Migrate + TRUNCATE + 完整 admin engine。
 //
-// 直接用 NewEngine + 真实 SQL repo（而不是 stub），因为 admin 的整个价值就是
-// "从 HTTP 把请求落到 DB"——stub repo 等于绕开测试目标。
-//
-// MYSQL_DSN 没设就 t.Skip。本地：`docker compose up -d mysql` 后导出 env。
+// MYSQL_DSN 没设就 t.Skip。本地：`docker compose up -d mysql` 后 export env。
 func newTestEngine(t *testing.T) *gin.Engine {
 	t.Helper()
 
@@ -30,26 +28,33 @@ func newTestEngine(t *testing.T) *gin.Engine {
 		t.Skip("MYSQL_DSN not set; skipping admin integration test")
 	}
 
-	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
+	// schema 由 infra.Migrate 跑 raw SQL（gorm 不开 AutoMigrate）
+	sqldb, err := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
 	if err != nil {
 		t.Fatalf("infra.Open: %v", err)
 	}
-	if err := infra.Migrate(context.Background(), db); err != nil {
-		_ = db.Close()
+	if err := infra.Migrate(context.Background(), sqldb); err != nil {
+		_ = sqldb.Close()
 		t.Fatalf("infra.Migrate: %v", err)
 	}
 	for _, table := range []string{"endpoints", "model_services"} {
-		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
-			_ = db.Close()
+		if _, err := sqldb.Exec("TRUNCATE TABLE " + table); err != nil {
+			_ = sqldb.Close()
 			t.Fatalf("TRUNCATE %s: %v", table, err)
 		}
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	// gorm 复用同一份 *sql.DB（共享连接池）
+	gdb, err := gorm.Open(mysql.New(mysql.Config{Conn: sqldb.DB}), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open: %v", err)
+	}
 
 	return NewEngine(Deps{
-		Token:            testToken,
-		ModelServiceRepo: repo.NewSQLModelServiceRepo(db),
-		EndpointRepo:     repo.NewSQLEndpointRepo(db),
+		Token:             testToken,
+		ModelServiceStore: NewModelServiceStore(gdb),
+		EndpointStore:     NewEndpointStore(gdb),
 	})
 }
 
@@ -106,16 +111,17 @@ func TestAuth_OpsBypassToken(t *testing.T) {
 
 func TestAuth_EmptyConfiguredTokenRefusesAll(t *testing.T) {
 	// 即便 caller 也送了 token，服务侧 token 没配就拒（防误配上线）。
-	// 复用 newTestEngine 起 stack 然后构造一个 token 为空的新 engine。
-	_ = newTestEngine(t) // 确保 MYSQL 在线 + skip 行为一致
+	_ = newTestEngine(t) // ensure stack online + skip behavior aligned
 
 	dsn := os.Getenv("MYSQL_DSN")
-	db, _ := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
-	t.Cleanup(func() { _ = db.Close() })
+	sqldb, _ := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
+	t.Cleanup(func() { _ = sqldb.Close() })
+	gdb, _ := gorm.Open(mysql.New(mysql.Config{Conn: sqldb.DB}), &gorm.Config{})
+
 	engine := NewEngine(Deps{
-		Token:            "",
-		ModelServiceRepo: repo.NewSQLModelServiceRepo(db),
-		EndpointRepo:     repo.NewSQLEndpointRepo(db),
+		Token:             "",
+		ModelServiceStore: NewModelServiceStore(gdb),
+		EndpointStore:     NewEndpointStore(gdb),
 	})
 
 	req := httptest.NewRequest("GET", "/admin/v1/modelservices", nil)

@@ -2,27 +2,30 @@
 // X-Admin-Token 鉴权 + /admin/v1 下的 ModelService / Endpoint CRUD。
 //
 // 与 pkg/router 平行：cmd/admin/main.go 是薄 lifecycle 壳，所有业务逻辑都在本包内。
-// 与 pkg/router 的边界：本包专属于"控制平面 admin 服务"——独立 binary、独立鉴权方式、
-// 独立路由前缀；不被 gateway 复用。
 //
-// Deps 用接口注入：本包只依赖 repo.{ModelService,Endpoint}Repository，
-// 不知道 *sqlx.DB 也不打开连接（连接生命周期归 cmd 装配方）。
+// 数据层用 gorm（不是 pkg/repo 的 sqlx）——admin 业务繁琐（CRUD / 过滤 / 分页 /
+// 未来 soft-delete / audit），gorm 减少样板。pkg/repo 仍是 gateway 的读路径，
+// 两套库各自服务于"谁的 hot path"。
+//
+// 实体类型（repo.ModelService / repo.Endpoint）住在 pkg/repo——两边共享一份
+// struct 定义（带 sqlx db: + gorm: 双标签 + 自定义 Scanner/Valuer）。
+//
+// schema 真相：pkg/infra/schema.sql。admin 启动时 infra.Migrate 跑一次 raw SQL；
+// gorm tag 只描述列名 / 类型，**不开 AutoMigrate**——schema 演进只能从 SQL 走。
 package admin
 
 import (
 	"github.com/gin-gonic/gin"
-
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 // Deps 是 NewEngine 的依赖集合。
 //
-// Token 校验 X-Admin-Token header；空时 admin 拒所有请求（防止误把无鉴权服务上线）。
-// 两个 Repository 必须同时支持读和写——admin 同时承担列表查看 + 创建 / 修改 / 删除。
+// Token 校验 X-Admin-Token；空时 admin 拒所有请求（防止误把无鉴权服务上线）。
+// 两个 Store 是 gorm-backed 的具体类型；不抽 interface（无第二实现 + admin tests 直接用真 MySQL）。
 type Deps struct {
-	Token            string
-	ModelServiceRepo repo.ModelServiceRepository
-	EndpointRepo     repo.EndpointRepository
+	Token             string
+	ModelServiceStore *ModelServiceStore
+	EndpointStore     *EndpointStore
 }
 
 // NewEngine 构造 admin gin.Engine 并完成全部装配。
@@ -41,8 +44,8 @@ func NewEngine(deps Deps) *gin.Engine {
 	registerOpsRoutes(engine)
 
 	api := engine.Group("/admin/v1", authMW(deps.Token))
-	registerModelServiceRoutes(api, deps.ModelServiceRepo)
-	registerEndpointRoutes(api, deps.EndpointRepo)
+	registerModelServiceRoutes(api, deps.ModelServiceStore)
+	registerEndpointRoutes(api, deps.EndpointStore)
 
 	return engine
 }

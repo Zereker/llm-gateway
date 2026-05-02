@@ -2,8 +2,6 @@ package admin
 
 import (
 	"github.com/gin-gonic/gin"
-
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 // registerModelServiceRoutes 注册 /admin/v1/modelservices CRUD。
@@ -15,76 +13,76 @@ import (
 //	GET    /modelservices/:model  按 model 字段查
 //	PUT    /modelservices/:model  全量更新（URL 是 model 来源，body.Model 被覆盖）
 //	DELETE /modelservices/:model  删除
-func registerModelServiceRoutes(api *gin.RouterGroup, r repo.ModelServiceRepository) {
-	api.GET("/modelservices", listModelServices(r))
-	api.POST("/modelservices", createModelService(r))
-	api.GET("/modelservices/:model", getModelService(r))
-	api.PUT("/modelservices/:model", updateModelService(r))
-	api.DELETE("/modelservices/:model", deleteModelService(r))
+func registerModelServiceRoutes(api *gin.RouterGroup, s *ModelServiceStore) {
+	api.GET("/modelservices", listModelServices(s))
+	api.POST("/modelservices", createModelService(s))
+	api.GET("/modelservices/:model", getModelService(s))
+	api.PUT("/modelservices/:model", updateModelService(s))
+	api.DELETE("/modelservices/:model", deleteModelService(s))
 }
 
-func listModelServices(r repo.ModelServiceReader) gin.HandlerFunc {
+func listModelServices(s *ModelServiceStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		all, err := r.List(c.Request.Context())
+		all, err := s.List(c.Request.Context())
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 		items := make([]modelServiceDTO, len(all))
 		for i := range all {
-			items[i] = msToDTO(all[i])
+			items[i] = msToDTO(&all[i])
 		}
 		c.JSON(200, gin.H{"items": items})
 	}
 }
 
-func getModelService(r repo.ModelServiceReader) gin.HandlerFunc {
+func getModelService(s *ModelServiceStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		snap, err := r.GetByModel(c.Request.Context(), c.Param("model"))
+		ms, err := s.GetByModel(c.Request.Context(), c.Param("model"))
 		if err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, msToDTO(snap))
+		c.JSON(200, msToDTO(ms))
 	}
 }
 
-func createModelService(r repo.ModelServiceWriter) gin.HandlerFunc {
+func createModelService(s *ModelServiceStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var dto modelServiceDTO
 		if err := c.ShouldBindJSON(&dto); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		snap := dtoToMS(dto)
-		if err := r.Create(c.Request.Context(), snap); err != nil {
+		m := dtoToMS(dto)
+		if err := s.Create(c.Request.Context(), m); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(201, msToDTO(snap)) // 回填了 ID + UpdateTime
+		c.JSON(201, msToDTO(m)) // 回填 ID + UpdateTime
 	}
 }
 
-func updateModelService(r repo.ModelServiceWriter) gin.HandlerFunc {
+func updateModelService(s *ModelServiceStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var dto modelServiceDTO
 		if err := c.ShouldBindJSON(&dto); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		dto.Model = c.Param("model") // URL 是 model 字段的真相来源
-		snap := dtoToMS(dto)
-		if err := r.Update(c.Request.Context(), snap); err != nil {
+		dto.Model = c.Param("model") // URL 是 model 真相来源
+		m := dtoToMS(dto)
+		if err := s.Update(c.Request.Context(), m); err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, msToDTO(snap))
+		c.JSON(200, msToDTO(m))
 	}
 }
 
-func deleteModelService(r repo.ModelServiceWriter) gin.HandlerFunc {
+func deleteModelService(s *ModelServiceStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if err := r.Delete(c.Request.Context(), c.Param("model")); err != nil {
+		if err := s.Delete(c.Request.Context(), c.Param("model")); err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}

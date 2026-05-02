@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 // APIKeyProvider 是 IdentityProvider 的内存 / 文件默认实现：
@@ -15,14 +13,14 @@ import (
 // 调用 Update 替换内存表实现热加载。
 type APIKeyProvider struct {
 	mu   sync.RWMutex
-	keys map[string]domain.UserIdentity
+	keys map[string]UserIdentity
 }
 
 // NewAPIKeyProvider 用初始 key → identity 表构造。
 //
 // 入参 map 在内部被拷贝，不与外部共享。
-func NewAPIKeyProvider(keys map[string]domain.UserIdentity) *APIKeyProvider {
-	p := &APIKeyProvider{keys: make(map[string]domain.UserIdentity, len(keys))}
+func NewAPIKeyProvider(keys map[string]UserIdentity) *APIKeyProvider {
+	p := &APIKeyProvider{keys: make(map[string]UserIdentity, len(keys))}
 	for k, v := range keys {
 		p.keys[k] = v
 	}
@@ -30,8 +28,8 @@ func NewAPIKeyProvider(keys map[string]domain.UserIdentity) *APIKeyProvider {
 }
 
 // Update 整体替换内存表（适合配置 reload）。
-func (p *APIKeyProvider) Update(keys map[string]domain.UserIdentity) {
-	next := make(map[string]domain.UserIdentity, len(keys))
+func (p *APIKeyProvider) Update(keys map[string]UserIdentity) {
+	next := make(map[string]UserIdentity, len(keys))
 	for k, v := range keys {
 		next[k] = v
 	}
@@ -41,7 +39,7 @@ func (p *APIKeyProvider) Update(keys map[string]domain.UserIdentity) {
 }
 
 // Resolve 实现 IdentityProvider.Resolve：按 creds.APIKey 查表。
-func (p *APIKeyProvider) Resolve(_ context.Context, creds *Credentials) (*domain.UserIdentity, error) {
+func (p *APIKeyProvider) Resolve(_ context.Context, creds *Credentials) (*UserIdentity, error) {
 	if creds == nil || creds.APIKey == "" {
 		return nil, errors.New("apikey: missing api key")
 	}

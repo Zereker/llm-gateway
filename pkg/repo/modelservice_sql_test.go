@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/jmoiron/sqlx"
+	"gorm.io/datatypes"
 )
 
 // jsonEqual 比较两个 JSON byte slice 的语义相等（不在意空格 / 字段顺序）。
@@ -25,26 +27,50 @@ func jsonEqual(t *testing.T, got, want []byte) bool {
 	return reflect.DeepEqual(g, w)
 }
 
-func TestSQLModelServiceRepo_CreateAndGet(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
-	ctx := context.Background()
+// seedModelService 用 raw SQL 把测试数据写进 db（bypass admin 写路径），
+// 让 Reader 测试自包含。
+func seedModelService(t *testing.T, db *sqlx.DB, ms *ModelService) {
+	t.Helper()
+	if ms.UpdateTime.IsZero() {
+		ms.UpdateTime = time.Now().UTC()
+	}
+	if ms.Group == "" {
+		ms.Group = "default"
+	}
+	res, err := db.Exec(
+		`INSERT INTO model_services (service_id, model, update_time, spec_detail, group_name, tpm, rpm)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		ms.ServiceID, ms.Model, ms.UpdateTime, datatypesJSONOrNil(ms.SpecDetail),
+		ms.Group, ms.Tpm, ms.Rpm,
+	)
+	if err != nil {
+		t.Fatalf("seed model_service: %v", err)
+	}
+	if id, err := res.LastInsertId(); err == nil {
+		ms.ID = id
+	}
+}
 
-	snap := &domain.ModelServiceSnapshot{
+// datatypesJSONOrNil 避免 "" → MySQL JSON 列拒绝插入。
+func datatypesJSONOrNil(j datatypes.JSON) any {
+	if len(j) == 0 {
+		return nil
+	}
+	return string(j)
+}
+
+func TestSQLModelServiceReader_GetByModel(t *testing.T) {
+	db := newTestDB(t)
+	seedModelService(t, db, &ModelService{
 		ServiceID:  "openai/gpt-4o",
 		Model:      "gpt-4o",
-		Group:      "default",
 		Tpm:        100000,
 		Rpm:        600,
-		SpecDetail: json.RawMessage(`{"unit":"token"}`),
-	}
-	if err := r.Create(ctx, snap); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if snap.ID == 0 {
-		t.Error("Create should backfill snap.ID")
-	}
+		SpecDetail: datatypes.JSON(`{"unit":"token"}`),
+	})
 
-	got, err := r.GetByModel(ctx, "gpt-4o")
+	r := NewSQLModelServiceReader(db)
+	got, err := r.GetByModel(context.Background(), "gpt-4o")
 	if err != nil {
 		t.Fatalf("GetByModel: %v", err)
 	}
@@ -56,8 +82,8 @@ func TestSQLModelServiceRepo_CreateAndGet(t *testing.T) {
 	}
 }
 
-func TestSQLModelServiceRepo_GetNotFound(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
+func TestSQLModelServiceReader_GetNotFound(t *testing.T) {
+	r := NewSQLModelServiceReader(newTestDB(t))
 	if _, err := r.GetByModel(context.Background(), "missing"); err == nil {
 		t.Fatal("want not-found error")
 	}
@@ -66,95 +92,18 @@ func TestSQLModelServiceRepo_GetNotFound(t *testing.T) {
 	}
 }
 
-func TestSQLModelServiceRepo_DefaultsGroupOnEmpty(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
-	ctx := context.Background()
-
-	snap := &domain.ModelServiceSnapshot{ServiceID: "x/y", Model: "y"} // Group ""
-	if err := r.Create(ctx, snap); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	got, _ := r.GetByModel(ctx, "y")
-	if got.Group != "default" {
-		t.Errorf("Group = %q, want default", got.Group)
-	}
-}
-
-func TestSQLModelServiceRepo_List(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
-	ctx := context.Background()
-
+func TestSQLModelServiceReader_List(t *testing.T) {
+	db := newTestDB(t)
 	for _, m := range []string{"a", "b", "c"} {
-		_ = r.Create(ctx, &domain.ModelServiceSnapshot{ServiceID: "v/" + m, Model: m})
+		seedModelService(t, db, &ModelService{ServiceID: "v/" + m, Model: m})
 	}
 
-	all, err := r.List(ctx)
+	r := NewSQLModelServiceReader(db)
+	all, err := r.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(all) != 3 {
 		t.Errorf("len = %d, want 3", len(all))
-	}
-}
-
-func TestSQLModelServiceRepo_Update(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
-	ctx := context.Background()
-
-	snap := &domain.ModelServiceSnapshot{ServiceID: "v/m", Model: "m", Tpm: 1}
-	_ = r.Create(ctx, snap)
-
-	snap.Tpm = 999
-	snap.Rpm = 50
-	if err := r.Update(ctx, snap); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	got, _ := r.GetByModel(ctx, "m")
-	if got.Tpm != 999 || got.Rpm != 50 {
-		t.Errorf("got %+v", got)
-	}
-	if got.UpdateTime.Equal(snap.UpdateTime) == false {
-		// Update 服务端覆盖 UpdateTime；snap.UpdateTime 也应该被覆盖到 now
-		// 这里只断言两边一致就够了
-		t.Errorf("UpdateTime out of sync: snap=%v got=%v", snap.UpdateTime, got.UpdateTime)
-	}
-}
-
-func TestSQLModelServiceRepo_UpdateMissing(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
-	err := r.Update(context.Background(), &domain.ModelServiceSnapshot{Model: "nope"})
-	if err == nil {
-		t.Fatal("want not-found error")
-	}
-}
-
-func TestSQLModelServiceRepo_Delete(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
-	ctx := context.Background()
-
-	_ = r.Create(ctx, &domain.ModelServiceSnapshot{ServiceID: "v/m", Model: "m"})
-	if err := r.Delete(ctx, "m"); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if _, err := r.GetByModel(ctx, "m"); err == nil {
-		t.Error("expected gone after Delete")
-	}
-}
-
-func TestSQLModelServiceRepo_DeleteMissing(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
-	if err := r.Delete(context.Background(), "nope"); err == nil {
-		t.Fatal("want not-found error")
-	}
-}
-
-func TestSQLModelServiceRepo_DuplicateModel(t *testing.T) {
-	r := NewSQLModelServiceRepo(newTestDB(t))
-	ctx := context.Background()
-	_ = r.Create(ctx, &domain.ModelServiceSnapshot{ServiceID: "v/m", Model: "m"})
-
-	if err := r.Create(ctx, &domain.ModelServiceSnapshot{ServiceID: "v/m2", Model: "m"}); err == nil {
-		t.Fatal("want UNIQUE constraint error on duplicate model")
 	}
 }

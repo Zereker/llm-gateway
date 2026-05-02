@@ -14,7 +14,6 @@ import (
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 	"github.com/zereker-labs/ai-gateway/pkg/infra"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
 // e2e: 用 httptest 模拟 OpenAI 上游，把 gateway 的全套 middleware 串起来跑一遍。
@@ -174,24 +173,18 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		}
 	}
 
-	msRepo := repo.NewSQLModelServiceRepo(db)
-	if err := msRepo.Create(ctx, &domain.ModelServiceSnapshot{
-		ServiceID: "openai/gpt-4o",
-		Model:     "gpt-4o",
-		Group:     "default",
-	}); err != nil {
+	// 用 raw SQL 直接 INSERT，避开 admin 写路径（gateway 测试不需要 import admin）。
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO model_services (service_id, model, group_name) VALUES (?, ?, ?)`,
+		"openai/gpt-4o", "gpt-4o", "default",
+	); err != nil {
 		t.Fatalf("seed model_service: %v", err)
 	}
-
-	epRepo := repo.NewSQLEndpointRepo(db)
-	if err := epRepo.Create(ctx, &domain.Endpoint{
-		ID:     "openai_main",
-		Vendor: "openai",
-		URL:    upstreamURL,
-		APIKey: domain.Secret("sk-upstream-key"),
-		Group:  "default",
-		Model:  "gpt-4o",
-	}); err != nil {
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO endpoints (id, vendor, url, api_key, group_name, model)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"openai_main", "openai", upstreamURL, "sk-upstream-key", "default", "gpt-4o",
+	); err != nil {
 		t.Fatalf("seed endpoint: %v", err)
 	}
 }

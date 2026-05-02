@@ -101,8 +101,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 
 		Auth:         middleware.AuthDeps{Provider: repo.NewAPIKeyProvider(apiKeys)},
 		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
-		ModelService: middleware.ModelServiceDeps{Provider: repo.NewSQLModelServiceRepo(sqldb)},
-		Schedule:     middleware.ScheduleDeps{Endpoints: repo.NewSQLEndpointRepo(sqldb)},
+		ModelService: middleware.ModelServiceDeps{Provider: repo.NewSQLModelServiceReader(sqldb)},
+		Schedule:     middleware.ScheduleDeps{Endpoints: repo.NewSQLEndpointReader(sqldb)},
 		Tracing:      middleware.TracingDeps{Outbox: outbox, Tracer: trace.NewSlogTracer(slog.Default())},
 	})
 

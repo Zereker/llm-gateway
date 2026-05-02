@@ -3,13 +3,11 @@ package repo
 import (
 	"context"
 	"testing"
-
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 func TestAPIKeyProvider_ResolveKnown(t *testing.T) {
-	want := domain.UserIdentity{UserID: "alice", Group: "default"}
-	p := NewAPIKeyProvider(map[string]domain.UserIdentity{
+	want := UserIdentity{UserID: "alice", Group: "default"}
+	p := NewAPIKeyProvider(map[string]UserIdentity{
 		"sk-aaa": want,
 	})
 
@@ -41,11 +39,11 @@ func TestAPIKeyProvider_ResolveNilCreds(t *testing.T) {
 }
 
 func TestAPIKeyProvider_UpdateReplacesTable(t *testing.T) {
-	p := NewAPIKeyProvider(map[string]domain.UserIdentity{
+	p := NewAPIKeyProvider(map[string]UserIdentity{
 		"sk-old": {UserID: "alice"},
 	})
 
-	p.Update(map[string]domain.UserIdentity{
+	p.Update(map[string]UserIdentity{
 		"sk-new": {UserID: "bob"},
 	})
 
@@ -62,10 +60,10 @@ func TestAPIKeyProvider_UpdateReplacesTable(t *testing.T) {
 }
 
 func TestAPIKeyProvider_InputMapNotShared(t *testing.T) {
-	src := map[string]domain.UserIdentity{"sk": {UserID: "alice"}}
+	src := map[string]UserIdentity{"sk": {UserID: "alice"}}
 	p := NewAPIKeyProvider(src)
 
-	src["sk-injected"] = domain.UserIdentity{UserID: "mallory"}
+	src["sk-injected"] = UserIdentity{UserID: "mallory"}
 
 	if _, err := p.Resolve(context.Background(), &Credentials{APIKey: "sk-injected"}); err == nil {
 		t.Fatal("provider should not share input map")
