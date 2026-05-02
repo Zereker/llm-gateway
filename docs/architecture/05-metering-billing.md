@@ -1,8 +1,8 @@
 # 05 — Metering & Billing
 
-本文定义计量与计价层：`usage.Usage` 数据总线、`TokenExtractor` 提取层、`PricingSpec` 版本化定价、在线计量管道（应用层 → Kafka）+ 离线计价聚合（流处理器）的 Kappa 架构。
+本文定义计量与计价层：`domain.Usage` 数据总线、`TokenExtractor` 提取层、`PricingSpec` 版本化定价、在线计量管道（应用层 → Kafka）+ 离线计价聚合（流处理器）的 Kappa 架构。
 
-> **阅读前**：[02](02-protocol-translation.md) 的 `adapter.ResponseSession`；[01](01-request-pipeline.md) 的 M10 Tracing 契约；[06](06-pluggable-infra.md) 的 `usage.EventBus` / `archive.Store` 抽象接口。
+> **阅读前**：[02](02-protocol-translation.md) 的 `adapter.ResponseSession`；[01](01-request-pipeline.md) 的 M10 Tracing 契约；[06](06-pluggable-infra.md) 的 `usage.OutboxPublisher` / `archive.Store` 抽象接口。
 
 ## 1. 范围与目标
 
@@ -15,7 +15,7 @@
 | G1 | 限流 / 明细 / 聚合 / 账单**共享同一份 Usage** | 删除其中任一消费者，其他路径不受影响；新增维度改一处，多处同步 |
 | G2 | 新增计价规则**不改代码** | 改 `ModelService.SpecDetail` JSON（含可选 CEL 表达式）即可 |
 | G3 | 新厂商 Usage 提取**集中到一处** | 不在 Adapter 散写 JSON 字段取数；走 `TokenExtractor` 注册 |
-| G4 | 新维度（音频秒 / 视频时长 / 图像张数）改动 ≤ 3 处 | `usage.MetricKey` 集中枚举；Extractor 填充 + Pricing 配置 |
+| G4 | 新维度（音频秒 / 视频时长 / 图像张数）改动 ≤ 3 处 | `domain.MetricKey` 集中枚举；Extractor 填充 + Pricing 配置 |
 | G5 | **以请求发生时的价格计价**（point-in-time billing） | 价格改动后，未上报的请求按改动前价格结算 |
 | G6 | 计量数据强可靠 | 应用 crash / Kafka 不可用都不丢；本地日志 = 单一事实源 |
 
@@ -23,19 +23,19 @@
 
 | # | 原则 | 含义 |
 |---|------|------|
-| U1 | **Usage = 数据总线** | 所有下游（限流 / 明细 / 计价 / 监控）只读同一份 `usage.Usage`；杜绝各自解析上游响应 |
+| U1 | **Usage = 数据总线** | 所有下游（限流 / 明细 / 计价 / 监控）只读同一份 `domain.Usage`；杜绝各自解析上游响应 |
 | U2 | **流式 / 非流式同接口** | `Extractor.NewSession()` → `Session.Feed/Finalize`；非流式即 Feed 一次的特例 |
 | U3 | **价格 = 数据 + 表达式** | 默认走结构化字段（input/output 单价 + 倍率）；例外走 CEL 表达式 |
-| U4 | **在线只计量，离线做计价聚合** | 应用层只产出 `usage.Usage` 事件；聚合（小时窗口）+ 计价由流处理器执行 |
+| U4 | **在线只计量，离线做计价聚合** | 应用层只产出 `domain.Usage` 事件；聚合（小时窗口）+ 计价由流处理器执行 |
 | U5 | **请求时价（point-in-time billing）** | 消息携带价格版本指纹；流处理器按指纹查 history 表得到当时的价格 |
 | U6 | **本地日志 = 单一事实源** | 应用层同步 fsync 本地日志再异步发 Kafka；Kafka 失败不影响业务返回；旁路日志收集器归档到对象存储 |
 
 ## 3. 数据结构
 
-### 3.1 usage.Usage
+### 3.1 domain.Usage
 
 ```go
-// internal/usage/usage.go
+// pkg/domain/usage.go
 package usage
 
 import "time"
@@ -79,10 +79,10 @@ type PricingFingerprint struct {
 }
 ```
 
-### 3.2 usage.MetricKey
+### 3.2 domain.MetricKey
 
 ```go
-// internal/usage/keys.go
+// pkg/domain/usage.go
 package usage
 
 // MetricKey 集中定义所有可能的扩展维度，杜绝散字符串。
@@ -107,7 +107,7 @@ const (
 ## 4. TokenExtractor 接口
 
 ```go
-// internal/usage/extractor.go
+// pkg/usage/extractor.go
 package usage
 
 import "context"
@@ -132,7 +132,7 @@ type Session interface {
 ### 4.1 注册表
 
 ```go
-// internal/usage/registry.go
+// pkg/usage/extractor.go
 package usage
 
 var registry = map[string]Extractor{}
@@ -160,7 +160,7 @@ func Get(name string) Extractor {
 每个 Extractor 在自己的包里 `init()` 注册；`adapter` 通过 `Adapter.UsageExtractor() string` 声明用哪一个：
 
 ```go
-// internal/adapter/openai/adapter.go (示例)
+// pkg/adapter/openai/adapter.go (示例)
 func (*Adapter) UsageExtractor() string { return "openai_compat" }
 ```
 
@@ -187,7 +187,7 @@ usage.Details[CacheCreationTokens] = upstream.CacheCreationInput
 
 ### 5.1 存储
 
-复用 `modelservice.Snapshot.SpecDetail`（JSON 字段）。**不新增 `pricing_spec` 表**。
+复用 `domain.ModelServiceSnapshot.SpecDetail`（JSON 字段）。**不新增 `pricing_spec` 表**。
 
 ```go
 // 通过 SpecDetail json.RawMessage 解码得到 PricingSpec
@@ -334,7 +334,7 @@ M10 Tracing (defer):
 应用层只负责**写本地日志**：
 
 ```go
-// internal/infra/usage/locallog/locallog.go
+// pkg/usage/locallog/locallog.go
 type LocalLog interface {
     WriteSync(payload []byte) error // append + fsync；失败返回错
 }
@@ -357,10 +357,10 @@ output.s3:    # 或任何 S3 兼容对象存储
 
 ### 6.4 EventBus 抽象（[06] 中定义）
 
-应用层不直接依赖 Kafka SDK；通过 `usage.EventBus` 接口注入：
+应用层不直接依赖 Kafka SDK；通过 `usage.OutboxPublisher` 接口注入：
 
 ```go
-// internal/usage/bus.go
+// pkg/usage/outbox.go
 package usage
 
 import "context"
@@ -534,8 +534,8 @@ pricing.calculator_duration_ms{quantile}
 
 ## 12. 演进规则
 
-- **新增 Usage 维度**：在 `usage.MetricKey` 加常量；对应 Extractor 填充；本文档第 3.2 节同步；如需参与计价，`PricingSpec.Rates` 加字段
-- **新增 Extractor**：新建 `internal/usage/<name>/`；`init()` 注册；Adapter 通过 `UsageExtractor()` 声明；本文档第 4.2 节同步
+- **新增 Usage 维度**：在 `domain.MetricKey` 加常量；对应 Extractor 填充；本文档第 3.2 节同步；如需参与计价，`PricingSpec.Rates` 加字段
+- **新增 Extractor**：新建 `pkg/usage/<name>/`；`init()` 注册；Adapter 通过 `UsageExtractor()` 声明；本文档第 4.2 节同步
 - **修改 Pricing JSON schema**：向后兼容（旧字段保留）；history 表无需迁移（历史快照保持原 schema）
 - **修改 Kafka 消息 schema**：版本化 `event_schema_version` 字段；流处理器按版本分支处理
 - **修改本地日志 / 归档策略**：本文档第 6.3 节同步；评估 Filebeat 等部署侧配置变更

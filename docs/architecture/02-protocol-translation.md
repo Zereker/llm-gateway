@@ -1,8 +1,8 @@
 # 02 — Protocol Translation
 
-本文定义协议转换层：`Adapter` 接口、`envelope.Envelope` 数据结构、`Translator` 跨协议翻译、`ResponseSession` 流式响应聚合，以及 `ParamSpec` 同协议族内参数适配。
+本文定义协议转换层：`Adapter` 接口、`domain.RequestEnvelope` 数据结构、`Translator` 跨协议翻译、`ResponseSession` 流式响应聚合，以及 `ParamSpec` 同协议族内参数适配。
 
-> **阅读前**：[01-request-pipeline](01-request-pipeline.md) 的 `request.Context` 和 M3 Envelope / M7 Schedule 契约。
+> **阅读前**：[01-request-pipeline](01-request-pipeline.md) 的 `domain.RequestContext` 和 M3 Envelope / M7 Schedule 契约。
 
 ## 1. 范围与目标
 
@@ -16,8 +16,8 @@
 | G2 | 接入 OpenAI 兼容厂商零业务代码 | 新厂商一个文件 + 配置 |
 | G3 | 客户端协议透传未知字段 | 任意未在 `CanonicalRequest` 中的字段都能原样传到上游 |
 | G4 | 流式 / 非流式同一接口 | `ResponseSession.Feed` + `Finalize` 二选一无歧义 |
-| G5 | 跨协议翻译独立成包 | `internal/translator/` 可被多个 Adapter 引用 |
-| G6 | 错误分类对齐限流 / 调度 | 上游 4xx/5xx 统一映射到 `errs.Class` |
+| G5 | 跨协议翻译独立成包 | `pkg/translator/` 可被多个 Adapter 引用 |
+| G6 | 错误分类对齐限流 / 调度 | 上游 4xx/5xx 统一映射到 `domain.ErrorClass` |
 | G7 | 注册表零 switch | `init()` + blank import 注册 |
 | G8 | 多模态共存 | 一个 Adapter 可同时声明 `Chat` + `Image` + `Task` 多个 Modality |
 
@@ -28,18 +28,18 @@
 | Q1 | **一个厂商一个 Adapter** | Adapter 与厂商一一对应；多模态由 `SupportedModalities()` 声明，不拆多个接口 |
 | Q2 | **请求体双解析** | `Envelope.RawBytes` 用于上游透传，`Envelope.Parsed` 用于业务读取；杜绝结构化解析丢字段 |
 | Q3 | **流式聚合统一到 Session** | 所有流式 / 非流式响应都走 `ResponseSession.Feed` + `Finalize`；无平行的 `StreamHandler` 接口 |
-| Q4 | **跨协议翻译独立模块** | `internal/translator/` 包统一处理 (src → dst) 双向翻译；Adapter 不内嵌翻译逻辑 |
+| Q4 | **跨协议翻译独立模块** | `pkg/translator/` 包统一处理 (src → dst) 双向翻译；Adapter 不内嵌翻译逻辑 |
 | Q5 | **同族字段差异由 ParamSpec 处理** | 跨协议族走 Translator；同族（如多个 OpenAI 兼容厂商）的字段名 / 取值 / 必填扩展由 `ParamSpec` 声明式处理 |
 | Q6 | **注册表 + init() 注册** | `adapter.Register("vendor", factory)` 通过 `init()` 调用；`main.go` 用 blank import 决定哪些厂商进二进制 |
-| Q7 | **错误集中分类** | Adapter 自带 `Classify`；所有上游错误统一为 `errs.Error{Class: ...}` |
+| Q7 | **错误集中分类** | Adapter 自带 `Classify`；所有上游错误统一为 `domain.AdapterError{Class: ...}` |
 | Q8 | **能力声明可选** | `CapabilityProvider` 接口预留；用于未来端点选择按"是否支持 thinking / tools / vision"过滤，本期不强制实现 |
 
 ## 3. 接口与数据结构
 
-### 3.1 envelope.Envelope
+### 3.1 domain.RequestEnvelope
 
 ```go
-// internal/envelope/envelope.go
+// pkg/domain/envelope.go
 package envelope
 
 import "time"
@@ -63,7 +63,7 @@ type Envelope struct {
 `CanonicalRequest` 是网关内部的"通用请求形态"——所有 Adapter 与 Translator 都以它为输入。它**只覆盖跨厂商共性的字段**，专有字段不进入 Canonical（在 `RawBytes` 中保留）。
 
 ```go
-// internal/envelope/canonical.go
+// pkg/domain/canonical.go
 package envelope
 
 import "encoding/json"
@@ -127,7 +127,7 @@ type Tool struct {
 ### 3.3 SourceProtocol 与 Modality
 
 ```go
-// internal/envelope/protocol.go
+// pkg/domain/protocol.go
 package envelope
 
 type SourceProtocol int
@@ -154,7 +154,7 @@ func (p SourceProtocol) String() string {
 ```
 
 ```go
-// internal/envelope/modality.go
+// pkg/domain/modality.go
 package envelope
 
 type Modality int
@@ -183,12 +183,12 @@ func (m Modality) String() string {
 }
 ```
 
-### 3.4 envelope.Detector / envelope.Parser
+### 3.4 middleware.Detector / middleware.Parser
 
-M3 middleware 注入这两个接口的实现（默认实现见 `internal/envelope/default/`）。
+M3 middleware 注入这两个接口的实现（默认实现见 `pkg/domain/default/`）。
 
 ```go
-// internal/envelope/detector.go
+// pkg/domain/detector.go
 package envelope
 
 // Detector 识别请求的协议族与模态。
@@ -217,15 +217,15 @@ type Parser interface {
 ## 4. Adapter 接口
 
 ```go
-// internal/adapter/adapter.go
+// pkg/adapter/adapter.go
 package adapter
 
 import (
     "context"
     "net/http"
 
-    "github.com/zereker-labs/ai-gateway/internal/envelope"
-    "github.com/zereker-labs/ai-gateway/internal/scheduling"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/schedule"
 )
 
 // Adapter 是单个上游厂商的接入实现。
@@ -235,11 +235,11 @@ import (
 type Adapter interface {
     // 元信息
     Vendor() string                              // "openai" / "anthropic" / "vllm" / ...
-    NativeProtocol() envelope.SourceProtocol     // 该厂商上游使用的协议族
-    SupportedModalities() []envelope.Modality
+    NativeProtocol() domain.Protocol     // 该厂商上游使用的协议族
+    SupportedModalities() []domain.Modality
 
     // 请求侧
-    Init(ctx context.Context, ep *scheduling.Endpoint, env *envelope.Envelope) error
+    Init(ctx context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) error
     BuildURL() (string, error)
     BuildHeaders(req *http.Request) error
     TransformRequest() ([]byte, error)
@@ -254,7 +254,7 @@ type Adapter interface {
 ### 4.1 Factory 与 Registry
 
 ```go
-// internal/adapter/registry.go
+// pkg/adapter/registry.go
 package adapter
 
 import "fmt"
@@ -287,11 +287,11 @@ func Vendors() []string {
 ```
 
 ```go
-// internal/adapter/openai/adapter.go (示例厂商包)
+// pkg/adapter/openai/adapter.go (示例厂商包)
 package openai
 
 import (
-    "github.com/zereker-labs/ai-gateway/internal/adapter"
+    "github.com/zereker-labs/ai-gateway/pkg/adapter"
 )
 
 func init() {
@@ -308,13 +308,13 @@ type Adapter struct {
 ```go
 // cmd/gateway/main.go
 import (
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/openai"
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/anthropic"
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/google"
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/aws_bedrock"
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/azure_openai"
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/vllm"
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/ollama"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/openai"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/anthropic"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/google"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/aws_bedrock"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/azure_openai"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/vllm"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/ollama"
     // 部署方按需选择 import 哪些厂商
 )
 ```
@@ -322,13 +322,12 @@ import (
 ### 4.2 ResponseSession 接口
 
 ```go
-// internal/adapter/session.go
+// pkg/adapter/session.go
 package adapter
 
 import (
-    "github.com/zereker-labs/ai-gateway/internal/envelope"
-    "github.com/zereker-labs/ai-gateway/internal/errs"
-    "github.com/zereker-labs/ai-gateway/internal/usage"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/usage"
 )
 
 // ResponseSession 处理上游响应（流式 / 非流式统一）。
@@ -347,7 +346,7 @@ import (
 // out 是"翻译 / 加工后写给客户端的字节"；非流式时通常返回空（客户端在 Finalize 后拿完整 resp）。
 type ResponseSession interface {
     Feed(chunk []byte) ([]byte, error)
-    Finalize() (*usage.Usage, *envelope.CanonicalResponse, *errs.Error)
+    Finalize() (*domain.Usage, *domain.CanonicalResponse, *domain.AdapterError)
 }
 ```
 
@@ -355,12 +354,12 @@ type ResponseSession interface {
 - 累积 chunk 形成完整响应
 - 提取 `Usage`（委托给 `usage.TokenExtractor`，详见 [05]）
 - 跨协议时反向翻译（如上游是 OpenAI、客户端用的 Anthropic 协议，Session 要把 OpenAI chunk 翻译成 Anthropic 事件流）
-- 错误分类（包装 `errs.Error`）
+- 错误分类（包装 `domain.AdapterError`）
 
 ### 4.3 CanonicalResponse
 
 ```go
-// internal/envelope/canonical_response.go
+// pkg/domain/canonical_response.go
 package envelope
 
 import "encoding/json"
@@ -389,20 +388,20 @@ type Choice struct {
 ## 5. Translator 跨协议翻译
 
 ```go
-// internal/translator/translator.go
+// pkg/translator/translator.go
 package translator
 
-import "github.com/zereker-labs/ai-gateway/internal/envelope"
+import "github.com/zereker-labs/ai-gateway/pkg/domain"
 
 // Translator 把请求 / 响应在两个协议族之间双向翻译。
 //
 // 注意：每个 Translator 是单向的（src → dst）。需要双向翻译时实例化两个。
 type Translator interface {
     // 请求翻译：返回发给 dst 上游的字节
-    TranslateRequest(env *envelope.Envelope) ([]byte, error)
+    TranslateRequest(env *domain.RequestEnvelope) ([]byte, error)
 
     // 响应翻译（非流式）：把 dst 协议的响应翻译回 src 协议
-    TranslateResponse(resp *envelope.CanonicalResponse) (*envelope.CanonicalResponse, error)
+    TranslateResponse(resp *domain.CanonicalResponse) (*domain.CanonicalResponse, error)
 
     // 响应翻译（流式 chunk）：把 dst 协议的 chunk 翻译为 src 协议的 chunk
     // 如 OpenAI SSE chunk → Anthropic event chunk
@@ -411,24 +410,24 @@ type Translator interface {
 ```
 
 ```go
-// internal/translator/registry.go
+// pkg/translator/registry.go
 package translator
 
-import "github.com/zereker-labs/ai-gateway/internal/envelope"
+import "github.com/zereker-labs/ai-gateway/pkg/domain"
 
 type key struct {
-    Src envelope.SourceProtocol
-    Dst envelope.SourceProtocol
+    Src domain.Protocol
+    Dst domain.Protocol
 }
 
 var registry = map[key]Translator{}
 
-func Register(src, dst envelope.SourceProtocol, t Translator) {
+func Register(src, dst domain.Protocol, t Translator) {
     registry[key{src, dst}] = t
 }
 
 // Get 返回 (src → dst) 的 Translator。src == dst 时返回 identityTranslator（透传）。
-func Get(src, dst envelope.SourceProtocol) Translator {
+func Get(src, dst domain.Protocol) Translator {
     if src == dst {
         return identityTranslator{}
     }
@@ -437,10 +436,10 @@ func Get(src, dst envelope.SourceProtocol) Translator {
 
 type identityTranslator struct{}
 
-func (identityTranslator) TranslateRequest(env *envelope.Envelope) ([]byte, error) {
+func (identityTranslator) TranslateRequest(env *domain.RequestEnvelope) ([]byte, error) {
     return env.RawBytes, nil
 }
-func (identityTranslator) TranslateResponse(r *envelope.CanonicalResponse) (*envelope.CanonicalResponse, error) {
+func (identityTranslator) TranslateResponse(r *domain.CanonicalResponse) (*domain.CanonicalResponse, error) {
     return r, nil
 }
 func (identityTranslator) TranslateStreamChunk(c []byte) ([]byte, error) { return c, nil }
@@ -449,19 +448,19 @@ func (identityTranslator) TranslateStreamChunk(c []byte) ([]byte, error) { retur
 **实现示例**：
 
 ```go
-// internal/translator/anthropic_to_openai.go
+// pkg/translator/anthropic_to_openai.go
 package translator
 
-import "github.com/zereker-labs/ai-gateway/internal/envelope"
+import "github.com/zereker-labs/ai-gateway/pkg/domain"
 
 func init() {
-    Register(envelope.ProtoAnthropic, envelope.ProtoOpenAI, &anthropicToOpenAI{})
-    Register(envelope.ProtoOpenAI, envelope.ProtoAnthropic, &openAIToAnthropic{})
+    Register(domain.ProtoAnthropic, domain.ProtoOpenAI, &anthropicToOpenAI{})
+    Register(domain.ProtoOpenAI, domain.ProtoAnthropic, &openAIToAnthropic{})
 }
 
 type anthropicToOpenAI struct{}
 
-func (anthropicToOpenAI) TranslateRequest(env *envelope.Envelope) ([]byte, error) {
+func (anthropicToOpenAI) TranslateRequest(env *domain.RequestEnvelope) ([]byte, error) {
     // 1. 把 Anthropic 的 system 字段转入 OpenAI messages[0].role=system
     // 2. 字段重命名 / 类型转换（如 max_tokens 必填）
     // 3. 未识别字段从 RawBytes 中 sjson 取出后透传
@@ -502,7 +501,7 @@ Step 3: 公共补洞
 ## 7. ParamSpec 同协议族参数适配
 
 ```go
-// internal/adapter/paramspec.go
+// pkg/adapter/paramspec.go
 package adapter
 
 // ParamSpec 描述一个 Adapter 在"协议族内部"的字段差异。
@@ -554,10 +553,10 @@ type ParamSpecProvider interface {
 ### 7.2 ParamSpec 示例
 
 ```go
-// internal/adapter/anthropic/paramspec.go
+// pkg/adapter/anthropic/paramspec.go
 package anthropic
 
-import "github.com/zereker-labs/ai-gateway/internal/adapter"
+import "github.com/zereker-labs/ai-gateway/pkg/adapter"
 
 func (*Adapter) ParamSpec() *adapter.ParamSpec {
     return &adapter.ParamSpec{
@@ -572,47 +571,47 @@ func (*Adapter) ParamSpec() *adapter.ParamSpec {
             // anthropic-version 通过 Header 注入，不在 body
         },
         Validators: map[string]adapter.ParamValidator{
-            "temperature": adapter.RangeValidator{Min: 0, Max: 1, OnOver: adapter.Clamp},
-            "top_p":       adapter.RangeValidator{Min: 0, Max: 1, OnOver: adapter.Clamp},
+            "temperature": adapter.RangeValidator{Min: 0, Max: 1, OnOver: adapter.OverflowClamp},
+            "top_p":       adapter.RangeValidator{Min: 0, Max: 1, OnOver: adapter.OverflowClamp},
         },
     }
 }
 ```
 
-## 8. 错误分类（对接 errs.Class）
+## 8. 错误分类（对接 domain.ErrorClass）
 
 ```go
-// internal/adapter/classifier.go
+// pkg/adapter/classifier.go
 package adapter
 
-import "github.com/zereker-labs/ai-gateway/internal/errs"
+import "github.com/zereker-labs/ai-gateway/pkg/domain"
 
-// Classifier 把上游 HTTP 状态 + body 映射到 errs.Class。
+// Classifier 把上游 HTTP 状态 + body 映射到 domain.ErrorClass。
 //
 // Adapter 可实现 Classifier 以接管特定厂商的 error schema；未实现时走 DefaultClassifier。
 type Classifier interface {
-    Classify(httpStatus int, body []byte) *errs.Error
+    Classify(httpStatus int, body []byte) *domain.AdapterError
 }
 
 // DefaultClassifier 仅按 HTTP 状态分类。
 type DefaultClassifier struct{}
 
-func (DefaultClassifier) Classify(httpStatus int, body []byte) *errs.Error {
-    e := &errs.Error{
+func (DefaultClassifier) Classify(httpStatus int, body []byte) *domain.AdapterError {
+    e := &domain.AdapterError{
         HTTPStatus:      httpStatus,
         UpstreamMessage: string(body),
     }
     switch {
     case httpStatus == 429:
-        e.Class = errs.RateLimit
+        e.Class = domain.ErrRateLimit
     case httpStatus == 401, httpStatus == 403:
-        e.Class = errs.Permanent
+        e.Class = domain.ErrPermanent
     case httpStatus >= 400 && httpStatus < 500:
-        e.Class = errs.Invalid
+        e.Class = domain.ErrInvalid
     case httpStatus >= 500:
-        e.Class = errs.Transient
+        e.Class = domain.ErrTransient
     default:
-        e.Class = errs.Unknown
+        e.Class = domain.ErrUnknown
     }
     return e
 }
@@ -621,19 +620,19 @@ func (DefaultClassifier) Classify(httpStatus int, body []byte) *errs.Error {
 每个 Adapter 注册时声明自己的 Classifier（可选）：
 
 ```go
-// internal/adapter/openai/classifier.go
+// pkg/adapter/openai/classifier.go
 package openai
 
-import "github.com/zereker-labs/ai-gateway/internal/adapter"
+import "github.com/zereker-labs/ai-gateway/pkg/adapter"
 
 func (*Adapter) Classifier() adapter.Classifier {
     return openaiClassifier{}
 }
 ```
 
-**`errs.Class` 与重试策略对接**：详见 [03-endpoint-scheduling](03-endpoint-scheduling.md)。
+**`domain.ErrorClass` 与重试策略对接**：详见 [03-endpoint-scheduling](03-endpoint-scheduling.md)。
 
-| `errs.Class` | RetryExecutor 行为 |
+| `domain.ErrorClass` | RetryExecutor 行为 |
 |---|---|
 | `Transient` | L1 同 endpoint retry → L2 fallback |
 | `RateLimit` | L1 短退避 → L2 触发 cooldown 后 fallback |
@@ -645,25 +644,24 @@ func (*Adapter) Classifier() adapter.Classifier {
 ### 9.1 Task 模态（异步任务，轮询型）
 
 ```go
-// internal/adapter/task.go
+// pkg/adapter/task.go
 package adapter
 
 import (
     "context"
     "time"
 
-    "github.com/zereker-labs/ai-gateway/internal/envelope"
-    "github.com/zereker-labs/ai-gateway/internal/errs"
-    "github.com/zereker-labs/ai-gateway/internal/usage"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/usage"
 )
 
 // TaskAdapter 是 Task 模态 Adapter 必须额外实现的差异 Hook。
 // 通用的"提交 → 轮询 → 超时"流程由 BaseTaskFlow 实现。
 type TaskAdapter interface {
-    BuildSubmitRequest(env *envelope.Envelope) ([]byte, error)
+    BuildSubmitRequest(env *domain.RequestEnvelope) ([]byte, error)
     ExtractTaskID(submitResp []byte) (string, error)
     BuildQueryURL(taskID string) string
-    ParseTaskStatus(queryResp []byte) (TaskStatus, *usage.Usage, error)
+    ParseTaskStatus(queryResp []byte) (TaskStatus, *domain.Usage, error)
 }
 
 type TaskStatus int
@@ -685,8 +683,8 @@ type BaseTaskFlow struct {
 
 func (f *BaseTaskFlow) Run(
     ctx context.Context,
-    env *envelope.Envelope,
-) (resp []byte, u *usage.Usage, err *errs.Error) {
+    env *domain.RequestEnvelope,
+) (resp []byte, u *domain.Usage, err *domain.AdapterError) {
     // 1. 提交任务
     // 2. 解析 task ID
     // 3. 循环轮询直到 Succeeded / Failed / Timeout
@@ -707,10 +705,10 @@ func (f *BaseTaskFlow) Run(
 ## 10. ModelCapabilities（可选，预留接口）
 
 ```go
-// internal/adapter/capabilities.go
+// pkg/adapter/capabilities.go
 package adapter
 
-import "github.com/zereker-labs/ai-gateway/internal/envelope"
+import "github.com/zereker-labs/ai-gateway/pkg/domain"
 
 type ModelCapabilities struct {
     MaxContextTokens      int
@@ -720,7 +718,7 @@ type ModelCapabilities struct {
     SupportsStructuredOut bool
     SupportsMultiTurn     bool
     MaxToolCalls          int
-    SupportedModalities   []envelope.Modality
+    SupportedModalities   []domain.Modality
 }
 
 // CapabilityProvider 由 Adapter 可选实现。
@@ -797,9 +795,9 @@ type CapabilityProvider interface {
 ```
 上游返回 429 / 5xx / 4xx
   ↓
-sess.Finalize() 调 a.Classifier().Classify(httpStatus, body) → *errs.Error
+sess.Finalize() 调 a.Classifier().Classify(httpStatus, body) → *domain.AdapterError
   ↓
-errs.Class 传给 RetryExecutor（[03]）：
+domain.ErrorClass 传给 RetryExecutor（[03]）：
   Transient → L1 同 endpoint retry
   RateLimit → L1 短退避 + L2 fallback + endpoint cooldown
   Permanent → L2 fallback + endpoint cooldown
@@ -810,24 +808,24 @@ errs.Class 传给 RetryExecutor（[03]）：
 
 ### 场景 A — 接入 OpenAI 兼容新厂商
 
-1. 新建 `internal/adapter/<vendor>/adapter.go`
+1. 新建 `pkg/adapter/<vendor>/adapter.go`
 2. `init()` 调 `adapter.Register("<vendor>", factory)`
-3. 实现 `Vendor()` / `NativeProtocol()` / `SupportedModalities()` / `BuildURL()` / `BuildHeaders()`；`TransformRequest()` 通常用默认实现（identity translator + ParamSpec）；`NewResponseSession()` 通常用 `internal/adapter/openai_session.NewDefault()`
+3. 实现 `Vendor()` / `NativeProtocol()` / `SupportedModalities()` / `BuildURL()` / `BuildHeaders()`；`TransformRequest()` 通常用默认实现（identity translator + ParamSpec）；`NewResponseSession()` 通常用 `pkg/adapter/openai_session.NewDefault()`
 4. `cmd/gateway/main.go` 加 blank import
 
 **改动**：1 个文件，~50-80 行。
 
 ### 场景 B — 接入新协议厂商（如 Cohere）
 
-1. 同 A，新建 `internal/adapter/cohere/`
-2. 加 `internal/translator/openai_to_cohere.go` + `cohere_to_openai.go`，`init()` 调 `translator.Register`
+1. 同 A，新建 `pkg/adapter/cohere/`
+2. 加 `pkg/translator/openai_to_cohere.go` + `cohere_to_openai.go`，`init()` 调 `translator.Register`
 3. blank import
 
 **改动**：2 个文件，~150-200 行。
 
 ### 场景 C — 接入新模态（如音频分离）
 
-1. 在 `envelope.Modality` 加一项
+1. 在 `domain.Modality` 加一项
 2. Adapter 声明 `SupportedModalities()` 包含新项
 3. 视模态需要，加专用接口（如 Task 那样的差异 Hook）
 
@@ -847,7 +845,7 @@ errs.Class 传给 RetryExecutor（[03]）：
 ```
 adapter.request_total{vendor, modality}
 adapter.request_duration_ms{vendor, modality, quantile}
-adapter.error_total{vendor, class}                     # errs.Class
+adapter.error_total{vendor, class}                     # domain.ErrorClass
 adapter.translate_total{src_proto, dst_proto}
 adapter.translate_duration_ms{src_proto, dst_proto, quantile}
 
@@ -877,7 +875,7 @@ trace 字段（写入 `rc.SchedulingDecision.Attempts[i]`）：
 `字段覆盖率测试` 模板：
 
 ```go
-// internal/translator/anthropic_to_openai_test.go
+// pkg/translator/anthropic_to_openai_test.go
 func TestTranslateRequest_PreservesUnknownFields(t *testing.T) {
     raw := []byte(`{
       "model": "claude-3-5-sonnet",
@@ -885,10 +883,10 @@ func TestTranslateRequest_PreservesUnknownFields(t *testing.T) {
       "max_tokens": 100,
       "experimental_extra_field": "should be preserved"
     }`)
-    env := &envelope.Envelope{
+    env := &domain.RequestEnvelope{
         RawBytes:       raw,
         Parsed:         /* 解析后 */,
-        SourceProtocol: envelope.ProtoAnthropic,
+        SourceProtocol: domain.ProtoAnthropic,
     }
     out, err := (&anthropicToOpenAI{}).TranslateRequest(env)
     require.NoError(t, err)
@@ -898,9 +896,9 @@ func TestTranslateRequest_PreservesUnknownFields(t *testing.T) {
 
 ## 15. 演进规则
 
-- **新增厂商**：新建 `internal/adapter/<vendor>/` 包，`init()` 注册；不改本文档
-- **新增协议族**：在 `envelope.SourceProtocol` 加常量；更新本文档第 3.3 节；为相关厂商加 Translator
-- **新增 Modality**：在 `envelope.Modality` 加常量；更新本文档第 3.3 节；视需要在第 9 章加专用接口
+- **新增厂商**：新建 `pkg/adapter/<vendor>/` 包，`init()` 注册；不改本文档
+- **新增协议族**：在 `domain.Protocol` 加常量；更新本文档第 3.3 节；为相关厂商加 Translator
+- **新增 Modality**：在 `domain.Modality` 加常量；更新本文档第 3.3 节；视需要在第 9 章加专用接口
 - **修改 Adapter 接口**：必须更新本文档第 4 章；评估对所有现有厂商实现的影响
-- **修改 ParamSpec / Validator**：更新本文档第 7 章；新 Validator 内置实现放 `internal/adapter/`
+- **修改 ParamSpec / Validator**：更新本文档第 7 章；新 Validator 内置实现放 `pkg/adapter/`
 - **修改错误分类**：必须同时更新本文档第 8 章 与 [01-request-pipeline](01-request-pipeline.md) 第 7 章

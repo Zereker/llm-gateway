@@ -23,7 +23,7 @@
 ## 2. 包结构
 
 ```
-internal/infra/
+pkg/
 ├── auth/
 │   ├── provider.go             # IdentityProvider 接口
 │   ├── apikey/                 # 默认：基于配置文件 / DB 的 API Key 鉴权
@@ -45,7 +45,7 @@ internal/infra/
 │   ├── memory/                 # 默认：sync.Map + 周期清理
 │   └── redis/                  # 可选：go-redis
 │
-├── eventbus/                   # usage.EventBus 实现
+├── eventbus/                   # usage.OutboxPublisher 实现
 │   ├── file/                   # 默认：本地 JSONL append
 │   ├── memory/                 # 仅测试
 │   └── kafka/                  # 可选：sarama / kgo
@@ -61,13 +61,13 @@ internal/infra/
     └── otel/                   # 可选：OpenTelemetry
 ```
 
-## 3. auth.IdentityProvider
+## 3. middleware.IdentityProvider
 
 M2 Auth middleware 的依赖（详见 [01] 第 5 节）。
 
 ```go
-// internal/infra/auth/provider.go
-package auth
+// pkg/middleware/provider.go
+package middleware
 
 import "context"
 
@@ -92,11 +92,11 @@ type IdentityProvider interface {
 ### 3.1 默认：APIKey 文件 / 内存
 
 ```go
-// internal/infra/auth/apikey/provider.go
+// pkg/middleware/apikey/provider.go
 package apikey
 
 type Provider struct {
-    Keys map[string]auth.Identity // key=APIKey 字符串
+    Keys map[string]domain.UserIdentity // key=APIKey 字符串
 }
 
 func NewFromFile(path string) (*Provider, error) {
@@ -107,7 +107,7 @@ func NewFromFile(path string) (*Provider, error) {
     //   external: true
 }
 
-func (p *Provider) Resolve(ctx context.Context, c *auth.Credentials) (*auth.Identity, error) {
+func (p *Provider) Resolve(ctx context.Context, c *middleware.Credentials) (*domain.UserIdentity, error) {
     id, ok := p.Keys[c.APIKey]
     if !ok {
         return nil, errors.New("unknown api key")
@@ -119,7 +119,7 @@ func (p *Provider) Resolve(ctx context.Context, c *auth.Credentials) (*auth.Iden
 ### 3.2 可选：JWT
 
 ```go
-// internal/infra/auth/jwt/provider.go
+// pkg/middleware/jwt/provider.go
 package jwt
 
 type Provider struct {
@@ -132,35 +132,35 @@ type Provider struct {
 // Resolve 校验 JWT 签名 + 过期；从 claims 中提取 user_id / group / external
 ```
 
-## 4. budget.Checker
+## 4. middleware.BudgetGate
 
 M4 Budget middleware 的依赖。
 
 ```go
-// internal/infra/budget/checker.go
-package budget
+// pkg/middleware/checker.go
+package middleware
 
 import (
     "context"
 
-    "github.com/zereker-labs/ai-gateway/internal/budget"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type Checker interface {
-    Check(ctx context.Context, userID string) (budget.Status, error)
+    Check(ctx context.Context, userID string) (domain.BudgetStatus, error)
 }
 ```
 
 ### 4.1 默认：AlwaysPass
 
 ```go
-// internal/infra/budget/alwayspass/checker.go
+// pkg/middleware/alwayspass/checker.go
 package alwayspass
 
 type Checker struct{}
 
-func (Checker) Check(_ context.Context, _ string) (budget.Status, error) {
-    return budget.Active, nil
+func (Checker) Check(_ context.Context, _ string) (domain.BudgetStatus, error) {
+    return domain.BudgetActive, nil
 }
 ```
 
@@ -169,19 +169,19 @@ func (Checker) Check(_ context.Context, _ string) (budget.Status, error) {
 ### 4.2 可选：内存配额
 
 ```go
-// internal/infra/budget/inmemory/checker.go
+// pkg/middleware/inmemory/checker.go
 package inmemory
 
 type Checker struct {
-    store map[string]budget.Status // 由外部管理（Admin API 写）
+    store map[string]domain.BudgetStatus // 由外部管理（Admin API 写）
     mu    sync.RWMutex
 }
 
-func (c *Checker) Set(userID string, status budget.Status) { /* mu Lock + write */ }
-func (c *Checker) Check(_ context.Context, userID string) (budget.Status, error) {
+func (c *Checker) Set(userID string, status domain.BudgetStatus) { /* mu Lock + write */ }
+func (c *Checker) Check(_ context.Context, userID string) (domain.BudgetStatus, error) {
     c.mu.RLock(); defer c.mu.RUnlock()
     if s, ok := c.store[userID]; ok { return s, nil }
-    return budget.Active, nil // 默认放行
+    return domain.BudgetActive, nil // 默认放行
 }
 ```
 
@@ -195,7 +195,7 @@ type StripeChecker struct {
     Cache  cache.Store // 三级缓存兜底
 }
 
-func (c *StripeChecker) Check(ctx, userID string) (budget.Status, error) {
+func (c *StripeChecker) Check(ctx, userID string) (domain.BudgetStatus, error) {
     // 1. L1 本地内存
     // 2. L2 Cache (Redis)
     // 3. L3 Stripe API
@@ -205,10 +205,10 @@ func (c *StripeChecker) Check(ctx, userID string) (budget.Status, error) {
 
 ## 5. config.Store
 
-`modelservice.Loader` / `limit.Store` / `scheduling.Profile` 等都依赖此接口下发配置。
+`modelservice.Loader` / `ratelimit.ConfigStore` / `schedule.Profile` 等都依赖此接口下发配置。
 
 ```go
-// internal/infra/config/store.go
+// pkg/config/store.go
 package config
 
 import (
@@ -250,7 +250,7 @@ const (
 ### 5.1 默认：文件 + fsnotify
 
 ```go
-// internal/infra/config/file/store.go
+// pkg/config/file/store.go
 package file
 
 type Store struct {
@@ -270,7 +270,7 @@ type Store struct {
 ### 5.2 可选：etcd v3
 
 ```go
-// internal/infra/config/etcd/store.go
+// pkg/config/etcd/store.go
 package etcd
 
 type Store struct {
@@ -284,7 +284,7 @@ type Store struct {
 ### 5.3 可选：SQLite + 轮询
 
 ```go
-// internal/infra/config/sqlite/store.go
+// pkg/config/sqlite/store.go
 package sqlite
 
 type Store struct {
@@ -299,16 +299,16 @@ type Store struct {
 
 ```
 /ai-gateway/
-├── modelservice/{service_id}              → modelservice.Snapshot
+├── modelservice/{service_id}              → domain.ModelServiceSnapshot
 ├── ratelimit/
-│   ├── apikey/{api_key_id}/{service_id}   → limit.LayerSpec
-│   ├── user/{user_id}/{service_id}        → limit.LayerSpec
-│   └── service/{service_id}               → limit.ServiceLimits
+│   ├── apikey/{api_key_id}/{service_id}   → domain.LayerSpec
+│   ├── user/{user_id}/{service_id}        → domain.LayerSpec
+│   └── service/{service_id}               → ratelimit.ServiceLimits
 ├── scheduling/
-│   ├── profile/{service_id}               → scheduling.Profile
-│   └── endpoint/{endpoint_id}             → scheduling.Endpoint
-├── identity/{user_id}                     → auth.Identity (可选；APIKey 实现可不用)
-└── budget/{user_id}                       → budget.Status (可选)
+│   ├── profile/{service_id}               → schedule.Profile
+│   └── endpoint/{endpoint_id}             → domain.Endpoint
+├── identity/{user_id}                     → domain.UserIdentity (可选；APIKey 实现可不用)
+└── budget/{user_id}                       → domain.BudgetStatus (可选)
 ```
 
 ## 6. cache.Store
@@ -316,7 +316,7 @@ type Store struct {
 限流 Lua 脚本 / Cooldown Manager / 配置二级缓存的存储后端。
 
 ```go
-// internal/infra/cache/store.go
+// pkg/cache.go (deleted; semantics moved into ratelimit Checker impl)
 package cache
 
 import (
@@ -343,7 +343,7 @@ type Store interface {
 ### 6.1 默认：内存
 
 ```go
-// internal/infra/cache/memory/store.go
+// pkg/cache.go (deleted)
 package memory
 
 type Store struct {
@@ -363,7 +363,7 @@ type item struct {
 ### 6.2 可选：Redis
 
 ```go
-// internal/infra/cache/redis/store.go
+// pkg/cache.go (deleted)
 package redis
 
 type Store struct {
@@ -376,25 +376,25 @@ type Store struct {
 
 支持集群 / 哨兵 / 主从；多实例共享；生产推荐。
 
-## 7. usage.EventBus
+## 7. usage.OutboxPublisher
 
 [05] 计量事件的传输通道。
 
 ```go
-// internal/usage/bus.go（接口定义见 [05] 第 6.4 节）
+// pkg/usage/outbox.go（接口定义见 [05] 第 6.4 节）
 ```
 
 ### 7.1 默认：本地文件 JSONL
 
 ```go
-// internal/infra/eventbus/file/bus.go
+// pkg/usage/file_outbox.go (内置默认实现)
 package file
 
 type Bus struct {
     Writer *zap.Logger // 配 lumberjack
 }
 
-func (b *Bus) Publish(ctx context.Context, evt *usage.Event) error {
+func (b *Bus) Publish(ctx context.Context, evt *usage.OutboxEvent) error {
     b.Writer.Info("usage_event", zap.ByteString("payload", evt.Payload))
     return nil // zap 同步 writer 失败抛错
 }
@@ -405,7 +405,7 @@ func (b *Bus) Publish(ctx context.Context, evt *usage.Event) error {
 ### 7.2 可选：Kafka
 
 ```go
-// internal/infra/eventbus/kafka/bus.go
+// pkg/usage/kafka/bus.go
 package kafka
 
 type Bus struct {
@@ -413,7 +413,7 @@ type Bus struct {
     Topic    string
 }
 
-func (b *Bus) Publish(ctx context.Context, evt *usage.Event) error {
+func (b *Bus) Publish(ctx context.Context, evt *usage.OutboxEvent) error {
     msg := &sarama.ProducerMessage{
         Topic: b.Topic,
         Key:   sarama.StringEncoder(evt.Key),
@@ -429,30 +429,30 @@ func (b *Bus) Publish(ctx context.Context, evt *usage.Event) error {
 ### 7.3 可选：内存（仅测试）
 
 ```go
-// internal/infra/eventbus/memory/bus.go
+// pkg/usage/memory/bus.go
 package memory
 
 type Bus struct {
-    Channel chan *usage.Event
+    Channel chan *usage.OutboxEvent
 }
 ```
 
-## 8. moderation.Moderator
+## 8. middleware.Moderator
 
 M8 Content Moderation middleware 的依赖（可选，允许 nil）。
 
 ```go
-// internal/infra/moderation/moderator.go
-package moderation
+// pkg/middleware/moderator.go
+package middleware
 
 import (
     "context"
 
-    "github.com/zereker-labs/ai-gateway/internal/envelope"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type Moderator interface {
-    CheckInput(ctx context.Context, env *envelope.Envelope) error  // 违规返回 error
+    CheckInput(ctx context.Context, env *domain.RequestEnvelope) error  // 违规返回 error
     CheckOutput(ctx context.Context, chunk []byte) error            // 流式审核（Session 集成）
 }
 ```
@@ -464,7 +464,7 @@ type Moderator interface {
 ### 8.2 可选：调 OpenAI moderation API
 
 ```go
-// internal/infra/moderation/openai/moderator.go
+// pkg/middleware/openai/moderator.go
 package openai
 
 type Moderator struct {
@@ -476,7 +476,7 @@ type Moderator struct {
 ### 8.3 可选：本地分类器
 
 ```go
-// internal/infra/moderation/local/moderator.go
+// pkg/middleware/local/moderator.go
 package local
 
 type Moderator struct {
@@ -484,13 +484,13 @@ type Moderator struct {
 }
 ```
 
-## 9. tracing.Tracer
+## 9. trace.Tracer
 
 M10 Tracing middleware 的依赖。
 
 ```go
-// internal/infra/tracing/tracer.go
-package tracing
+// pkg/trace/tracer.go
+package trace
 
 import "context"
 
@@ -511,7 +511,7 @@ type Span interface {
 ### 9.1 默认：stdlib slog
 
 ```go
-// internal/infra/tracing/slog/tracer.go
+// pkg/trace/slog/tracer.go
 package slog
 
 type Tracer struct {
@@ -527,7 +527,7 @@ func (t *Tracer) Log(ctx context.Context, name string, payload any) {
 ### 9.2 可选：OpenTelemetry
 
 ```go
-// internal/infra/tracing/otel/tracer.go
+// pkg/trace/otel/tracer.go
 package otel
 
 type Tracer struct {
@@ -542,7 +542,7 @@ type Tracer struct {
 M5 ModelService middleware 的依赖；底层走 `config.Store` + LRU 缓存。
 
 ```go
-// internal/modelservice/loader.go
+// pkg/domain/loader.go
 package modelservice
 
 import "context"
@@ -556,12 +556,12 @@ type Loader interface {
 ### 10.1 默认实现：从 config.Store 加载
 
 ```go
-// internal/modelservice/loader/loader.go
+// pkg/domain/loader/loader.go
 package loader
 
 type Loader struct {
     Store config.Store
-    Cache *lru.Cache[string, *modelservice.Snapshot] // model name → snapshot
+    Cache *lru.Cache[string, *domain.ModelServiceSnapshot] // model name → snapshot
     // Watch /modelservice/* 自动 invalidate
 }
 
@@ -572,16 +572,16 @@ func New(s config.Store, cacheSize int) *Loader {
 }
 ```
 
-## 11. envelope.Detector / envelope.Parser
+## 11. middleware.Detector / middleware.Parser
 
 M3 Envelope middleware 的依赖（详见 [02] 第 3.4 节）。
 
 ```go
-// internal/envelope/default/detector.go (默认实现示例)
+// pkg/domain/default/detector.go (默认实现示例)
 package default
 
 type Detector struct {
-    PathRules map[string]envelope.SourceProtocol // "/v1/chat/completions" → ProtoOpenAI
+    PathRules map[string]domain.Protocol // "/v1/chat/completions" → ProtoOpenAI
 }
 ```
 
@@ -598,23 +598,23 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/infra/auth/apikey"
-    "github.com/zereker-labs/ai-gateway/internal/infra/budget/alwayspass"
-    "github.com/zereker-labs/ai-gateway/internal/infra/cache/memory"
-    "github.com/zereker-labs/ai-gateway/internal/infra/config/file"
-    "github.com/zereker-labs/ai-gateway/internal/infra/eventbus/file"
-    "github.com/zereker-labs/ai-gateway/internal/infra/moderation"
-    "github.com/zereker-labs/ai-gateway/internal/infra/tracing/slog"
-    "github.com/zereker-labs/ai-gateway/internal/middleware"
+    "github.com/zereker-labs/ai-gateway/pkg/middleware/apikey"
+    "github.com/zereker-labs/ai-gateway/pkg/middleware/alwayspass"
+    "github.com/zereker-labs/ai-gateway/pkg/cache/memory"
+    "github.com/zereker-labs/ai-gateway/pkg/config/file"
+    "github.com/zereker-labs/ai-gateway/pkg/usage/file"
+    "github.com/zereker-labs/ai-gateway/pkg/middleware"
+    "github.com/zereker-labs/ai-gateway/pkg/trace/slog"
+    "github.com/zereker-labs/ai-gateway/pkg/middleware"
 
     // 注册 Adapter
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/openai"
-    _ "github.com/zereker-labs/ai-gateway/internal/adapter/anthropic"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/openai"
+    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/anthropic"
     // ...
 
     // 注册 TokenExtractor
-    _ "github.com/zereker-labs/ai-gateway/internal/usage/extractor/openai_compat"
-    _ "github.com/zereker-labs/ai-gateway/internal/usage/extractor/anthropic"
+    _ "github.com/zereker-labs/ai-gateway/pkg/usage/extractor/openai_compat"
+    _ "github.com/zereker-labs/ai-gateway/pkg/usage/extractor/anthropic"
 )
 
 func main() {
@@ -670,17 +670,17 @@ func handler(c *gin.Context) {
 
 | 接口 | 本地 / 单机 | 生产推荐 | 说明 |
 |------|-----------|---------|------|
-| `auth.IdentityProvider` | `apikey` (file) | `apikey` (DB) / `jwt` (JWKS) | 自定义实现接入企业 SSO / IAM |
-| `budget.Checker` | `alwayspass` | 自定义对接计费系统 | 若有付费体系 |
+| `middleware.IdentityProvider` | `apikey` (file) | `apikey` (DB) / `jwt` (JWKS) | 自定义实现接入企业 SSO / IAM |
+| `middleware.BudgetGate` | `alwayspass` | 自定义对接计费系统 | 若有付费体系 |
 | `config.Store` | `file` | `etcd` | 多实例需要强一致 + Watch |
 | `cache.Store` | `memory` | `redis` | 多实例共享限流桶 / cooldown |
-| `usage.EventBus` | `file` | `kafka` | 离线计价聚合需要 |
-| `moderation.Moderator` | `nil` (NoOp) | `openai` / 自建 | 合规要求时启用 |
-| `tracing.Tracer` | `slog` | `otel` | OTLP exporter 接 Jaeger / Tempo / vendor |
+| `usage.OutboxPublisher` | `file` | `kafka` | 离线计价聚合需要 |
+| `middleware.Moderator` | `nil` (NoOp) | `openai` / 自建 | 合规要求时启用 |
+| `trace.Tracer` | `slog` | `otel` | OTLP exporter 接 Jaeger / Tempo / vendor |
 
 ## 14. 演进规则
 
-- **新增接口**：在 `internal/infra/<area>/` 加包；至少提供一个默认实现（最好两个：NoOp + minimal）；本文档第 2 节同步包结构
+- **新增接口**：在 `pkg/<area>/` 加包；至少提供一个默认实现（最好两个：NoOp + minimal）；本文档第 2 节同步包结构
 - **修改接口签名**：评估对所有现有实现的影响；考虑向后兼容（新方法可选 / 提供 default 实现）
 - **新增默认实现**：在对应包下加子包；本文档第 13 节对照表同步
 - **示例 main.go**：保持本文档第 12 节示例与 `cmd/gateway/main.go` 对齐

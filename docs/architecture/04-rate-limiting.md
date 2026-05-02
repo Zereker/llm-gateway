@@ -1,8 +1,8 @@
 # 04 — Rate Limiting
 
-本文定义限流层：`limit.Spec` 数据结构、`limit.Checker` 接口、三层 AND 级联、`BuildSpec` 四级查询链，以及与计量 `Usage` 的对接（预检 + 后置 Consume 双阶段）。
+本文定义限流层：`domain.LimitSpec` 数据结构、`ratelimit.Checker` 接口、三层 AND 级联、`BuildSpec` 四级查询链，以及与计量 `Usage` 的对接（预检 + 后置 Consume 双阶段）。
 
-> **阅读前**：[01-request-pipeline](01-request-pipeline.md) 的 M6 Limit 与 M10 Tracing 契约；[02](02-protocol-translation.md) 的 `errs.RateLimit`；[03](03-endpoint-scheduling.md) 的 endpoint Filter 链。
+> **阅读前**：[01-request-pipeline](01-request-pipeline.md) 的 M6 Limit 与 M10 Tracing 契约；[02](02-protocol-translation.md) 的 `domain.ErrRateLimit`；[03](03-endpoint-scheduling.md) 的 endpoint Filter 链。
 
 ## 1. 范围与目标
 
@@ -15,7 +15,7 @@
 |---|------|---------|
 | G1 | 三层限流全部在主链路生效 | 用户层 / 模型层 / endpoint 层都同步前置 |
 | G2 | 多租户公平 | 单租户超限不影响其他租户；reserved group 独占资源 |
-| G3 | 与 Usage 同源 | 限流扣减输入 = `usage.Usage`；不再独立解析 token |
+| G3 | 与 Usage 同源 | 限流扣减输入 = `domain.Usage`；不再独立解析 token |
 | G4 | 超售可控 | 用户配额总和允许 > 模型容量；模型层兜底 + 监控 |
 | G5 | 配置秒级生效 | 通过 [06] ConfigStore Watch 推送；无需发版 |
 | G6 | 副作用剔除 | 调度期 read-only；扣减只在响应成功后做一次 |
@@ -26,18 +26,18 @@
 |---|------|------|
 | L1 | **三层 AND 级联** | 用户层 AND 模型层（仅 default group）AND endpoint 层；任一超限即拒 |
 | L2 | **预检 + 后置 Consume 双阶段** | M6 调 `CheckReadOnly`（不写）；M10 调 `Consume(usage)`（按真实用量扣三层桶）|
-| L3 | **Group 决定路径** | `identity.User.Group` × `Endpoint.Group` 配置匹配，自然实现 reserved / default 隔离；无 if 分支 |
+| L3 | **Group 决定路径** | `domain.UserIdentity.Group` × `Endpoint.Group` 配置匹配，自然实现 reserved / default 隔离；无 if 分支 |
 | L4 | **模型层共享桶** | 同模型所有 default 用户共享同一个 Redis key，争抢式分配；reserved group 不接触此 key |
 | L5 | **超售允许 + 兜底监控** | 不做"用户配额总和 ≤ 模型容量"校验；模型层硬上限是真实容量保护；超售比 metric 持续观察 |
 | L6 | **四级查询链** | 阈值优先级：apikey > user > model_service.default > 硬编码兜底 |
-| L7 | **Usage 多维** | `Spec` 三层都基于 `usage.Usage` 多维（Input/Output/Reasoning + Details）扣减；新维度自动参与 |
+| L7 | **Usage 多维** | `Spec` 三层都基于 `domain.Usage` 多维（Input/Output/Reasoning + Details）扣减；新维度自动参与 |
 
 ## 3. 数据结构
 
-### 3.1 limit.Spec
+### 3.1 domain.LimitSpec
 
 ```go
-// internal/limit/spec.go
+// pkg/ratelimit/spec.go
 package limit
 
 // Spec 是 M6 Limit 为本次请求构建的三层阈值快照。
@@ -68,34 +68,33 @@ const (
 )
 ```
 
-### 3.2 limit.Checker 接口
+### 3.2 ratelimit.Checker 接口
 
 ```go
-// internal/limit/checker.go
+// pkg/ratelimit/checker.go
 package limit
 
 import (
     "context"
 
-    "github.com/zereker-labs/ai-gateway/internal/identity"
-    "github.com/zereker-labs/ai-gateway/internal/modelservice"
-    "github.com/zereker-labs/ai-gateway/internal/scheduling"
-    "github.com/zereker-labs/ai-gateway/internal/usage"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/schedule"
+    "github.com/zereker-labs/ai-gateway/pkg/usage"
 )
 
 type Checker interface {
     // BuildSpec 为本次请求构建三层阈值（不含 Endpoint 层；endpoint 选定后由 [03] 单独 read 检查）
-    BuildSpec(id identity.User, ms *modelservice.Snapshot) *Spec
+    BuildSpec(id domain.UserIdentity, ms *domain.ModelServiceSnapshot) *Spec
 
     // CheckReadOnly 三层预检（用户层 + 模型层）。read-only，不写桶。
     // Endpoint 层不在此处检查（在 [03] 的 LimitReadFilter 内做）。
-    CheckReadOnly(ctx context.Context, spec *Spec, id identity.User, ms *modelservice.Snapshot) CheckResult
+    CheckReadOnly(ctx context.Context, spec *Spec, id domain.UserIdentity, ms *domain.ModelServiceSnapshot) CheckResult
 
     // PeekEndpoint 给 [03] LimitReadFilter 用：读 endpoint 层当前使用率。
-    PeekEndpoint(ctx context.Context, ep *scheduling.Endpoint) EndpointUsage
+    PeekEndpoint(ctx context.Context, ep *domain.Endpoint) EndpointUsage
 
     // Consume 响应成功后由 M10 调用。按真实 Usage 扣三层桶。
-    Consume(ctx context.Context, spec *Spec, id identity.User, ep *scheduling.Endpoint, u *usage.Usage) error
+    Consume(ctx context.Context, spec *Spec, id domain.UserIdentity, ep *domain.Endpoint, u *domain.Usage) error
 }
 
 type CheckResult struct {
@@ -117,7 +116,7 @@ type EndpointUsage struct {
 ## 4. BuildSpec 四级查询链
 
 ```go
-func (c *DefaultChecker) BuildSpec(id identity.User, ms *modelservice.Snapshot) *Spec {
+func (c *DefaultChecker) BuildSpec(id domain.UserIdentity, ms *domain.ModelServiceSnapshot) *Spec {
     spec := &Spec{}
 
     // 用户层：APIKey > User > ModelService.default > Hardcoded
@@ -141,7 +140,7 @@ func (c *DefaultChecker) BuildSpec(id identity.User, ms *modelservice.Snapshot) 
     return spec
 }
 
-func (c *DefaultChecker) lookupUser(id identity.User, ms *modelservice.Snapshot) (*LayerSpec, Source) {
+func (c *DefaultChecker) lookupUser(id domain.UserIdentity, ms *domain.ModelServiceSnapshot) (*LayerSpec, Source) {
     if l := c.store.GetAPIKeyLimit(id.APIKeyID, ms.ServiceID); l != nil {
         return l, SourceAPIKey
     }
@@ -212,7 +211,7 @@ return {current, 0}
 ### 5.2 Store 接口（[06] 中定义）
 
 ```go
-// internal/limit/store.go
+// pkg/ratelimit/store.go
 package limit
 
 import "context"
@@ -317,7 +316,7 @@ M7 Schedule:
   ep1 被淘汰
 
 如果所有 endpoint 都打满：
-  Scheduler.Pick → nil → RetryExecutor 返回 errs.RateLimit (429)
+  Scheduler.Pick → nil → RetryExecutor 返回 domain.ErrRateLimit (429)
 ```
 
 ## 7. 配置 Schema
@@ -325,7 +324,7 @@ M7 Schedule:
 通过 [06] `ConfigStore` 下发；本节定义 schema。
 
 ```go
-// internal/limit/config.go
+// pkg/ratelimit/config.go
 package limit
 
 // LimitConfig 是 ConfigStore 中限流相关的所有配置的统一形态。
@@ -346,7 +345,7 @@ type ServiceLimits struct {
     DefaultUser LayerSpec  // 该模型下用户层默认值（四级查询链的第三级）
 }
 
-// /ratelimit/endpoint/{endpoint_id} 在 scheduling.Endpoint.RPM/TPM/RPS 中
+// /ratelimit/endpoint/{endpoint_id} 在 domain.Endpoint.RPM/TPM/RPS 中
 ```
 
 ```yaml
@@ -369,7 +368,7 @@ type ServiceLimits struct {
 ## 8. Hardcoded 兜底
 
 ```go
-// internal/limit/hardcoded.go
+// pkg/ratelimit/hardcoded.go
 package limit
 
 var DefaultHardcoded = struct {

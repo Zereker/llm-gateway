@@ -21,12 +21,12 @@
 ### 包含
 
 - 包结构骨架（按 [01] 第 1 节）
-- `request.Context` 数据结构 + `From / Attach / TryFrom` helper
+- `domain.RequestContext` 数据结构 + `From / Attach / TryFrom` helper
 - 10 个 middleware 全部空壳 + M1 / M2 / M3 / M9 / M10 完整实现（M1 trace、M2 APIKey 鉴权、M3 envelope 解析、M9 panic 兜底、M10 Tracing 落 metric）
 - M5 ModelService：从单文件 YAML 加载（无 ConfigStore Watch）
 - M7 Schedule：单 endpoint 直连，无 RetryExecutor / Filter 链（直接调 Adapter）
-- 1 个 Adapter：`internal/adapter/openai/`（OpenAI 协议 → OpenAI 上游，identity translator）
-- 1 个 TokenExtractor：`internal/usage/extractor/openai_compat/`
+- 1 个 Adapter：`pkg/adapter/openai/`（OpenAI 协议 → OpenAI 上游，identity translator）
+- 1 个 TokenExtractor：`pkg/usage/extractor/openai_compat/`
 - 默认基础设施：
   - `auth/apikey` (file) — `apikeys.yaml`
   - `budget/alwayspass`
@@ -69,7 +69,7 @@
 ### 包含
 
 - M4 Budget 完整实现（`Checker` 接口）+ `inmemory` 默认实现
-- M6 Limit 完整：`limit.Spec` + `Checker` + 三层 AND + Lua 脚本（`cache/memory` 和 `cache/redis` 两套）
+- M6 Limit 完整：`domain.LimitSpec` + `Checker` + 三层 AND + Lua 脚本（`cache/memory` 和 `cache/redis` 两套）
 - M7 完整 RetryExecutor：CooldownManager + HealthChecker + Filter 链（`Cooldown / Group / Health / WeightedRandom`，**不含** PrefixCache / Busy）
 - M8 ContentModeration 实现（默认 NoOp，可选 OpenAI moderation）
 - 第二、第三个 Adapter：`anthropic`、`google_gemini`（含 Translator）
@@ -139,7 +139,7 @@
 | # | 验收项 | 验证方法 |
 |---|-------|---------|
 | V1 | 高并发压测（≥ 5000 QPS）持续 1 小时无内存泄漏 | benchmark |
-| V2 | 所有 errs.Class 在 chaos 测试下行为符合契约 | chaos 测试（fake upstream 注入各种错） |
+| V2 | 所有 domain.ErrorClass 在 chaos 测试下行为符合契约 | chaos 测试（fake upstream 注入各种错） |
 | V3 | Kafka EventBus + Flink 示例跑通 end-to-end 计价 | 集成测试 |
 | V4 | OTel trace 能在 Jaeger 中看到完整 span 树 | 手测 |
 | V5 | Helm install 后健康探针正常、metric 暴露 | k8s 集成测试 |

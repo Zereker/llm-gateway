@@ -2,7 +2,7 @@
 
 本文定义端点选择层：`Scheduler` 接口、`Filter` 链、`RetryExecutor` 三层降级、`CooldownManager` 错误隔离、`HealthChecker` 双轨健康检查，以及 `PrefixCacheScheduler` 主动亲和。
 
-> **阅读前**：[01-request-pipeline](01-request-pipeline.md) 的 M7 Schedule 契约；[02-protocol-translation](02-protocol-translation.md) 的 `adapter.Adapter` 与 `errs.Class`。
+> **阅读前**：[01-request-pipeline](01-request-pipeline.md) 的 M7 Schedule 契约；[02-protocol-translation](02-protocol-translation.md) 的 `adapter.Adapter` 与 `domain.ErrorClass`。
 
 ## 1. 范围与目标
 
@@ -17,7 +17,7 @@
 | G3 | 失败 endpoint 自动隔离 | 错误分类 → cooldown 时长分级 → 短期不再选 |
 | G4 | 限流副作用剔除 | 调度期纯 read-only，扣减只在响应成功后由 [04] Limit 模块执行 |
 | G5 | 单/多上游统一 | 一条主链路；endpoint 池可混合形态，按 form 分支能力 |
-| G6 | 调度决策可追溯 | 每请求一份完整 `scheduling.Decision` trace（候选 → 过滤 → 打分 → 选中 → 重试） |
+| G6 | 调度决策可追溯 | 每请求一份完整 `domain.SchedulingDecision` trace（候选 → 过滤 → 打分 → 选中 → 重试） |
 | G7 | 策略可配置 | 每模型一份 `Profile`，开关 prefix-cache / busy / RPM / TPM / RPS 调度器 |
 
 ## 2. 设计原则
@@ -28,18 +28,18 @@
 | S2 | **三段式 ScheduleI** | `Filter`（淘汰）→ `Score`（打分）→ `Select`（加权随机）三阶段；新调度器按此接口接入，无 switch |
 | S3 | **预检 read-only** | 调度期不写 Redis 限流桶，不增 INCR / 不更新计数；扣减由 [04] Limit 模块在响应成功后执行 |
 | S4 | **L1 / L2 / L3 三层降级** | L1 同 endpoint 重试 → L2 换 endpoint（同 group 同 model） → L3 换模型（可选） |
-| S5 | **Cooldown 按错误类分级** | `errs.Class` 决定 cooldown 时长；短失败短 cooldown，永久失败长 cooldown |
+| S5 | **Cooldown 按错误类分级** | `domain.ErrorClass` 决定 cooldown 时长；短失败短 cooldown，永久失败长 cooldown |
 | S6 | **双轨健康检查** | `FormSelfHosted`：主动 probe + 被动 fail count；`FormVendor`：仅被动 |
 | S7 | **每模型一份调度 Profile** | 通过 `ConfigStore` 下发；改 profile 秒级生效，无需发版 |
-| S8 | **决策可追溯** | 每次调度产出完整 `scheduling.Decision`（候选数 / 过滤原因 / 选中 endpoint / 重试链），写入 `rc.SchedulingDecision`，由 M10 落 trace |
+| S8 | **决策可追溯** | 每次调度产出完整 `domain.SchedulingDecision`（候选数 / 过滤原因 / 选中 endpoint / 重试链），写入 `rc.SchedulingDecision`，由 M10 落 trace |
 
 ## 3. 数据结构
 
-### 3.1 scheduling.Endpoint
+### 3.1 domain.Endpoint
 
 ```go
-// internal/scheduling/endpoint.go
-package scheduling
+// pkg/schedule/endpoint.go
+package schedule
 
 import "encoding/json"
 
@@ -49,7 +49,7 @@ type Endpoint struct {
     Vendor   string          // 与 adapter.Vendor 对应
     URL      string          // 上游 base URL
     APIKey   string          // 凭证（运行时按需脱敏 / 存到 secret store）
-    Group    string          // 与 identity.User.Group 匹配；默认 "default"
+    Group    string          // 与 domain.UserIdentity.Group 匹配；默认 "default"
     Model    string          // 该 endpoint 服务的模型名（与 ModelService.Model 对齐）
     Weight   int             // 加权随机的基础权重；> 0
     RPM      int             // endpoint 层每分钟请求数硬上限
@@ -86,11 +86,11 @@ func (e *Endpoint) Form() EndpointForm {
 
 > `Capabilities.SelfHosted` 由配置直接声明，**不从 Vendor 字符串猜测**。这样开源后用户可声明任意厂商为"自部署"（配套补 KV metric endpoint 即可启用 busy / prefix-cache 调度）。
 
-### 3.2 scheduling.Decision（调度决策 trace）
+### 3.2 domain.SchedulingDecision（调度决策 trace）
 
 ```go
-// internal/scheduling/decision.go
-package scheduling
+// pkg/schedule/decision.go
+package schedule
 
 import "time"
 
@@ -117,7 +117,7 @@ type Attempt struct {
     EndpointID string
     Outcome    string        // "success" / "retry" / "fallback" / "fail"
     LatencyMs  int64
-    ErrorClass string        // errs.Class.String()，成功时为空
+    ErrorClass string        // domain.ErrorClass.String()，成功时为空
     Started    time.Time
 }
 ```
@@ -125,14 +125,13 @@ type Attempt struct {
 ## 4. Scheduler 接口
 
 ```go
-// internal/scheduling/scheduler.go
-package scheduling
+// pkg/schedule/scheduler.go
+package schedule
 
 import (
     "context"
 
-    "github.com/zereker-labs/ai-gateway/internal/identity"
-    "github.com/zereker-labs/ai-gateway/internal/modelservice"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 // Scheduler 是调度链路的入口；输入候选池 + 上下文，输出一个 endpoint。
@@ -143,8 +142,8 @@ type Scheduler interface {
 }
 
 type PickInput struct {
-    Identity     identity.User
-    ModelService *modelservice.Snapshot
+    Identity     domain.UserIdentity
+    ModelService *domain.ModelServiceSnapshot
     Excluded     map[string]struct{} // 已尝试过的 endpoint ID（L2 fallback 用）
     PromptHash   string              // M3 / M5 预计算的 prompt 前 N 字符 hash（PrefixCacheScheduler 用）
     Profile      *Profile            // 该 model 的调度 profile（ConfigStore 下发）
@@ -156,8 +155,8 @@ type PickInput struct {
 每个 Filter 实现统一接口：
 
 ```go
-// internal/scheduling/filter.go
-package scheduling
+// pkg/schedule/filter.go
+package schedule
 
 import "context"
 
@@ -236,7 +235,7 @@ func (GroupFilter) Filter(_ context.Context, in PickInput, eps []*Endpoint) ([]*
 }
 ```
 
-> **PTU / Reserved 隔离**：通过 `identity.User.Group="reserved"` × `Endpoint.Group="reserved"` 自然实现；无需代码 if 分支。
+> **PTU / Reserved 隔离**：通过 `domain.UserIdentity.Group="reserved"` × `Endpoint.Group="reserved"` 自然实现；无需代码 if 分支。
 
 #### HealthFilter
 
@@ -293,7 +292,7 @@ type BusyMetricProvider interface {
 
 ```go
 type LimitReadFilter struct {
-    Checker limit.Checker
+    Checker ratelimit.Checker
 }
 
 // 调用 Checker.PeekEndpoint(ep.ID) 拿当前使用率（read-only），过 0.95 即淘汰
@@ -307,21 +306,20 @@ type LimitReadFilter struct {
 ## 6. RetryExecutor
 
 ```go
-// internal/scheduling/retry_executor.go
-package scheduling
+// pkg/schedule/retry_executor.go
+package schedule
 
 import (
     "context"
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/errs"
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 // RetryExecutor 是 M7 Schedule 的执行体：选 endpoint → 调 Adapter → 失败决定 retry / fallback。
 type RetryExecutor interface {
-    Run(c *gin.Context, rc *request.Context) error
+    Run(c *gin.Context, rc *domain.RequestContext) error
 }
 
 type Executor struct {
@@ -350,9 +348,9 @@ type BackoffStrategy struct {
 ### 6.1 主循环
 
 ```go
-func (e *Executor) Run(c *gin.Context, rc *request.Context) error {
+func (e *Executor) Run(c *gin.Context, rc *domain.RequestContext) error {
     excluded := map[string]struct{}{}
-    var lastErr *errs.Error
+    var lastErr *domain.AdapterError
 
     for total := 0; total < e.Policy.MaxTotalAttempts; {
         ep, dec, err := e.Scheduler.Pick(rc.Ctx, PickInput{
@@ -368,7 +366,7 @@ func (e *Executor) Run(c *gin.Context, rc *request.Context) error {
             // 全部 endpoint 已 cooldown 或被淘汰
             rc.Error = lastErr
             if rc.Error == nil {
-                rc.Error = &errs.Error{Class: errs.RateLimit, HTTPStatus: 429, Message: "no available endpoint"}
+                rc.Error = &domain.AdapterError{Class: domain.ErrRateLimit, HTTPStatus: 429, Message: "no available endpoint"}
             }
             return rc.Error
         }
@@ -399,7 +397,7 @@ func (e *Executor) Run(c *gin.Context, rc *request.Context) error {
         excluded[ep.ID] = struct{}{}
 
         // 永久错误（401/403/404/Invalid）不进入下一轮 fallback
-        if lastErr.Class == errs.Invalid {
+        if lastErr.Class == domain.ErrInvalid {
             rc.Error = lastErr
             return lastErr
         }
@@ -424,18 +422,18 @@ fallbackModel := rc.ModelService.Spec.FallbackModels[i]  // 配置在 ModelServi
 ## 7. CooldownManager
 
 ```go
-// internal/scheduling/cooldown.go
-package scheduling
+// pkg/schedule/cooldown.go
+package schedule
 
 import (
     "context"
     "time"
 
-    "github.com/zereker-labs/ai-gateway/internal/errs"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type CooldownManager interface {
-    OnFailure(epID string, class errs.Class)
+    OnFailure(epID string, class domain.ErrorClass)
     IsCooldown(epID string) bool
     Clear(epID string)
 }
@@ -444,18 +442,18 @@ type CooldownManager interface {
 type DefaultManager struct {
     Store        Store // 抽象 KV（Redis / 内存）
     AllowedFails int   // 默认 3
-    Durations    map[errs.Class]time.Duration
+    Durations    map[domain.ErrorClass]time.Duration
 }
 
 // 默认 Durations
-// errs.Transient:  60 * time.Second
-// errs.RateLimit:  30 * time.Second
-// errs.Permanent:  300 * time.Second
-// errs.Unknown:    60 * time.Second
-// errs.Invalid:    0 (不进 cooldown)
+// domain.ErrTransient:  60 * time.Second
+// domain.ErrRateLimit:  30 * time.Second
+// domain.ErrPermanent:  300 * time.Second
+// domain.ErrUnknown:    60 * time.Second
+// domain.ErrInvalid:    0 (不进 cooldown)
 
-func (m *DefaultManager) OnFailure(epID string, class errs.Class) {
-    if class == errs.Invalid {
+func (m *DefaultManager) OnFailure(epID string, class domain.ErrorClass) {
+    if class == domain.ErrInvalid {
         return
     }
     cnt := m.Store.Incr(failKey(epID), 5*time.Minute) // 5 分钟内累计
@@ -475,8 +473,8 @@ func (m *DefaultManager) IsCooldown(epID string) bool {
 ## 8. HealthChecker
 
 ```go
-// internal/scheduling/health.go
-package scheduling
+// pkg/schedule/health.go
+package schedule
 
 import "context"
 
@@ -535,8 +533,8 @@ func (VendorChecker) IsHealthy(_ context.Context, _ *Endpoint) bool {
 ## 9. Profile 配置
 
 ```go
-// internal/scheduling/profile.go
-package scheduling
+// pkg/schedule/profile.go
+package schedule
 
 type Profile struct {
     EnablePrefixCache  bool
@@ -572,10 +570,10 @@ var DefaultProfile = Profile{
 ## 10. AdapterFactory（与 [02] 衔接）
 
 ```go
-// internal/scheduling/adapter_factory.go
-package scheduling
+// pkg/schedule/adapter_factory.go
+package schedule
 
-import "github.com/zereker-labs/ai-gateway/internal/adapter"
+import "github.com/zereker-labs/ai-gateway/pkg/adapter"
 
 // AdapterFactory 抽象"按 Vendor 取出 Adapter 工厂"。
 // 默认实现是 adapter.Get；测试可注入 mock。
@@ -611,7 +609,7 @@ M7 Schedule.Run:
 ```
 1. Scheduler.Pick → ep1
 2. RetryExecutor:
-   attempt 0: callAdapter(ep1) → Timeout (errs.Transient)
+   attempt 0: callAdapter(ep1) → Timeout (domain.ErrTransient)
               shouldRetrySameEndpoint(Transient) = true
               sleep(backoff)
    attempt 1: callAdapter(ep1) → 200
@@ -634,9 +632,9 @@ M7 Schedule.Run:
 
 ```
 循环 N 次后所有 endpoint 都进入 excluded
-Scheduler.Pick → nil（或返回 errs.RateLimit）
+Scheduler.Pick → nil（或返回 domain.ErrRateLimit）
 若 Policy.AllowCrossModelFallback = true：尝试 fallback model
-否则：rc.Error = errs.RateLimit (429)
+否则：rc.Error = domain.ErrRateLimit (429)
 ```
 
 ### 11.5 限流模型层超限场景
@@ -667,7 +665,7 @@ scheduler.decision_duration_ms{quantile}
 scheduler.prefix_cache.hit_rate
 ```
 
-trace 字段：完整 `scheduling.Decision` JSON 写入 `rc.SchedulingDecision`，由 M10 落出。
+trace 字段：完整 `domain.SchedulingDecision` JSON 写入 `rc.SchedulingDecision`，由 M10 落出。
 
 ## 13. 测试矩阵
 
@@ -676,10 +674,10 @@ trace 字段：完整 `scheduling.Decision` JSON 写入 `rc.SchedulingDecision`�
 | S1 | 正常 1 endpoint 1 次成功 | Decision 含 1 attempt success |
 | S2 | 5xx + 重试成功 | Decision 含 2 attempts (1 retry, 1 success) |
 | S3 | 5xx + 重试失败 + L2 fallback 成功 | excluded.add(ep1)；ep2 success |
-| S4 | 全组都 5xx | rc.Error = errs.Transient (502) |
+| S4 | 全组都 5xx | rc.Error = domain.ErrTransient (502) |
 | S5 | 全组 cooldown | Pick 返回 nil；rc.Error = 429 |
 | S6 | 401 立即不重试 | attempt 0 失败 → 直接 L2 |
-| S7 | 400 客户端错误 | 不重试，rc.Error = errs.Invalid |
+| S7 | 400 客户端错误 | 不重试，rc.Error = domain.ErrInvalid |
 | S8 | Group 不匹配 | GroupFilter 全淘汰，rc.Error = 429 |
 | S9 | PrefixCache 主选被淘汰 | 顺时针次选；trace 中 preferred ≠ selected |
 | S10 | BusyFilter 阈值过滤 | 高 KV rate endpoint 被淘汰 |
@@ -688,7 +686,7 @@ trace 字段：完整 `scheduling.Decision` JSON 写入 `rc.SchedulingDecision`�
 ## 14. 演进规则
 
 - **新增 Filter**：实现 `Filter` 或 `Scorer` 接口；在 `Profile.FilterChain` 中插入相应位置；本文档第 5 节注册新 Filter
-- **新增错误类**：在 `errs.Class` 加常量；同步更新 [02] 第 8 章和本文档 `Cooldown.Durations`
+- **新增错误类**：在 `domain.ErrorClass` 加常量；同步更新 [02] 第 8 章和本文档 `Cooldown.Durations`
 - **修改默认 Profile**：本文档第 9 节同步更新；评估对存量模型的影响
 - **修改 RetryExecutor 主循环**：必须有完整测试覆盖（第 13 节矩阵 + 边界）
 - **新增 Endpoint 字段**：本文档第 3.1 节同步；评估 ConfigStore schema 兼容性（详见 [06]）

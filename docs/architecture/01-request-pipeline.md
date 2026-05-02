@@ -1,15 +1,15 @@
 # 01 — Request Pipeline
 
-本文定义 `request.Context` 数据结构与 10 个 middleware 的完整契约（输入、输出、错误、副作用、顺序约束）。是其他主题（02-05）的前置依赖。
+本文定义 `domain.RequestContext` 数据结构与 10 个 middleware 的完整契约（输入、输出、错误、副作用、顺序约束）。是其他主题（02-05）的前置依赖。
 
-> **阅读前**：[00-overview](00-overview.md) 第 3 章设计原则；尤其 P2（typed `request.Context` + gin.Context.Set 模式）和 P6（预检与扣减分离）。
+> **阅读前**：[00-overview](00-overview.md) 第 3 章设计原则；尤其 P2（typed `domain.RequestContext` + gin.Context.Set 模式）和 P6（预检与扣减分离）。
 
 ## 1. 包结构
 
-代码包按主题切分，与本目录的文档章节一一对应。每个 domain 包只定义自己的领域类型与接口，不互相 import。`request.Context` 集中聚合所有 domain 类型，由 `middleware` 包消费。
+代码包按主题切分，与本目录的文档章节一一对应。每个 domain 包只定义自己的领域类型与接口，不互相 import。`domain.RequestContext` 集中聚合所有 domain 类型，由 `middleware` 包消费。
 
 ```
-internal/
+pkg/
 ├── request/                    # 跨 middleware 的请求级状态
 │   ├── context.go              # type Context 聚合所有 domain 类型
 │   └── helpers.go              # From / tryFrom / Attach + 私有 ctxKey 常量
@@ -86,15 +86,15 @@ middleware  ──┬─→ request ──┬─→ envelope
               │
               ├─→ envelope, identity, budget, modelservice, limit, scheduling, usage, errs, adapter（按需）
               │
-              └─→ infra（auth.IdentityProvider / budget.Checker 等抽象，详见 [06]）
+              └─→ infra（middleware.IdentityProvider / middleware.BudgetGate 等抽象，详见 [06]）
 
 domain 包之间互不 import；request 单向 import 它们；middleware 既 import request 也 import 各 domain 包。
 ```
 
-## 2. request.Context 定义
+## 2. domain.RequestContext 定义
 
 ```go
-// internal/request/context.go
+// pkg/domain/context.go
 package request
 
 import (
@@ -104,15 +104,12 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/adapter"
-    "github.com/zereker-labs/ai-gateway/internal/budget"
-    "github.com/zereker-labs/ai-gateway/internal/envelope"
-    "github.com/zereker-labs/ai-gateway/internal/errs"
-    "github.com/zereker-labs/ai-gateway/internal/identity"
-    "github.com/zereker-labs/ai-gateway/internal/limit"
-    "github.com/zereker-labs/ai-gateway/internal/modelservice"
-    "github.com/zereker-labs/ai-gateway/internal/scheduling"
-    "github.com/zereker-labs/ai-gateway/internal/usage"
+    "github.com/zereker-labs/ai-gateway/pkg/adapter"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/ratelimit"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/schedule"
+    "github.com/zereker-labs/ai-gateway/pkg/usage"
 )
 
 // Context 是一次 HTTP 请求的全链路可变状态。
@@ -123,7 +120,7 @@ import (
 //   - Handler / Adapter 视为只读消费者；Usage / Error / SchedulingDecision 是响应阶段产物
 //
 // 读取规则：
-//   - 通过 request.From(c) 取出，杜绝裸调 c.MustGet/c.Get
+//   - 通过 middleware.GetRequestContext(c) 取出，杜绝裸调 c.MustGet/c.Get
 //
 // 演进规则：
 //   - 字段增删需同步更新本文档第 2 节
@@ -135,29 +132,29 @@ type Context struct {
     StartTime time.Time // 请求进入网关时间
 
     // ===== M2 Auth 写入 =====
-    Identity identity.User // 鉴权后的身份；ExternalUser 为 false 时 M4 可短路
+    Identity domain.UserIdentity // 鉴权后的身份；ExternalUser 为 false 时 M4 可短路
 
     // ===== M3 Envelope 写入 =====
-    Envelope *envelope.Envelope // 解析后的请求信封，详见 [02]
+    Envelope *domain.RequestEnvelope // 解析后的请求信封，详见 [02]
 
     // ===== M4 Budget 写入 =====
-    BudgetStatus budget.Status // budget.Active 才会进入后续；其他值 M4 内 abort
+    BudgetStatus domain.BudgetStatus // domain.BudgetActive 才会进入后续；其他值 M4 内 abort
 
     // ===== M5 ModelService 写入 =====
-    ModelService *modelservice.Snapshot   // 模型路由配置（含 endpoint 池标识、限流默认值等）
-    Pricing      modelservice.PricingSnapshot // 仅含价格指纹（ID + UpdateTime），详见 [05]
+    ModelService *domain.ModelServiceSnapshot   // 模型路由配置（含 endpoint 池标识、限流默认值等）
+    Pricing      domain.PricingSnapshot // 仅含价格指纹（ID + UpdateTime），详见 [05]
 
     // ===== M6 Limit 写入 =====
-    LimitSpec *limit.Spec // 三层阈值，M10 后置 Consume 复用
+    LimitSpec *domain.LimitSpec // 三层阈值，M10 后置 Consume 复用
 
     // ===== M7 Schedule 写入 =====
-    Endpoint *scheduling.Endpoint // 实际选中的 endpoint（重试 / fallback 后是最后一个）
+    Endpoint *domain.Endpoint // 实际选中的 endpoint（重试 / fallback 后是最后一个）
     Adapter  adapter.Adapter      // 与 Endpoint 对应的 Adapter 实例
 
     // ===== 响应阶段写入（M7 内部 / Adapter） =====
-    Usage              *usage.Usage         // 真实 token 用量；流式终态填入；详见 [05]
-    Error              *errs.Error          // 终态错误（已分类）；详见第 7 节
-    SchedulingDecision *scheduling.Decision // 整次调度决策（含每次尝试的 endpoint 与结果）；详见 [03]
+    Usage              *domain.Usage         // 真实 token 用量；流式终态填入；详见 [05]
+    Error              *domain.AdapterError          // 终态错误（已分类）；详见第 7 节
+    SchedulingDecision *domain.SchedulingDecision // 整次调度决策（含每次尝试的 endpoint 与结果）；详见 [03]
 
     // ===== 全链路共享（M1 写入，后续只读） =====
     Ctx    context.Context // 业务 context；用于 timeout / cancel
@@ -172,7 +169,7 @@ type Context struct {
 各 domain 包对应的领域类型简表（完整定义见各主题文档）：
 
 ```go
-// internal/identity/user.go
+// pkg/domain/user.go
 package identity
 
 type User struct {
@@ -184,8 +181,8 @@ type User struct {
 ```
 
 ```go
-// internal/budget/status.go
-package budget
+// pkg/domain/status.go
+package middleware
 
 type Status int
 
@@ -197,7 +194,7 @@ const (
 ```
 
 ```go
-// internal/modelservice/snapshot.go
+// pkg/domain/snapshot.go
 package modelservice
 
 import (
@@ -219,7 +216,7 @@ type Snapshot struct {
 ```
 
 ```go
-// internal/modelservice/pricing.go
+// pkg/domain/pricing.go
 package modelservice
 
 import "time"
@@ -234,14 +231,14 @@ type PricingSnapshot struct {
 }
 ```
 
-> `envelope.Envelope` / `limit.Spec` / `scheduling.Endpoint` / `scheduling.Decision` / `adapter.Adapter` / `usage.Usage` 的完整定义见各自主题文档（02-05）。
+> `domain.RequestEnvelope` / `domain.LimitSpec` / `domain.Endpoint` / `domain.SchedulingDecision` / `adapter.Adapter` / `domain.Usage` 的完整定义见各自主题文档（02-05）。
 
 ## 3. Helper 函数
 
 `gin.Context` 的 key 常量私有化在 `request` 包内，外部不可直接访问；统一通过 `From` / `Attach` 操作。
 
 ```go
-// internal/request/helpers.go
+// pkg/domain/helpers.go
 package request
 
 import "github.com/gin-gonic/gin"
@@ -259,7 +256,7 @@ func Attach(c *gin.Context, rc *Context) {
 func From(c *gin.Context) *Context {
     v, ok := c.Get(ctxKey)
     if !ok {
-        panic("request.Context not set: M1 TraceContext middleware missing")
+        panic("domain.RequestContext not set: M1 TraceContext middleware missing")
     }
     return v.(*Context)
 }
@@ -274,7 +271,7 @@ func tryFrom(c *gin.Context) *Context {
 }
 ```
 
-> **不要**在业务代码里裸调 `c.MustGet` / `c.Get`，统一走 `request.From(c)`。
+> **不要**在业务代码里裸调 `c.MustGet` / `c.Get`，统一走 `middleware.GetRequestContext(c)`。
 > Recover middleware 是唯一例外（它需要在 RC 不存在时也能兜底），用 `tryFrom`。
 
 ## 4. Middleware 契约总览
@@ -305,7 +302,7 @@ M1 → M9 → M2 → M3 → M4 → M5 → M6 → M8 → M7 → M10
 
 ### M1 TraceContext
 
-**职责**：构建 `request.Context`，挂到 `gin.Context`。
+**职责**：构建 `domain.RequestContext`，挂到 `gin.Context`。
 
 **前置**：无。
 **后置**：`rc.TraceID` / `rc.RequestID` / `rc.StartTime` / `rc.Ctx` / `rc.GinCtx` / `rc.Logger` / `rc.Extras` 已就绪。
@@ -313,7 +310,7 @@ M1 → M9 → M2 → M3 → M4 → M5 → M6 → M8 → M7 → M10
 **幂等**：是（同请求多次执行会重置 trace_id，应避免）。
 
 ```go
-// internal/middleware/trace_context.go
+// pkg/middleware/trace_context.go
 package middleware
 
 import (
@@ -322,7 +319,7 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 func TraceContext() gin.HandlerFunc {
@@ -331,7 +328,7 @@ func TraceContext() gin.HandlerFunc {
         if traceID == "" {
             traceID = genTraceID()
         }
-        rc := &request.Context{
+        rc := &domain.RequestContext{
             TraceID:   traceID,
             RequestID: genRequestID(),
             StartTime: time.Now(),
@@ -340,7 +337,7 @@ func TraceContext() gin.HandlerFunc {
             Logger:    slog.Default().With("trace_id", traceID),
             Extras:    make(map[string]any),
         }
-        request.Attach(c, rc)
+        middleware.AttachRequestContext(c, rc)
         c.Next()
     }
 }
@@ -355,7 +352,7 @@ func TraceContext() gin.HandlerFunc {
 **错误**：自身不 abort；将 panic 转成 500 响应。
 
 ```go
-// internal/middleware/recover.go
+// pkg/middleware/recover.go
 package middleware
 
 import (
@@ -363,9 +360,9 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/errs"
-    "github.com/zereker-labs/ai-gateway/internal/metric"
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/metric"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 func Recover() gin.HandlerFunc {
@@ -373,11 +370,11 @@ func Recover() gin.HandlerFunc {
         defer func() {
             if r := recover(); r != nil {
                 metric.Inc(metric.PanicTotal, "component", "middleware")
-                if rc := request.TryFrom(c); rc != nil {
+                if rc := middleware.TryGetRequestContext(c); rc != nil {
                     rc.Logger.Error("panic", "recover", r, "stack", debug.Stack())
                 }
-                writeError(c, &errs.Error{
-                    Class:      errs.Unknown,
+                writeError(c, &domain.AdapterError{
+                    Class:      domain.ErrUnknown,
                     HTTPStatus: 500,
                     Message:    "internal server error",
                 })
@@ -386,43 +383,43 @@ func Recover() gin.HandlerFunc {
         c.Next()
 
         // 主链结束后兜底处理 Error（M7 等填入但未写出）
-        if rc := request.TryFrom(c); rc != nil && rc.Error != nil && !c.Writer.Written() {
+        if rc := middleware.TryGetRequestContext(c); rc != nil && rc.Error != nil && !c.Writer.Written() {
             writeError(c, rc.Error)
         }
     }
 }
 ```
 
-> `request.TryFrom` 是 `tryFrom` 的导出版本（仅供 middleware 使用）；`writeError` 见第 7 节。
+> `middleware.TryGetRequestContext` 是 `tryFrom` 的导出版本（仅供 middleware 使用）；`writeError` 见第 7 节。
 
 ### M2 Auth
 
-**职责**：从请求头提取凭证 → 调 `auth.IdentityProvider` → 写 `rc.Identity`。
+**职责**：从请求头提取凭证 → 调 `middleware.IdentityProvider` → 写 `rc.Identity`。
 
 **前置**：M1 已执行。
 **后置**：`rc.Identity` 字段全部就绪；`rc.Logger` 追加 `user_id` 字段。
 **错误**：401（缺凭证 / 无效凭证）。
 
 ```go
-// internal/middleware/auth.go
+// pkg/middleware/auth.go
 package middleware
 
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/identity"
-    "github.com/zereker-labs/ai-gateway/internal/infra/auth" // 见 [06]
-    "github.com/zereker-labs/ai-gateway/internal/metric"
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/middleware" // 见 [06]
+    "github.com/zereker-labs/ai-gateway/pkg/metric"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type AuthDeps struct {
-    Provider auth.IdentityProvider
+    Provider middleware.IdentityProvider
 }
 
 func Auth(deps AuthDeps) gin.HandlerFunc {
     return func(c *gin.Context) {
-        rc := request.From(c)
+        rc := middleware.GetRequestContext(c)
 
         creds := extractCredentials(c) // 从 Authorization / X-API-Key 等头部提取
         if creds == nil {
@@ -437,7 +434,7 @@ func Auth(deps AuthDeps) gin.HandlerFunc {
             return
         }
 
-        rc.Identity = identity.User{
+        rc.Identity = domain.UserIdentity{
             UserID:       u.UserID,
             APIKeyID:     u.APIKeyID,
             Group:        u.Group,
@@ -457,10 +454,10 @@ func Auth(deps AuthDeps) gin.HandlerFunc {
 **后置**：`rc.Envelope` 字段全部就绪。
 **错误**：400（body 读取失败 / 协议解析失败）。
 
-详细的 `envelope.Envelope` / `SourceProtocol` / `Modality` 枚举与解析规则见 [02-protocol-translation](02-protocol-translation.md)。
+详细的 `domain.RequestEnvelope` / `SourceProtocol` / `Modality` 枚举与解析规则见 [02-protocol-translation](02-protocol-translation.md)。
 
 ```go
-// internal/middleware/envelope.go
+// pkg/middleware/envelope.go
 package middleware
 
 import (
@@ -468,18 +465,17 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/envelope"
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type EnvelopeDeps struct {
-    Detector envelope.Detector
-    Parser   envelope.Parser
+    Detector middleware.Detector
+    Parser   middleware.Parser
 }
 
 func Envelope(deps EnvelopeDeps) gin.HandlerFunc {
     return func(c *gin.Context) {
-        rc := request.From(c)
+        rc := middleware.GetRequestContext(c)
 
         raw, err := io.ReadAll(c.Request.Body)
         if err != nil {
@@ -488,7 +484,7 @@ func Envelope(deps EnvelopeDeps) gin.HandlerFunc {
         }
 
         sourceProto, modality := deps.Detector.Detect(c.Request.URL.Path, raw)
-        if sourceProto == envelope.ProtoUnknown {
+        if sourceProto == domain.ProtoUnknown {
             abort(c, 400, "unknown source protocol")
             return
         }
@@ -499,7 +495,7 @@ func Envelope(deps EnvelopeDeps) gin.HandlerFunc {
             return
         }
 
-        rc.Envelope = &envelope.Envelope{
+        rc.Envelope = &domain.RequestEnvelope{
             RawBytes:       raw,
             Parsed:         parsed,
             SourceProtocol: sourceProto,
@@ -517,19 +513,19 @@ func Envelope(deps EnvelopeDeps) gin.HandlerFunc {
 
 **前置**：M2 写入了 `rc.Identity`。
 **后置**：`rc.BudgetStatus` 已确定。
-**错误**：403（不通过）；`budget.Unknown` 默认放行 + 告警（避免依赖失效导致全量拒绝）。
+**错误**：403（不通过）；`domain.BudgetUnknown` 默认放行 + 告警（避免依赖失效导致全量拒绝）。
 
 ```go
-// internal/middleware/budget.go
+// pkg/middleware/budget.go
 package middleware
 
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/budget"
-    bud "github.com/zereker-labs/ai-gateway/internal/infra/budget" // 见 [06]：抽象接口
-    "github.com/zereker-labs/ai-gateway/internal/metric"
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    bud "github.com/zereker-labs/ai-gateway/pkg/middleware" // 见 [06]：抽象接口
+    "github.com/zereker-labs/ai-gateway/pkg/metric"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type BudgetDeps struct {
@@ -538,11 +534,11 @@ type BudgetDeps struct {
 
 func Budget(deps BudgetDeps) gin.HandlerFunc {
     return func(c *gin.Context) {
-        rc := request.From(c)
+        rc := middleware.GetRequestContext(c)
 
         // 内部用户跳过
         if !rc.Identity.ExternalUser {
-            rc.BudgetStatus = budget.Active
+            rc.BudgetStatus = domain.BudgetActive
             c.Next()
             return
         }
@@ -552,17 +548,17 @@ func Budget(deps BudgetDeps) gin.HandlerFunc {
             // 检查失败：默认放行 + 告警，避免基础设施挂掉拖垮全量请求
             metric.Inc(metric.BudgetCheckTotal, "result", "fallback_pass")
             rc.Logger.Warn("budget check failed, fallback pass", "err", err)
-            rc.BudgetStatus = budget.Active
+            rc.BudgetStatus = domain.BudgetActive
             c.Next()
             return
         }
 
         rc.BudgetStatus = status
         switch status {
-        case budget.Active:
+        case domain.BudgetActive:
             metric.Inc(metric.BudgetCheckTotal, "result", "pass")
             c.Next()
-        case budget.Inactive:
+        case domain.BudgetInactive:
             metric.Inc(metric.BudgetCheckTotal, "result", "blocked")
             abort(c, 403, "budget inactive")
         }
@@ -579,14 +575,13 @@ func Budget(deps BudgetDeps) gin.HandlerFunc {
 **错误**：404（模型未注册）。
 
 ```go
-// internal/middleware/model_service.go
+// pkg/middleware/model_service.go
 package middleware
 
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/modelservice"
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type ModelServiceDeps struct {
@@ -595,7 +590,7 @@ type ModelServiceDeps struct {
 
 func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
     return func(c *gin.Context) {
-        rc := request.From(c)
+        rc := middleware.GetRequestContext(c)
 
         ms, err := deps.Loader.GetByModel(rc.Ctx, rc.Envelope.Parsed.Model)
         if err != nil {
@@ -604,7 +599,7 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
         }
 
         rc.ModelService = ms
-        rc.Pricing = modelservice.PricingSnapshot{
+        rc.Pricing = domain.PricingSnapshot{
             ModelServiceID:    ms.ID,
             ServiceUpdateTime: ms.UpdateTime,
         }
@@ -615,7 +610,7 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 
 ### M6 Limit
 
-**职责**：构建 `limit.Spec` + 三层限流预检（read-only）。
+**职责**：构建 `domain.LimitSpec` + 三层限流预检（read-only）。
 
 **前置**：M2, M5 已执行。
 **后置**：
@@ -627,24 +622,24 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 详见 [04-rate-limiting](04-rate-limiting.md)。
 
 ```go
-// internal/middleware/limit.go
+// pkg/middleware/limit.go
 package middleware
 
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/limit"
-    "github.com/zereker-labs/ai-gateway/internal/metric"
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/ratelimit"
+    "github.com/zereker-labs/ai-gateway/pkg/metric"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type LimitDeps struct {
-    Checker limit.Checker
+    Checker ratelimit.Checker
 }
 
 func Limit(deps LimitDeps) gin.HandlerFunc {
     return func(c *gin.Context) {
-        rc := request.From(c)
+        rc := middleware.GetRequestContext(c)
 
         spec := deps.Checker.BuildSpec(rc.Identity, rc.ModelService) // 四级查询链
         rc.LimitSpec = spec
@@ -673,23 +668,23 @@ func Limit(deps LimitDeps) gin.HandlerFunc {
 **错误**：400（违规）。
 
 ```go
-// internal/middleware/moderation.go
+// pkg/middleware/moderation.go
 package middleware
 
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/infra/moderation" // 见 [06]
-    "github.com/zereker-labs/ai-gateway/internal/request"
+    "github.com/zereker-labs/ai-gateway/pkg/middleware" // 见 [06]
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
 type ModerationDeps struct {
-    Moderator moderation.Moderator // 可为 nil（NoOp）
+    Moderator middleware.Moderator // 可为 nil（NoOp）
 }
 
 func ContentModeration(deps ModerationDeps) gin.HandlerFunc {
     return func(c *gin.Context) {
-        rc := request.From(c)
+        rc := middleware.GetRequestContext(c)
 
         if deps.Moderator == nil {
             c.Next()
@@ -716,25 +711,25 @@ func ContentModeration(deps ModerationDeps) gin.HandlerFunc {
 详见 [03-endpoint-scheduling](03-endpoint-scheduling.md)。
 
 ```go
-// internal/middleware/schedule.go
+// pkg/middleware/schedule.go
 package middleware
 
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/metric"
-    "github.com/zereker-labs/ai-gateway/internal/request"
-    "github.com/zereker-labs/ai-gateway/internal/scheduling"
+    "github.com/zereker-labs/ai-gateway/pkg/metric"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/schedule"
 )
 
 type ScheduleDeps struct {
-    Scheduler scheduling.Scheduler
-    Executor  scheduling.RetryExecutor
+    Scheduler schedule.Scheduler
+    Executor  schedule.RetryExecutor
 }
 
 func Schedule(deps ScheduleDeps) gin.HandlerFunc {
     return func(c *gin.Context) {
-        rc := request.From(c)
+        rc := middleware.GetRequestContext(c)
         if err := deps.Executor.Run(c, rc); err != nil {
             // RetryExecutor 已将分类错误写入 rc.Error；这里只记录失败次数
             metric.Inc(metric.ScheduleResultTotal, "result", "failed")
@@ -752,7 +747,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 **错误**：自身不影响响应；只做 best-effort。
 
 ```go
-// internal/middleware/tracing.go
+// pkg/middleware/tracing.go
 package middleware
 
 import (
@@ -761,22 +756,22 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/internal/infra/tracing" // 见 [06]
-    "github.com/zereker-labs/ai-gateway/internal/metric"
-    "github.com/zereker-labs/ai-gateway/internal/request"
-    "github.com/zereker-labs/ai-gateway/internal/usage"
+    "github.com/zereker-labs/ai-gateway/pkg/trace" // 见 [06]
+    "github.com/zereker-labs/ai-gateway/pkg/metric"
+    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker-labs/ai-gateway/pkg/usage"
 )
 
 type TracingDeps struct {
-    UsageBus usage.EventBus // 默认本地文件 / 内存，见 [06]
-    Tracer   tracing.Tracer
+    UsageBus usage.OutboxPublisher // 默认本地文件 / 内存，见 [06]
+    Tracer   trace.Tracer
 }
 
 func Tracing(deps TracingDeps) gin.HandlerFunc {
     return func(c *gin.Context) {
         c.Next() // 等所有后续 middleware 跑完
 
-        rc := request.From(c)
+        rc := middleware.GetRequestContext(c)
         cost := time.Since(rc.StartTime).Milliseconds()
 
         metric.Observe(metric.HTTPRequestDurationMs,
@@ -801,7 +796,7 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 ## 6. Middleware 注册与启动自检
 
 ```go
-// internal/middleware/chain.go
+// pkg/middleware/chain.go
 package middleware
 
 import (
@@ -871,7 +866,7 @@ func (d Deps) Validate() error {
 ### 错误分类
 
 ```go
-// internal/errs/class.go
+// pkg/domain/class.go
 package errs
 
 type Class int
@@ -898,7 +893,7 @@ func (c Class) String() string {
 ### Error 结构
 
 ```go
-// internal/errs/error.go
+// pkg/domain/error.go
 package errs
 
 type Error struct {
@@ -943,11 +938,11 @@ func DefaultHTTPStatus(class Class) int {
 写出实现：
 
 ```go
-// internal/middleware/recover.go (writeError)
-func writeError(c *gin.Context, e *errs.Error) {
+// pkg/middleware/recover.go (writeError)
+func writeError(c *gin.Context, e *domain.AdapterError) {
     status := e.HTTPStatus
     if status == 0 {
-        status = errs.DefaultHTTPStatus(e.Class)
+        status = domain.DefaultHTTPStatus(e.Class)
     }
     body := gin.H{
         "error": gin.H{
@@ -955,7 +950,7 @@ func writeError(c *gin.Context, e *errs.Error) {
             "message": e.Message,
         },
     }
-    if rc := request.TryFrom(c); rc != nil {
+    if rc := middleware.TryGetRequestContext(c); rc != nil {
         body["error"].(gin.H)["request_id"] = rc.RequestID
         body["error"].(gin.H)["trace_id"] = rc.TraceID
     }
@@ -966,13 +961,13 @@ func writeError(c *gin.Context, e *errs.Error) {
 ## 8. 字段缺失检测（防御性）
 
 ```go
-// internal/middleware/helpers.go
+// pkg/middleware/helpers.go
 // MustField 在 middleware 入口断言前置 middleware 已写入相应字段。
 // 缺失则记录 metric 并 panic（M9 Recover 兜底）。
-func MustField(rc *request.Context, name string, ok bool) {
+func MustField(rc *domain.RequestContext, name string, ok bool) {
     if !ok {
         metric.Inc(metric.ContextFieldMissTotal, "field_name", name)
-        panic("required request.Context field missing: " + name)
+        panic("required domain.RequestContext field missing: " + name)
     }
 }
 ```
@@ -1020,8 +1015,8 @@ MustField(rc, "Envelope", rc.Envelope != nil)
 
 ## 11. 演进规则
 
-- **新增字段到 `request.Context`**：必须更新本文档第 2 节；说明哪个 middleware 写入、哪些 middleware 读取
+- **新增字段到 `domain.RequestContext`**：必须更新本文档第 2 节；说明哪个 middleware 写入、哪些 middleware 读取
 - **新增 middleware**：必须更新本文档第 4 节注册表与第 5 节契约；评估对现有顺序的影响
-- **修改 `errs.Class`**：必须同时更新本文档第 7 节与所有用到的 Adapter
+- **修改 `domain.ErrorClass`**：必须同时更新本文档第 7 节与所有用到的 Adapter
 - **新增 domain 包**：必须更新本文档第 1 节包结构图与依赖方向图；确保不引入循环
 - **临时性字段**：用 `rc.Extras["xxx"]`，正式化时再升级到 struct 字段
