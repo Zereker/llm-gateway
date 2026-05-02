@@ -9,6 +9,10 @@ import (
 )
 
 // Store 配置中心抽象。
+//
+// Implementations MUST be safe for concurrent Get / List / Put / Delete from
+// multiple goroutines. Watch 返回的 channel 由单一 consumer 读取；多个 Watch
+// 调用应返回独立 channel。
 type Store interface {
 	// Get 读单个 key
 	Get(c context.Context, key string) (json.RawMessage, error)

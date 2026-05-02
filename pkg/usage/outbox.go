@@ -7,6 +7,9 @@ import "context"
 // 内置实现：file (JSONL append) 和 kafka (sync ack=1)。
 //
 // 详见 docs/architecture/05-metering-billing.md 第 6 节（同步两阶段：本地日志 + Kafka）。
+//
+// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时 Publish）。
+// evt.Payload []byte：实现不可保留 slice 引用（caller 可能复用 / GC）。
 type OutboxPublisher interface {
 	Publish(c context.Context, evt *OutboxEvent) error
 }

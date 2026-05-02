@@ -10,6 +10,8 @@ import (
 //
 // 内置默认实现 alwayspass（永远放行，适合无付费体系场景）；
 // 接入外部计费系统时实现自定义 BudgetGate。
+//
+// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
 type BudgetGate interface {
 	Check(c context.Context, userID string) (domain.BudgetStatus, error)
 }

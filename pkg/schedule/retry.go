@@ -8,6 +8,10 @@ import "github.com/gin-gonic/gin"
 // 详见 docs/architecture/03-endpoint-scheduling.md 第 6 节。
 //
 // 接口仅声明 Run；具体实现需要持有 Scheduler / AdapterFactory / CooldownManager 等依赖。
+//
+// Implementations MUST be safe for concurrent use（每个 gin handler 一个 goroutine 调用 Run）。
+// 注：Run 同时把分类错误写入 rc.Error，并 return error 给 caller 用于 metric 统计；
+// 两个真值源应保持一致（实现责任）。
 type RetryExecutor interface {
 	Run(c *gin.Context) error
 }

@@ -21,22 +21,30 @@
 ### 包含
 
 - 包结构骨架（按 [01] 第 1 节）
-- `domain.RequestContext` 数据结构 + `From / Attach / TryFrom` helper
-- 10 个 middleware 全部空壳 + M1 / M2 / M3 / M9 / M10 完整实现（M1 trace、M2 APIKey 鉴权、M3 envelope 解析、M9 panic 兜底、M10 Tracing 落 metric）
+- `domain.RequestContext` 数据结构 + `middleware.GetRequestContext / TryGet / Attach` helper
+- 10 个 middleware 全部空壳 + M1 / M2 / M3 / M5 / M9 / M10 完整实现（M1 trace、M2 APIKey 鉴权、M3 envelope 解析、M5 ModelService loader、M9 panic 兜底、M10 Tracing 落 metric）
 - M5 ModelService：从单文件 YAML 加载（无 ConfigStore Watch）
-- M7 Schedule：单 endpoint 直连，无 RetryExecutor / Filter 链（直接调 Adapter）
+- M7 Schedule：单 endpoint 直连，无 RetryExecutor / Filter 链（直接调 `adapter.Factory.NewSession` → BuildRequest → http.Do → Feed → Finalize）
 - 1 个 Adapter：`pkg/adapter/openai/`（OpenAI 协议 → OpenAI 上游，identity translator）
-- 1 个 TokenExtractor：`pkg/usage/extractor/openai_compat/`
-- 默认基础设施：
-  - `auth/apikey` (file) — `apikeys.yaml`
-  - `budget/alwayspass`
-  - `config/file` — 单文件 YAML 加载
-  - `cache/memory`
-  - `eventbus/file` — JSONL append
-  - `tracing/slog`
+- 默认基础设施（inline 到现有包，无新子包）：
+  - `middleware.NewAPIKeyProvider(map[string]domain.UserIdentity)` — APIKey 文件 / 内存
+  - `middleware.AlwaysPassGate{}` — 永远放行
+  - `middleware.DefaultDetector + DefaultParser` — 按 URL 路径识别协议
+  - `middleware.NewModelServiceProvider(configStore)` — config 文件 backed
+  - `config.FileStore` — 单文件 YAML + fsnotify 热加载
+  - `usage.FileOutbox` — JSONL append
+  - `trace.SlogTracer` — stdlib slog
+- **运维端点**（cmd/gateway 装配时配）：
+  - `GET /healthz` — liveness（始终 200）
+  - `GET /readyz` — readiness（registry 已注册 + ConfigStore 已加载）
+  - `GET /metrics` — Prometheus scrape
+- **请求保护**（M0 阶段或 gin 启动时配）：
+  - 请求体大小限制（默认 10 MB，可配）
+  - 网关级 timeout（默认 60s，可配；与 Adapter 上游 timeout 独立）
+  - Graceful shutdown（SIGTERM / SIGINT → drain in-flight requests → 退出）
 - `cmd/gateway/main.go` 完整可运行
 - `docker-compose.yml` 提供（可选 Redis / Postgres，但默认全用本地实现）
-- `examples/` 目录：curl 示例 + `apikeys.yaml` 模板
+- `examples/` 目录：curl 示例 + `apikeys.yaml` 模板 + `models.yaml` 模板
 
 ### 不含
 
@@ -55,12 +63,17 @@
 | # | 验收项 | 验证方法 |
 |---|-------|---------|
 | V1 | `go build ./...` 通过 | CI |
-| V2 | `go test ./...` 通过（≥ 70% 覆盖率，针对 request / envelope / errs / middleware/M1/M2/M3/M9） | CI |
+| V2 | `go test ./...` 通过（≥ 70% 覆盖率，针对 domain / middleware/M1/M2/M3/M5/M9 / adapter/openai） | CI |
 | V3 | `go run ./cmd/gateway` 启动成功（默认配置） | 手测 |
 | V4 | curl 一个 OpenAI 请求，得到上游响应 | 手测；上游可用 OpenAI 真账号或 vLLM |
 | V5 | `tail -f /tmp/usage.log` 能看到一条 JSONL Usage 事件 | 手测 |
 | V6 | 不带 Authorization 请求返回 401 | 手测 |
 | V7 | panic 时返回 500 + log 含 stack | 单元测试 |
+| V8 | `curl /healthz` 返回 200；`curl /readyz` 在 ConfigStore 未就绪时返回 503 | 手测 |
+| V9 | `curl /metrics` 返回 Prometheus 格式（含 `ai_gateway.http.request_duration_ms` 等） | 手测 |
+| V10 | 请求体超过限制 → 返回 413 Payload Too Large | 手测（`curl --data-binary @big.json`） |
+| V11 | 请求超时 → 返回 504 Gateway Timeout（不阻塞、不泄漏 goroutine）| 集成测试 |
+| V12 | SIGTERM 后 in-flight 请求完成、新请求拒绝、进程在 30s 内退出 | 手测 |
 
 ## 3. v0.5 — 完整能力（约 6-8 周）
 

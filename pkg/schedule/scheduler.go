@@ -12,6 +12,8 @@ import (
 // Scheduler 调度链路的入口；输入候选池 + 上下文，输出一个 endpoint。
 //
 // 调用方（RetryExecutor）在 fallback 时通过 PickInput.Excluded 排除已尝试的 endpoint。
+//
+// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
 type Scheduler interface {
 	Pick(c context.Context, in PickInput) (*domain.Endpoint, *domain.SchedulingDecision, error)
 }

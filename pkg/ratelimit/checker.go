@@ -10,6 +10,8 @@ import (
 )
 
 // Checker M6 Limit middleware 的依赖接口。
+//
+// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
 type Checker interface {
 	// BuildSpec 为本次请求构建用户层 + 模型层阈值（不含 Endpoint 层）。
 	BuildSpec(id domain.UserIdentity, ms *domain.ModelServiceSnapshot) *domain.LimitSpec

@@ -24,8 +24,10 @@ type Metadata struct {
 
 // Factory 是注册到 adapter registry 的工厂。
 //
-// 一个 vendor 一个 factory；factory 本身无状态。
+// 一个 vendor 一个 factory；factory 本身无状态、单实例。
 // 每次请求由 NewSession 构造一个 Session 实例，承载本次请求的全部状态。
+//
+// Factory 实现 MUST be safe for concurrent use（多 gin handler goroutine 同时调用 NewSession）。
 type Factory interface {
 	Metadata() Metadata
 

@@ -9,6 +9,8 @@ import "github.com/zereker-labs/ai-gateway/pkg/domain"
 //
 // 限流的原子计数（INCR + 比较）由 Checker 实现自己定义底层 KV / Lua 抽象；
 // 不在本接口。
+//
+// Implementations MUST be safe for concurrent use（M6 + Checker 多 goroutine 同时调用）。
 type ConfigStore interface {
 	GetAPIKeyLimit(apiKeyID, serviceID string) *domain.LayerSpec
 	GetUserLimit(userID, serviceID string) *domain.LayerSpec

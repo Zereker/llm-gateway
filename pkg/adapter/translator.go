@@ -11,6 +11,12 @@ import (
 // 详见 docs/architecture/02-protocol-translation.md 第 5 节。
 //
 // 每个 Translator 是单向的 (src → dst)；需要双向时实例化两个。
+//
+// 契约：
+//   - Translator 实现 MUST be safe for concurrent use（多 goroutine 同时翻译）。
+//   - TranslateRequest / TranslateStreamChunk 入参 slice：实现不可保留引用（caller 可能复用）。
+//   - 返回 []byte：调用方应在下次调用同 Translator 之前 Write 出去；
+//     实现可借此复用底层 buffer（sync.Pool 等）。
 type Translator interface {
 	TranslateRequest(env *domain.RequestEnvelope) ([]byte, error)
 	TranslateResponse(resp *domain.CanonicalResponse) (*domain.CanonicalResponse, error)

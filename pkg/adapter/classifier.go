@@ -5,6 +5,10 @@ import "github.com/zereker-labs/ai-gateway/pkg/domain"
 // Classifier 把上游 HTTP 状态 + body 映射到 domain.AdapterError。
 //
 // Adapter 可实现 Classifier 接管特定厂商的 error schema；未实现走 DefaultClassifier。
+//
+// 契约：
+//   - Classifier 实现 MUST be safe for concurrent use（多 goroutine 同时分类）。
+//   - body 入参：实现不可保留 slice 引用 —— 如要存进返回的 AdapterError，必须 string(body) / 拷贝。
 type Classifier interface {
 	Classify(httpStatus int, body []byte) *domain.AdapterError
 }
