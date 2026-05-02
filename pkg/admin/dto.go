@@ -11,14 +11,16 @@ import (
 
 // dto.go 提供 admin REST API 边界用的传输结构体。
 //
-// 跟 repo.X（gorm Model）分开的原因：
+// 跟 repo.X（DB Model）分开的原因：
 //
 //  1. JSON 命名风格：DTO 用 snake_case（REST 行业惯例），repo.X 字段是 PascalCase
-//  2. APIKey：admin 边界明文 string，绕开 repo.Secret 的屏蔽（gateway 那边用 repo.Secret）
+//  2. APIKey 明文：admin 创建 api_key 时一次性返回明文（apiKeyCreateResponse），
+//     普通 GET / List 只返 api_key_id（apiKeyDTO）；明文不进 dto base
 //  3. 字段裁剪 / 计算字段 / 版本演进：API 演化不污染 DB 模型
 
 type modelServiceDTO struct {
 	ID         int64           `json:"id,omitempty"`
+	TenantID   string          `json:"tenant_id"`
 	ServiceID  string          `json:"service_id"`
 	Model      string          `json:"model"`
 	UpdateTime time.Time       `json:"update_time,omitempty"`
@@ -31,6 +33,7 @@ type modelServiceDTO struct {
 func msToDTO(m *repo.ModelService) modelServiceDTO {
 	return modelServiceDTO{
 		ID:         m.ID,
+		TenantID:   m.TenantID,
 		ServiceID:  m.ServiceID,
 		Model:      m.Model,
 		UpdateTime: m.UpdateTime,
@@ -44,6 +47,7 @@ func msToDTO(m *repo.ModelService) modelServiceDTO {
 func dtoToMS(d modelServiceDTO) *repo.ModelService {
 	return &repo.ModelService{
 		ID:         d.ID,
+		TenantID:   d.TenantID,
 		ServiceID:  d.ServiceID,
 		Model:      d.Model,
 		UpdateTime: d.UpdateTime,
@@ -55,6 +59,7 @@ func dtoToMS(d modelServiceDTO) *repo.ModelService {
 }
 
 type endpointDTO struct {
+	TenantID     string                    `json:"tenant_id"`
 	ID           string                    `json:"id"`
 	Vendor       string                    `json:"vendor"`
 	URL          string                    `json:"url"`
@@ -71,6 +76,7 @@ type endpointDTO struct {
 
 func epToDTO(e *repo.Endpoint) endpointDTO {
 	return endpointDTO{
+		TenantID:     e.TenantID,
 		ID:           e.ID,
 		Vendor:       e.Vendor,
 		URL:          e.URL,
@@ -88,6 +94,7 @@ func epToDTO(e *repo.Endpoint) endpointDTO {
 
 func dtoToEp(d endpointDTO) *repo.Endpoint {
 	return &repo.Endpoint{
+		TenantID:     d.TenantID,
 		ID:           d.ID,
 		Vendor:       d.Vendor,
 		URL:          d.URL,
@@ -101,6 +108,41 @@ func dtoToEp(d endpointDTO) *repo.Endpoint {
 		Capabilities: d.Capabilities,
 		Extra:        datatypeFromJSONRaw(d.Extra),
 	}
+}
+
+// apiKeyDTO 普通 GET / List 用：**不返明文 api_key**。
+type apiKeyDTO struct {
+	ID           int64      `json:"id,omitempty"`
+	TenantID     string     `json:"tenant_id"`
+	APIKeyID     string     `json:"api_key_id"`
+	UserID       string     `json:"user_id"`
+	Group        string     `json:"group"`
+	ExternalUser bool       `json:"external_user"`
+	Enabled      bool       `json:"enabled"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at,omitempty"`
+}
+
+func apiKeyToDTO(k *repo.APIKey) apiKeyDTO {
+	return apiKeyDTO{
+		ID:           k.ID,
+		TenantID:     k.TenantID,
+		APIKeyID:     k.APIKeyID,
+		UserID:       k.UserID,
+		Group:        k.Group,
+		ExternalUser: k.ExternalUser,
+		Enabled:      k.Enabled,
+		ExpiresAt:    k.ExpiresAt,
+		CreatedAt:    k.CreatedAt,
+	}
+}
+
+// apiKeyCreateResponse POST /apikeys 的响应：包含一次性明文 api_key。
+//
+// 客户端**只在这一次响应里**能拿到明文；后续 GET 只返 apiKeyDTO。
+type apiKeyCreateResponse struct {
+	apiKeyDTO
+	APIKey string `json:"api_key"` // 明文 sk-xxx；只在 Create 响应出现
 }
 
 // jsonRawFromDatatype 把 gorm datatypes.JSON 转回标准 json.RawMessage。

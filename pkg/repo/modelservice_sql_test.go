@@ -28,9 +28,12 @@ func jsonEqual(t *testing.T, got, want []byte) bool {
 }
 
 // seedModelService 用 raw SQL 把测试数据写进 db（bypass admin 写路径），
-// 让 Reader 测试自包含。
+// 让 Reader 测试自包含。tenant_id 默认 "default"。
 func seedModelService(t *testing.T, db *sqlx.DB, ms *ModelService) {
 	t.Helper()
+	if ms.TenantID == "" {
+		ms.TenantID = testTenant
+	}
 	if ms.UpdateTime.IsZero() {
 		ms.UpdateTime = time.Now().UTC()
 	}
@@ -38,9 +41,9 @@ func seedModelService(t *testing.T, db *sqlx.DB, ms *ModelService) {
 		ms.Group = "default"
 	}
 	res, err := db.Exec(
-		`INSERT INTO model_services (service_id, model, update_time, spec_detail, group_name, tpm, rpm)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		ms.ServiceID, ms.Model, ms.UpdateTime, datatypesJSONOrNil(ms.SpecDetail),
+		`INSERT INTO model_services (tenant_id, service_id, model, update_time, spec_detail, group_name, tpm, rpm)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		ms.TenantID, ms.ServiceID, ms.Model, ms.UpdateTime, datatypesJSONOrNil(ms.SpecDetail),
 		ms.Group, ms.Tpm, ms.Rpm,
 	)
 	if err != nil {
@@ -70,7 +73,7 @@ func TestSQLModelServiceReader_GetByModel(t *testing.T) {
 	})
 
 	r := NewSQLModelServiceReader(db)
-	got, err := r.GetByModel(context.Background(), "gpt-4o")
+	got, err := r.GetByModel(context.Background(), testTenant, "gpt-4o")
 	if err != nil {
 		t.Fatalf("GetByModel: %v", err)
 	}
@@ -84,10 +87,10 @@ func TestSQLModelServiceReader_GetByModel(t *testing.T) {
 
 func TestSQLModelServiceReader_GetNotFound(t *testing.T) {
 	r := NewSQLModelServiceReader(newTestDB(t))
-	if _, err := r.GetByModel(context.Background(), "missing"); err == nil {
+	if _, err := r.GetByModel(context.Background(), testTenant, "missing"); err == nil {
 		t.Fatal("want not-found error")
 	}
-	if _, err := r.GetByModel(context.Background(), ""); err == nil {
+	if _, err := r.GetByModel(context.Background(), testTenant, ""); err == nil {
 		t.Fatal("want error for empty model")
 	}
 }
@@ -99,7 +102,7 @@ func TestSQLModelServiceReader_List(t *testing.T) {
 	}
 
 	r := NewSQLModelServiceReader(db)
-	all, err := r.List(context.Background())
+	all, err := r.List(context.Background(), testTenant)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

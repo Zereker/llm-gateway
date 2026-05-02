@@ -13,10 +13,8 @@ import (
 
 // ModelServiceStore 用 gorm 写 model_services 表。
 //
-// 没拆 interface——只有这一个实现，handlers 直接拿 *ModelServiceStore 用就行；
-// 加 interface 是过度设计（不会有第二实现，不需要 stub 测试，admin tests 直接连真 MySQL）。
-//
-// 实体类型用 repo.ModelService（pkg/repo 持有，gateway 也共享）。
+// 多租户：所有 query 按 tenantID 范围内（v0.1 admin 单租户操作 "default"，
+// 调用方可以传任意 tenantID 准备未来多租户）。
 type ModelServiceStore struct {
 	db *gorm.DB
 }
@@ -26,34 +24,44 @@ func NewModelServiceStore(db *gorm.DB) *ModelServiceStore {
 	return &ModelServiceStore{db: db}
 }
 
-// GetByModel 按 model 字段查；找不到返回带表 / key 信息的错误。
-func (s *ModelServiceStore) GetByModel(ctx context.Context, model string) (*repo.ModelService, error) {
-	if model == "" {
-		return nil, errors.New("model_service: empty model name")
+// GetByModel 按 (tenant, model) 查；找不到返回带 key 信息的错误。
+func (s *ModelServiceStore) GetByModel(ctx context.Context, tenantID, model string) (*repo.ModelService, error) {
+	if tenantID == "" || model == "" {
+		return nil, errors.New("model_service: tenant_id and model required")
 	}
 	var ms repo.ModelService
-	if err := s.db.WithContext(ctx).Where("model = ?", model).First(&ms).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND model = ?", tenantID, model).
+		First(&ms).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("model_service: not found: %s", model)
+			return nil, fmt.Errorf("model_service: not found: tenant=%s model=%s", tenantID, model)
 		}
 		return nil, fmt.Errorf("model_service: get by model: %w", err)
 	}
 	return &ms, nil
 }
 
-// List 全量返回；admin 列表 UI 用。
-func (s *ModelServiceStore) List(ctx context.Context) ([]repo.ModelService, error) {
+// List 列租户范围内的全部记录。
+func (s *ModelServiceStore) List(ctx context.Context, tenantID string) ([]repo.ModelService, error) {
+	if tenantID == "" {
+		return nil, errors.New("model_service: tenant_id required")
+	}
 	var out []repo.ModelService
-	if err := s.db.WithContext(ctx).Order("id ASC").Find(&out).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Where("tenant_id = ?", tenantID).
+		Order("id ASC").Find(&out).Error; err != nil {
 		return nil, fmt.Errorf("model_service: list: %w", err)
 	}
 	return out, nil
 }
 
-// Create 插入新记录；成功后回填 m.ID + m.UpdateTime。
+// Create 插入新记录；成功后回填 m.ID + m.UpdateTime。tenant_id 默认 "default"。
 func (s *ModelServiceStore) Create(ctx context.Context, m *repo.ModelService) error {
 	if m == nil || m.Model == "" || m.ServiceID == "" {
 		return errors.New("model_service: model and service_id required")
+	}
+	if m.TenantID == "" {
+		m.TenantID = "default"
 	}
 	if m.UpdateTime.IsZero() {
 		m.UpdateTime = time.Now().UTC()
@@ -67,10 +75,13 @@ func (s *ModelServiceStore) Create(ctx context.Context, m *repo.ModelService) er
 	return nil
 }
 
-// Update 按 m.Model 字段定位行，更新除 id / model 外所有字段；服务端覆写 UpdateTime。
+// Update 按 (tenant_id, model) 定位行，更新除 id / model / tenant_id 外所有字段。
 func (s *ModelServiceStore) Update(ctx context.Context, m *repo.ModelService) error {
 	if m == nil || m.Model == "" {
 		return errors.New("model_service: model required for update")
+	}
+	if m.TenantID == "" {
+		m.TenantID = "default"
 	}
 	if m.Group == "" {
 		m.Group = "default"
@@ -79,7 +90,7 @@ func (s *ModelServiceStore) Update(ctx context.Context, m *repo.ModelService) er
 
 	res := s.db.WithContext(ctx).
 		Model(&repo.ModelService{}).
-		Where("model = ?", m.Model).
+		Where("tenant_id = ? AND model = ?", m.TenantID, m.Model).
 		Updates(map[string]any{
 			"service_id":  m.ServiceID,
 			"update_time": m.UpdateTime,
@@ -92,21 +103,23 @@ func (s *ModelServiceStore) Update(ctx context.Context, m *repo.ModelService) er
 		return fmt.Errorf("model_service: update: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return fmt.Errorf("model_service: not found: %s", m.Model)
+		return fmt.Errorf("model_service: not found: tenant=%s model=%s", m.TenantID, m.Model)
 	}
 	return nil
 }
 
-func (s *ModelServiceStore) Delete(ctx context.Context, model string) error {
-	if model == "" {
-		return errors.New("model_service: empty model name")
+func (s *ModelServiceStore) Delete(ctx context.Context, tenantID, model string) error {
+	if tenantID == "" || model == "" {
+		return errors.New("model_service: tenant_id and model required")
 	}
-	res := s.db.WithContext(ctx).Where("model = ?", model).Delete(&repo.ModelService{})
+	res := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND model = ?", tenantID, model).
+		Delete(&repo.ModelService{})
 	if res.Error != nil {
 		return fmt.Errorf("model_service: delete: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return fmt.Errorf("model_service: not found: %s", model)
+		return fmt.Errorf("model_service: not found: tenant=%s model=%s", tenantID, model)
 	}
 	return nil
 }

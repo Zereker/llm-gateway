@@ -1,15 +1,12 @@
 # gateway.yaml — production 模板
 #
-# **不要把真实密钥提交到 git**：apikeys.json 由部署侧从 secret store /
-# k8s Secret / Docker volume 挂载到 paths 指定位置；
-# 业务记录（model_services / endpoints）由 admin 进程管理，存 DB。
-# 本目录只持有这份 yaml + README。
+# **不要把真实密钥提交到 git**：所有业务记录（model_services / endpoints /
+# api_keys）由 admin 进程通过 HTTP CRUD 维护，存 DB；本目录只持有 yaml + README。
 #
 # 部署：
 #   1. 把本 yaml 拷到目标机：/etc/ai-gateway/gateway.yaml
-#   2. 把 apikeys.json 挂到指定路径
-#   3. 启动 admin（cmd/admin）建表 + 录入 model_services / endpoints
-#   4. 启动 gateway：ai-gateway -config /etc/ai-gateway/gateway.yaml
+#   2. 启动 admin（cmd/admin）建表 + 录入 model_services / endpoints / api_keys
+#   3. 启动 gateway：ai-gateway -config /etc/ai-gateway/gateway.yaml
 
 server:
   addr: ":8080"
@@ -19,9 +16,6 @@ server:
 middleware:
   body_limit_bytes: 5242880     # 5 MiB（生产保守）
   timeout: 90s                  # 长 LLM 响应留余量
-
-paths:
-  apikeys: /etc/ai-gateway/apikeys.json
 
 database:
   # 生产 MySQL；用户名密码从 secret 注入（环境变量 / k8s Secret 渲染）。

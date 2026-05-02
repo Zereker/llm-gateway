@@ -1,7 +1,12 @@
 package repo
 
-// UserIdentity M2 Auth middleware 的产物（凭证查表得到的用户身份）。
+// UserIdentity M2 Auth middleware 的产物（凭证查表得到的用户身份 + 租户上下文）。
+//
+// **TenantID** 是多租户的源头：M2 把它从 api_keys 表读出，后续所有 middleware
+// （M5 ModelService / M7 Schedule 等）按 TenantID 限定查询范围。
+// v0.1 单租户运行时所有记录都是 "default"。
 type UserIdentity struct {
+	TenantID     string // 租户 ID；v0.1 默认 "default"
 	UserID       string // 平台内的用户唯一标识
 	APIKeyID     string // 命中的 API Key 的 ID（用于审计与限流维度）
 	Group        string // 限流 / 调度分组；默认 "default"，可扩展 "reserved" / "premium" 等

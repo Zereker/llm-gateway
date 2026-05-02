@@ -18,11 +18,11 @@ type stubMSProvider struct {
 	err  error
 }
 
-func (s stubMSProvider) GetByModel(_ context.Context, _ string) (*domain.ModelServiceSnapshot, error) {
+func (s stubMSProvider) GetByModel(_ context.Context, _, _ string) (*domain.ModelServiceSnapshot, error) {
 	return s.snap, s.err
 }
 
-func (s stubMSProvider) List(_ context.Context) ([]*domain.ModelServiceSnapshot, error) {
+func (s stubMSProvider) List(_ context.Context, _ string) ([]*domain.ModelServiceSnapshot, error) {
 	if s.snap == nil {
 		return nil, nil
 	}

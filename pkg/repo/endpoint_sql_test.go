@@ -8,9 +8,14 @@ import (
 	"gorm.io/datatypes"
 )
 
-// seedEndpoint 用 raw SQL 插测试 endpoint。
+const testTenant = "default"
+
+// seedEndpoint 用 raw SQL 插测试 endpoint。tenant_id 默认 "default"。
 func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 	t.Helper()
+	if ep.TenantID == "" {
+		ep.TenantID = testTenant
+	}
 	if ep.Group == "" {
 		ep.Group = "default"
 	}
@@ -20,9 +25,9 @@ func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 	caps, _ := ep.Capabilities.Value()
 	_, err := db.Exec(
 		`INSERT INTO endpoints
-		 (id, vendor, url, api_key, group_name, model, weight, rpm, tpm, rps, capabilities, extra)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.ID, ep.Vendor, ep.URL, string(ep.APIKey), ep.Group, ep.Model,
+		 (tenant_id, id, vendor, url, api_key, group_name, model, weight, rpm, tpm, rps, capabilities, extra)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ep.TenantID, ep.ID, ep.Vendor, ep.URL, string(ep.APIKey), ep.Group, ep.Model,
 		ep.Weight, ep.RPM, ep.TPM, ep.RPS, caps, datatypesJSONOrNil(ep.Extra),
 	)
 	if err != nil {
@@ -33,21 +38,21 @@ func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 func TestSQLEndpointReader_PickForModel(t *testing.T) {
 	db := newTestDB(t)
 	seedEndpoint(t, db, &Endpoint{
-		ID:     "openai_main",
-		Vendor: "openai",
-		URL:    "https://api.openai.com",
-		APIKey: Secret("sk-xxx"),
-		Group:  "default",
-		Model:  "gpt-4o",
-		Weight: 100,
-		RPM:    600,
-		TPM:    100000,
+		ID:           "openai_main",
+		Vendor:       "openai",
+		URL:          "https://api.openai.com",
+		APIKey:       Secret("sk-xxx"),
+		Group:        "default",
+		Model:        "gpt-4o",
+		Weight:       100,
+		RPM:          600,
+		TPM:          100000,
 		Capabilities: EndpointCapabilities{SelfHosted: false, PrefixCacheEnabled: true},
 		Extra:        datatypes.JSON(`{"region":"us-east-1"}`),
 	})
 
 	r := NewSQLEndpointReader(db)
-	got, err := r.PickForModel(context.Background(), "gpt-4o", "default")
+	got, err := r.PickForModel(context.Background(), testTenant, "gpt-4o", "default")
 	if err != nil {
 		t.Fatalf("PickForModel: %v", err)
 	}
@@ -67,7 +72,7 @@ func TestSQLEndpointReader_PickEmptyGroupTreatedAsDefault(t *testing.T) {
 	seedEndpoint(t, db, &Endpoint{ID: "x", Vendor: "v", URL: "u", Model: "m"})
 
 	r := NewSQLEndpointReader(db)
-	got, err := r.PickForModel(context.Background(), "m", "")
+	got, err := r.PickForModel(context.Background(), testTenant, "m", "")
 	if err != nil {
 		t.Fatalf("PickForModel: %v", err)
 	}
@@ -81,11 +86,28 @@ func TestSQLEndpointReader_PickNotFound(t *testing.T) {
 	seedEndpoint(t, db, &Endpoint{ID: "x", Vendor: "v", URL: "u", Model: "m", Group: "default"})
 
 	r := NewSQLEndpointReader(db)
-	if _, err := r.PickForModel(context.Background(), "missing", "default"); err == nil {
+	if _, err := r.PickForModel(context.Background(), testTenant, "missing", "default"); err == nil {
 		t.Fatal("want not-found for missing model")
 	}
-	if _, err := r.PickForModel(context.Background(), "m", "reserved"); err == nil {
+	if _, err := r.PickForModel(context.Background(), testTenant, "m", "reserved"); err == nil {
 		t.Fatal("want not-found for missing group")
+	}
+}
+
+func TestSQLEndpointReader_PickTenantIsolation(t *testing.T) {
+	// 不同租户同 model 互不可见
+	db := newTestDB(t)
+	seedEndpoint(t, db, &Endpoint{TenantID: "tenant_a", ID: "ep_a", Vendor: "v", URL: "u", Model: "shared"})
+	seedEndpoint(t, db, &Endpoint{TenantID: "tenant_b", ID: "ep_b", Vendor: "v", URL: "u", Model: "shared"})
+
+	r := NewSQLEndpointReader(db)
+	a, _ := r.PickForModel(context.Background(), "tenant_a", "shared", "default")
+	b, _ := r.PickForModel(context.Background(), "tenant_b", "shared", "default")
+	if a.ID != "ep_a" || b.ID != "ep_b" {
+		t.Errorf("tenant isolation broken: a=%v b=%v", a, b)
+	}
+	if _, err := r.PickForModel(context.Background(), "tenant_c", "shared", "default"); err == nil {
+		t.Error("tenant_c should see nothing")
 	}
 }
 
@@ -94,7 +116,7 @@ func TestSQLEndpointReader_GetByID(t *testing.T) {
 	seedEndpoint(t, db, &Endpoint{ID: "ep1", Vendor: "v", URL: "u", Model: "m"})
 
 	r := NewSQLEndpointReader(db)
-	got, err := r.GetByID(context.Background(), "ep1")
+	got, err := r.GetByID(context.Background(), testTenant, "ep1")
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
@@ -102,7 +124,7 @@ func TestSQLEndpointReader_GetByID(t *testing.T) {
 		t.Errorf("got %+v", got)
 	}
 
-	if _, err := r.GetByID(context.Background(), "missing"); err == nil {
+	if _, err := r.GetByID(context.Background(), testTenant, "missing"); err == nil {
 		t.Error("want not-found")
 	}
 }
@@ -114,7 +136,7 @@ func TestSQLEndpointReader_List(t *testing.T) {
 	}
 
 	r := NewSQLEndpointReader(db)
-	all, _ := r.List(context.Background())
+	all, _ := r.List(context.Background(), testTenant)
 	if len(all) != 3 {
 		t.Errorf("len = %d, want 3", len(all))
 	}

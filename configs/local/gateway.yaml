@@ -16,10 +16,6 @@ middleware:
   body_limit_bytes: 10485760  # 10 MiB
   timeout: 60s
 
-paths:
-  # map[apiKey]UserIdentity 的 JSON 文件（仍然 file-based；可考虑迁 DB）
-  apikeys: apikeys.json
-
 database:
   # ModelService / Endpoint 的存储；admin 增删改、gateway 启动期 CheckSchema + 读。
   # docker-compose 起的 MySQL：root 无密码、库名 ai_gateway

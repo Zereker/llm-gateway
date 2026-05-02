@@ -89,6 +89,7 @@ func buildEngine(cfg *config.AdminConfig) (engine *gin.Engine, srv *server.Serve
 		Token:             cfg.Admin.Token,
 		ModelServiceStore: admin.NewModelServiceStore(gdb),
 		EndpointStore:     admin.NewEndpointStore(gdb),
+		APIKeyStore:       admin.NewAPIKeyStore(gdb),
 	})
 
 	return engine, srv, nil

@@ -52,7 +52,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 		}
 
 		// 1. 选 endpoint
-		ep, err := deps.Endpoints.PickForModel(rc.Ctx, rc.ModelService.Model, rc.Identity.Group)
+		ep, err := deps.Endpoints.PickForModel(rc.Ctx, rc.Identity.TenantID, rc.ModelService.Model, rc.Identity.Group)
 		if err != nil {
 			abort(c, 503, domain.ErrTransient, err.Error())
 			return

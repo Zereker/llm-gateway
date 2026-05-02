@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -54,10 +53,10 @@ type MiddlewareConfig struct {
 
 // PathsConfig 文件型数据路径。
 //
-// ModelService / Endpoint 已迁到 DB（由 admin 管理）；usage 输出已迁到 outbox 段。
-type PathsConfig struct {
-	APIKeys string `yaml:"apikeys"` // map[apiKey]UserIdentity 的 JSON 文件
-}
+// v0.1：apikeys / model_services / endpoints 全部迁到 DB（admin 管理），
+// usage 输出迁到 outbox 段。本结构体当前为空但保留——未来如果有"必须是文件"
+// 的资源（例如 TLS 证书），加在这里。
+type PathsConfig struct{}
 
 // OutboxConfig M10 Tracing 输出 usage 事件的下游通道选择。
 //
@@ -89,14 +88,9 @@ type KafkaOutboxSection struct {
 	Topic             string `yaml:"topic"`
 }
 
-// Load 从 YAML 文件读入 Config，应用默认值，并把相对路径解析为
-// "相对 yaml 文件所在目录"。这样目录可整体迁移：
+// Load 从 YAML 文件读入 Config 并应用默认值。
 //
-//	configs/local/gateway.yaml 里写 "apikeys: apikeys.json"
-//	→ 实际指向 configs/local/apikeys.json，与 CWD 无关
-//
-// UsageLog / Database.DSN 都按 URL/字符串原样保留——MySQL DSN 是连接字符串，
-// 不是路径。
+// MySQL DSN 是连接字符串、Outbox.File.Path 约定绝对路径，都按字面量保留。
 func Load(path string) (*Config, error) {
 	if path == "" {
 		return nil, errors.New("config: empty path")
@@ -110,19 +104,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
 	}
 	c.ApplyDefaults()
-
-	base := filepath.Dir(path)
-	c.Paths.APIKeys = resolveRelative(base, c.Paths.APIKeys)
-	// UsageLog / Database.DSN 不解析（约定绝对路径 / 连接 URL）
-
 	return &c, nil
-}
-
-func resolveRelative(base, p string) string {
-	if p == "" || filepath.IsAbs(p) {
-		return p
-	}
-	return filepath.Join(base, p)
 }
 
 // ApplyDefaults 给所有未设置的字段填默认值。
@@ -143,9 +125,6 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Middleware.Timeout == 0 {
 		c.Middleware.Timeout = 60 * time.Second
-	}
-	if c.Paths.APIKeys == "" {
-		c.Paths.APIKeys = "apikeys.json"
 	}
 	if c.Database.Driver == "" {
 		c.Database.Driver = infra.DriverMySQL

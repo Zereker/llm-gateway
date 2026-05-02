@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/mysql"
@@ -37,7 +38,7 @@ func newTestEngine(t *testing.T) *gin.Engine {
 		_ = sqldb.Close()
 		t.Fatalf("infra.Migrate: %v", err)
 	}
-	for _, table := range []string{"endpoints", "model_services"} {
+	for _, table := range []string{"api_keys", "endpoints", "model_services"} {
 		if _, err := sqldb.Exec("TRUNCATE TABLE " + table); err != nil {
 			_ = sqldb.Close()
 			t.Fatalf("TRUNCATE %s: %v", table, err)
@@ -55,6 +56,7 @@ func newTestEngine(t *testing.T) *gin.Engine {
 		Token:             testToken,
 		ModelServiceStore: NewModelServiceStore(gdb),
 		EndpointStore:     NewEndpointStore(gdb),
+		APIKeyStore:       NewAPIKeyStore(gdb),
 	})
 }
 
@@ -122,6 +124,7 @@ func TestAuth_EmptyConfiguredTokenRefusesAll(t *testing.T) {
 		Token:             "",
 		ModelServiceStore: NewModelServiceStore(gdb),
 		EndpointStore:     NewEndpointStore(gdb),
+		APIKeyStore:       NewAPIKeyStore(gdb),
 	})
 
 	req := httptest.NewRequest("GET", "/admin/v1/modelservices", nil)
@@ -303,5 +306,128 @@ func TestEndpoint_UpdateMissing(t *testing.T) {
 	})
 	if w.Code != 404 {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+// === apikey CRUD ===
+
+func TestAPIKey_CreateReturnsPlaintextOnce(t *testing.T) {
+	engine := newTestEngine(t)
+
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{
+		UserID:       "alice",
+		Group:        "default",
+		ExternalUser: false,
+	})
+	if w.Code != 201 {
+		t.Fatalf("create status = %d body = %s", w.Code, w.Body.String())
+	}
+	var resp apiKeyCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.APIKey == "" {
+		t.Error("Create response should include plaintext api_key")
+	}
+	if !bytes.HasPrefix([]byte(resp.APIKey), []byte("sk-")) {
+		t.Errorf("api_key should be sk-prefixed, got %q", resp.APIKey)
+	}
+	if resp.APIKeyID == "" {
+		t.Error("api_key_id should be backfilled")
+	}
+	if !resp.Enabled {
+		t.Error("new key should default enabled")
+	}
+	if resp.TenantID != "default" {
+		t.Errorf("tenant_id = %q, want default", resp.TenantID)
+	}
+
+	// 后续 GET 不返明文
+	w = do(t, engine, "GET", "/admin/v1/apikeys/"+resp.APIKeyID, nil)
+	if w.Code != 200 {
+		t.Fatalf("get status = %d", w.Code)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte(`"api_key"`)) {
+		t.Errorf("GET response leaked api_key plaintext: %s", w.Body.String())
+	}
+}
+
+func TestAPIKey_ListByUser(t *testing.T) {
+	engine := newTestEngine(t)
+	for _, u := range []string{"alice", "alice", "bob"} {
+		w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: u})
+		if w.Code != 201 {
+			t.Fatalf("create for %s: %d", u, w.Code)
+		}
+	}
+
+	// alice 有 2 个 key
+	w := do(t, engine, "GET", "/admin/v1/apikeys?user_id=alice", nil)
+	var resp struct {
+		Items []apiKeyDTO `json:"items"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Items) != 2 {
+		t.Errorf("alice should have 2 keys, got %d", len(resp.Items))
+	}
+}
+
+func TestAPIKey_ToggleEnabled(t *testing.T) {
+	engine := newTestEngine(t)
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: "alice"})
+	var created apiKeyCreateResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+
+	// disable
+	disabled := false
+	w = do(t, engine, "PUT", "/admin/v1/apikeys/"+created.APIKeyID, apiKeyUpdateRequest{
+		Enabled: &disabled,
+	})
+	if w.Code != 200 {
+		t.Fatalf("update status = %d body = %s", w.Code, w.Body.String())
+	}
+	var got apiKeyDTO
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got.Enabled {
+		t.Error("key should be disabled after PUT")
+	}
+}
+
+func TestAPIKey_SetExpiresAt(t *testing.T) {
+	engine := newTestEngine(t)
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: "alice"})
+	var created apiKeyCreateResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+
+	expires := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	w = do(t, engine, "PUT", "/admin/v1/apikeys/"+created.APIKeyID, apiKeyUpdateRequest{
+		ExpiresAt: &expires,
+	})
+	if w.Code != 200 {
+		t.Fatalf("update status = %d", w.Code)
+	}
+	var got apiKeyDTO
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got.ExpiresAt == nil {
+		t.Fatal("expires_at not set")
+	}
+	if !got.ExpiresAt.Equal(expires) {
+		t.Errorf("expires_at = %v, want %v", got.ExpiresAt, expires)
+	}
+}
+
+func TestAPIKey_Delete(t *testing.T) {
+	engine := newTestEngine(t)
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: "alice"})
+	var created apiKeyCreateResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+
+	w = do(t, engine, "DELETE", "/admin/v1/apikeys/"+created.APIKeyID, nil)
+	if w.Code != 204 {
+		t.Errorf("delete status = %d, want 204", w.Code)
+	}
+	w = do(t, engine, "GET", "/admin/v1/apikeys/"+created.APIKeyID, nil)
+	if w.Code != 404 {
+		t.Errorf("after delete, get status = %d, want 404", w.Code)
 	}
 }

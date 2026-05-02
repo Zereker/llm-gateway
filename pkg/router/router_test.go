@@ -11,32 +11,46 @@ import (
 	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
+// stubIdentity 永远拒（router 这层只关心路由 + middleware 链是否注册，
+// auth 失败 401 已经能证明 middleware 跑了）。
+type stubIdentity struct{}
+
+func (stubIdentity) Resolve(_ context.Context, _ *repo.Credentials) (*repo.UserIdentity, error) {
+	return nil, errStubAuth
+}
+
+var errStubAuth = stubAuthError("stub: not authenticated")
+
+type stubAuthError string
+
+func (e stubAuthError) Error() string { return string(e) }
+
 // stubMSProvider for tests.
 type stubMSProvider struct{ snap *domain.ModelServiceSnapshot }
 
-func (s stubMSProvider) GetByModel(_ context.Context, _ string) (*domain.ModelServiceSnapshot, error) {
+func (s stubMSProvider) GetByModel(_ context.Context, _, _ string) (*domain.ModelServiceSnapshot, error) {
 	return s.snap, nil
 }
-func (s stubMSProvider) List(_ context.Context) ([]*domain.ModelServiceSnapshot, error) {
+func (s stubMSProvider) List(_ context.Context, _ string) ([]*domain.ModelServiceSnapshot, error) {
 	return []*domain.ModelServiceSnapshot{s.snap}, nil
 }
 
 // stubEPProvider for tests.
 type stubEPProvider struct{ ep *domain.Endpoint }
 
-func (s stubEPProvider) PickForModel(_ context.Context, _, _ string) (*domain.Endpoint, error) {
+func (s stubEPProvider) PickForModel(_ context.Context, _, _, _ string) (*domain.Endpoint, error) {
 	return s.ep, nil
 }
-func (s stubEPProvider) GetByID(_ context.Context, _ string) (*domain.Endpoint, error) {
+func (s stubEPProvider) GetByID(_ context.Context, _, _ string) (*domain.Endpoint, error) {
 	return s.ep, nil
 }
-func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
+func (s stubEPProvider) List(_ context.Context, _ string) ([]*domain.Endpoint, error) {
 	return []*domain.Endpoint{s.ep}, nil
 }
 
 func minDeps() Deps {
 	return Deps{
-		Auth:         middleware.AuthDeps{Provider: repo.NewAPIKeyProvider(nil)},
+		Auth:         middleware.AuthDeps{Provider: stubIdentity{}},
 		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
 		ModelService: middleware.ModelServiceDeps{Provider: stubMSProvider{}},
 		Schedule:     middleware.ScheduleDeps{Endpoints: stubEPProvider{}},

@@ -21,11 +21,13 @@ import (
 // Deps 是 NewEngine 的依赖集合。
 //
 // Token 校验 X-Admin-Token；空时 admin 拒所有请求（防止误把无鉴权服务上线）。
-// 两个 Store 是 gorm-backed 的具体类型；不抽 interface（无第二实现 + admin tests 直接用真 MySQL）。
+// 三个 Store 都是 gorm-backed 的具体类型；不抽 interface（无第二实现 + admin
+// tests 直接用真 MySQL）。
 type Deps struct {
 	Token             string
 	ModelServiceStore *ModelServiceStore
 	EndpointStore     *EndpointStore
+	APIKeyStore       *APIKeyStore
 }
 
 // NewEngine 构造 admin gin.Engine 并完成全部装配。
@@ -46,6 +48,7 @@ func NewEngine(deps Deps) *gin.Engine {
 	api := engine.Group("/admin/v1", authMW(deps.Token))
 	registerModelServiceRoutes(api, deps.ModelServiceStore)
 	registerEndpointRoutes(api, deps.EndpointStore)
+	registerAPIKeyRoutes(api, deps.APIKeyStore)
 
 	return engine
 }

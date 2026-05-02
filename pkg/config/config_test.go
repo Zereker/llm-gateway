@@ -50,8 +50,6 @@ server:
 middleware:
   body_limit_bytes: 1048576
   timeout: 30s
-paths:
-  apikeys: /etc/x/apikeys.json
 database:
   driver: mysql
   dsn: user:pwd@tcp(db.example.com:3306)/prod?parseTime=true
@@ -80,9 +78,6 @@ outbox:
 	}
 	if cfg.Middleware.Timeout != 30*time.Second {
 		t.Errorf("Timeout = %v", cfg.Middleware.Timeout)
-	}
-	if cfg.Paths.APIKeys != "/etc/x/apikeys.json" {
-		t.Errorf("Paths.APIKeys = %q", cfg.Paths.APIKeys)
 	}
 	if cfg.Database.Driver != infra.DriverMySQL {
 		t.Errorf("Database.Driver = %q", cfg.Database.Driver)

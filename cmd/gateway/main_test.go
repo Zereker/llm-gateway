@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/zereker-labs/ai-gateway/pkg/config"
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
 	"github.com/zereker-labs/ai-gateway/pkg/infra"
 )
 
@@ -111,8 +109,8 @@ func TestE2E_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// writeTestConfig 在 t.TempDir() 准备好 apikeys.json + outbox 输出路径，
-// 把 Database 段指向本地 MySQL（MYSQL_DSN env），然后 seedDB 写入测试数据。
+// writeTestConfig 准备好 outbox 输出路径，把 Database 段指向本地 MySQL（MYSQL_DSN env），
+// 然后 seedDB 直接 INSERT 进 model_services / endpoints / api_keys 三张表。
 //
 // 没设 MYSQL_DSN 直接 t.Skip 整组 e2e 测试。
 func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
@@ -124,18 +122,9 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	}
 
 	dir := t.TempDir()
-
-	apikeys := map[string]domain.UserIdentity{
-		"sk-test-alice": {UserID: "alice", APIKeyID: "ak_alice", Group: "default"},
-	}
-	mustWriteJSON(t, filepath.Join(dir, "apikeys.json"), apikeys)
-
 	seedDB(t, dsn, upstreamURL)
 
 	cfg := &config.Config{
-		Paths: config.PathsConfig{
-			APIKeys: filepath.Join(dir, "apikeys.json"),
-		},
 		Database: infra.DBConfig{
 			Driver: infra.DriverMySQL,
 			DSN:    dsn,
@@ -153,7 +142,7 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	return cfg
 }
 
-// seedDB 连本地 MySQL，Migrate + TRUNCATE + 写测试用 ModelService + Endpoint。
+// seedDB 连本地 MySQL，Migrate + TRUNCATE + 写测试用 ModelService + Endpoint + APIKey。
 // buildEngine 后续会再开一次连接，读到这些数据。
 func seedDB(t *testing.T, dsn, upstreamURL string) {
 	t.Helper()
@@ -167,7 +156,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	if err := infra.Migrate(ctx, db); err != nil {
 		t.Fatalf("infra.Migrate seed: %v", err)
 	}
-	for _, table := range []string{"endpoints", "model_services"} {
+	for _, table := range []string{"api_keys", "endpoints", "model_services"} {
 		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
 			t.Fatalf("TRUNCATE %s: %v", table, err)
 		}
@@ -175,30 +164,23 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 
 	// 用 raw SQL 直接 INSERT，避开 admin 写路径（gateway 测试不需要 import admin）。
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO model_services (service_id, model, group_name) VALUES (?, ?, ?)`,
-		"openai/gpt-4o", "gpt-4o", "default",
+		`INSERT INTO model_services (tenant_id, service_id, model, group_name) VALUES (?, ?, ?, ?)`,
+		"default", "openai/gpt-4o", "gpt-4o", "default",
 	); err != nil {
 		t.Fatalf("seed model_service: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO endpoints (id, vendor, url, api_key, group_name, model)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"openai_main", "openai", upstreamURL, "sk-upstream-key", "default", "gpt-4o",
+		`INSERT INTO endpoints (tenant_id, id, vendor, url, api_key, group_name, model)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"default", "openai_main", "openai", upstreamURL, "sk-upstream-key", "default", "gpt-4o",
 	); err != nil {
 		t.Fatalf("seed endpoint: %v", err)
 	}
-}
-
-func mustWriteJSON(t *testing.T, path string, v any) {
-	t.Helper()
-	data, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO api_keys (tenant_id, api_key, api_key_id, user_id, group_name, external_user, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"default", "sk-test-alice", "ak_alice_test", "alice", "default", false, true,
+	); err != nil {
+		t.Fatalf("seed api_key: %v", err)
 	}
 }

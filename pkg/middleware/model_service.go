@@ -29,7 +29,7 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 			return
 		}
 
-		ms, err := deps.Provider.GetByModel(rc.Ctx, rc.Envelope.Parsed.Model)
+		ms, err := deps.Provider.GetByModel(rc.Ctx, rc.Identity.TenantID, rc.Envelope.Parsed.Model)
 		if err != nil {
 			abort(c, 404, domain.ErrInvalid, "model not found: "+rc.Envelope.Parsed.Model)
 			return

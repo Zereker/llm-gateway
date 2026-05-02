@@ -22,30 +22,39 @@ func NewSQLModelServiceReader(db *sqlx.DB) *SQLModelServiceReader {
 	return &SQLModelServiceReader{db: db}
 }
 
-const msColumns = `id, service_id, model, update_time, spec_detail, group_name, tpm, rpm`
+const msColumns = `id, tenant_id, service_id, model, update_time, spec_detail, group_name, tpm, rpm`
 
-// GetByModel 实现 ModelServiceReader.GetByModel。
-func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*ModelService, error) {
+// GetByModel 实现 ModelServiceReader.GetByModel；按 (tenant_id, model) 查。
+func (r *SQLModelServiceReader) GetByModel(ctx context.Context, tenantID, model string) (*ModelService, error) {
+	if tenantID == "" {
+		return nil, errors.New("model_service: empty tenant_id")
+	}
 	if model == "" {
 		return nil, errors.New("model_service: empty model name")
 	}
 	var ms ModelService
 	err := r.db.GetContext(ctx, &ms, r.db.Rebind(
-		`SELECT `+msColumns+` FROM model_services WHERE model = ?`), model)
+		`SELECT `+msColumns+` FROM model_services WHERE tenant_id = ? AND model = ?`),
+		tenantID, model)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("model_service: not found: %s", model)
+			return nil, fmt.Errorf("model_service: not found: tenant=%s model=%s", tenantID, model)
 		}
 		return nil, fmt.Errorf("model_service: get by model: %w", err)
 	}
 	return &ms, nil
 }
 
-// List 实现 ModelServiceReader.List。
-func (r *SQLModelServiceReader) List(ctx context.Context) ([]*ModelService, error) {
+// List 实现 ModelServiceReader.List；只列指定 tenant 的。
+func (r *SQLModelServiceReader) List(ctx context.Context, tenantID string) ([]*ModelService, error) {
+	if tenantID == "" {
+		return nil, errors.New("model_service: empty tenant_id")
+	}
 	var rows []ModelService
 	if err := r.db.SelectContext(ctx, &rows,
-		`SELECT `+msColumns+` FROM model_services ORDER BY id`); err != nil {
+		r.db.Rebind(`SELECT `+msColumns+` FROM model_services WHERE tenant_id = ? ORDER BY id`),
+		tenantID,
+	); err != nil {
 		return nil, fmt.Errorf("model_service: list: %w", err)
 	}
 	out := make([]*ModelService, len(rows))
