@@ -116,15 +116,14 @@ func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
 	}
 
 	engine := router.NewEngine(router.Deps{
-		IdentityProvider: middleware.NewAPIKeyProvider(apiKeys),
-		Detector:         middleware.DefaultDetector{},
-		Parser:           middleware.DefaultParser{},
-		ModelService:     msp,
-		Endpoints:        epp,
-		Outbox:           outbox,
-		Tracer:           trace.NewSlogTracer(slog.Default()),
-		BodyLimit:        cfg.Middleware.BodyLimitBytes,
-		Timeout:          cfg.Middleware.Timeout,
+		BodyLimit: cfg.Middleware.BodyLimitBytes,
+		Timeout:   cfg.Middleware.Timeout,
+
+		Auth:         middleware.AuthDeps{Provider: middleware.NewAPIKeyProvider(apiKeys)},
+		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
+		ModelService: middleware.ModelServiceDeps{Provider: msp},
+		Schedule:     middleware.ScheduleDeps{Endpoints: epp},
+		Tracing:      middleware.TracingDeps{Outbox: outbox, Tracer: trace.NewSlogTracer(slog.Default())},
 	})
 
 	cleanup := func() { _ = outbox.Close() }

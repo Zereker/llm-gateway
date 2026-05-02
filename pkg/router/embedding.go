@@ -19,11 +19,11 @@ func registerEmbeddingRoutes(api *gin.RouterGroup, deps Deps) {
 		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
 		middleware.Recover(),
-		middleware.Auth(middleware.AuthDeps{Provider: deps.IdentityProvider}),
-		middleware.Envelope(middleware.EnvelopeDeps{Detector: deps.Detector, Parser: deps.Parser}),
-		middleware.ModelService(middleware.ModelServiceDeps{Provider: deps.ModelService}),
-		middleware.Schedule(middleware.ScheduleDeps{Endpoints: deps.Endpoints}),
-		middleware.Tracing(middleware.TracingDeps{Outbox: deps.Outbox, Tracer: deps.Tracer}),
+		middleware.Auth(deps.Auth),
+		middleware.Envelope(deps.Envelope),
+		middleware.ModelService(deps.ModelService),
+		middleware.Schedule(deps.Schedule),
+		middleware.Tracing(deps.Tracing),
 	)
 	embed.POST("/embeddings", noopHandler)
 }

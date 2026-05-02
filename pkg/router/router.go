@@ -10,7 +10,7 @@
 //   - image.go     /v1/images/{generations,edits,variations}
 //   - audio.go     /v1/audio/{speech,transcriptions,translations}（TTS + ASR）
 //   - embedding.go /v1/embeddings
-//   - helpers.go   ops handlers + bodyLimitMW + timeoutMW + noopHandler
+//   - helpers.go   ops handlers + noopHandler
 package router
 
 import (
@@ -19,45 +19,29 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker-labs/ai-gateway/pkg/middleware"
-	"github.com/zereker-labs/ai-gateway/pkg/trace"
-	"github.com/zereker-labs/ai-gateway/pkg/usage"
 )
 
-// Deps 是 NewEngine 的依赖集合。
+// Deps 是 NewEngine 的依赖集合，按 middleware 切分。
 //
-// 各 modality 文件按需取用：
-//   - 比如 chat 用 IdentityProvider / Detector / Parser / ModelService / Endpoints / Outbox / Tracer
-//   - image 未来可能加 Moderator
-//   - audio 未来可能加 multipart Parser
+// 每个子字段就是对应 middleware 的 Deps，调用形态零拆装：
 //
-// nil 字段：BudgetGate / Moderator nil 时对应 middleware 不注册（v0.1 都默认 NoOp）。
+//	middleware.Auth(deps.Auth)
+//	middleware.Envelope(deps.Envelope)
+//
+// 加新 middleware → 加一个新子字段；老调用不动。
+//
+// BodyLimit / Timeout 是 pre-middleware 的标量参数，不走 Deps 结构。
 type Deps struct {
-	// M2 Auth
-	IdentityProvider middleware.IdentityProvider
-
-	// M3 Envelope
-	Detector middleware.Detector
-	Parser   middleware.Parser
-
-	// M4 Budget (optional)
-	BudgetGate middleware.BudgetGate
-
-	// M5 ModelService
-	ModelService middleware.ModelServiceProvider
-
-	// M7 Schedule
-	Endpoints middleware.EndpointProvider
-
-	// M8 Moderation (optional)
-	Moderator middleware.Moderator
-
-	// M10 Tracing
-	Outbox usage.OutboxPublisher
-	Tracer trace.Tracer
-
 	// Pre-middleware
 	BodyLimit int64         // 0 = 不限制
 	Timeout   time.Duration // 0 = 不限超时
+
+	// Middleware deps（按 M-编号顺序）
+	Auth         middleware.AuthDeps         // M2
+	Envelope     middleware.EnvelopeDeps     // M3
+	ModelService middleware.ModelServiceDeps // M5
+	Schedule     middleware.ScheduleDeps     // M7
+	Tracing      middleware.TracingDeps      // M10
 }
 
 // NewEngine 构造 gin.Engine 并完成全部装配。

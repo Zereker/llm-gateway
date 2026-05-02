@@ -32,11 +32,10 @@ func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 
 func minDeps() Deps {
 	return Deps{
-		IdentityProvider: middleware.NewAPIKeyProvider(nil),
-		Detector:         middleware.DefaultDetector{},
-		Parser:           middleware.DefaultParser{},
-		ModelService:     stubMSProvider{},
-		Endpoints:        stubEPProvider{},
+		Auth:         middleware.AuthDeps{Provider: middleware.NewAPIKeyProvider(nil)},
+		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
+		ModelService: middleware.ModelServiceDeps{Provider: stubMSProvider{}},
+		Schedule:     middleware.ScheduleDeps{Endpoints: stubEPProvider{}},
 	}
 }
 
