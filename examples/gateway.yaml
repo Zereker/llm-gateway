@@ -1,0 +1,24 @@
+# gateway.yaml — ai-gateway 启动配置
+#
+# 所有字段都可省略；省略的取 pkg/config.ApplyDefaults 中的默认值。
+# 运行：
+#   go run ./cmd/gateway -config ./examples/gateway.yaml
+
+server:
+  addr: ":8080"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+middleware:
+  body_limit_bytes: 10485760  # 10 MiB
+  timeout: 60s                # 网关级请求 timeout
+
+paths:
+  # map[apiKey]UserIdentity 的 JSON 文件
+  apikeys: ./examples/apikeys.json
+
+  # pkg/store.FileKV 根目录；下面包含 modelservice/ 和 endpoint/ 子目录
+  kv_root: ./examples/kv
+
+  # pkg/usage.FileOutbox 写入路径（计量事件 JSONL）
+  usage_log: /tmp/ai-gateway-usage.log
