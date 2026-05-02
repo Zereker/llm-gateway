@@ -7,8 +7,8 @@ import "github.com/zereker-labs/ai-gateway/pkg/ctx"
 // 默认实现走 pkg/config.Store + 内存 LRU 缓存；
 // 详见 docs/architecture/06-pluggable-infra.md。
 //
-// 限流的原子计数（INCR + 比较）走 pkg/store.Cache.EvalLimit，不在本接口；
-// Checker 实现同时持有 ConfigStore + store.Cache。
+// 限流的原子计数（INCR + 比较）由 Checker 实现自己定义底层 KV / Lua 抽象；
+// 不在本接口。
 type ConfigStore interface {
 	GetAPIKeyLimit(apiKeyID, serviceID string) *ctx.LayerSpec
 	GetUserLimit(userID, serviceID string) *ctx.LayerSpec
