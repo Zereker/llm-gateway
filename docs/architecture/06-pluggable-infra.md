@@ -203,12 +203,12 @@ func (c *StripeChecker) Check(ctx, userID string) (domain.BudgetStatus, error) {
 }
 ```
 
-## 5. config.Store
+## 5. store.KV
 
 `modelservice.Loader` / `ratelimit.ConfigStore` / `schedule.Profile` 等都依赖此接口下发配置。
 
 ```go
-// pkg/config/store.go
+// pkg/store/store.go
 package config
 
 import (
@@ -250,7 +250,7 @@ const (
 ### 5.1 默认：文件 + fsnotify
 
 ```go
-// pkg/config/file/store.go
+// pkg/store/file/store.go
 package file
 
 type Store struct {
@@ -270,7 +270,7 @@ type Store struct {
 ### 5.2 可选：etcd v3
 
 ```go
-// pkg/config/etcd/store.go
+// pkg/store/etcd/store.go
 package etcd
 
 type Store struct {
@@ -284,7 +284,7 @@ type Store struct {
 ### 5.3 可选：SQLite + 轮询
 
 ```go
-// pkg/config/sqlite/store.go
+// pkg/store/sqlite/store.go
 package sqlite
 
 type Store struct {
@@ -539,7 +539,7 @@ type Tracer struct {
 
 ## 10. modelservice.Loader
 
-M5 ModelService middleware 的依赖；底层走 `config.Store` + LRU 缓存。
+M5 ModelService middleware 的依赖；底层走 `store.KV` + LRU 缓存。
 
 ```go
 // pkg/domain/loader.go
@@ -553,19 +553,19 @@ type Loader interface {
 }
 ```
 
-### 10.1 默认实现：从 config.Store 加载
+### 10.1 默认实现：从 store.KV 加载
 
 ```go
 // pkg/domain/loader/loader.go
 package loader
 
 type Loader struct {
-    Store config.Store
+    Store store.KV
     Cache *lru.Cache[string, *domain.ModelServiceSnapshot] // model name → snapshot
     // Watch /modelservice/* 自动 invalidate
 }
 
-func New(s config.Store, cacheSize int) *Loader {
+func New(s store.KV, cacheSize int) *Loader {
     l := &Loader{Store: s, Cache: lru.New(cacheSize)}
     go l.watch() // Watch + invalidate
     return l
@@ -601,7 +601,7 @@ import (
     "github.com/zereker-labs/ai-gateway/pkg/middleware/apikey"
     "github.com/zereker-labs/ai-gateway/pkg/middleware/alwayspass"
     "github.com/zereker-labs/ai-gateway/pkg/cache/memory"
-    "github.com/zereker-labs/ai-gateway/pkg/config/file"
+    "github.com/zereker-labs/ai-gateway/pkg/store/file"
     "github.com/zereker-labs/ai-gateway/pkg/usage/file"
     "github.com/zereker-labs/ai-gateway/pkg/middleware"
     "github.com/zereker-labs/ai-gateway/pkg/trace/slog"
@@ -672,7 +672,7 @@ func handler(c *gin.Context) {
 |------|-----------|---------|------|
 | `middleware.IdentityProvider` | `apikey` (file) | `apikey` (DB) / `jwt` (JWKS) | 自定义实现接入企业 SSO / IAM |
 | `middleware.BudgetGate` | `alwayspass` | 自定义对接计费系统 | 若有付费体系 |
-| `config.Store` | `file` | `etcd` | 多实例需要强一致 + Watch |
+| `store.KV` | `file` | `etcd` | 多实例需要强一致 + Watch |
 | `cache.Store` | `memory` | `redis` | 多实例共享限流桶 / cooldown |
 | `usage.OutboxPublisher` | `file` | `kafka` | 离线计价聚合需要 |
 | `middleware.Moderator` | `nil` (NoOp) | `openai` / 自建 | 合规要求时启用 |

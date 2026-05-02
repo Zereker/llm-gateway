@@ -3,61 +3,62 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
-	"github.com/zereker-labs/ai-gateway/pkg/config"
+	"github.com/zereker-labs/ai-gateway/pkg/store"
 )
 
-// minimal in-memory config.Store for tests.
-type memStore struct {
+// minimal in-memory store.KV for tests.
+type memKV struct {
 	data map[string]json.RawMessage
 }
 
-func newMem(seed map[string]string) *memStore {
-	m := &memStore{data: map[string]json.RawMessage{}}
+func newMem(seed map[string]string) *memKV {
+	m := &memKV{data: map[string]json.RawMessage{}}
 	for k, v := range seed {
 		m.data[k] = json.RawMessage(v)
 	}
 	return m
 }
 
-func (m *memStore) Get(_ context.Context, key string) (json.RawMessage, error) {
+func (m *memKV) Get(_ context.Context, key string) (json.RawMessage, error) {
 	return m.data[key], nil
 }
 
-func (m *memStore) List(_ context.Context, prefix string) (map[string]json.RawMessage, error) {
+func (m *memKV) List(_ context.Context, prefix string) (map[string]json.RawMessage, error) {
 	out := map[string]json.RawMessage{}
 	for k, v := range m.data {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+		if strings.HasPrefix(k, prefix) {
 			out[k] = v
 		}
 	}
 	return out, nil
 }
 
-func (m *memStore) Watch(_ context.Context, _ string) (<-chan config.Event, error) {
-	return make(chan config.Event), nil
+func (m *memKV) Watch(_ context.Context, _ string) (<-chan store.Event, error) {
+	return make(chan store.Event), nil
 }
 
-func (m *memStore) Put(_ context.Context, key string, value json.RawMessage) error {
+func (m *memKV) Put(_ context.Context, key string, value json.RawMessage) error {
 	m.data[key] = value
 	return nil
 }
 
-func (m *memStore) Delete(_ context.Context, key string) error {
+func (m *memKV) Delete(_ context.Context, key string) error {
 	delete(m.data, key)
 	return nil
 }
 
-func TestConfigBackedModelServiceProvider_GetByModel(t *testing.T) {
-	store := newMem(map[string]string{
-		"modelservice/svc_gpt4o": `{"ID":1,"ServiceID":"openai/gpt-4o","Model":"gpt-4o","Group":"default"}`,
+func TestKVModelServiceProvider_GetByModel(t *testing.T) {
+	kv := newMem(map[string]string{
+		"modelservice/svc_gpt4o":  `{"ID":1,"ServiceID":"openai/gpt-4o","Model":"gpt-4o","Group":"default"}`,
 		"modelservice/svc_claude": `{"ID":2,"ServiceID":"anthropic/claude","Model":"claude-3.5-sonnet"}`,
 	})
 
-	p, err := NewConfigBackedModelServiceProvider(context.Background(), store, "modelservice")
+	p, err := NewKVModelServiceProvider(context.Background(), kv, "modelservice")
 	if err != nil {
-		t.Fatalf("NewConfigBackedModelServiceProvider: %v", err)
+		t.Fatalf("NewKVModelServiceProvider: %v", err)
 	}
 
 	snap, err := p.GetByModel(context.Background(), "gpt-4o")
@@ -69,9 +70,9 @@ func TestConfigBackedModelServiceProvider_GetByModel(t *testing.T) {
 	}
 }
 
-func TestConfigBackedModelServiceProvider_NotFound(t *testing.T) {
-	store := newMem(nil)
-	p, _ := NewConfigBackedModelServiceProvider(context.Background(), store, "modelservice")
+func TestKVModelServiceProvider_NotFound(t *testing.T) {
+	kv := newMem(nil)
+	p, _ := NewKVModelServiceProvider(context.Background(), kv, "modelservice")
 
 	if _, err := p.GetByModel(context.Background(), "missing"); err == nil {
 		t.Fatal("want not found error")
@@ -81,32 +82,32 @@ func TestConfigBackedModelServiceProvider_NotFound(t *testing.T) {
 	}
 }
 
-func TestConfigBackedModelServiceProvider_RejectsBadJSON(t *testing.T) {
-	store := newMem(map[string]string{
+func TestKVModelServiceProvider_RejectsBadJSON(t *testing.T) {
+	kv := newMem(map[string]string{
 		"modelservice/bad": `{not valid json}`,
 	})
-	_, err := NewConfigBackedModelServiceProvider(context.Background(), store, "modelservice")
+	_, err := NewKVModelServiceProvider(context.Background(), kv, "modelservice")
 	if err == nil {
 		t.Fatal("want parse error")
 	}
 }
 
-func TestConfigBackedModelServiceProvider_RejectsEmptyModelField(t *testing.T) {
-	store := newMem(map[string]string{
+func TestKVModelServiceProvider_RejectsEmptyModelField(t *testing.T) {
+	kv := newMem(map[string]string{
 		"modelservice/m1": `{"ID":1,"ServiceID":"x"}`, // no Model
 	})
-	_, err := NewConfigBackedModelServiceProvider(context.Background(), store, "modelservice")
+	_, err := NewKVModelServiceProvider(context.Background(), kv, "modelservice")
 	if err == nil {
 		t.Fatal("want error for missing Model field")
 	}
 }
 
-func TestConfigBackedModelServiceProvider_List(t *testing.T) {
-	store := newMem(map[string]string{
+func TestKVModelServiceProvider_List(t *testing.T) {
+	kv := newMem(map[string]string{
 		"modelservice/m1": `{"Model":"a"}`,
 		"modelservice/m2": `{"Model":"b"}`,
 	})
-	p, _ := NewConfigBackedModelServiceProvider(context.Background(), store, "modelservice")
+	p, _ := NewKVModelServiceProvider(context.Background(), kv, "modelservice")
 
 	all, err := p.List(context.Background())
 	if err != nil {
@@ -117,14 +118,14 @@ func TestConfigBackedModelServiceProvider_List(t *testing.T) {
 	}
 }
 
-func TestConfigBackedModelServiceProvider_Reload(t *testing.T) {
-	store := newMem(map[string]string{
+func TestKVModelServiceProvider_Reload(t *testing.T) {
+	kv := newMem(map[string]string{
 		"modelservice/m1": `{"Model":"a"}`,
 	})
-	p, _ := NewConfigBackedModelServiceProvider(context.Background(), store, "modelservice")
+	p, _ := NewKVModelServiceProvider(context.Background(), kv, "modelservice")
 
 	// add another model and reload
-	store.data["modelservice/m2"] = json.RawMessage(`{"Model":"b"}`)
+	kv.data["modelservice/m2"] = json.RawMessage(`{"Model":"b"}`)
 	if err := p.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}

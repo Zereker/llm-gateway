@@ -7,37 +7,38 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker-labs/ai-gateway/pkg/store"
 )
 
-// ConfigBackedModelServiceProvider 是 ModelServiceProvider 的默认实现：
-// 启动期一次性从 config.Store 的指定 prefix 下加载所有 ModelServiceSnapshot 到内存。
+// KVModelServiceProvider 是 ModelServiceProvider 的默认实现：
+// 启动期一次性从 store.KV 的指定 prefix 下加载所有 ModelServiceSnapshot 到内存，
+// 之后请求路径只读内存（无 Watch）。
 //
-// **v0.1 不支持 Watch / 热加载**；配置变更需调用 Reload 或重启进程。
-type ConfigBackedModelServiceProvider struct {
-	store  config.Store
+// **v0.1 不支持热加载**；变更需调用 Reload 或重启进程。
+type KVModelServiceProvider struct {
+	kv     store.KV
 	prefix string
 
 	mu      sync.RWMutex
 	byModel map[string]*domain.ModelServiceSnapshot
 }
 
-// NewConfigBackedModelServiceProvider 构造并立即从 store 拉一次全量。
+// NewKVModelServiceProvider 构造并立即从 kv 拉一次全量。
 //
 // prefix 推荐 "modelservice"；约定 store 中每个 key 的 value 是 JSON 序列化的
 // domain.ModelServiceSnapshot。
-func NewConfigBackedModelServiceProvider(c context.Context, store config.Store, prefix string) (*ConfigBackedModelServiceProvider, error) {
-	p := &ConfigBackedModelServiceProvider{store: store, prefix: prefix}
+func NewKVModelServiceProvider(c context.Context, kv store.KV, prefix string) (*KVModelServiceProvider, error) {
+	p := &KVModelServiceProvider{kv: kv, prefix: prefix}
 	if err := p.Reload(c); err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-// Reload 重新从 config.Store 全量加载（适合手动触发热加载）。
-func (p *ConfigBackedModelServiceProvider) Reload(c context.Context) error {
-	raws, err := p.store.List(c, p.prefix)
+// Reload 重新从 store 全量加载（适合手动触发热加载）。
+func (p *KVModelServiceProvider) Reload(c context.Context) error {
+	raws, err := p.kv.List(c, p.prefix)
 	if err != nil {
 		return fmt.Errorf("model_service: list %q: %w", p.prefix, err)
 	}
@@ -59,7 +60,7 @@ func (p *ConfigBackedModelServiceProvider) Reload(c context.Context) error {
 }
 
 // GetByModel 实现 ModelServiceProvider.GetByModel。
-func (p *ConfigBackedModelServiceProvider) GetByModel(_ context.Context, model string) (*domain.ModelServiceSnapshot, error) {
+func (p *KVModelServiceProvider) GetByModel(_ context.Context, model string) (*domain.ModelServiceSnapshot, error) {
 	if model == "" {
 		return nil, errors.New("model_service: empty model name")
 	}
@@ -73,7 +74,7 @@ func (p *ConfigBackedModelServiceProvider) GetByModel(_ context.Context, model s
 }
 
 // List 实现 ModelServiceProvider.List。
-func (p *ConfigBackedModelServiceProvider) List(_ context.Context) ([]*domain.ModelServiceSnapshot, error) {
+func (p *KVModelServiceProvider) List(_ context.Context) ([]*domain.ModelServiceSnapshot, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	out := make([]*domain.ModelServiceSnapshot, 0, len(p.byModel))
@@ -84,4 +85,4 @@ func (p *ConfigBackedModelServiceProvider) List(_ context.Context) ([]*domain.Mo
 }
 
 // 编译期断言。
-var _ ModelServiceProvider = (*ConfigBackedModelServiceProvider)(nil)
+var _ ModelServiceProvider = (*KVModelServiceProvider)(nil)

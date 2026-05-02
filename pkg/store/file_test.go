@@ -1,4 +1,4 @@
-package config
+package store
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-func TestFileStore_PutGet(t *testing.T) {
-	s, _ := NewFileStore(t.TempDir())
+func TestFileKV_PutGet(t *testing.T) {
+	s, _ := NewFileKV(t.TempDir())
 	ctx := context.Background()
 
 	if err := s.Put(ctx, "ratelimit/user/alice/svc_gpt4o", json.RawMessage(`{"RPM":60}`)); err != nil {
@@ -23,15 +23,15 @@ func TestFileStore_PutGet(t *testing.T) {
 	}
 }
 
-func TestFileStore_GetMissing(t *testing.T) {
-	s, _ := NewFileStore(t.TempDir())
+func TestFileKV_GetMissing(t *testing.T) {
+	s, _ := NewFileKV(t.TempDir())
 	if _, err := s.Get(context.Background(), "no-such"); err == nil {
 		t.Fatal("want error for missing key")
 	}
 }
 
-func TestFileStore_List(t *testing.T) {
-	s, _ := NewFileStore(t.TempDir())
+func TestFileKV_List(t *testing.T) {
+	s, _ := NewFileKV(t.TempDir())
 	ctx := context.Background()
 
 	_ = s.Put(ctx, "modelservice/gpt-4o", json.RawMessage(`{"Model":"gpt-4o"}`))
@@ -50,8 +50,8 @@ func TestFileStore_List(t *testing.T) {
 	}
 }
 
-func TestFileStore_ListMissingPrefix(t *testing.T) {
-	s, _ := NewFileStore(t.TempDir())
+func TestFileKV_ListMissingPrefix(t *testing.T) {
+	s, _ := NewFileKV(t.TempDir())
 	got, err := s.List(context.Background(), "no-such-prefix")
 	if err != nil {
 		t.Fatalf("List should not error on missing prefix: %v", err)
@@ -61,8 +61,8 @@ func TestFileStore_ListMissingPrefix(t *testing.T) {
 	}
 }
 
-func TestFileStore_Delete(t *testing.T) {
-	s, _ := NewFileStore(t.TempDir())
+func TestFileKV_Delete(t *testing.T) {
+	s, _ := NewFileKV(t.TempDir())
 	ctx := context.Background()
 
 	_ = s.Put(ctx, "k", json.RawMessage(`"v"`))
@@ -78,8 +78,8 @@ func TestFileStore_Delete(t *testing.T) {
 	}
 }
 
-func TestFileStore_WatchClosesOnCtx(t *testing.T) {
-	s, _ := NewFileStore(t.TempDir())
+func TestFileKV_WatchClosesOnCtx(t *testing.T) {
+	s, _ := NewFileKV(t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ch, err := s.Watch(ctx, "modelservice")
@@ -88,22 +88,19 @@ func TestFileStore_WatchClosesOnCtx(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Fatal("want closed channel after ctx cancel; got value")
-		}
+	if _, ok := <-ch; ok {
+		t.Fatal("want closed channel after ctx cancel; got value")
 	}
 }
 
-func TestFileStore_EmptyRootRejected(t *testing.T) {
-	if _, err := NewFileStore(""); err == nil {
+func TestFileKV_EmptyRootRejected(t *testing.T) {
+	if _, err := NewFileKV(""); err == nil {
 		t.Fatal("want error for empty root")
 	}
 }
 
-func TestFileStore_PathOf(t *testing.T) {
-	s, _ := NewFileStore("/tmp/test")
+func TestFileKV_PathOf(t *testing.T) {
+	s, _ := NewFileKV("/tmp/test")
 	want := filepath.Join("/tmp/test", "a/b/c.json")
 	if got := s.pathOf("a/b/c"); got != want {
 		t.Errorf("pathOf = %q, want %q", got, want)

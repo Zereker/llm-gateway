@@ -1,19 +1,21 @@
-// Package config 定义 ConfigStore 接口（业务配置的实时分发）。
+// Package store 定义带 Watch 的 KV 存储抽象：
+// 业务侧用它存"运行期可变的、需推送变更"的数据
+// （如 ModelService 配置 / RateLimit 阈值 / SchedulerProfile / 端点列表 等）。
 //
-// 默认实现：file (fsnotify) / etcd / sqlite，详见 docs/architecture/06。
-package config
+// 默认实现见 file.go（目录 + 文件）；生产可挂 etcd / sqlite / 其他 KV 后端。
+package store
 
 import (
 	"context"
 	"encoding/json"
 )
 
-// Store 配置中心抽象。
+// KV 带 Watch 的 KV 存储抽象。
 //
 // Implementations MUST be safe for concurrent Get / List / Put / Delete from
 // multiple goroutines. Watch 返回的 channel 由单一 consumer 读取；多个 Watch
 // 调用应返回独立 channel。
-type Store interface {
+type KV interface {
 	// Get 读单个 key
 	Get(c context.Context, key string) (json.RawMessage, error)
 
@@ -30,7 +32,7 @@ type Store interface {
 	Delete(c context.Context, key string) error
 }
 
-// Event 配置变更事件。
+// Event 变更事件。
 type Event struct {
 	Type  EventType
 	Key   string
