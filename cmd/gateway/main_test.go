@@ -28,11 +28,11 @@ func TestE2E_OpenAIChatCompletions(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := writeTestConfig(t, upstream.URL)
-	engine, cleanup, err := buildEngine(cfg)
+	engine, srv, err := buildEngine(cfg)
 	if err != nil {
 		t.Fatalf("buildEngine: %v", err)
 	}
-	defer cleanup()
+	defer srv.Close()
 
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -60,11 +60,11 @@ func TestE2E_OpenAIChatCompletions(t *testing.T) {
 
 func TestE2E_RejectsMissingAuth(t *testing.T) {
 	cfg := writeTestConfig(t, "http://example.invalid")
-	engine, cleanup, err := buildEngine(cfg)
+	engine, srv, err := buildEngine(cfg)
 	if err != nil {
 		t.Fatalf("buildEngine: %v", err)
 	}
-	defer cleanup()
+	defer srv.Close()
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
 	w := httptest.NewRecorder()
@@ -77,11 +77,11 @@ func TestE2E_RejectsMissingAuth(t *testing.T) {
 
 func TestE2E_HealthEndpoints(t *testing.T) {
 	cfg := writeTestConfig(t, "http://example.invalid")
-	engine, cleanup, err := buildEngine(cfg)
+	engine, srv, err := buildEngine(cfg)
 	if err != nil {
 		t.Fatalf("buildEngine: %v", err)
 	}
-	defer cleanup()
+	defer srv.Close()
 
 	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
 		w := httptest.NewRecorder()
@@ -94,11 +94,11 @@ func TestE2E_HealthEndpoints(t *testing.T) {
 
 func TestE2E_RejectsUnknownModel(t *testing.T) {
 	cfg := writeTestConfig(t, "http://example.invalid")
-	engine, cleanup, err := buildEngine(cfg)
+	engine, srv, err := buildEngine(cfg)
 	if err != nil {
 		t.Fatalf("buildEngine: %v", err)
 	}
-	defer cleanup()
+	defer srv.Close()
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"nonexistent-model","messages":[]}`))

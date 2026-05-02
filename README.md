@@ -22,6 +22,7 @@ ai-gateway/
 │   ├── config/          gateway.yaml loader (boot config)
 │   ├── domain/          shared domain types (RequestContext, Endpoint, ...)
 │   ├── infra/           infrastructure adapters (sqlx + schema, kafka producer)
+│   ├── server/          process lifecycle: open infra, run http, close in LIFO order
 │   ├── repo/            data-access layer: Reader/Writer interfaces + sqlx impls
 │   ├── middleware/      M1-M10 + helpers + default impls
 │   ├── router/          gin engine + per-modality route registration

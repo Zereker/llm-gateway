@@ -4,32 +4,32 @@
 //
 //	go run ./cmd/gateway -config ./configs/local/gateway.yaml
 //
-// gateway.yaml 见 configs/local/gateway.yaml；包含 server / middleware / paths / database 四段。
+// gateway.yaml 见 configs/local/gateway.yaml；包含 server / middleware / paths /
+// database / outbox 五段。
 //
 // 路由与 middleware 装配在 pkg/router；DB（model_services / endpoints）由
-// admin 进程通过 cmd/admin 维护，gateway 启动期 Migrate + 读全量。
+// admin 进程通过 cmd/admin 维护，gateway 启动期 CheckSchema + 读全量。
+//
+// lifecycle（infra Open + 信号处理 + 倒序 close）走 pkg/server，本文件只做
+// 配置加载 + 业务装配 + 把 engine 交给 server。
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
 	"github.com/zereker-labs/ai-gateway/pkg/middleware"
 	"github.com/zereker-labs/ai-gateway/pkg/repo"
 	"github.com/zereker-labs/ai-gateway/pkg/router"
+	"github.com/zereker-labs/ai-gateway/pkg/server"
 	"github.com/zereker-labs/ai-gateway/pkg/trace"
 	"github.com/zereker-labs/ai-gateway/pkg/usage"
 
@@ -47,117 +47,91 @@ func main() {
 	}
 }
 
-// run 加载 config → 构造 engine → 启动 HTTP → 等待信号优雅退出。
 func run(configPath string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
 
-	engine, cleanup, err := buildEngine(cfg)
+	engine, srv, err := buildEngine(cfg)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
 
-	srv := &http.Server{
-		Addr:              cfg.Server.Addr,
-		Handler:           engine,
-		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
-	}
-
-	serverErr := make(chan error, 1)
-	go func() {
-		slog.Info("ai-gateway listening", "addr", cfg.Server.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
-		}
-	}()
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case err := <-serverErr:
-		return err
-	case s := <-sig:
-		slog.Info("shutdown signal", "signal", s.String())
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	return srv.Serve(cfg.Server.Addr, engine, cfg.Server.ReadHeaderTimeout, cfg.Server.ShutdownTimeout)
 }
 
-// buildEngine 构造所有 deps 并装配 router.NewEngine。
+// buildEngine 构造 deps 并装配 router.NewEngine；同时返回 *server.Server，
+// 供调用方决定 Serve（生产）或 Close（测试）。
 //
-// gateway 不拥有 schema：启动只 Open + repo.CheckSchema 验证表存在；缺表
+// gateway 不拥有 schema：启动只 OpenDB + repo.CheckSchema 验证表存在；缺表
 // 直接报错退出（schema 由 cmd/admin 维护）。DB 里没有 model_service /
 // endpoint 时 gateway 仍能启动，请求过来时 M5 / M7 会 404 / 503。
-func buildEngine(cfg *config.Config) (*gin.Engine, func(), error) {
-	ctx := context.Background()
+//
+// 任意中间步骤失败时通过 defer 把已 open 的 infra 一并 Close，避免泄漏。
+func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, err error) {
+	srv = server.New(slog.Default())
+	defer func() {
+		if err != nil {
+			srv.Close()
+		}
+	}()
 
 	apiKeys, err := loadAPIKeys(cfg.Paths.APIKeys)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load apikeys: %w", err)
 	}
 
-	sqldb, err := infra.Open(cfg.Database)
+	sqldb, err := srv.OpenDB(cfg.Database)
 	if err != nil {
 		return nil, nil, fmt.Errorf("infra.Open: %w", err)
 	}
-	if err := repo.CheckSchema(ctx, sqldb); err != nil {
-		_ = sqldb.Close()
+	if err = repo.CheckSchema(context.Background(), sqldb); err != nil {
 		return nil, nil, err
 	}
 
-	msRepo := repo.NewSQLModelServiceRepo(sqldb)
-	epRepo := repo.NewSQLEndpointRepo(sqldb)
-
-	outbox, closeOutbox, err := buildOutbox(cfg.Outbox)
+	outbox, err := buildOutbox(srv, cfg.Outbox)
 	if err != nil {
-		_ = sqldb.Close()
 		return nil, nil, fmt.Errorf("usage outbox: %w", err)
 	}
 
-	engine := router.NewEngine(router.Deps{
+	engine = router.NewEngine(router.Deps{
 		BodyLimit: cfg.Middleware.BodyLimitBytes,
 		Timeout:   cfg.Middleware.Timeout,
 
 		Auth:         middleware.AuthDeps{Provider: repo.NewAPIKeyProvider(apiKeys)},
 		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
-		ModelService: middleware.ModelServiceDeps{Provider: msRepo},
-		Schedule:     middleware.ScheduleDeps{Endpoints: epRepo},
+		ModelService: middleware.ModelServiceDeps{Provider: repo.NewSQLModelServiceRepo(sqldb)},
+		Schedule:     middleware.ScheduleDeps{Endpoints: repo.NewSQLEndpointRepo(sqldb)},
 		Tracing:      middleware.TracingDeps{Outbox: outbox, Tracer: trace.NewSlogTracer(slog.Default())},
 	})
 
-	cleanup := func() {
-		_ = closeOutbox()
-		_ = sqldb.Close()
-	}
-	return engine, cleanup, nil
+	return engine, srv, nil
 }
 
-// buildOutbox 按 cfg.Outbox.Driver 构造 OutboxPublisher + 它的 close 函数。
+// buildOutbox 按 cfg.Driver 构造 OutboxPublisher。
 //
-// 接口（OutboxPublisher）只声明 Publish；Close 走 io.Closer 是另一回事。
-// 这里同时返回两者，省掉调用方做 io.Closer 类型断言的体操。
-func buildOutbox(cfg config.OutboxConfig) (usage.OutboxPublisher, func() error, error) {
+// 把 close 注册进 srv：
+//   - file: file 句柄关闭
+//   - kafka: producer 关闭由 srv.NewKafkaProducer 自动注册；KafkaOutbox 自身共享
+//     producer 引用，不再额外 AddCloser（避免双关）。
+func buildOutbox(srv *server.Server, cfg config.OutboxConfig) (usage.OutboxPublisher, error) {
 	switch cfg.Driver {
 	case "file":
 		ob, err := usage.NewFileOutbox(cfg.File.Path)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		return ob, ob.Close, nil
+		srv.AddCloser("file-outbox", ob.Close)
+		return ob, nil
 	case "kafka":
-		producer, err := infra.NewKafkaProducer(cfg.Kafka.KafkaConfig)
+		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		ob := usage.NewKafkaOutbox(producer, cfg.Kafka.Topic)
-		return ob, ob.Close, nil
+		return usage.NewKafkaOutbox(producer, cfg.Kafka.Topic), nil
 	default:
-		return nil, nil, fmt.Errorf("unknown outbox driver %q (want file|kafka)", cfg.Driver)
+		return nil, fmt.Errorf("unknown outbox driver %q (want file|kafka)", cfg.Driver)
 	}
 }
 
