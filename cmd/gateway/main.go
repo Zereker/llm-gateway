@@ -83,10 +83,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		return nil, nil, err
 	}
 
-	apikeyProvider, err := repo.NewSQLAPIKeyProvider(context.Background(), sqldb)
-	if err != nil {
-		return nil, nil, fmt.Errorf("apikey provider: %w", err)
-	}
+	apikeyProvider := repo.NewSQLAPIKeyProvider(sqldb)
 
 	outbox, err := buildOutbox(srv, cfg.Outbox)
 	if err != nil {
