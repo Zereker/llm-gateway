@@ -75,8 +75,7 @@ func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 
 func minDeps() Deps {
 	return Deps{
-		Auth:         middleware.AuthDeps{Provider: stubIdentity{}},
-		Envelope:     middleware.EnvelopeDeps{Parser: middleware.DefaultParser{}},
+		Auth: middleware.AuthDeps{Provider: stubIdentity{}},
 		ModelService: middleware.ModelServiceDeps{
 			Provider:      stubMSProvider{},
 			Subscriptions: stubSubscriptions{},

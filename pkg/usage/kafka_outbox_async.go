@@ -99,7 +99,7 @@ func (o *AsyncKafkaOutbox) Publish(ctx context.Context, evt *OutboxEvent) error 
 	}
 	select {
 	case o.queue <- evt:
-		metric.Observe("ai_gateway.usage.bus.queue_depth", float64(len(o.queue)))
+		metric.Gauge(metric.UsageBusQueueDepth, float64(len(o.queue)))
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -124,11 +124,11 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 		err := o.inner.Write(ctx, o.topic, []byte(evt.Key), evt.Payload)
 		cancel()
 		if err == nil {
-			metric.Inc("ai_gateway.usage.bus.publish_total", "result", "ok")
+			metric.Inc(metric.UsageBusPublishTotal, "result", "ok")
 			return
 		}
 		if attempt < o.maxRetries {
-			metric.Inc("ai_gateway.usage.bus.publish_total", "result", "retry")
+			metric.Inc(metric.UsageBusPublishTotal, "result", "retry")
 			time.Sleep(delay)
 			delay *= 2
 			continue
@@ -136,7 +136,7 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 		// 重试耗尽
 		o.logger.Warn("usage outbox: publish exhausted retries",
 			"topic", o.topic, "key", evt.Key, "err", err)
-		metric.Inc("ai_gateway.usage.bus.publish_total", "result", "exhausted")
+		metric.Inc(metric.UsageBusPublishTotal, "result", "exhausted")
 		o.toDLQ(evt, err)
 		return
 	}
@@ -146,7 +146,7 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 	if o.dlqTopic == "" {
 		o.dropped.Add(1)
-		metric.Inc("ai_gateway.usage.bus.dropped_total", "reason", "no_dlq")
+		metric.Inc(metric.UsageBusDroppedTotal, "reason", "no_dlq")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -156,12 +156,12 @@ func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 		o.topic, originalErr.Error(), string(evt.Payload)))
 	if err := o.inner.Write(ctx, o.dlqTopic, []byte(evt.Key), dlqPayload); err != nil {
 		o.dropped.Add(1)
-		metric.Inc("ai_gateway.usage.bus.dropped_total", "reason", "dlq_failed")
+		metric.Inc(metric.UsageBusDroppedTotal, "reason", "dlq_failed")
 		o.logger.Error("usage outbox: DLQ also failed; event lost",
 			"dlq_topic", o.dlqTopic, "key", evt.Key, "err", err)
 		return
 	}
-	metric.Inc("ai_gateway.usage.bus.publish_total", "result", "dlq")
+	metric.Inc(metric.UsageBusPublishTotal, "result", "dlq")
 }
 
 // Dropped 累计真丢失的事件数（重试耗尽 + DLQ 也失败）。仅 metric / 排障用。

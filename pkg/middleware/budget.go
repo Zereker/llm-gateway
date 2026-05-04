@@ -33,7 +33,7 @@ type BudgetDeps struct {
 //   - Gate 报错 → 502 / ErrUnknown / "budget check error: <err>"（计费系统挂；不应放过）
 //   - 状态非 Active → 402 / ErrPermanent / "budget inactive"
 //
-// 成功后写 rc.BudgetStatus；下游 middleware 不再 query。
+// 成功后直接 c.Next()——"通过"是隐含条件，下游不需要 BudgetStatus 字段。
 //
 // Gate 为 nil 时直接 c.Next()（视同 alwayspass）。
 func Budget(deps BudgetDeps) gin.HandlerFunc {
@@ -42,7 +42,11 @@ func Budget(deps BudgetDeps) gin.HandlerFunc {
 			c.Next()
 			return
 		}
+
 		rc := GetRequestContext(c)
+		ctx, end := startSpan(rc.Ctx, "ai-gateway.budget")
+		defer end()
+		rc.Ctx = ctx
 
 		status, err := deps.Gate.Check(rc.Ctx, rc.Identity.UserID)
 		if err != nil {
@@ -50,12 +54,13 @@ func Budget(deps BudgetDeps) gin.HandlerFunc {
 			abort(c, 502, domain.ErrUnknown, "budget check error: "+err.Error())
 			return
 		}
-		rc.BudgetStatus = status
+
 		if status != domain.BudgetActive {
 			metric.Inc(metric.BudgetCheckTotal, "result", "inactive")
 			abort(c, 402, domain.ErrPermanent, "budget inactive: "+status.String())
 			return
 		}
+
 		metric.Inc(metric.BudgetCheckTotal, "result", "ok")
 		c.Next()
 	}

@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
@@ -54,6 +55,13 @@ func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.T
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
+	// 全局 propagator 设为 W3C TraceContext + Baggage：让 M1 TraceContext middleware
+	// 提取 traceparent / baggage header；下游 outgoing HTTP（如果 adapter 用 OTel
+	// instrumented client 也会自动注入 traceparent 到 upstream request）。
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
 	return tp, nil
 }
 
@@ -66,12 +74,11 @@ func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.T
 // **StartSpan**：用 tracer.Start 开 span；返回 OtelSpan 让 SetAttribute / End 路由
 // 到 OTel SDK。
 //
-// **关于 trace_id 联动**：依赖 OTel context propagation；上游 middleware（gin）
-// 应注入 trace context 到 c.Request.Context，让本 tracer 自动 join。当前
-// pkg/middleware/trace_context.go 走自定义 trace_id；如果想跟 OTel 对齐，要在
-// TraceContext middleware 里也调 otel.GetTextMapPropagator 提取 W3C traceparent。
-// v1.0 minimum 不强制对齐——OTel 自己生成的 trace_id 跟 gateway 的 trace_id 可
-// 通过 metadata 关联（OtelTracer 把 rc.TraceID 当 attribute 存）。
+// **关于 trace_id 联动**：M1 TraceContext middleware 已用 OTel propagator 解析
+// W3C traceparent header（pkg/middleware/trace_context.go），把 SpanContext 注入
+// rc.Ctx；本 tracer 的 StartSpan(rc.Ctx, ...) 自动以 rc.SpanID 为 parent 创建
+// 子 span，trace_id 跟 rc.TraceID 一致——gateway 日志里的 trace_id 和 OTel
+// collector 看到的 trace_id 是同一个。
 type OtelTracer struct {
 	tracer oteltrace.Tracer
 }

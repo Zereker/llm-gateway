@@ -49,6 +49,11 @@ func main() {
 	configPath := flag.String("config", "./configs/local/gateway.yaml", "path to gateway YAML config")
 	flag.Parse()
 
+	// slog default：用 trace.CtxHandler 包 JSON handler，让所有 *Context 系列调用
+	// （slog.InfoContext / ErrorContext 等）自动从 ctx 抽 trace_id / span_id /
+	// baggage（user_id / request_id 等）加进 record。
+	slog.SetDefault(slog.New(trace.NewCtxHandler(slog.NewJSONHandler(os.Stderr, nil))))
+
 	if err := run(*configPath); err != nil {
 		slog.Error("ai-gateway exit", "err", err)
 		os.Exit(1)
@@ -115,8 +120,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		BodyLimit: cfg.Middleware.BodyLimitBytes,
 		Timeout:   cfg.Middleware.Timeout,
 
-		Auth:     middleware.AuthDeps{Provider: apikeyProvider},
-		Envelope: middleware.EnvelopeDeps{Parser: middleware.DefaultParser{}},
+		Auth: middleware.AuthDeps{Provider: apikeyProvider},
 		// M4 Budget：driver 决定实现。alwayspass = 永远放行；inmemory = 进程内余额跟踪
 		Budget: middleware.BudgetDeps{Gate: buildBudgetGate(cfg.Budget)},
 		// M8 Moderation：driver 决定实现。none = pass-through；openai = 调 OpenAI moderation API

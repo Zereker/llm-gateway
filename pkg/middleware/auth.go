@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/baggage"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 	"github.com/zereker-labs/ai-gateway/pkg/metric"
@@ -23,30 +24,36 @@ type AuthDeps struct {
 //
 // 成功后：
 //   - rc.Identity 字段全部填充
-//   - rc.Logger 追加 "user_id" 字段，下游 middleware / handler 的日志自动带上
+//   - user_id 写入 OTel baggage；trace.CtxHandler 让所有后续 log record 自动带 user_id 字段
 func Auth(deps AuthDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
+		ctx, end := startSpan(rc.Ctx, "ai-gateway.auth")
+		defer end()
+		rc.Ctx = ctx
 
 		creds := extractCredentials(c)
 		if creds == nil {
-			metric.Inc("ai_gateway.auth.total", "result", "missing")
+			metric.Inc(metric.AuthTotal, "result", "missing")
 			abort(c, 401, domain.ErrPermanent, "missing credentials")
 			return
 		}
 
 		u, err := deps.Provider.Resolve(rc.Ctx, creds)
 		if err != nil {
-			metric.Inc("ai_gateway.auth.total", "result", "invalid")
+			metric.Inc(metric.AuthTotal, "result", "invalid")
 			abort(c, 401, domain.ErrPermanent, "invalid credentials: "+err.Error())
 			return
 		}
 
 		rc.Identity = *u
-		if rc.Logger != nil {
-			rc.Logger = rc.Logger.With("user_id", u.UserID)
+		if member, err := baggage.NewMember("user_id", u.UserID); err == nil {
+			if newBag, err := baggage.FromContext(rc.Ctx).SetMember(member); err == nil {
+				rc.Ctx = baggage.ContextWithBaggage(rc.Ctx, newBag)
+			}
 		}
-		metric.Inc("ai_gateway.auth.total", "result", "ok")
+		
+		metric.Inc(metric.AuthTotal, "result", "ok")
 		c.Next()
 	}
 }
@@ -61,7 +68,7 @@ func Auth(deps AuthDeps) gin.HandlerFunc {
 // Headers 全量保留，便于自定义 Provider 用其他 header（如 X-User-Id 等）。
 //
 // 没有任何凭证时返回 nil。
-func extractCredentials(c *gin.Context) *repo.Credentials {
+func extractCredentials(c *gin.Context) *domain.Credentials {
 	creds := &repo.Credentials{Headers: make(map[string]string, len(c.Request.Header))}
 	for k, v := range c.Request.Header {
 		if len(v) > 0 {
@@ -76,6 +83,7 @@ func extractCredentials(c *gin.Context) *repo.Credentials {
 			creds.APIKey = tok // OpenAI-style: APIKey lives in Bearer
 		}
 	}
+
 	if k := c.GetHeader("X-API-Key"); k != "" {
 		creds.APIKey = k // explicit X-API-Key overrides
 	}
@@ -83,5 +91,6 @@ func extractCredentials(c *gin.Context) *repo.Credentials {
 	if creds.APIKey == "" && creds.BearerToken == "" {
 		return nil
 	}
+
 	return creds
 }

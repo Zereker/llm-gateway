@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log/slog"
 	"runtime/debug"
 
 	"github.com/gin-gonic/gin"
@@ -21,13 +22,17 @@ func Recover() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				metric.Inc("ai_gateway.panic_total", "component", "middleware")
-				if rc := TryGetRequestContext(c); rc != nil && rc.Logger != nil {
-					rc.Logger.Error("panic recovered",
-						"recover", r,
-						"stack", string(debug.Stack()),
-					)
+				metric.Inc(metric.PanicTotal, "component", "middleware")
+				// 用带 ctx 的 log API：trace.CtxHandler 自动从 ctx 抽 trace_id /
+				// span_id / request_id / user_id 加进 record。
+				ctx := c.Request.Context() // fallback：没 RC 时用 gin 的原 ctx
+				if rc := TryGetRequestContext(c); rc != nil && rc.Ctx != nil {
+					ctx = rc.Ctx
 				}
+				slog.ErrorContext(ctx, "panic recovered",
+					"recover", r,
+					"stack", string(debug.Stack()),
+				)
 				writeError(c, &domain.AdapterError{
 					Class:      domain.ErrUnknown,
 					HTTPStatus: 500,
@@ -62,7 +67,7 @@ func writeError(c *gin.Context, e *domain.AdapterError) {
 	}
 	if rc := TryGetRequestContext(c); rc != nil {
 		errBody["request_id"] = rc.RequestID
-		errBody["trace_id"] = rc.TraceID
+		errBody["trace_id"] = TraceIDFromCtx(rc.Ctx)
 	}
 	c.AbortWithStatusJSON(status, gin.H{"error": errBody})
 }

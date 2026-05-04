@@ -9,13 +9,13 @@ package repo
 // **QuotaPolicy 双层指针**：M2 一次 SELECT JOIN tenants 把两个 quota_policy_id
 // 都拿出来，避免 M6 RateLimit 每请求多 2 次 SELECT。NULL = 该层不限。
 type UserIdentity struct {
-	TenantID             string // 租户 pin；v0.1 默认 "default"
-	UserID               string // 平台内的用户唯一标识
-	APIKeyID             string // 命中的 API Key 的稳定 ID（审计与限流维度）
-	Group                string // 限流 / 调度分组；默认 "default"
-	ExternalUser         bool   // true = 第三方付费用户（需走预算检查）
-	TenantQuotaPolicyID  *int64 // pin 维度限流策略 ID；nil = pin 维度不限
-	APIKeyQuotaPolicyID  *int64 // key 维度限流策略 ID；nil = key 维度不限
+	TenantID            string // 租户 pin；v0.1 默认 "default"
+	UserID              string // 平台内的用户唯一标识
+	APIKeyID            string // 命中的 API Key 的稳定 ID（审计与限流维度）
+	Group               string // 限流 / 调度分组；默认 "default"
+	ExternalUser        bool   // true = 第三方付费用户（需走预算检查）
+	TenantQuotaPolicyID *int64 // pin 维度限流策略 ID；nil = pin 维度不限
+	APIKeyQuotaPolicyID *int64 // key 维度限流策略 ID；nil = key 维度不限
 }
 
 // Credentials 从请求头提取的鉴权凭证；IdentityProvider.Resolve 的入参。

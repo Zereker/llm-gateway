@@ -22,7 +22,7 @@ func TestTraceContext_GeneratesIDs(t *testing.T) {
 	var gotTrace, gotRequest string
 	r.GET("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		gotTrace = rc.TraceID
+		gotTrace = TraceIDFromCtx(rc.Ctx)
 		gotRequest = rc.RequestID
 		c.Status(200)
 	})
@@ -42,7 +42,7 @@ func TestTraceContext_HonorsXTraceIdHeader(t *testing.T) {
 	r := newGinTest(TraceContext())
 	var got string
 	r.GET("/x", func(c *gin.Context) {
-		got = GetRequestContext(c).TraceID
+		got = TraceIDFromCtx(GetRequestContext(c).Ctx)
 		c.Status(200)
 	})
 
@@ -65,10 +65,6 @@ func TestTraceContext_FillsAllRCFields(t *testing.T) {
 			t.Error("StartTime zero")
 		case rc.Ctx == nil:
 			t.Error("Ctx nil")
-		case rc.GinCtx == nil:
-			t.Error("GinCtx nil")
-		case rc.Logger == nil:
-			t.Error("Logger nil")
 		case rc.Extras == nil:
 			t.Error("Extras nil")
 		}

@@ -65,6 +65,9 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
+		ctx, end := startSpan(rc.Ctx, "ai-gateway.schedule")
+		defer end()
+		rc.Ctx = ctx
 		if rc.Envelope == nil || rc.ModelService == nil {
 			abort(c, 500, domain.ErrUnknown, "internal: M3/M5 did not run before M7")
 			return
@@ -199,11 +202,16 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 				})
 				continue
 			}
-			req = req.WithContext(rc.Ctx)
+			// 上游 HTTP 调用单独 span：production 最关心的指标 —— "上游慢了多少 vs 网关
+			// 调度慢了多少"。span name 含 vendor + model 让 Jaeger 端能按厂商 / 模型聚合。
+			upstreamCtx, upstreamSpan := middlewareTracer.Start(rc.Ctx,
+				fmt.Sprintf("ai-gateway.upstream.%s.%s", ep.Vendor, rc.ModelService.Model))
+			req = req.WithContext(upstreamCtx)
 
 			// 调上游
 			resp, err := httpc.Do(req)
 			if err != nil {
+				upstreamSpan.End()
 				_ = sess.Close()
 				sel.Report(ep, schedule.Result{
 					Class:   schedule.ClassTransient,
@@ -227,6 +235,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 			}
 			if class.IsRetryable() && class != schedule.ClassSuccess {
 				// transient / capacity / permanent → 关 resp 试下一个
+				upstreamSpan.End()
 				_ = resp.Body.Close()
 				_ = sess.Close()
 				sel.Report(ep, schedule.Result{
@@ -279,6 +288,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 			rc.Usage = usage
 			_ = resp.Body.Close()
 			_ = sess.Close()
+			upstreamSpan.End()
 
 			finalClass := class
 			if feedErr != nil || fErr != nil {

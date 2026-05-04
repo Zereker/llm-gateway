@@ -44,6 +44,9 @@ func Moderation(deps ModerationDeps) gin.HandlerFunc {
 			return
 		}
 		rc := GetRequestContext(c)
+		ctx, end := startSpan(rc.Ctx, "ai-gateway.moderation")
+		defer end()
+		rc.Ctx = ctx
 		if rc.Envelope == nil {
 			c.Next()
 			return

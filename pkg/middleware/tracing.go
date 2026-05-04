@@ -43,16 +43,22 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 		if rc == nil {
 			return
 		}
+		// 注意：本 span 在 c.Next() 之后开；只覆盖"事后聚合 + outbox publish"这一段，
+		// 不包括上游 middleware（它们各自有自己的 span）。
+		ctx, end := startSpan(rc.Ctx, "ai-gateway.tracing")
+		defer end()
+		rc.Ctx = ctx
 
 		now := time.Now().UTC()
-		cost := now.Sub(rc.StartTime).Milliseconds()
-		metric.Observe(metric.HTTPRequestDurationMs, float64(cost),
+		elapsed := now.Sub(rc.StartTime)
+		// metric 走秒（Prometheus base unit），UsageMeta.TotalLatency 走毫秒（业务 schema 兼容）
+		metric.Observe(metric.HTTPRequestDurationSeconds, elapsed.Seconds(),
 			"method", c.Request.Method,
 			"path", c.FullPath(),
 			"status", strconv.Itoa(c.Writer.Status()))
 
 		if rc.Usage != nil {
-			fillUsageMeta(rc, now, cost)
+			fillUsageMeta(rc, now, elapsed.Milliseconds())
 			// TPM commit：reserve 估值 vs 实际差额调账（best-effort，失败仅 log）
 			adjustTPM(rc, deps.RateLimitStore)
 		}
@@ -127,7 +133,7 @@ func fillUsageMeta(rc *domain.RequestContext, endTime time.Time, totalLatencyMs 
 
 	// 请求维度
 	m.RequestID = rc.RequestID
-	m.TraceID = rc.TraceID
+	m.TraceID = TraceIDFromCtx(rc.Ctx)
 
 	// 身份维度
 	m.UserID = rc.Identity.UserID

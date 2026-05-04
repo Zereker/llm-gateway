@@ -21,7 +21,7 @@ type ModelServiceDeps struct {
 	Pricing       repo.PricingProvider
 }
 
-// ModelService 是 M5：根据 rc.Envelope.Parsed.Model 定位 ModelService → 验订阅 → 拍价格快照。
+// ModelService 是 M5：根据 rc.Envelope.Model 定位 ModelService → 验订阅 → 拍价格快照。
 //
 // 失败行为：
 //   - rc.Envelope 为 nil（M3 顺序错） → 500（应该早期 panic / fail-fast）
@@ -40,15 +40,18 @@ const defaultRuleClass = "standard"
 func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
+		ctx, end := startSpan(rc.Ctx, "ai-gateway.model_service")
+		defer end()
+		rc.Ctx = ctx
 		if rc.Envelope == nil {
 			abort(c, 500, domain.ErrUnknown, "internal: M3 Envelope did not run before M5")
 			return
 		}
 
 		// Step 1: 全局 catalog 查 model
-		ms, err := deps.Provider.GetByModel(rc.Ctx, rc.Envelope.Parsed.Model)
+		ms, err := deps.Provider.GetByModel(rc.Ctx, rc.Envelope.Model)
 		if err != nil {
-			abort(c, 404, domain.ErrInvalid, "model not found: "+rc.Envelope.Parsed.Model)
+			abort(c, 404, domain.ErrInvalid, "model not found: "+rc.Envelope.Model)
 			return
 		}
 
@@ -58,8 +61,9 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 			abort(c, 500, domain.ErrUnknown, "subscription lookup: "+err.Error())
 			return
 		}
+
 		if !subscribed {
-			abort(c, 403, domain.ErrPermanent, "model not subscribed: "+rc.Envelope.Parsed.Model)
+			abort(c, 403, domain.ErrPermanent, "model not subscribed: "+rc.Envelope.Model)
 			return
 		}
 

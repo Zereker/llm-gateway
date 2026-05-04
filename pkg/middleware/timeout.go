@@ -22,15 +22,17 @@ func Timeout(defaultDur time.Duration) gin.HandlerFunc {
 				if defaultDur <= 0 || parsed < defaultDur {
 					d = parsed
 				}
-				// parsed >= defaultDur 时忽略（防客户端写更长）
 			}
 		}
+
 		if d <= 0 {
 			c.Next()
 			return
 		}
+
 		ctx, cancel := context.WithTimeout(c.Request.Context(), d)
 		defer cancel()
+
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}

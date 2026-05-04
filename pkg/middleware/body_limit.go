@@ -13,6 +13,7 @@ func BodyLimit(maxBytes int64) gin.HandlerFunc {
 	if maxBytes <= 0 {
 		return passthrough
 	}
+
 	return func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
 		c.Next()

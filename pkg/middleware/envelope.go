@@ -1,75 +1,85 @@
 package middleware
 
 import (
-	"bytes"
+	"errors"
 	"io"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
-// Parser 把 RawBytes 解析为 CanonicalRequest。M3 Envelope middleware 的依赖。
+// Envelope 是 M3：读 body → 提取 model → 写 rc.Envelope。
 //
-// 不同 SourceProtocol 用不同实现；Parser 内部按 SourceProtocol 分发。
+// **职责严格收窄**：
+//   - 读 body 一次，存进 rc.Envelope.RawBytes 给下游共用
+//   - 从 body 顶层提 `model` 字段
+//   - 写 rc.Envelope.{RawBytes, Model}
 //
-// Implementations MUST be safe for concurrent use。
-// raw 参数：实现不可保留 slice 引用；解析后的 CanonicalRequest 应是独立的 Go 对象。
-type Parser interface {
-	Parse(raw []byte, proto domain.Protocol, mod domain.Modality) (domain.CanonicalRequest, error)
-}
-
-// EnvelopeDeps M3 Envelope middleware 的依赖。
+// **不做**的事（明确职责边界）：
+//   - 参数解析 / 字段翻译——下放给 pkg/translator/<src>_<tgt>/
+//   - 校验 body 合法性——translator 在 TranslateRequest 内部失败即可
+//   - 流式判断——translator 内部从 body 自己读 stream 字段
 //
-// 没有 Detector：协议 / 模态由前置 WithSourceProtocol middleware 在路由注册期写入；
-// 本中间件只负责 body / Parsed / RequestTime。
-type EnvelopeDeps struct {
-	Parser Parser
-}
-
-// Envelope 是 M3：读 body → Parser 解析 CanonicalRequest → 填 rc.Envelope。
-//
-// 协议 / 模态由前置的 WithSourceProtocol middleware（路由注册期）写入 rc.Envelope.SourceProtocol /
-// Modality；Gemini 之类 model-在-URL 的协议靠后置的 WithGeminiPathModel 把 model 补进
-// rc.Envelope.Parsed。
+// **不重置 c.Request.Body**：所有 body 消费者（M6 / M7 / M8 / token estimator /
+// translator）都走 rc.Envelope.RawBytes；adapter 已 slim 化只构 HTTP request from
+// translator 输出，不读 c.Request.Body。0 个真消费者后 NopCloser 重置就是 noise。
 //
 // 失败行为（统一走 abort → M9 写出 JSON）：
-//   - 路由忘挂 WithSourceProtocol → 500 / ErrUnknown（装配错，启动期就该发现）
-//   - 读 body 失败 → 400 / ErrInvalid / "read body failed: <err>"
-//   - Parser 失败 → 400 / ErrInvalid / "parse body failed: <err>"
-//
-// 成功后：
-//   - rc.Envelope.RawBytes 持有原始字节；c.Request.Body 被替换成 NopCloser，
-//     保证下游若再读 c.Request.Body 也能拿到同样的字节
-//   - rc.Envelope.Parsed 持有 CanonicalRequest（Gemini 的 Model 由 WithGeminiPathModel 后填）
-//   - rc.Envelope.RequestTime 已就绪
-func Envelope(deps EnvelopeDeps) gin.HandlerFunc {
+//   - 路由忘挂 WithSourceProtocol → 500 / ErrUnknown
+//   - 读 body 失败 → 400 / ErrInvalid / "envelope: read body: <err>"
+//   - 缺 model 字段 → 400 / ErrInvalid / "envelope: ..."
+func Envelope() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
+		ctx, end := startSpan(rc.Ctx, "ai-gateway.envelope")
+		defer end()
+		rc.Ctx = ctx
+
 		if rc.Envelope == nil || rc.Envelope.SourceProtocol == domain.ProtoUnknown {
-			abort(c, 500, domain.ErrUnknown, "WithSourceProtocol middleware missing before Envelope")
+			abort(c, 500, domain.ErrUnknown, "envelope: WithSourceProtocol middleware missing")
 			return
 		}
 
 		raw, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			abort(c, 400, domain.ErrInvalid, "read body failed: "+err.Error())
+			abort(c, 400, domain.ErrInvalid, "envelope: read body: "+err.Error())
 			return
 		}
 		_ = c.Request.Body.Close()
-		// 替换 body：如果上游 / Adapter 想再读 c.Request.Body，能拿到一样的内容。
-		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
 
-		parsed, err := deps.Parser.Parse(raw, rc.Envelope.SourceProtocol, rc.Envelope.Modality)
+		model, err := extractModel(raw)
 		if err != nil {
-			abort(c, 400, domain.ErrInvalid, "parse body failed: "+err.Error())
+			abort(c, 400, domain.ErrInvalid, "envelope: "+err.Error())
 			return
 		}
 
 		rc.Envelope.RawBytes = raw
-		rc.Envelope.Parsed = parsed
-		rc.Envelope.RequestTime = time.Now()
+		rc.Envelope.Model = model
 		c.Next()
 	}
+}
+
+// extractModel 从客户端 body 顶层提 `model` 字段。
+//
+// 三个支持的客户端协议（OpenAI Chat / Anthropic Messages / OpenAI Responses）顶层
+// 字段名都是 `model`，所以不需要按 protocol 分发。
+//
+// **用 gjson**（不是 encoding/json）：schema-less 提取单字段，跳过整个 messages /
+// tools 数组的 unmarshal——典型 4KB chat body 上 ~5x 快、1 alloc（vs stdlib 3 alloc）。
+// stdlib `json.Unmarshal` 是 schema-based + 完整 tokenize；这个场景下纯浪费。
+func extractModel(raw []byte) (string, error) {
+	if len(raw) == 0 {
+		return "", errors.New("empty body")
+	}
+	res := gjson.GetBytes(raw, "model")
+	if !res.Exists() {
+		return "", errors.New("missing 'model' field")
+	}
+	model := res.String()
+	if model == "" {
+		return "", errors.New("'model' field is empty")
+	}
+	return model, nil
 }

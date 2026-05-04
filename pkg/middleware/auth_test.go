@@ -87,12 +87,7 @@ func TestAuth_LoggerGetsUserID(t *testing.T) {
 		Provider: stubProvider{user: &want},
 	}))
 	r.GET("/x", func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		if rc.Logger == nil {
-			t.Error("logger nil")
-		}
-		// Can't easily inspect slog logger attrs; just ensure no panic.
-		rc.Logger.Info("test")
+		_ = GetRequestContext(c) // Logger 字段已删；改 ctx-aware 后这个 test 不再断言 logger
 		c.Status(200)
 	})
 

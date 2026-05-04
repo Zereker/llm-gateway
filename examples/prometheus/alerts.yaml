@@ -2,8 +2,9 @@
 #
 # Prometheus alert rules for ai-gateway。
 #
-# 名字约定：pkg/metric/names.go 用 `.` 分隔（"ai_gateway.http.request_duration_ms"），
-# 落 Prometheus 时自动 ReplaceAll(".", "_") → 这里全部用下划线版本。
+# 名字约定：pkg/metric/names.go const 直接用 Prometheus-native underscore 形式
+# （e.g. ai_gateway_http_request_duration_seconds），本文件引用的就是同字面值。
+# 单位走 Prometheus 推荐 base SI（_seconds 不是 _ms）。
 #
 # 用法：把本文件放到 prometheus.yml 的 rule_files: 列表里，重启 prometheus 加载。
 # 配套 Alertmanager 收 alert，按 severity / team label 路由到 PD / Slack。
@@ -52,21 +53,21 @@ groups:
       - alert: AiGatewayHttpLatencyP99High
         expr: |
           histogram_quantile(0.99,
-            sum by(le) (rate(ai_gateway_http_request_duration_ms_bucket[5m]))
-          ) > 5000
+            sum by(le) (rate(ai_gateway_http_request_duration_seconds_bucket[5m]))
+          ) > 5
         for: 10m
         labels:
           severity: warning
           team: ai-platform
         annotations:
           summary: "ai-gateway: HTTP p99 latency > 5s"
-          description: "p99 = {{ $value | humanize }}ms"
+          description: "p99 = {{ $value | humanizeDuration }}"
 
       - alert: AiGatewayAdapterLatencyP99High
         expr: |
           histogram_quantile(0.99,
-            sum by(le, vendor) (rate(ai_gateway_adapter_request_duration_ms_bucket[5m]))
-          ) > 8000
+            sum by(le, vendor) (rate(ai_gateway_adapter_request_duration_seconds_bucket[5m]))
+          ) > 8
         for: 10m
         labels:
           severity: warning

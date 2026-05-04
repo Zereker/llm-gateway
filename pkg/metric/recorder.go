@@ -1,7 +1,6 @@
 package metric
 
 import (
-	"strings"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -11,16 +10,18 @@ import (
 // Inc / Observe / Gauge 是业务侧使用的轻量门面：
 //
 //	metric.Inc(metric.AuthTotal, "result", "ok")
-//	metric.Observe(metric.HTTPRequestDurationMs, ms, "path", "/v1/chat/completions")
+//	metric.Observe(metric.HTTPRequestDurationSeconds, secs, "path", "/v1/chat/completions")
 //
 // labels 是 flat key,value pairs（奇数个或不成对会被丢掉尾值）。
+//
+// **命名约定**：name 直接用 Prometheus-native 下划线格式（详见 names.go）；本包不做
+// 任何 string rewrite——const 字面值就是 Prometheus 端展示的 metric name。
 //
 // 实现说明：
 //   - 同一 metric 名首次调用时按当时的 label keys 注册到 Prometheus default registry；
 //     后续调用必须使用相同的 label keys（否则 Prometheus 会 panic——属于编程错）。
-//   - 名字里的 `.` 自动替换成 `_`（Prometheus 命名规范）。
-//   - histogram 桶按毫秒级响应时间预设；如果你测的不是延迟，自定义桶请直接用
-//     prometheus 包的 promauto.NewHistogramVec。
+//   - histogram 桶按 LLM 延迟范围预设秒级（见 secondsBuckets）；如果你测的不是延迟，
+//     自定义桶请直接用 prometheus 包的 promauto.NewHistogramVec。
 //
 // /metrics 端点由 pkg/router/helpers.go 暴露，走 promhttp.Handler() 直读 default registry。
 
@@ -31,8 +32,12 @@ var (
 	gauges   = make(map[string]*prometheus.GaugeVec)
 )
 
-// msBuckets：1ms ~ 10s 的指数分布，覆盖 LLM 请求 P50 ~ P99 的延迟范围。
-var msBuckets = []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000}
+// secondsBuckets：1ms ~ 120s 的指数分布，覆盖 LLM 请求 P50 ~ P99 延迟范围。
+// LLM 流式长输出可达 30s+，所以右侧拖到 120s 防止 P99 算不准。
+var secondsBuckets = []float64{
+	0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+	1, 2.5, 5, 10, 30, 60, 120,
+}
 
 // Inc 增加 1 次计数。
 func Inc(name string, labels ...string) {
@@ -40,7 +45,7 @@ func Inc(name string, labels ...string) {
 	getCounter(name, keys).WithLabelValues(vals...).Inc()
 }
 
-// Observe 记录一次观测值（histogram，默认毫秒桶）。
+// Observe 记录一次观测值（histogram，默认秒级桶）。
 func Observe(name string, val float64, labels ...string) {
 	keys, vals := splitLabels(labels)
 	getHistogram(name, keys).WithLabelValues(vals...).Observe(val)
@@ -51,9 +56,6 @@ func Gauge(name string, val float64, labels ...string) {
 	keys, vals := splitLabels(labels)
 	getGauge(name, keys).WithLabelValues(vals...).Set(val)
 }
-
-// promName 把 ai_gateway.foo.bar → ai_gateway_foo_bar；prom 不允许 `.`。
-func promName(s string) string { return strings.ReplaceAll(s, ".", "_") }
 
 // splitLabels 把 [k1,v1,k2,v2,...] 切成 keys / values；奇数个尾部丢弃。
 func splitLabels(pairs []string) ([]string, []string) {
@@ -68,40 +70,37 @@ func splitLabels(pairs []string) ([]string, []string) {
 }
 
 func getCounter(name string, keys []string) *prometheus.CounterVec {
-	pn := promName(name)
 	mu.Lock()
 	defer mu.Unlock()
-	if cv, ok := counters[pn]; ok {
+	if cv, ok := counters[name]; ok {
 		return cv
 	}
-	cv := promauto.NewCounterVec(prometheus.CounterOpts{Name: pn}, keys)
-	counters[pn] = cv
+	cv := promauto.NewCounterVec(prometheus.CounterOpts{Name: name}, keys)
+	counters[name] = cv
 	return cv
 }
 
 func getHistogram(name string, keys []string) *prometheus.HistogramVec {
-	pn := promName(name)
 	mu.Lock()
 	defer mu.Unlock()
-	if hv, ok := histos[pn]; ok {
+	if hv, ok := histos[name]; ok {
 		return hv
 	}
 	hv := promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    pn,
-		Buckets: msBuckets,
+		Name:    name,
+		Buckets: secondsBuckets,
 	}, keys)
-	histos[pn] = hv
+	histos[name] = hv
 	return hv
 }
 
 func getGauge(name string, keys []string) *prometheus.GaugeVec {
-	pn := promName(name)
 	mu.Lock()
 	defer mu.Unlock()
-	if gv, ok := gauges[pn]; ok {
+	if gv, ok := gauges[name]; ok {
 		return gv
 	}
-	gv := promauto.NewGaugeVec(prometheus.GaugeOpts{Name: pn}, keys)
-	gauges[pn] = gv
+	gv := promauto.NewGaugeVec(prometheus.GaugeOpts{Name: name}, keys)
+	gauges[name] = gv
 	return gv
 }
