@@ -1,8 +1,28 @@
+// Package adapter 定义 vendor adapter 的契约 + 注册表。
+//
+// **v0.5 架构（slim adapter + translator）**：
+//
+//	┌──────────┐       ┌────────────┐       ┌─────────┐       ┌──────────┐
+//	│ Client   │  ───→ │ Translator │  ───→ │ Adapter │  ───→ │ Upstream │
+//	└──────────┘       └────────────┘       └─────────┘       └──────────┘
+//
+// Adapter 的责任收窄到只管 HTTP 层（URL / auth headers / TLS / proxy 等 vendor 特定细节），
+// 数据 shape / SSE 解析 / usage 提取等"协议层"任务搬到 pkg/translator。
+//
+// **新增 vendor 步骤**：
+//  1. 实现 Factory + Session（slim 版：BuildRequest(body) + Close()）
+//  2. init() 注册到 adapter.Register
+//  3. 如果上游协议跟客户端不同：在 pkg/translator/<from>_<to>/ 加 Translator
+//  4. cmd/gateway 加 blank import
+//
+// 例：
+//   - DeepSeek / ARK：vendor=ark + OpenAI 协议族（identity translator 透传）
+//   - Vertex Gemini：vendor=gemini + openai_gemini Translator 翻译
+//   - Anthropic Claude：vendor=anthropic + openai_anthropic Translator（future）
 package adapter
 
 import (
 	"context"
-	"io"
 	"net/http"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
@@ -14,90 +34,42 @@ import (
 //   - 与 ConfigStore 中的 vendor 集合做覆盖比对（漏注册告警）
 //   - 路由层根据 SupportedModalities 做能力过滤
 //   - 调度日志 / metric 标签
+//   - **关键**：M7 用 NativeProtocol 找对应 Translator（envelope.SourceProtocol → NativeProtocol）
 type Metadata struct {
-	// Vendor 是开放集合（运维 / Admin 在 ConfigStore 注册任意名字 + Adapter 实现 init() 注册同名 Factory），
-	// 故意不做 enum；与 domain.Endpoint.Vendor 字段对齐。
-	Vendor              string
-	NativeProtocol      domain.Protocol
-	SupportedModalities []domain.Modality
+	Vendor              string            // vendor 名（跟 endpoints.vendor 对齐）
+	NativeProtocol      domain.Protocol   // 上游使用的协议
+	SupportedModalities []domain.Modality // 能处理的模态
 }
 
 // Factory 是注册到 adapter registry 的工厂。
 //
 // 一个 vendor 一个 factory；factory 本身无状态、单实例。
-// 每次请求由 NewSession 构造一个 Session 实例，承载本次请求的全部状态。
+// 每次请求由 NewSession 构造一个 Session 实例。
 //
 // Factory 实现 MUST be safe for concurrent use（多 gin handler goroutine 同时调用 NewSession）。
 type Factory interface {
 	Metadata() Metadata
 
 	// NewSession 创建本次请求专属的 Session。
-	//
-	// 实现负责按 ep.URL / ep.APIKey 等初始化内部状态；
-	// 调用方按 Session 的契约（见 Session doc）使用。
 	NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (Session, error)
 }
 
-// Session 承载单次上游调用的全部状态：请求构造 + 流式响应处理 + 资源清理。
+// Session **slim 版**（v0.5 重构）：只负责构造上游 HTTP 请求 + 释放资源。
 //
-// 调用方（dispatch layer = M7 RetryExecutor / pkg/middleware/schedule）的标准流程：
+// 不再有 Feed / Finalize / FinalizeResult——chunk 流处理 + usage 提取
+// 全部搬到 pkg/translator.ResponseHandler。
 //
-//	sess, err := factory.NewSession(ctx, ep, env)
-//	if err != nil { return err }
-//	defer sess.Close()  // 异常 / 提前结束 / panic 路径都要释放
-//
-//	req, err := sess.BuildRequest()
-//	if err != nil { return err }
-//	resp, err := httpClient.Do(req)
-//	if err != nil { return err }
-//	defer resp.Body.Close()
-//
-//	// dispatch layer 负责读 resp.Body，把字节切片喂回 Feed。
-//	// chunk 边界由 dispatch 决定（按 SSE event / 固定大小 / Read 一次的实际长度均可）；
-//	// Session 实现负责内部累积 / 重组（如 SSE event 跨 chunk 时 buffer）。
-//	buf := make([]byte, 4096)
-//	for {
-//	    n, rerr := resp.Body.Read(buf)
-//	    if n > 0 {
-//	        out, err := sess.Feed(buf[:n])
-//	        if err != nil { return err }
-//	        writer.Write(out)  // 写客户端
-//	    }
-//	    if rerr == io.EOF { break }
-//	    if rerr != nil    { return rerr }
-//	}
-//
-//	result := sess.Finalize()
-//	rc.Usage = result.Usage
-//	rc.Error = result.Error
-//
-// 契约：
-//   - 单 goroutine 使用（与 gin handler 同协程）；实现无需自加锁。
-//   - BuildRequest → Feed* → Finalize 顺序调用；违反契约时实现可 panic / 返回错误，行为未定义。
-//   - Close 在**所有**路径上必须调用（defer），包括 BuildRequest 失败 / Feed 中途出错 / panic；幂等。
-//   - Session 三方法刻意合并到一个接口，便于共享私有 buffer / 解析器状态；按 phase 拆会逼出复杂的状态传递。
-//
-// Feed 返回字节的生命周期：
-//   - 返回的 []byte 在**下次 Feed / Finalize / Close 之前**有效。
-//   - 调用方必须在该窗口内 Write 出去；不要长期持有。
-//   - 实现可借此复用底层 buffer（sync.Pool 等），避免每次 alloc。
+// **契约**：
+//   - 单 goroutine 使用（与 gin handler 同协程）；实现无需自加锁
+//   - BuildRequest 调一次；body 是 Translator 已经翻译好的"上游协议"字节
+//   - Close 必须在所有路径上 defer 调用；幂等
 type Session interface {
-	BuildRequest() (*http.Request, error)
-	Feed(chunk []byte) ([]byte, error)
-	Finalize() FinalizeResult
-	io.Closer // Close 释放 Session 持有的资源；必须由 dispatch defer 调用；幂等
-}
+	// BuildRequest 构造发往上游的 HTTP request。
+	//
+	// body 是 translator 已经翻译过的字节（直接塞进 request body）。
+	// adapter 的工作：URL / auth header / Content-Type / 其它 vendor 特定 header。
+	BuildRequest(body []byte) (*http.Request, error)
 
-// FinalizeResult 是 Session.Finalize 的终态。
-//
-// 三个字段都是 nilable，分别表示：
-//   - Usage:    上游 usage 提取成功时非 nil；缺失 / 提取失败时 nil
-//   - Response: 跨协议反向翻译后的响应；同协议透传时通常 nil（chunk 已直写客户端）
-//   - Error:    成功时 nil；上游 / 解析 / 翻译失败时非 nil（已分类）
-//
-// 用 struct 包装而不是裸三元组，避免调用方记忆顺序 + 漏 nil check。
-type FinalizeResult struct {
-	Usage    *domain.Usage
-	Response *domain.CanonicalResponse
-	Error    *domain.AdapterError
+	// Close 释放 Session 持有的资源；必须由 dispatch defer 调用；幂等。
+	Close() error
 }

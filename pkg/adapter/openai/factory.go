@@ -24,7 +24,11 @@ func (Factory) Metadata() adapter.Metadata {
 	return adapter.Metadata{
 		Vendor:              "openai",
 		NativeProtocol:      domain.ProtoOpenAI,
-		SupportedModalities: []domain.Modality{domain.ModalityChat, domain.ModalityEmbedding},
+		SupportedModalities: []domain.Modality{
+			domain.ModalityChat,
+			domain.ModalityEmbedding,
+			domain.ModalityImage, // /v1/images/generations 等；admin 配 endpoint 时 routing.url 指向 image API
+		},
 	}
 }
 

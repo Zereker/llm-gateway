@@ -11,8 +11,7 @@ import (
 
 // SQLModelServiceReader 是 ModelServiceReader 的 sqlx 实现。
 //
-// 字段映射 ModelService（pkg/repo/models.go）的 db: tag；JSON 列由
-// datatypes.JSON 自带的 Scanner 接管。
+// **v0.3 改动**：去 tenant_id（model_services 是全局 catalog）；GetByModel 签名去 tenantID 参数。
 type SQLModelServiceReader struct {
 	db *sqlx.DB
 }
@@ -22,38 +21,33 @@ func NewSQLModelServiceReader(db *sqlx.DB) *SQLModelServiceReader {
 	return &SQLModelServiceReader{db: db}
 }
 
-const msColumns = `id, tenant_id, service_id, model, update_time, spec_detail, group_name, tpm, rpm`
+const msColumns = `id, service_id, model, created_at, updated_at, deleted_at`
 
-// GetByModel 实现 ModelServiceReader.GetByModel；按 (tenant_id, model) 查。
-func (r *SQLModelServiceReader) GetByModel(ctx context.Context, tenantID, model string) (*ModelService, error) {
-	if tenantID == "" {
-		return nil, errors.New("model_service: empty tenant_id")
-	}
+// GetByModel 实现 ModelServiceReader.GetByModel；按 model 全局查。
+func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*ModelService, error) {
 	if model == "" {
 		return nil, errors.New("model_service: empty model name")
 	}
 	var ms ModelService
 	err := r.db.GetContext(ctx, &ms, r.db.Rebind(
-		`SELECT `+msColumns+` FROM model_services WHERE tenant_id = ? AND model = ?`),
-		tenantID, model)
+		`SELECT `+msColumns+` FROM model_services
+		 WHERE model = ? AND deleted_at IS NULL`),
+		model)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("model_service: not found: tenant=%s model=%s", tenantID, model)
+			return nil, fmt.Errorf("model_service: not found: model=%s", model)
 		}
 		return nil, fmt.Errorf("model_service: get by model: %w", err)
 	}
 	return &ms, nil
 }
 
-// List 实现 ModelServiceReader.List；只列指定 tenant 的。
-func (r *SQLModelServiceReader) List(ctx context.Context, tenantID string) ([]*ModelService, error) {
-	if tenantID == "" {
-		return nil, errors.New("model_service: empty tenant_id")
-	}
+// List 实现 ModelServiceReader.List；列全部未删 records（全局 catalog）。
+func (r *SQLModelServiceReader) List(ctx context.Context) ([]*ModelService, error) {
 	var rows []ModelService
 	if err := r.db.SelectContext(ctx, &rows,
-		r.db.Rebind(`SELECT `+msColumns+` FROM model_services WHERE tenant_id = ? ORDER BY id`),
-		tenantID,
+		`SELECT `+msColumns+` FROM model_services
+		 WHERE deleted_at IS NULL ORDER BY id`,
 	); err != nil {
 		return nil, fmt.Errorf("model_service: list: %w", err)
 	}

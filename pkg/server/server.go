@@ -30,6 +30,9 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/redis/go-redis/v9"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"github.com/zereker-labs/ai-gateway/pkg/infra"
 )
@@ -88,6 +91,18 @@ func (s *Server) NewKafkaProducer(cfg infra.KafkaConfig) (*infra.KafkaProducer, 
 	return p, nil
 }
 
+// OpenRedis 通过 infra.OpenRedis 构造 *redis.Client 并自动注册其 Close。
+//
+// gateway 启动期 ping fail-fast；M6 RateLimit 必须有 Redis（不再有内存兜底）。
+func (s *Server) OpenRedis(cfg infra.RedisConfig) (*redis.Client, error) {
+	rdb, err := infra.OpenRedis(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.AddCloser("redis", rdb.Close)
+	return rdb, nil
+}
+
 // Close 倒序跑所有 registered closer。Idempotent（连续调用安全）。
 //
 // 测试 / 非 Serve 路径（比如 cmd 内部 buildEngine 的 error fast-fail）用这个。
@@ -117,10 +132,16 @@ func (s *Server) Serve(addr string, handler http.Handler, readTimeout, shutdownT
 }
 
 // serveCtx 是 Serve 的内部实现：ctx 取消触发 shutdown，方便测试用 cancel 模拟信号。
+//
+// **HTTP/2 (h2c) 支持**：用 h2c.NewHandler 包一层让客户端可以走明文 HTTP/2
+// （PRI 升级或 prior knowledge）。HTTP/1.1 客户端不受影响——h2c handler
+// 自动按请求 ALPN/preface 区分协议。生产 ingress 一般做 TLS 终结后走 h2c
+// 到上游网关，本配置直接支持。
 func (s *Server) serveCtx(ctx context.Context, addr string, handler http.Handler, readTimeout, shutdownTimeout time.Duration) error {
+	h2s := &http2.Server{}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           h2c.NewHandler(handler, h2s),
 		ReadHeaderTimeout: readTimeout,
 	}
 

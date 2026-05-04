@@ -31,6 +31,7 @@ import (
 	"github.com/zereker-labs/ai-gateway/pkg/admin"
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 	"github.com/zereker-labs/ai-gateway/pkg/server"
 )
 
@@ -48,6 +49,11 @@ func run(configPath string) error {
 	cfg, err := config.LoadAdmin(configPath)
 	if err != nil {
 		return err
+	}
+
+	// 装载 endpoints.auth 列加密 KEK；缺失或长度错 fail-fast。
+	if err := repo.SetDataKey(cfg.DataKey); err != nil {
+		return fmt.Errorf("load data_key: %w", err)
 	}
 
 	engine, srv, err := buildEngine(cfg)
@@ -87,9 +93,13 @@ func buildEngine(cfg *config.AdminConfig) (engine *gin.Engine, srv *server.Serve
 
 	engine = admin.NewEngine(admin.Deps{
 		Token:             cfg.Admin.Token,
+		TenantStore:       admin.NewTenantStore(gdb),
+		QuotaPolicyStore:  admin.NewQuotaPolicyStore(gdb),
 		ModelServiceStore: admin.NewModelServiceStore(gdb),
+		SubscriptionStore: admin.NewSubscriptionStore(gdb),
 		EndpointStore:     admin.NewEndpointStore(gdb),
 		APIKeyStore:       admin.NewAPIKeyStore(gdb),
+		PricingStore:      admin.NewPricingStore(gdb),
 	})
 
 	return engine, srv, nil

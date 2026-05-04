@@ -20,6 +20,10 @@ type AdminConfig struct {
 	Server   ServerConfig   `yaml:"server"`
 	Admin    AdminSection   `yaml:"admin"`
 	Database infra.DBConfig `yaml:"database"` // schema 在 pkg/infra
+
+	// DataKey AES-256-GCM 加密 endpoints.auth 列；admin 写、gateway 读必须一致。
+	// hex-encoded 32 字节 = 64 字符。生产从 secret manager 注入。
+	DataKey string `yaml:"data_key"`
 }
 
 // AdminSection admin 服务专属字段（不与 gateway 共享）。

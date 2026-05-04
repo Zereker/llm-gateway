@@ -59,12 +59,12 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if err := db.Select(&tables,
 		`SELECT table_name FROM information_schema.tables
 		 WHERE table_schema = DATABASE()
-		   AND table_name IN ('model_services', 'endpoints')
+		   AND table_name IN ('model_services', 'endpoints', 'api_keys', 'pricing_versions')
 		 ORDER BY table_name`,
 	); err != nil {
 		t.Fatalf("query tables: %v", err)
 	}
-	want := map[string]bool{"model_services": false, "endpoints": false}
+	want := map[string]bool{"model_services": false, "endpoints": false, "api_keys": false, "pricing_versions": false}
 	for _, n := range tables {
 		if _, ok := want[n]; ok {
 			want[n] = true
@@ -90,35 +90,69 @@ func TestMigrate_TableShape(t *testing.T) {
 	}
 
 	// 测试前清空，避免唯一约束冲突
-	for _, table := range []string{"endpoints", "model_services"} {
+	// FK 引用时 MySQL 拒 TRUNCATE 父表
+	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 0`); err != nil {
+		t.Fatalf("disable FK checks: %v", err)
+	}
+	for _, table := range []string{
+		"pricing_versions",
+		"tenant_model_subscriptions",
+		"endpoints",
+		"model_services",
+		"api_keys",
+		"tenants",
+		"quota_policies",
+	} {
 		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
 			t.Fatalf("TRUNCATE %s: %v", table, err)
 		}
 	}
+	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 1`); err != nil {
+		t.Fatalf("re-enable FK checks: %v", err)
+	}
+	// seed default tenant 让后续 FK insert 通过
+	if _, err := db.Exec(`INSERT INTO tenants (pin, name) VALUES ('default', 'Default')`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
 
+	// model_services：精简列（v0.3 删 tenant_id/group_name/spec_detail）
 	_, err = db.Exec(
-		`INSERT INTO model_services (service_id, model, group_name, tpm, rpm)
-		 VALUES (?, ?, ?, ?, ?)`,
-		"openai/gpt-4o", "gpt-4o", "default", 100000, 600,
+		`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
+		"openai/gpt-4o", "gpt-4o",
 	)
 	if err != nil {
 		t.Fatalf("insert model_services: %v", err)
 	}
 
+	// endpoints：auth 列存任意 VARCHAR 字符串（schema validation 不在 infra 层做，
+	// 真实加密走 pkg/repo Scanner/Valuer）；routing 必须是合法 JSON
 	_, err = db.Exec(
-		`INSERT INTO endpoints (id, vendor, url, api_key, group_name, model, weight, rpm, tpm, rps)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"openai_main", "openai", "https://api.openai.com",
-		"sk-xxx", "default", "gpt-4o", 100, 600, 100000, 0,
+		`INSERT INTO endpoints (name, vendor, model, group_name, weight, enabled, auth, routing)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"openai_main", "openai", "gpt-4o", "default", 100, true,
+		"v1:dummy-ciphertext", `{"url":"https://api.openai.com"}`,
 	)
 	if err != nil {
 		t.Fatalf("insert endpoints: %v", err)
 	}
 
-	var msCount, epCount int
+	// api_keys：hash + prefix 形态
+	_, err = db.Exec(
+		`INSERT INTO api_keys
+		 (tenant_id, api_key_hash, api_key_prefix, api_key_id, user_id, group_name, external_user, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"default", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"sk-abcdef123", "ak_alice_test", "alice", "default", false, true,
+	)
+	if err != nil {
+		t.Fatalf("insert api_keys: %v", err)
+	}
+
+	var msCount, epCount, akCount int
 	_ = db.Get(&msCount, `SELECT COUNT(*) FROM model_services`)
 	_ = db.Get(&epCount, `SELECT COUNT(*) FROM endpoints`)
-	if msCount != 1 || epCount != 1 {
-		t.Errorf("counts: ms=%d ep=%d, want 1/1", msCount, epCount)
+	_ = db.Get(&akCount, `SELECT COUNT(*) FROM api_keys`)
+	if msCount != 1 || epCount != 1 || akCount != 1 {
+		t.Errorf("counts: ms=%d ep=%d ak=%d, want 1/1/1", msCount, epCount, akCount)
 	}
 }

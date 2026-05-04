@@ -10,6 +10,7 @@ const (
 	ProtoGemini             // /v1beta/models/.../generateContent
 	ProtoBedrock            // AWS Bedrock 格式
 	ProtoCustom             // 厂商自定义；Adapter 自行解释
+	ProtoResponses          // OpenAI Responses API（/v1/responses；2024 H2 推出的新协议）
 )
 
 func (p Protocol) String() string {
@@ -24,6 +25,8 @@ func (p Protocol) String() string {
 		return "bedrock"
 	case ProtoCustom:
 		return "custom"
+	case ProtoResponses:
+		return "responses"
 	default:
 		return "unknown"
 	}

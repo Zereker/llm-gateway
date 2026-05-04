@@ -1,0 +1,76 @@
+# gateway.yaml — examples/full-config 完整功能演示
+#
+# 跟 configs/local/gateway.yaml 的差别：
+#   - 启用 Kafka outbox（生产形态）+ 注释保留 file driver 作回退
+#   - 显式列出所有 scheduler filter（含 limit_read 用 redis 限流计数）
+#   - cooldown 按 ErrorClass 分维度配
+#   - 多 model + 多 endpoint 的典型配置（数据走 admin SQL，本文件只配运行时）
+#
+# 配套 seed：seed.sql（多 tenant / model_services / endpoints / api_keys / quota_policies）
+# 启动顺序：docker compose up -d → mysql < seed.sql → 启动 admin → 启动 gateway
+
+server:
+  addr: ":8080"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+middleware:
+  body_limit_bytes: 10485760  # 10 MiB；生产建议按业务 Body 大小调
+  timeout: 120s               # 长 chat 流式可能超 60s；按 SLA 调
+
+database:
+  driver: mysql
+  # 生产 DSN：开 multiStatements + connection pool（pkg/infra 默认 maxOpenConns=20）
+  dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/ai_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
+
+redis:
+  # 生产配主备 / sentinel；本文件只示意单实例。M6 限流的 hard dependency。
+  addr: "redis.internal:6379"
+  db: 0
+  password: ""    # 生产从 secret manager 注入
+
+# data_key：AES-256-GCM 加密 endpoints.auth 列的 KEK（hex-encoded 32 字节）。
+# 必须跟 admin.yaml 一致。
+# **生产强约束**：从 secret manager / KMS 注入，绝不 commit 真实值。
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+outbox:
+  # 生产推荐 kafka；file 适合本地 dev / 排障。
+  driver: kafka
+  kafka:
+    brokers: ["kafka-1.internal:9092", "kafka-2.internal:9092", "kafka-3.internal:9092"]
+    topic: ai-gateway.usage
+  # 切回 file 的话注释 driver 改成 file 即可：
+  # driver: file
+  # file:
+  #   path: /var/log/ai-gateway/usage.log
+
+budget:
+  # 生产单实例 demo：用 inmemory + 默认余额 100 USD；要支持 admin 调拨改 SetBalance API。
+  # 多副本生产请用 alwayspass + 外部计费系统对接（v0.5 没有 Redis-backed 实现）。
+  driver: inmemory
+  default_balance: 100
+
+moderation:
+  # 生产推荐启用 openai moderation（免费 endpoint，~100ms 延迟）。
+  # API key 从 secret manager / env 注入；不要 commit 真值。
+  driver: openai
+  api_key: "sk-CHANGEME-moderation-key"
+  # base_url 留空走 OpenAI 官方
+  # base_url: "https://api.openai.com"
+
+scheduler:
+  # 生产推荐 filter chain：cooldown（隔离故障 ep）→ limit_read（避开已限流 ep）
+  #                       → weighted_random（按权重抽样）。
+  # weighted_random 必须放最后（其它 filter 是 prune；它是 select）。
+  filters: [cooldown, limit_read, weighted_random]
+
+  cooldown:
+    transient: 30s    # 上游 5xx / 网络错 / timeout
+    capacity:  60s    # 上游 429 / overloaded（可短一点 vs 5xx）
+    permanent: 5m     # 上游 401 / 配置错（人工修才能恢复）
+    invalid:   0s     # 客户端 400-class，**不该 cooldown endpoint**
+    unknown:   10s    # 兜底；分类不出来的错都按 transient 处理但短时
+
+  max_attempts: 3       # 全局尝试上限（含 L1 同 ep 重试）；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
+  max_per_endpoint: 2   # 同 ep 内部重试 2 次再换 ep；适合 transient 网络抖动场景。1 = 不做 L1 retry

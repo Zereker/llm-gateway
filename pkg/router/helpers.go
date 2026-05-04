@@ -2,6 +2,7 @@ package router
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // noopHandler 让 gin 把请求路由到这里，实际响应由 M7 Schedule middleware 写出；
@@ -13,11 +14,10 @@ func noopHandler(c *gin.Context) {}
 func registerOpsRoutes(engine *gin.Engine) {
 	engine.GET("/healthz", healthzHandler)
 	engine.GET("/readyz", readyzHandler)
-	engine.GET("/metrics", metricsHandler)
+	// /metrics 直接读 prometheus default registry——pkg/metric 的 Inc/Observe/Gauge
+	// 注册到那里，handler 自动暴露所有已注册的 metric。
+	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 }
 
 func healthzHandler(c *gin.Context) { c.String(200, "ok") }
 func readyzHandler(c *gin.Context)  { c.String(200, "ok") }
-func metricsHandler(c *gin.Context) {
-	c.Data(200, "text/plain; version=0.0.4", []byte("# v0.1 metric endpoint stub\n"))
-}

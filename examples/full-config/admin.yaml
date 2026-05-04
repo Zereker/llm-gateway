@@ -1,0 +1,19 @@
+# admin.yaml — examples/full-config 完整功能演示
+#
+# admin 是控制平面，跟 gateway 共享同一份 MySQL（dsn / data_key 必须一致）。
+
+server:
+  addr: ":8081"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+admin:
+  # 生产从 secret manager 注入；切忌 commit。
+  token: CHANGEME-admin-token
+
+database:
+  driver: mysql
+  dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/ai_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
+
+# 必须跟 gateway.yaml 的 data_key 一致。
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

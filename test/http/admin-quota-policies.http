@@ -1,0 +1,259 @@
+# admin-quota-policies.http —— QuotaPolicy CRUD（限流策略库）。
+#
+# 路由：/admin/v1/quota-policies*
+#
+# 设计：N:M 共享。一个 policy 被多个 tenant / api_key 通过 quota_policy_id 引用。
+# 改 policy → 所有引用方立即生效。
+#
+# rule_json shape（M6 RateLimit 是唯一消费者；admin/gateway 都不解析）：
+#   {
+#     "default":   {"rpm": 60, "tpm": 100000, "rps": null, "concurrent_requests": null},
+#     "per_model": {"gpt-4o": {"rpm": 10, "tpm": 30000}, "gpt-4o-mini": {"rpm": 100}}
+#   }
+#
+# M6 选 rule 策略：
+#   - 先看 per_model[currentModel]，命中即用
+#   - 否则用 default
+#   - 都没（policy 完全空）则该层不限
+#
+# **可改**（跟 pricing_versions 不同；quota 调整即时生效，不需要保留历史）。
+# 想保留历史改价记录？admin 自己外部审计日志。
+
+### List
+GET {{admin_url}}/admin/v1/quota-policies
+X-Admin-Token: {{admin_token}}
+
+### Get by name
+GET {{admin_url}}/admin/v1/quota-policies?name=tier1
+X-Admin-Token: {{admin_token}}
+
+### Create: free tier (低限流，per-model 限制 gpt-4o)
+POST {{admin_url}}/admin/v1/quota-policies
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "free",
+  "description": "免费档：全模型聚合 60 RPM；gpt-4o 单独 5 RPM",
+  "rule_json": {
+    "default":   {"rpm": 60, "tpm": 100000},
+    "per_model": {"gpt-4o": {"rpm": 5, "tpm": 10000}}
+  }
+}
+
+> {% client.global.set("policy_free_id", response.body.id); %}
+
+### Create: tier1 (基础付费档)
+POST {{admin_url}}/admin/v1/quota-policies
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "tier1",
+  "description": "基础付费档",
+  "rule_json": {
+    "default":   {"rpm": 600, "tpm": 1000000},
+    "per_model": {"gpt-4o": {"rpm": 30, "tpm": 100000}, "gpt-4o-mini": {"rpm": 200}}
+  }
+}
+
+> {% client.global.set("policy_tier1_id", response.body.id); %}
+
+### Create: enterprise contract (单租户专属)
+POST {{admin_url}}/admin/v1/quota-policies
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "enterprise_acme",
+  "description": "ACME Corp 2026 contract: 高 quota，无 per-model 限制",
+  "rule_json": {
+    "default": {"rpm": 10000, "tpm": 50000000, "concurrent_requests": 100}
+  }
+}
+
+### Get by id
+GET {{admin_url}}/admin/v1/quota-policies/{{policy_tier1_id}}
+X-Admin-Token: {{admin_token}}
+
+### Update rule_json (改限流；引用方即时生效)
+PUT {{admin_url}}/admin/v1/quota-policies/{{policy_tier1_id}}
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "rule_json": {
+    "default":   {"rpm": 1200, "tpm": 2000000},
+    "per_model": {"gpt-4o": {"rpm": 60}, "gpt-4o-mini": {"rpm": 400}}
+  },
+  "description": "Q2 升级：tier1 quota 翻倍"
+}
+
+### Disable policy（引用方按"该层不限"处理）
+PUT {{admin_url}}/admin/v1/quota-policies/{{policy_tier1_id}}
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "enabled": false
+}
+
+### Delete (软删)
+DELETE {{admin_url}}/admin/v1/quota-policies/{{policy_free_id}}
+X-Admin-Token: {{admin_token}}
+
+# =====================================================================
+# 429 verify flow（端到端验证 RPM 触发限流）
+# 顺序：建超严格 policy（RPM=2） → 绑给 default tenant → 发 3 次 chat
+# 第 3 次应 429 + Retry-After header
+# =====================================================================
+
+### Create policy: RPM=2
+POST {{admin_url}}/admin/v1/quota-policies
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "throttle_test",
+  "description": "e2e test: 1 minute window, RPM=2",
+  "rule_json": {
+    "default": {"rpm": 2}
+  }
+}
+
+> {% client.global.set("throttle_policy_id", response.body.id); %}
+
+### Bind policy to default tenant
+PUT {{admin_url}}/admin/v1/tenants/default
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "quota_policy_id": {{throttle_policy_id}}
+}
+
+### Chat #1 — should 200
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "stream": false,
+  "messages": [{"role": "user", "content": "1"}]
+}
+
+### Chat #2 — should 200
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "stream": false,
+  "messages": [{"role": "user", "content": "2"}]
+}
+
+### Chat #3 — should 429 with Retry-After
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "stream": false,
+  "messages": [{"role": "user", "content": "3"}]
+}
+
+> {%
+client.test("429 rate limited", () => client.assert(response.status === 429));
+client.test("Retry-After header present", () => client.assert(response.headers.valueOf("Retry-After") !== null));
+%}
+
+### Cleanup: 解绑 policy（不然后面用例都被限流）
+PUT {{admin_url}}/admin/v1/tenants/default
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "clear_quota_policy": true
+}
+
+# =====================================================================
+# per-model additive 验证：default RPM=10 + per_model.<model> RPM=2
+# 发 3 次同 model 请求 → 第 3 次 429（per-model 桶满，default 还剩 7）
+# =====================================================================
+
+### Create policy: per-model additive
+POST {{admin_url}}/admin/v1/quota-policies
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "additive_test",
+  "description": "default 10 RPM + gpt-4o 2 RPM (additive: per-model is sub-cap)",
+  "rule_json": {
+    "default":   {"rpm": 10},
+    "per_model": {"deepseek-v3-2-251201": {"rpm": 2}}
+  }
+}
+
+> {% client.global.set("additive_policy_id", response.body.id); %}
+
+### Bind to default tenant
+PUT {{admin_url}}/admin/v1/tenants/default
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "quota_policy_id": {{additive_policy_id}}
+}
+
+### Chat #1, #2, #3 to gpt model：第 3 次应 429（per-model bucket 满）
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "stream": false,
+  "messages": [{"role": "user", "content": "1"}]
+}
+
+###
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "stream": false,
+  "messages": [{"role": "user", "content": "2"}]
+}
+
+###
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "stream": false,
+  "messages": [{"role": "user", "content": "3"}]
+}
+
+> {%
+client.test("429 per-model exceeded", () => client.assert(response.status === 429));
+client.test("error message scope=model", () => {
+  client.assert(response.body.error.message.indexOf("deepseek") !== -1, "should mention model in error key");
+});
+%}
+
+### Cleanup
+PUT {{admin_url}}/admin/v1/tenants/default
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "clear_quota_policy": true
+}

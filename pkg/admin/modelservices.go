@@ -6,16 +6,13 @@ import (
 
 // registerModelServiceRoutes 注册 /admin/v1/modelservices CRUD。
 //
-// 多租户：所有路由用 ?tenant_id= query 参数指定（v0.1 默认 "default"）；
-// POST/PUT body 也可以带 tenant_id，URL 优先。
+// **v0.3 改动**：去 ?tenant_id= 参数（modelservices 全局 catalog）。
 //
-// 路径设计：
-//
-//	GET    /modelservices                  列表（?tenant_id=）
-//	POST   /modelservices                  创建（body: modelServiceDTO）
-//	GET    /modelservices/:model           按 model 字段查（?tenant_id=）
-//	PUT    /modelservices/:model           全量更新（URL 是 model 来源，body.Model 被覆盖）
-//	DELETE /modelservices/:model           删除（?tenant_id=）
+//	GET    /modelservices                  列表
+//	POST   /modelservices                  创建
+//	GET    /modelservices/:model           按 model 查
+//	PUT    /modelservices/:model           改 service_id（model 是 UNIQUE 业务键不可改）
+//	DELETE /modelservices/:model           软删
 func registerModelServiceRoutes(api *gin.RouterGroup, s *ModelServiceStore) {
 	api.GET("/modelservices", listModelServices(s))
 	api.POST("/modelservices", createModelService(s))
@@ -26,8 +23,7 @@ func registerModelServiceRoutes(api *gin.RouterGroup, s *ModelServiceStore) {
 
 func listModelServices(s *ModelServiceStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
-		all, err := s.List(c.Request.Context(), tenantID)
+		all, err := s.List(c.Request.Context())
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -42,8 +38,7 @@ func listModelServices(s *ModelServiceStore) gin.HandlerFunc {
 
 func getModelService(s *ModelServiceStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
-		ms, err := s.GetByModel(c.Request.Context(), tenantID, c.Param("model"))
+		ms, err := s.GetByModel(c.Request.Context(), c.Param("model"))
 		if err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
@@ -59,13 +54,12 @@ func createModelService(s *ModelServiceStore) gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		dto.TenantID = tenantOrDefault(dto.TenantID)
 		m := dtoToMS(dto)
 		if err := s.Create(c.Request.Context(), m); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(201, msToDTO(m)) // 回填 ID + UpdateTime
+		c.JSON(201, msToDTO(m)) // 回填 ID + 三件套时间戳
 	}
 }
 
@@ -76,21 +70,25 @@ func updateModelService(s *ModelServiceStore) gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		dto.Model = c.Param("model")                              // URL 是 model 真相来源
-		dto.TenantID = tenantOrDefault(c.Query("tenant_id"))      // URL query 是 tenant 来源
+		dto.Model = c.Param("model") // URL 是 model 真相来源
 		m := dtoToMS(dto)
 		if err := s.Update(c.Request.Context(), m); err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, msToDTO(m))
+		// 重读拿最新 updated_at
+		fresh, err := s.GetByModel(c.Request.Context(), m.Model)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, msToDTO(fresh))
 	}
 }
 
 func deleteModelService(s *ModelServiceStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
-		if err := s.Delete(c.Request.Context(), tenantID, c.Param("model")); err != nil {
+		if err := s.Delete(c.Request.Context(), c.Param("model")); err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}

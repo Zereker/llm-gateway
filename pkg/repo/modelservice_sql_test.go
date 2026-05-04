@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/jmoiron/sqlx"
-	"gorm.io/datatypes"
 )
 
 // jsonEqual 比较两个 JSON byte slice 的语义相等（不在意空格 / 字段顺序）。
-// MySQL JSON 列存进去会 re-format，byte 不等但语义相等。
 func jsonEqual(t *testing.T, got, want []byte) bool {
 	t.Helper()
 	var g, w any
@@ -27,24 +24,15 @@ func jsonEqual(t *testing.T, got, want []byte) bool {
 	return reflect.DeepEqual(g, w)
 }
 
-// seedModelService 用 raw SQL 把测试数据写进 db（bypass admin 写路径），
-// 让 Reader 测试自包含。tenant_id 默认 "default"。
+// seedModelService 把测试数据写进 db（bypass admin 写路径）。
+//
+// **v0.3 改动**：model_services 删 tenant_id/group_name/spec_detail。
 func seedModelService(t *testing.T, db *sqlx.DB, ms *ModelService) {
 	t.Helper()
-	if ms.TenantID == "" {
-		ms.TenantID = testTenant
-	}
-	if ms.UpdateTime.IsZero() {
-		ms.UpdateTime = time.Now().UTC()
-	}
-	if ms.Group == "" {
-		ms.Group = "default"
-	}
-	res, err := db.Exec(
-		`INSERT INTO model_services (tenant_id, service_id, model, update_time, spec_detail, group_name, tpm, rpm)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		ms.TenantID, ms.ServiceID, ms.Model, ms.UpdateTime, datatypesJSONOrNil(ms.SpecDetail),
-		ms.Group, ms.Tpm, ms.Rpm,
+	res, err := db.NamedExec(
+		`INSERT INTO model_services (service_id, model)
+		 VALUES (:service_id, :model)`,
+		ms,
 	)
 	if err != nil {
 		t.Fatalf("seed model_service: %v", err)
@@ -54,43 +42,32 @@ func seedModelService(t *testing.T, db *sqlx.DB, ms *ModelService) {
 	}
 }
 
-// datatypesJSONOrNil 避免 "" → MySQL JSON 列拒绝插入。
-func datatypesJSONOrNil(j datatypes.JSON) any {
-	if len(j) == 0 {
-		return nil
-	}
-	return string(j)
-}
-
 func TestSQLModelServiceReader_GetByModel(t *testing.T) {
 	db := newTestDB(t)
 	seedModelService(t, db, &ModelService{
-		ServiceID:  "openai/gpt-4o",
-		Model:      "gpt-4o",
-		Tpm:        100000,
-		Rpm:        600,
-		SpecDetail: datatypes.JSON(`{"unit":"token"}`),
+		ServiceID: "openai/gpt-4o",
+		Model:     "gpt-4o",
 	})
 
 	r := NewSQLModelServiceReader(db)
-	got, err := r.GetByModel(context.Background(), testTenant, "gpt-4o")
+	got, err := r.GetByModel(context.Background(), "gpt-4o")
 	if err != nil {
 		t.Fatalf("GetByModel: %v", err)
 	}
-	if got.ServiceID != "openai/gpt-4o" || got.Tpm != 100000 || got.Rpm != 600 {
+	if got.ServiceID != "openai/gpt-4o" {
 		t.Errorf("got %+v", got)
 	}
-	if !jsonEqual(t, got.SpecDetail, []byte(`{"unit":"token"}`)) {
-		t.Errorf("SpecDetail = %s", got.SpecDetail)
+	if got.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt not populated by DB DEFAULT")
 	}
 }
 
 func TestSQLModelServiceReader_GetNotFound(t *testing.T) {
 	r := NewSQLModelServiceReader(newTestDB(t))
-	if _, err := r.GetByModel(context.Background(), testTenant, "missing"); err == nil {
+	if _, err := r.GetByModel(context.Background(), "missing"); err == nil {
 		t.Fatal("want not-found error")
 	}
-	if _, err := r.GetByModel(context.Background(), testTenant, ""); err == nil {
+	if _, err := r.GetByModel(context.Background(), ""); err == nil {
 		t.Fatal("want error for empty model")
 	}
 }
@@ -102,11 +79,29 @@ func TestSQLModelServiceReader_List(t *testing.T) {
 	}
 
 	r := NewSQLModelServiceReader(db)
-	all, err := r.List(context.Background(), testTenant)
+	all, err := r.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(all) != 3 {
 		t.Errorf("len = %d, want 3", len(all))
+	}
+}
+
+func TestSQLModelServiceReader_SkipsDeleted(t *testing.T) {
+	db := newTestDB(t)
+	ms := &ModelService{ServiceID: "v/m", Model: "m"}
+	seedModelService(t, db, ms)
+	if _, err := db.Exec(`UPDATE model_services SET deleted_at = NOW(6) WHERE id = ?`, ms.ID); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+
+	r := NewSQLModelServiceReader(db)
+	if _, err := r.GetByModel(context.Background(), "m"); err == nil {
+		t.Error("expected not-found for soft-deleted")
+	}
+	all, _ := r.List(context.Background())
+	if len(all) != 0 {
+		t.Errorf("List returned soft-deleted: %d", len(all))
 	}
 }

@@ -15,7 +15,15 @@ import (
 // 设计考虑：schema 演进的所有权归 admin，gateway 不再调用 infra.Migrate。
 // 这个函数让 gateway 在 boot 失败时给出比"SQL: no such table"更友好的提示。
 func CheckSchema(ctx context.Context, db *sqlx.DB) error {
-	for _, t := range []string{"model_services", "endpoints"} {
+	for _, t := range []string{
+		"quota_policies",
+		"tenants",
+		"model_services",
+		"endpoints",
+		"tenant_model_subscriptions",
+		"api_keys",
+		"pricing_versions",
+	} {
 		if _, err := db.ExecContext(ctx, "SELECT 1 FROM "+t+" LIMIT 0"); err != nil {
 			return fmt.Errorf("repo: schema check failed on %q (run cmd/admin to bootstrap): %w", t, err)
 		}

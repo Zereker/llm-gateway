@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-gateway.fullname" . }}-gateway
+  labels:
+    {{- include "ai-gateway.labels" . | nindent 4 }}
+data:
+  gateway.yaml: |
+    {{- $cfg := .Values.gateway.config }}
+    server:
+      addr: {{ $cfg.server.addr | quote }}
+      read_header_timeout: {{ $cfg.server.read_header_timeout }}
+      shutdown_timeout: {{ $cfg.server.shutdown_timeout }}
+    middleware:
+      body_limit_bytes: {{ $cfg.middleware.body_limit_bytes }}
+      timeout: {{ $cfg.middleware.timeout }}
+    # database / redis / data_key 通过 env var 从 secret 注入；这里写占位让 yaml 合法
+    database:
+      driver: mysql
+      dsn: "${DATABASE_DSN}"
+    redis:
+      addr: "${REDIS_ADDR}"
+      password: "${REDIS_PASSWORD}"
+      db: 0
+    data_key: "${DATA_KEY}"
+    outbox:
+      driver: {{ $cfg.outbox.driver | quote }}
+      {{- if eq $cfg.outbox.driver "kafka" }}
+      kafka:
+        brokers: {{ $cfg.outbox.kafka.brokers | toJson }}
+        topic: {{ $cfg.outbox.kafka.topic | quote }}
+      {{- end }}
+    scheduler:
+      filters: {{ $cfg.scheduler.filters | toJson }}
+      max_attempts: {{ $cfg.scheduler.max_attempts }}
+      max_per_endpoint: {{ $cfg.scheduler.max_per_endpoint }}
+      cooldown:
+        transient: {{ $cfg.scheduler.cooldown.transient }}
+        capacity: {{ $cfg.scheduler.cooldown.capacity }}
+        permanent: {{ $cfg.scheduler.cooldown.permanent }}
+        invalid: {{ $cfg.scheduler.cooldown.invalid }}
+        unknown: {{ $cfg.scheduler.cooldown.unknown }}
+    budget:
+      driver: {{ $cfg.budget.driver | quote }}
+    moderation:
+      driver: {{ $cfg.moderation.driver | quote }}
+      {{- if eq $cfg.moderation.driver "openai" }}
+      api_key: "${MODERATION_API_KEY}"
+      {{- end }}
+    trace:
+      driver: {{ $cfg.trace.driver | quote }}
+      {{- if eq $cfg.trace.driver "otel" }}
+      endpoint: {{ $cfg.trace.endpoint | quote }}
+      service_name: {{ $cfg.trace.service_name | quote }}
+      {{- end }}

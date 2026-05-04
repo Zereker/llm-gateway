@@ -1,0 +1,153 @@
+# 00-bootstrap.http —— 从零起步把整条链路打通的最小操作序列。
+#
+# 前置：
+#   docker compose up -d                           # 起 mysql + redis + redpanda
+#   make run-admin    # OR: go run ./cmd/admin -config ./configs/local/admin.yaml
+#   make run-gateway  # OR: go run ./cmd/gateway -config ./configs/local/gateway.yaml
+#
+# 跑法（GoLand / VS Code REST Client）：
+#   选择 env: dev
+#   依次点每个请求左侧的 ▶；client.global 会保存 api_key / created_id 等供后续请求引用
+#
+# **v0.3 完整链路**（开放平台 SaaS 拓扑）：
+#   1) 确认 tenant default 存在            （schema.sql Migrate 自动 seed）
+#   2) 创建 ModelService                  全局 catalog
+#   3) tenant default 订阅该 model        ← M5 没订阅 → 403
+#   4) 发布 Pricing                       ← M5 没价 → 503
+#   5) 创建 APIKey                        客户端拿明文 sk-XXX 一次性
+#   6) 用 APIKey 打 chat                  全套 10 middleware → ARK → 真返回
+#
+# 验证矩阵（在 step 6 前打 chat 应分别拿到 401/403/503，链路条件满足后 200）：
+#   - 没 apikey                  → 401
+#   - apikey 错                  → 401
+#   - tenant 没订阅 model        → 403
+#   - tenant 订阅了但没 active price → 503
+#   - 都满足                      → 200
+
+### Step 0: 验证 default tenant 已存在（Migrate 自动 seed）
+GET {{admin_url}}/admin/v1/tenants/default
+X-Admin-Token: {{admin_token}}
+
+> {%
+client.test("default tenant seeded", () => client.assert(response.status === 200));
+%}
+
+### Step 1: 创建 ModelService（全局 catalog）
+POST {{admin_url}}/admin/v1/modelservices
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "service_id": "{{service_id}}",
+  "model": "{{model}}"
+}
+
+> {%
+client.global.set("model_service_id", response.body.id);
+client.test("created", () => client.assert(response.status === 201));
+%}
+
+### Step 2: 创建 Endpoint（vendor=ark, bearer auth；全局上游池）
+POST {{admin_url}}/admin/v1/endpoints
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "ark_deepseek",
+  "vendor": "ark",
+  "model": "{{model}}",
+  "group": "default",
+  "weight": 100,
+  "auth": {
+    "type": "bearer",
+    "payload": {
+      "api_key": "{{ark_apikey}}"
+    }
+  },
+  "routing": {
+    "url": "{{ark_url}}"
+  }
+}
+
+> {%
+client.global.set("endpoint_id", response.body.id);
+client.test("auth payload masked in response", () => {
+  client.assert(response.body.auth.payload === "***", "payload should be masked");
+});
+%}
+
+### Step 3: tenant 订阅该 model（不订阅的话 chat → 403）
+POST {{admin_url}}/admin/v1/tenants/default/subscriptions
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "model_service_id": {{model_service_id}}
+}
+
+> {%
+client.test("subscribed", () => client.assert(response.status === 201));
+client.test("enabled", () => client.assert(response.body.enabled === true));
+%}
+
+### Step 4: 发布 Pricing v1（不发的话 chat → 503）
+POST {{admin_url}}/admin/v1/modelservices/{{model}}/prices
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "rule_class": "standard",
+  "rule_json": {
+    "unit": "tokens_per_1m",
+    "currency": "CNY",
+    "rates": {
+      "input": 2.0,
+      "output": 8.0,
+      "cached_input": 0.4
+    }
+  },
+  "created_by": "bootstrap",
+  "notes": "initial price"
+}
+
+> {%
+client.global.set("pricing_version_id", response.body.id);
+%}
+
+### Step 5: 创建 APIKey（响应一次性返明文）
+POST {{admin_url}}/admin/v1/apikeys
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "tenant_id": "default",
+  "user_id": "alice",
+  "name": "bootstrap-test",
+  "group": "default"
+}
+
+> {%
+client.global.set("apikey", response.body.api_key);          // 明文，只此一次
+client.global.set("api_key_id", response.body.api_key_id);
+client.global.set("api_key_prefix", response.body.api_key_prefix);
+client.log("APIKEY = " + response.body.api_key);
+%}
+
+### Step 6: chat completion（走 gateway 全链路 → ARK）
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "stream": false,
+  "messages": [
+    {"role": "user", "content": "用一句话介绍你自己。"}
+  ]
+}
+
+> {%
+client.test("200 OK", () => client.assert(response.status === 200));
+client.test("model echo", () => client.assert(response.body.model === client.global.get("model")));
+client.test("usage filled", () => client.assert(response.body.usage.total_tokens > 0));
+%}

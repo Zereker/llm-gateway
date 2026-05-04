@@ -12,7 +12,18 @@ import (
 
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
+
+// devDataKey 是 e2e tests 用的 AES KEK；TestMain 装载，供 endpoints.auth 加解密。
+const devDataKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func TestMain(m *testing.M) {
+	if err := repo.SetDataKey(devDataKey); err != nil {
+		panic("e2e tests: SetDataKey: " + err.Error())
+	}
+	os.Exit(m.Run())
+}
 
 // e2e: 用 httptest 模拟 OpenAI 上游，把 gateway 的全套 middleware 串起来跑一遍。
 func TestE2E_OpenAIChatCompletions(t *testing.T) {
@@ -137,13 +148,19 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 			BodyLimitBytes: 10 << 20,
 			Timeout:        5 * time.Second,
 		},
+		DataKey: devDataKey,
 	}
 	cfg.ApplyDefaults()
 	return cfg
 }
 
 // seedDB 连本地 MySQL，Migrate + TRUNCATE + 写测试用 ModelService + Endpoint + APIKey。
-// buildEngine 后续会再开一次连接，读到这些数据。
+//
+// **endpoint 的 auth/routing 走 NamedExec**，让 AuthConfig.Value() 加密、
+// RoutingConfig.Value() 序列化 JSON——raw SQL 字符串拿不到这层魔法。
+//
+// **api_key 走 hash**：SHA-256(plaintext) 落 api_key_hash 列，gateway Resolve
+// 时入参 hash 后能查到。
 func seedDB(t *testing.T, dsn, upstreamURL string) {
 	t.Helper()
 	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
@@ -156,30 +173,96 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	if err := infra.Migrate(ctx, db); err != nil {
 		t.Fatalf("infra.Migrate seed: %v", err)
 	}
-	for _, table := range []string{"api_keys", "endpoints", "model_services"} {
+	// FK 引用时 MySQL 拒 TRUNCATE 父表（pricing_versions → model_services）；
+	// 关 FK check 一把扫
+	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 0`); err != nil {
+		t.Fatalf("disable FK checks: %v", err)
+	}
+	for _, table := range []string{
+		"pricing_versions",
+		"tenant_model_subscriptions",
+		"api_keys",
+		"endpoints",
+		"model_services",
+		"tenants",
+		"quota_policies",
+	} {
 		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
 			t.Fatalf("TRUNCATE %s: %v", table, err)
 		}
 	}
+	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 1`); err != nil {
+		t.Fatalf("re-enable FK checks: %v", err)
+	}
 
-	// 用 raw SQL 直接 INSERT，避开 admin 写路径（gateway 测试不需要 import admin）。
+	// 必须先有 tenants("default")（FK 锚点；schema.sql seed 已 INSERT IGNORE 但 TRUNCATE 清掉了）
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO model_services (tenant_id, service_id, model, group_name) VALUES (?, ?, ?, ?)`,
-		"default", "openai/gpt-4o", "gpt-4o", "default",
+		`INSERT INTO tenants (pin, name) VALUES (?, ?)`,
+		"default", "Default Tenant",
 	); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+
+	// model_services 全局 catalog（无 tenant_id / group_name / spec_detail）
+	res, err := db.ExecContext(ctx,
+		`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
+		"openai/gpt-4o", "gpt-4o",
+	)
+	if err != nil {
 		t.Fatalf("seed model_service: %v", err)
 	}
+	msID, _ := res.LastInsertId()
+
+	// tenant 必须订阅 model 才能用（不然 M5 → 403）
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO endpoints (tenant_id, id, vendor, url, api_key, group_name, model)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"default", "openai_main", "openai", upstreamURL, "sk-upstream-key", "default", "gpt-4o",
+		`INSERT INTO tenant_model_subscriptions (tenant_id, model_service_id, enabled) VALUES (?, ?, 1)`,
+		"default", msID,
+	); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	// M5 强制要求 active price，否则 503；e2e 必须 seed 价格
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO pricing_versions
+		 (tenant_id, model_service_id, rule_class, effective_from, effective_to, rule_json, created_by, notes)
+		 VALUES (?, ?, ?, NOW(6), NULL, ?, ?, ?)`,
+		"default", msID, "standard",
+		`{"unit":"tokens_per_1m","currency":"USD","rates":{"input":5.0,"output":15.0}}`,
+		"e2e-seed", "test fixture",
+	); err != nil {
+		t.Fatalf("seed pricing: %v", err)
+	}
+
+	auth, err := repo.EncodePayload(repo.AuthTypeBearer, repo.BearerAuth{APIKey: "sk-upstream-key"})
+	if err != nil {
+		t.Fatalf("encode bearer: %v", err)
+	}
+	ep := &repo.Endpoint{
+		Name:    "openai_main",
+		Vendor:  "openai",
+		Model:   "gpt-4o",
+		Group:   "default",
+		Weight:  100,
+		Enabled: true,
+		Auth:    auth,
+		Routing: repo.RoutingConfig{URL: upstreamURL},
+	}
+	if _, err := db.NamedExecContext(ctx,
+		`INSERT INTO endpoints
+		 (name, vendor, model, group_name, weight, enabled, auth, routing, quota, capabilities, extra)
+		 VALUES (:name, :vendor, :model, :group_name, :weight, :enabled, :auth, :routing, :quota, :capabilities, :extra)`,
+		ep,
 	); err != nil {
 		t.Fatalf("seed endpoint: %v", err)
 	}
+
+	const aliceKey = "sk-test-alice"
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO api_keys (tenant_id, api_key, api_key_id, user_id, group_name, external_user, enabled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"default", "sk-test-alice", "ak_alice_test", "alice", "default", false, true,
+		`INSERT INTO api_keys
+		 (tenant_id, api_key_hash, api_key_prefix, api_key_id, user_id, group_name, external_user, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"default", repo.HashAPIKey(aliceKey), aliceKey[:12],
+		"ak_alice_test", "alice", "default", false, true,
 	); err != nil {
 		t.Fatalf("seed api_key: %v", err)
 	}

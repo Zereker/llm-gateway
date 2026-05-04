@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/zereker-labs/ai-gateway/pkg/repo"
 )
 
-// EndpointStore 用 gorm 写 endpoints 表。多租户 scope 同 ModelServiceStore。
+// EndpointStore 用 gorm 写 endpoints 表。
+//
+// **v0.3 改动**：去 tenant_id（全局上游池；BYOK 等真要做时再加 nullable tenant_id 列）。
 type EndpointStore struct {
 	db *gorm.DB
 }
@@ -20,41 +23,66 @@ func NewEndpointStore(db *gorm.DB) *EndpointStore {
 	return &EndpointStore{db: db}
 }
 
-func (s *EndpointStore) GetByID(ctx context.Context, tenantID, id string) (*repo.Endpoint, error) {
-	if tenantID == "" || id == "" {
-		return nil, errors.New("endpoint: tenant_id and id required")
+// GetByID 按 id 查未删 endpoint。
+func (s *EndpointStore) GetByID(ctx context.Context, id int64) (*repo.Endpoint, error) {
+	if id == 0 {
+		return nil, errors.New("endpoint: id required")
 	}
 	var ep repo.Endpoint
 	if err := s.db.WithContext(ctx).
-		Where("tenant_id = ? AND id = ?", tenantID, id).
+		Where("id = ? AND deleted_at IS NULL", id).
 		First(&ep).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("endpoint: not found: tenant=%s id=%s", tenantID, id)
+			return nil, fmt.Errorf("endpoint: not found: id=%d", id)
 		}
 		return nil, fmt.Errorf("endpoint: get by id: %w", err)
 	}
 	return &ep, nil
 }
 
-func (s *EndpointStore) List(ctx context.Context, tenantID string) ([]repo.Endpoint, error) {
-	if tenantID == "" {
-		return nil, errors.New("endpoint: tenant_id required")
+// GetByName 按 name 查；admin UI 用名字找 ID。
+func (s *EndpointStore) GetByName(ctx context.Context, name string) (*repo.Endpoint, error) {
+	if name == "" {
+		return nil, errors.New("endpoint: name required")
 	}
+	var ep repo.Endpoint
+	if err := s.db.WithContext(ctx).
+		Where("name = ? AND deleted_at IS NULL", name).
+		First(&ep).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("endpoint: not found: name=%s", name)
+		}
+		return nil, fmt.Errorf("endpoint: get by name: %w", err)
+	}
+	return &ep, nil
+}
+
+// List 列全部未删 endpoint。
+func (s *EndpointStore) List(ctx context.Context) ([]repo.Endpoint, error) {
 	var out []repo.Endpoint
 	if err := s.db.WithContext(ctx).
-		Where("tenant_id = ?", tenantID).
+		Where("deleted_at IS NULL").
 		Order("id ASC").Find(&out).Error; err != nil {
 		return nil, fmt.Errorf("endpoint: list: %w", err)
 	}
 	return out, nil
 }
 
+// Create 插入新 endpoint；成功后回填 e.ID。
+//
+// 必填：name / vendor / model / Auth.Type / Routing。
 func (s *EndpointStore) Create(ctx context.Context, e *repo.Endpoint) error {
-	if e == nil || e.ID == "" || e.Vendor == "" || e.Model == "" {
-		return errors.New("endpoint: id, vendor, model required")
+	if e == nil || e.Name == "" || e.Vendor == "" || e.Model == "" {
+		return errors.New("endpoint: name, vendor, model required")
 	}
-	if e.TenantID == "" {
-		e.TenantID = "default"
+	if e.Auth.Type == "" {
+		return errors.New("endpoint: auth.type required")
+	}
+	if (e.Routing == repo.RoutingConfig{}) {
+		return errors.New("endpoint: routing required (at least URL or region)")
+	}
+	if err := validateRoutingURL(&e.Routing); err != nil {
+		return fmt.Errorf("endpoint: %w", err)
 	}
 	if e.Group == "" {
 		e.Group = "default"
@@ -62,19 +90,27 @@ func (s *EndpointStore) Create(ctx context.Context, e *repo.Endpoint) error {
 	if e.Weight == 0 {
 		e.Weight = 100
 	}
+	e.Enabled = true
+	now := time.Now().UTC()
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = now
+	}
+	if e.UpdatedAt.IsZero() {
+		e.UpdatedAt = now
+	}
 	if err := s.db.WithContext(ctx).Create(e).Error; err != nil {
 		return fmt.Errorf("endpoint: create: %w", err)
 	}
 	return nil
 }
 
-// Update 按 (tenant_id, id) 定位行，更新除 id / tenant_id 外所有字段。
+// Update 按 id 定位行，更新除 id / name 外所有字段。
 func (s *EndpointStore) Update(ctx context.Context, e *repo.Endpoint) error {
-	if e == nil || e.ID == "" {
+	if e == nil || e.ID == 0 {
 		return errors.New("endpoint: id required for update")
 	}
-	if e.TenantID == "" {
-		e.TenantID = "default"
+	if err := validateRoutingURL(&e.Routing); err != nil {
+		return fmt.Errorf("endpoint: %w", err)
 	}
 	if e.Group == "" {
 		e.Group = "default"
@@ -82,17 +118,16 @@ func (s *EndpointStore) Update(ctx context.Context, e *repo.Endpoint) error {
 
 	res := s.db.WithContext(ctx).
 		Model(&repo.Endpoint{}).
-		Where("tenant_id = ? AND id = ?", e.TenantID, e.ID).
+		Where("id = ? AND deleted_at IS NULL", e.ID).
 		Updates(map[string]any{
 			"vendor":       e.Vendor,
-			"url":          e.URL,
-			"api_key":      string(e.APIKey),
-			"group_name":   e.Group,
 			"model":        e.Model,
+			"group_name":   e.Group,
 			"weight":       e.Weight,
-			"rpm":          e.RPM,
-			"tpm":          e.TPM,
-			"rps":          e.RPS,
+			"enabled":      e.Enabled,
+			"auth":         e.Auth,
+			"routing":      e.Routing,
+			"quota":        e.Quota,
 			"capabilities": e.Capabilities,
 			"extra":        e.Extra,
 		})
@@ -100,23 +135,26 @@ func (s *EndpointStore) Update(ctx context.Context, e *repo.Endpoint) error {
 		return fmt.Errorf("endpoint: update: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return fmt.Errorf("endpoint: not found: tenant=%s id=%s", e.TenantID, e.ID)
+		return fmt.Errorf("endpoint: not found: id=%d", e.ID)
 	}
 	return nil
 }
 
-func (s *EndpointStore) Delete(ctx context.Context, tenantID, id string) error {
-	if tenantID == "" || id == "" {
-		return errors.New("endpoint: tenant_id and id required")
+// Delete 软删 set deleted_at = NOW()。
+func (s *EndpointStore) Delete(ctx context.Context, id int64) error {
+	if id == 0 {
+		return errors.New("endpoint: id required")
 	}
+	now := time.Now().UTC()
 	res := s.db.WithContext(ctx).
-		Where("tenant_id = ? AND id = ?", tenantID, id).
-		Delete(&repo.Endpoint{})
+		Model(&repo.Endpoint{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Updates(map[string]any{"deleted_at": now})
 	if res.Error != nil {
 		return fmt.Errorf("endpoint: delete: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return fmt.Errorf("endpoint: not found: tenant=%s id=%s", tenantID, id)
+		return fmt.Errorf("endpoint: not found: id=%d", id)
 	}
 	return nil
 }

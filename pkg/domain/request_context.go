@@ -39,7 +39,9 @@ type RequestContext struct {
 	Pricing      PricingSnapshot
 
 	// === M6 Limit 写入 ===
-	LimitSpec *LimitSpec
+	// RateLimit 携带：(a) M10 调账需要的 TPM bucket keys + 估值；(b) headers 需要的 tightest bucket 状态。
+	// nil = 没有任何 quota policy 应用到本请求（pin/apikey 都没绑 policy）。
+	RateLimit *RateLimitState
 
 	// === M7 Schedule 写入 ===
 	Endpoint *Endpoint

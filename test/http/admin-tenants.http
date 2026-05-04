@@ -1,0 +1,76 @@
+# admin-tenants.http —— Tenant (业务线 / pin) CRUD（控制平面）。
+#
+# 路由：/admin/v1/tenants*
+# pin 是 PK；其它表的 tenant_id 字段都 FK → tenants.pin。
+# 所以建 tenant 必须先于 创建该 tenant 下的 apikey / pricing / subscription。
+#
+# **schema seed**：infra.Migrate 会 INSERT IGNORE 一行 ('default', 'Default Tenant')，
+# 所以 v0.x 单租户运行不需要显式建 tenant。但开放平台 SaaS 模式下，每开通一个业务线
+# 都得 POST /tenants 一次。
+#
+# quota_policy_id：pin 维度限流；NULL = pin 不限。
+# 跟 apikey 维度限流叠加（两个独立计数器，都消耗，谁打满 429）。
+
+### List
+GET {{admin_url}}/admin/v1/tenants
+X-Admin-Token: {{admin_token}}
+
+### Get default tenant
+GET {{admin_url}}/admin/v1/tenants/default
+X-Admin-Token: {{admin_token}}
+
+### Create tenant (业务线 = "广告业务线"，pin 自定义)
+POST {{admin_url}}/admin/v1/tenants
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "pin": "ads",
+  "name": "广告业务线"
+}
+
+> {%
+client.global.set("tenant_pin", response.body.pin);
+%}
+
+### Create another tenant
+POST {{admin_url}}/admin/v1/tenants
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "pin": "search",
+  "name": "搜索业务线"
+}
+
+### Update name + 挂 quota policy
+PUT {{admin_url}}/admin/v1/tenants/{{tenant_pin}}
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "广告业务线（renamed）",
+  "quota_policy_id": 1
+}
+
+### Clear quota policy（pin 维度不限）
+PUT {{admin_url}}/admin/v1/tenants/{{tenant_pin}}
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "clear_quota_policy": true
+}
+
+### Disable tenant
+PUT {{admin_url}}/admin/v1/tenants/{{tenant_pin}}
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "enabled": false
+}
+
+### Delete (软删；该 pin 不能直接重建，需 hard-delete 才能复用)
+DELETE {{admin_url}}/admin/v1/tenants/{{tenant_pin}}
+X-Admin-Token: {{admin_token}}

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: ai-gateway
+description: ai-gateway data plane (gateway) + control plane (admin) Helm chart
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - llm
+  - ai
+  - gateway
+  - openai
+  - anthropic
+home: https://github.com/zereker-labs/ai-gateway
+sources:
+  - https://github.com/zereker-labs/ai-gateway
+maintainers:
+  - name: zereker
+    email: zereker.h@gmail.com

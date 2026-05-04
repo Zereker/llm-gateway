@@ -6,6 +6,19 @@ import "fmt"
 //
 // 跨协议族的差异由 pkg/translator 处理；同族（如多个 OpenAI 兼容厂商）的字段名 /
 // 取值范围 / 必填扩展由 ParamSpec 声明。
+//
+// **可选接口**：Factory 可以同时实现 ParamSpecProvider 暴露 ParamSpec；translator /
+// middleware 在需要时按 type assertion 拿。没实现就视为"全字段透传，不校验"——保持
+// 保守 fallback。
+//
+// **v0.5 范围**：只暴露数据结构（SupportedParams 白名单 + ParamMapping + ProviderExtensions
+// + Validators）。**enforcement** 留给 v1.0：
+//   - 三种未知参数模式（Reject / Drop / Forward）由 middleware 统一实现，按 vendor config 选
+//   - Validator 链跑完才进 translator
+//
+// 当前 v0.5 没有 middleware 真去查 ParamSpec；定义在这里是为了：
+//  (a) 让 OpenAI/Anthropic adapter 用代码声明各自的字段约束（生为文档生效）
+//  (b) v1.0 加 enforcement 时不需要回头改 adapter
 type ParamSpec struct {
 	SupportedParams    map[string]struct{}       // 白名单：该上游支持的参数（成员判定，不存值）
 	ParamMapping       map[string]string         // canonical 字段 → 上游字段名

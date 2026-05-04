@@ -1,0 +1,107 @@
+# admin-pricing.http —— Pricing rotate + history（控制平面）。
+#
+# 路由：/admin/v1/modelservices/:model/prices*
+#
+# **append-only 协议**：发布的价格行 NEVER UPDATE rule_json。
+# 改价 = POST /prices 一次原子事务里：封盘旧 active + INSERT 新 active。
+# 历史靠这个保证可重算（snapshot 里 PricingVersionID 永远指向同一份 rule_json）。
+#
+# rule_class：v0.1 默认 "standard"。将来 api_keys.pricing_class 加上后，
+# 不同租户/契约可挂不同曲线（enterprise_xxx / promo_xxx / tier_1 ...）。
+#
+# rule_json：gateway/admin 都不解析；billing engine 当真相。常见 unit:
+#   {"unit":"tokens_per_1m","currency":"USD","rates":{"input":5.0,"output":15.0,"cached_input":2.5}}
+#   {"unit":"tokens_per_1m","currency":"CNY","rates":{"input":2.0,"output":8.0}}
+#   {"unit":"image_per_call","currency":"USD","rates":{"1024x1024_standard":0.04,"1024x1024_hd":0.08}}
+#   {"unit":"audio_minute","currency":"USD","rates":{"transcription":0.006}}
+
+### List history（最新在前）
+GET {{admin_url}}/admin/v1/modelservices/{{model}}/prices?tenant_id={{tenant_id}}
+X-Admin-Token: {{admin_token}}
+
+### List history for specific rule_class
+GET {{admin_url}}/admin/v1/modelservices/{{model}}/prices?tenant_id={{tenant_id}}&rule_class=standard
+X-Admin-Token: {{admin_token}}
+
+### Get current active
+GET {{admin_url}}/admin/v1/modelservices/{{model}}/prices/active?tenant_id={{tenant_id}}
+X-Admin-Token: {{admin_token}}
+
+### Publish v1（首次价格；改价就是再 POST，原子封盘旧 + insert 新）
+POST {{admin_url}}/admin/v1/modelservices/{{model}}/prices?tenant_id={{tenant_id}}
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "rule_class": "standard",
+  "rule_json": {
+    "unit": "tokens_per_1m",
+    "currency": "CNY",
+    "rates": {
+      "input": 2.0,
+      "output": 8.0,
+      "cached_input": 0.4
+    }
+  },
+  "created_by": "alice@admin",
+  "notes": "initial DeepSeek pricing"
+}
+
+> {% client.global.set("pricing_v1_id", response.body.id); %}
+
+### Rotate v2（rate cut；v1 effective_to 自动设为现在，v2 接替为 active）
+POST {{admin_url}}/admin/v1/modelservices/{{model}}/prices?tenant_id={{tenant_id}}
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "rule_class": "standard",
+  "rule_json": {
+    "unit": "tokens_per_1m",
+    "currency": "CNY",
+    "rates": {
+      "input": 1.0,
+      "output": 4.0,
+      "cached_input": 0.2
+    }
+  },
+  "created_by": "alice@admin",
+  "notes": "Q1 promotional 50% cut"
+}
+
+> {% client.global.set("pricing_v2_id", response.body.id); %}
+
+### Verify v1 已封盘（effective_to 不再是 null）
+GET {{admin_url}}/admin/v1/modelservices/{{model}}/prices?tenant_id={{tenant_id}}
+X-Admin-Token: {{admin_token}}
+
+> {%
+client.test("history len = 2", () => client.assert(response.body.items.length === 2));
+client.test("v1 sealed (effective_to non-null)", () => {
+  const v1 = response.body.items.find(p => p.id === client.global.get("pricing_v1_id"));
+  client.assert(v1.effective_to != null, "v1 should be sealed");
+});
+client.test("v2 active", () => {
+  const v2 = response.body.items.find(p => p.id === client.global.get("pricing_v2_id"));
+  client.assert(v2.effective_to == null, "v2 should be active (effective_to null)");
+});
+%}
+
+### Publish enterprise contract pricing（不同 rule_class，跟 standard 并行存活）
+POST {{admin_url}}/admin/v1/modelservices/{{model}}/prices?tenant_id={{tenant_id}}
+X-Admin-Token: {{admin_token}}
+Content-Type: application/json
+
+{
+  "rule_class": "enterprise_acme",
+  "rule_json": {
+    "unit": "tokens_per_1m",
+    "currency": "CNY",
+    "rates": {
+      "input": 0.5,
+      "output": 2.0
+    }
+  },
+  "created_by": "biz-ops",
+  "notes": "ACME Corp 2026 contract"
+}

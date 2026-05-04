@@ -17,10 +17,23 @@ middleware:
   timeout: 60s
 
 database:
-  # ModelService / Endpoint 的存储；admin 增删改、gateway 启动期 CheckSchema + 读。
+  # ModelService / Endpoint / APIKey 的存储；admin 增删改、gateway 启动期 CheckSchema + 读。
   # docker-compose 起的 MySQL：root 无密码、库名 ai_gateway
   driver: mysql
   dsn: "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
+
+redis:
+  # M6 RateLimit 限流计数 + 未来 hot-path cache 共享 Redis。
+  # gateway 启动期 ping fail-fast，配错立即可见。
+  # 生产配主备 / sentinel；本地 docker-compose 起的单实例。
+  addr: "localhost:6379"
+  db: 0
+  password: ""
+
+# data_key: AES-256-GCM 加密 endpoints.auth 列的 KEK（hex-encoded 32 字节）。
+# 必须跟 admin.yaml 的 data_key 一致。生产从 secret manager 注入。
+# 本地 dev 用一个固定值方便调试；**绝不能上生产**。
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 outbox:
   # M10 Tracing 输出 usage 事件去哪：file 或 kafka。
@@ -31,3 +44,41 @@ outbox:
   # kafka:
   #   brokers: ["localhost:9092"]
   #   topic: ai-gateway.usage
+
+budget:
+  # M4 Budget Gate driver：
+  #   alwayspass — 默认；永远放行（开发 / 无付费体系）
+  #   inmemory   — 进程内余额跟踪（demo / 单租户；丢内存重启清零）
+  driver: alwayspass
+  # inmemory 时新 user 首次出现给的初始余额（USD）。0 = safe-by-default 拒绝
+  default_balance: 0
+
+moderation:
+  # M8 Content Moderation driver：
+  #   none   — 默认；不审核（pass-through）
+  #   openai — 调 OpenAI /v1/moderations endpoint
+  driver: none
+  # openai 时必填；生产从 secret manager 注入
+  # api_key: ""
+  # base_url 留空走 OpenAI 官方
+  # base_url: ""
+
+scheduler:
+  # M7 端点选路 Filter chain（顺序就是执行顺序；weighted_random 必须放最后）
+  filters: [cooldown, limit_read, weighted_random]
+
+  # endpoint 失败后冷却时长（按 ErrorClass 分；0 = 不冷却）
+  cooldown:
+    transient: 30s     # 上游 5xx / 网络错 / timeout
+    capacity:  60s     # 上游 429 / overloaded
+    permanent: 5m      # 上游 401 / 配置错
+    invalid:   0s      # 客户端 400-class，不该冷却 endpoint
+    unknown:   10s     # 分类不出来时
+
+  # 全局尝试上限（含 L1 同 ep 内部重试）；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
+  max_attempts: 3
+
+  # 同 endpoint 最大尝试次数（含首次）；
+  #   1 = 无 L1 retry（失败立刻换 ep；默认）
+  #   2-3 = 上游网络偶发抖动场景，同 ep 内部先重试再换。同 ep 重试期间不进 cooldown。
+  max_per_endpoint: 1

@@ -34,7 +34,7 @@ func TestTracing_PublishesUsageWhenSet(t *testing.T) {
 	)
 	r.GET("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		rc.Endpoint = &domain.Endpoint{ID: "ep1"}
+		rc.Endpoint = &domain.Endpoint{ID: 42, Name: "ep1"}
 		rc.Usage = &domain.Usage{Input: 100, Output: 50, Total: 150}
 		c.Status(200)
 	})
@@ -47,8 +47,8 @@ func TestTracing_PublishesUsageWhenSet(t *testing.T) {
 	if len(out.events) != 1 {
 		t.Fatalf("got %d events, want 1", len(out.events))
 	}
-	if out.events[0].Key != "ep1" {
-		t.Errorf("event key = %q, want ep1", out.events[0].Key)
+	if out.events[0].Key != "42" {
+		t.Errorf("event key = %q, want 42", out.events[0].Key)
 	}
 	body := string(out.events[0].Payload)
 	if body == "" || !contains(body, `"Total":150`) {

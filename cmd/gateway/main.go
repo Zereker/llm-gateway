@@ -25,14 +25,24 @@ import (
 
 	"github.com/zereker-labs/ai-gateway/pkg/config"
 	"github.com/zereker-labs/ai-gateway/pkg/middleware"
+	"github.com/zereker-labs/ai-gateway/pkg/ratelimit"
 	"github.com/zereker-labs/ai-gateway/pkg/repo"
 	"github.com/zereker-labs/ai-gateway/pkg/router"
+	"github.com/zereker-labs/ai-gateway/pkg/schedule"
 	"github.com/zereker-labs/ai-gateway/pkg/server"
 	"github.com/zereker-labs/ai-gateway/pkg/trace"
 	"github.com/zereker-labs/ai-gateway/pkg/usage"
 
 	// adapter blank imports：init() 自动注册到 adapter registry
+	_ "github.com/zereker-labs/ai-gateway/pkg/adapter/anthropic"
+	_ "github.com/zereker-labs/ai-gateway/pkg/adapter/gemini"
 	_ "github.com/zereker-labs/ai-gateway/pkg/adapter/openai"
+
+	// translator blank imports：init() 自动注册到 translator registry
+	_ "github.com/zereker-labs/ai-gateway/pkg/translator/anthropic_openai"
+	_ "github.com/zereker-labs/ai-gateway/pkg/translator/identity"
+	_ "github.com/zereker-labs/ai-gateway/pkg/translator/openai_anthropic"
+	_ "github.com/zereker-labs/ai-gateway/pkg/translator/openai_gemini"
 )
 
 func main() {
@@ -49,6 +59,11 @@ func run(configPath string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
+	}
+
+	// 装载 endpoints.auth 列加密 KEK；缺失或长度错 fail-fast。
+	if err := repo.SetDataKey(cfg.DataKey); err != nil {
+		return fmt.Errorf("load data_key: %w", err)
 	}
 
 	engine, srv, err := buildEngine(cfg)
@@ -83,6 +98,12 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		return nil, nil, err
 	}
 
+	// M6 RateLimit 必须有 Redis；启动期 ping fail-fast
+	rdb, err := srv.OpenRedis(cfg.Redis)
+	if err != nil {
+		return nil, nil, fmt.Errorf("infra.OpenRedis: %w", err)
+	}
+
 	apikeyProvider := repo.NewSQLAPIKeyProvider(sqldb)
 
 	outbox, err := buildOutbox(srv, cfg.Outbox)
@@ -94,14 +115,141 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		BodyLimit: cfg.Middleware.BodyLimitBytes,
 		Timeout:   cfg.Middleware.Timeout,
 
-		Auth:         middleware.AuthDeps{Provider: apikeyProvider},
-		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
-		ModelService: middleware.ModelServiceDeps{Provider: repo.NewSQLModelServiceReader(sqldb)},
-		Schedule:     middleware.ScheduleDeps{Endpoints: repo.NewSQLEndpointReader(sqldb)},
-		Tracing:      middleware.TracingDeps{Outbox: outbox, Tracer: trace.NewSlogTracer(slog.Default())},
+		Auth:     middleware.AuthDeps{Provider: apikeyProvider},
+		Envelope: middleware.EnvelopeDeps{Parser: middleware.DefaultParser{}},
+		// M4 Budget：driver 决定实现。alwayspass = 永远放行；inmemory = 进程内余额跟踪
+		Budget: middleware.BudgetDeps{Gate: buildBudgetGate(cfg.Budget)},
+		// M8 Moderation：driver 决定实现。none = pass-through；openai = 调 OpenAI moderation API
+		Moderation: middleware.ModerationDeps{Moderator: buildModerator(cfg.Moderation)},
+		ModelService: middleware.ModelServiceDeps{
+			Provider:      repo.NewSQLModelServiceReader(sqldb),
+			Subscriptions: repo.NewSQLSubscriptionProvider(sqldb),
+			Pricing:       repo.NewSQLPricingProvider(sqldb),
+		},
+		// M6 RateLimit：Redis 唯一实现 + PolicyCache 包一层 LRU+TTL（30s 默认）
+		Limit: middleware.LimitDeps{
+			Store:    ratelimit.NewRedisStore(rdb),
+			Policies: ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0),
+		},
+		Schedule: middleware.ScheduleDeps{
+			Scheduler: schedule.New(schedule.Config{
+				Candidates: repo.NewSQLEndpointReader(sqldb),
+				Filters: buildSchedulerFilters(
+					cfg.Scheduler.Filters,
+					ratelimit.NewRedisStore(rdb),
+					schedule.NewRedisCooldownManager(rdb, schedule.CooldownDurations{
+						Transient: cfg.Scheduler.Cooldown.Transient,
+						Capacity:  cfg.Scheduler.Cooldown.Capacity,
+						Permanent: cfg.Scheduler.Cooldown.Permanent,
+						Invalid:   cfg.Scheduler.Cooldown.Invalid,
+						Unknown:   cfg.Scheduler.Cooldown.Unknown,
+					}),
+				),
+				Cooldown: schedule.NewRedisCooldownManager(rdb, schedule.CooldownDurations{
+					Transient: cfg.Scheduler.Cooldown.Transient,
+					Capacity:  cfg.Scheduler.Cooldown.Capacity,
+					Permanent: cfg.Scheduler.Cooldown.Permanent,
+					Invalid:   cfg.Scheduler.Cooldown.Invalid,
+					Unknown:   cfg.Scheduler.Cooldown.Unknown,
+				}),
+				MaxAttempts:    cfg.Scheduler.MaxAttempts,
+				MaxPerEndpoint: cfg.Scheduler.MaxPerEndpoint,
+			}),
+		},
+		Tracing: middleware.TracingDeps{
+			Outbox:         outbox,
+			Tracer:         buildTracer(srv, cfg.Trace),
+			RateLimitStore: ratelimit.NewRedisStore(rdb),
+		},
 	})
 
 	return engine, srv, nil
+}
+
+// buildSchedulerFilters 按 cfg.Scheduler.Filters 列表名字 → Filter 实例。
+//
+// 不在 schedule pkg 里 hardcode 这个映射——cmd 才知道有哪些 deps（redis client / store /
+// cooldown manager）。新加 filter 类型时在这里加一个 case。
+//
+// 找不到的名字直接 panic（fail-fast；启动期暴露配置错）。
+func buildSchedulerFilters(names []string, store ratelimit.Store, cd schedule.CooldownManager) []schedule.Filter {
+	out := make([]schedule.Filter, 0, len(names))
+	for _, n := range names {
+		switch n {
+		case "cooldown":
+			out = append(out, schedule.NewCooldownFilter(cd))
+		case "limit_read":
+			out = append(out, schedule.NewLimitReadFilter(store))
+		case "weighted_random":
+			out = append(out, schedule.NewWeightedRandomSelector())
+		case "prefix_cache":
+			out = append(out, schedule.NewPrefixCacheFilter(0)) // 0 = 默认 vnodes=64
+		case "busy":
+			out = append(out, schedule.NewBusyFilter(0)) // 0 = 默认 threshold=0.85
+		default:
+			panic("unknown scheduler filter: " + n)
+		}
+	}
+	return out
+}
+
+// buildTracer 按 cfg.Driver 构造 trace.Tracer。
+//
+//   - slog: 默认；本地结构化日志（log/slog）
+//   - otel: OpenTelemetry OTLP gRPC export，注册 srv.AddCloser 让退出时 flush
+//
+// 找不到的 driver 直接 panic（fail-fast）。
+func buildTracer(srv *server.Server, cfg config.TraceConfig) trace.Tracer {
+	switch cfg.Driver {
+	case "", "slog":
+		return trace.NewSlogTracer(slog.Default())
+	case "otel":
+		tp, err := trace.NewOtelProvider(context.Background(), cfg.ServiceName, cfg.Endpoint)
+		if err != nil {
+			panic(fmt.Sprintf("init otel tracer: %v", err))
+		}
+		srv.AddCloser("otel-tracer", func() error {
+			return tp.Shutdown(context.Background())
+		})
+		return trace.NewOtelTracer(tp)
+	default:
+		panic("unknown trace driver: " + cfg.Driver)
+	}
+}
+
+// buildBudgetGate 按 cfg.Driver 构造 BudgetGate。
+//
+//   - alwayspass: 永远放行（默认；开发 / 无付费体系）
+//   - inmemory:   进程内余额跟踪（demo / 单租户；丢内存重启清零）
+//
+// 找不到的 driver 直接 panic（启动期暴露配置错）。
+func buildBudgetGate(cfg config.BudgetConfig) middleware.BudgetGate {
+	switch cfg.Driver {
+	case "", "alwayspass":
+		return middleware.AlwaysPassGate{}
+	case "inmemory":
+		return middleware.NewInMemoryBudgetGate(cfg.DefaultBalance)
+	default:
+		panic("unknown budget driver: " + cfg.Driver)
+	}
+}
+
+// buildModerator 按 cfg.Driver 构造 Moderator。返回 nil 时 M8 静默 pass-through。
+//
+//   - none:   nil（默认；不审核）
+//   - openai: OpenAI moderation API client（需要 cfg.APIKey）
+func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
+	switch cfg.Driver {
+	case "", "none":
+		return nil
+	case "openai":
+		if cfg.APIKey == "" {
+			panic("moderation.driver=openai requires moderation.api_key")
+		}
+		return middleware.NewOpenAIModerator(cfg.APIKey, cfg.BaseURL)
+	default:
+		panic("unknown moderation driver: " + cfg.Driver)
+	}
 }
 
 // buildOutbox 按 cfg.Driver 构造 OutboxPublisher。
@@ -123,6 +271,17 @@ func buildOutbox(srv *server.Server, cfg config.OutboxConfig) (usage.OutboxPubli
 		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
 		if err != nil {
 			return nil, err
+		}
+		if cfg.Kafka.Async {
+			ob := usage.NewAsyncKafkaOutbox(producer, cfg.Kafka.Topic, usage.AsyncOptions{
+				BufferSize:  cfg.Kafka.BufferSize,
+				MaxRetries:  cfg.Kafka.MaxRetries,
+				BackoffBase: cfg.Kafka.BackoffBase,
+				DLQTopic:    cfg.Kafka.DLQTopic,
+				Logger:      slog.Default(),
+			})
+			srv.AddCloser("async-kafka-outbox", ob.Close)
+			return ob, nil
 		}
 		return usage.NewKafkaOutbox(producer, cfg.Kafka.Topic), nil
 	default:

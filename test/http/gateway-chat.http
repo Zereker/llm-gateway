@@ -1,0 +1,98 @@
+# gateway-chat.http —— Chat completions（数据平面）。
+#
+# 路由：/v1/chat/completions（OpenAI 协议；M3 Envelope detector 按路径识别）
+#
+# 前置链路：admin 已建好对应 model 的 ModelService + Endpoint + active Pricing；
+# 拿一个有效 APIKey 明文（admin POST /apikeys 时一次返回）。
+#
+# 全链路（10 middleware）：
+#   M1 TraceContext → M9 Recover → M2 Auth → M3 Envelope → M4 Budget → M5 ModelService
+#   → M6 Limit → M8 Moderation → M7 Schedule → 上游 ARK → M10 Tracing
+#
+# 失败矩阵：
+#   - 缺凭证 / hash 不匹配 → 401
+#   - model 未在 model_services → 404 "model not found"
+#   - model 没 active pricing → 503 "pricing: no active version..."
+#   - 没 endpoint 配该 (model, group) → 503 "no endpoint for ..."
+#   - body 超 BodyLimit → 413
+#   - 上游 5xx → 502
+#
+# **{{apikey}}** 来自 admin-apikeys.http 或 00-bootstrap.http 里的 client.global.set()；
+# 跑这个文件前先在 IDE 里跑一次 admin-apikeys.http 的 Create 拿明文。
+
+### Non-streaming chat（DeepSeek-V3.2）
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "stream": false,
+  "messages": [
+    {"role": "user", "content": "用一句话回答你是谁。"}
+  ]
+}
+
+> {%
+client.test("200 OK", () => client.assert(response.status === 200));
+client.test("usage filled", () => client.assert(response.body.usage.total_tokens > 0));
+client.log("response: " + response.body.choices[0].message.content);
+%}
+
+### Streaming chat（SSE；usage 通过 stream_options.include_usage 注入）
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+  "model": "{{model}}",
+  "stream": true,
+  "messages": [
+    {"role": "user", "content": "数到 5。"}
+  ]
+}
+
+### 缺凭证 → 401
+POST {{gateway_url}}/v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "messages": [{"role": "user", "content": "hi"}]
+}
+
+> {% client.test("401 unauthorized", () => client.assert(response.status === 401)); %}
+
+### 错的 APIKey → 401（hash mismatch）
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer sk-bogus-key
+Content-Type: application/json
+
+{
+  "model": "{{model}}",
+  "messages": [{"role": "user", "content": "hi"}]
+}
+
+> {% client.test("401 invalid creds", () => client.assert(response.status === 401)); %}
+
+### 未注册 model → 404
+POST {{gateway_url}}/v1/chat/completions
+Authorization: Bearer {{apikey}}
+Content-Type: application/json
+
+{
+  "model": "this-model-does-not-exist",
+  "messages": [{"role": "user", "content": "hi"}]
+}
+
+> {% client.test("404 model not found", () => client.assert(response.status === 404)); %}
+
+### Health checks（不走主链路）
+GET {{gateway_url}}/healthz
+
+###
+GET {{gateway_url}}/readyz
+
+###
+GET {{gateway_url}}/metrics

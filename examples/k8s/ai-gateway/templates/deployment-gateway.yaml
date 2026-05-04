@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-gateway.fullname" . }}-gateway
+  labels:
+    {{- include "ai-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  {{- if not .Values.gateway.autoscaling.enabled }}
+  replicas: {{ .Values.gateway.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ai-gateway.gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-gateway.gateway.selectorLabels" . | nindent 8 }}
+      annotations:
+        # rolling restart on configmap/secret 改动
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-gateway.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # entrypoint: 用 envsubst 把 secret 注入到 yaml，再启 gateway
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              envsubst < /etc/ai-gateway/gateway.yaml.tmpl > /tmp/gateway.yaml && \
+              exec /usr/local/bin/ai-gateway -config /tmp/gateway.yaml
+          env:
+            - name: DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-gateway.fullname" . }}-secrets
+                  key: database-dsn
+            - name: REDIS_ADDR
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-gateway.fullname" . }}-secrets
+                  key: redis-addr
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-gateway.fullname" . }}-secrets
+                  key: redis-password
+            - name: DATA_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-gateway.fullname" . }}-secrets
+                  key: data-key
+            {{- if eq .Values.gateway.config.moderation.driver "openai" }}
+            - name: MODERATION_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-gateway.fullname" . }}-secrets
+                  key: moderation-api-key
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.gateway.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.gateway.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ai-gateway/gateway.yaml.tmpl
+              subPath: gateway.yaml
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "ai-gateway.fullname" . }}-gateway
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

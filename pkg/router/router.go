@@ -11,6 +11,11 @@
 //   - audio.go     /v1/audio/{speech,transcriptions,translations}（TTS + ASR）
 //   - embedding.go /v1/embeddings
 //   - helpers.go   ops handlers + noopHandler
+//
+// **客户端协议范围**：网关只暴露 OpenAI Chat / Anthropic Messages / OpenAI Responses
+// 三种文本协议（Responses 留 v1.0）。Gemini 作为**上游**支持（pkg/adapter/gemini +
+// pkg/translator/openai_gemini），不暴露 Gemini 客户端入口——客户端用 OpenAI SDK
+// 调网关，网关帮翻译到 Gemini 上游。
 package router
 
 import (
@@ -39,7 +44,10 @@ type Deps struct {
 	// Middleware deps（按 M-编号顺序）
 	Auth         middleware.AuthDeps         // M2
 	Envelope     middleware.EnvelopeDeps     // M3
+	Budget       middleware.BudgetDeps       // M4
 	ModelService middleware.ModelServiceDeps // M5
+	Limit        middleware.LimitDeps        // M6
+	Moderation   middleware.ModerationDeps   // M8
 	Schedule     middleware.ScheduleDeps     // M7
 	Tracing      middleware.TracingDeps      // M10
 }

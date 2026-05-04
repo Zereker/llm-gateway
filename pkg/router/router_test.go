@@ -5,10 +5,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 	"github.com/zereker-labs/ai-gateway/pkg/middleware"
 	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker-labs/ai-gateway/pkg/schedule"
 )
 
 // stubIdentity 永远拒（router 这层只关心路由 + middleware 链是否注册，
@@ -28,32 +30,65 @@ func (e stubAuthError) Error() string { return string(e) }
 // stubMSProvider for tests.
 type stubMSProvider struct{ snap *domain.ModelServiceSnapshot }
 
-func (s stubMSProvider) GetByModel(_ context.Context, _, _ string) (*domain.ModelServiceSnapshot, error) {
+func (s stubMSProvider) GetByModel(_ context.Context, _ string) (*domain.ModelServiceSnapshot, error) {
 	return s.snap, nil
 }
-func (s stubMSProvider) List(_ context.Context, _ string) ([]*domain.ModelServiceSnapshot, error) {
+func (s stubMSProvider) List(_ context.Context) ([]*domain.ModelServiceSnapshot, error) {
 	return []*domain.ModelServiceSnapshot{s.snap}, nil
+}
+
+// stubSubscriptions for tests; never reached because stubIdentity rejects auth first.
+type stubSubscriptions struct{}
+
+func (stubSubscriptions) Has(_ context.Context, _ string, _ int64) (bool, error) {
+	return false, nil
+}
+
+// stubPricing for tests; never reached because stubIdentity rejects auth first.
+type stubPricing struct{}
+
+func (stubPricing) GetActive(_ context.Context, _ string, _ int64, _ string, _ time.Time) (*repo.PricingVersion, error) {
+	return nil, nil
+}
+func (stubPricing) ListHistory(_ context.Context, _ string, _ int64, _ string) ([]*repo.PricingVersion, error) {
+	return nil, nil
 }
 
 // stubEPProvider for tests.
 type stubEPProvider struct{ ep *domain.Endpoint }
 
-func (s stubEPProvider) PickForModel(_ context.Context, _, _, _ string) (*domain.Endpoint, error) {
+func (s stubEPProvider) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
+	if s.ep == nil {
+		return nil, nil
+	}
+	return []*domain.Endpoint{s.ep}, nil
+}
+func (s stubEPProvider) PickForModel(_ context.Context, _, _ string) (*domain.Endpoint, error) {
 	return s.ep, nil
 }
-func (s stubEPProvider) GetByID(_ context.Context, _, _ string) (*domain.Endpoint, error) {
+func (s stubEPProvider) GetByID(_ context.Context, _ int64) (*domain.Endpoint, error) {
 	return s.ep, nil
 }
-func (s stubEPProvider) List(_ context.Context, _ string) ([]*domain.Endpoint, error) {
+func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 	return []*domain.Endpoint{s.ep}, nil
 }
 
 func minDeps() Deps {
 	return Deps{
 		Auth:         middleware.AuthDeps{Provider: stubIdentity{}},
-		Envelope:     middleware.EnvelopeDeps{Detector: middleware.DefaultDetector{}, Parser: middleware.DefaultParser{}},
-		ModelService: middleware.ModelServiceDeps{Provider: stubMSProvider{}},
-		Schedule:     middleware.ScheduleDeps{Endpoints: stubEPProvider{}},
+		Envelope:     middleware.EnvelopeDeps{Parser: middleware.DefaultParser{}},
+		ModelService: middleware.ModelServiceDeps{
+			Provider:      stubMSProvider{},
+			Subscriptions: stubSubscriptions{},
+			Pricing:       stubPricing{},
+		},
+		Schedule: middleware.ScheduleDeps{
+			Scheduler: schedule.New(schedule.Config{
+				Candidates:  stubEPProvider{},
+				Filters:     []schedule.Filter{schedule.NewWeightedRandomSelector()},
+				MaxAttempts: 3,
+			}),
+		},
 	}
 }
 

@@ -31,11 +31,62 @@ import (
 //
 // 缺省字段会被 ApplyDefaults 填上合理默认值；用户的 YAML 可只声明需要 override 的字段。
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Middleware MiddlewareConfig `yaml:"middleware"`
-	Paths      PathsConfig      `yaml:"paths"`
-	Database   infra.DBConfig   `yaml:"database"` // schema 在 pkg/infra
-	Outbox     OutboxConfig     `yaml:"outbox"`
+	Server     ServerConfig      `yaml:"server"`
+	Middleware MiddlewareConfig  `yaml:"middleware"`
+	Paths      PathsConfig       `yaml:"paths"`
+	Database   infra.DBConfig    `yaml:"database"` // schema 在 pkg/infra
+	Redis      infra.RedisConfig `yaml:"redis"`    // M6 RateLimit + 未来 cache layer 共享
+	Outbox     OutboxConfig      `yaml:"outbox"`
+	Scheduler  SchedulerConfig   `yaml:"scheduler"`  // M7 端点调度 + cooldown 配置
+	Budget     BudgetConfig      `yaml:"budget"`     // M4 Budget driver
+	Moderation ModerationConfig  `yaml:"moderation"` // M8 内容审核 driver
+	Trace      TraceConfig       `yaml:"trace"`      // M10 Tracer driver（slog / otel）
+
+	// DataKey 是 AES-256-GCM 的 KEK（hex-encoded 32 字节 = 64 字符）。
+	// gateway 启动期调 repo.SetDataKey 装载；用于解密 endpoints.auth 列。
+	// 必须跟 admin.yaml 的 data_key 字面相同（共享同一份密文存储）。
+	// 生产应从 secret manager 注入，**不要 commit 真实 key**。
+	DataKey string `yaml:"data_key"`
+}
+
+// BudgetConfig M4 Budget Gate 实现选择。
+//
+//	driver:
+//	  alwayspass — 默认；永远放行（开发 / 无付费体系）
+//	  inmemory   — 进程内余额跟踪（适合单实例 demo / 单租户）；丢内存重启清零
+//
+// inmemory 时 default_balance 是新 user 首次出现时分配的余额（USD）。
+// 0 = safe-by-default 拒绝（必须 admin 显式 SetBalance 才能用）。
+type BudgetConfig struct {
+	Driver         string  `yaml:"driver"`
+	DefaultBalance float64 `yaml:"default_balance"`
+}
+
+// TraceConfig M10 Tracer 实现选择。
+//
+//	driver:
+//	  slog — 默认；本地结构化日志（log/slog）
+//	  otel — OpenTelemetry OTLP gRPC export
+//
+// otel 时 endpoint 是 collector 地址（如 "otel-collector:4317"）；
+// service_name 写到 OTel resource（默认 "ai-gateway"）。
+type TraceConfig struct {
+	Driver      string `yaml:"driver"`
+	Endpoint    string `yaml:"endpoint"`
+	ServiceName string `yaml:"service_name"`
+}
+
+// ModerationConfig M8 Moderator 实现选择。
+//
+//	driver:
+//	  none   — 默认；不审核（pass-through）
+//	  openai — 调 OpenAI /v1/moderations endpoint
+//
+// openai 时需要 api_key（生产从 secret manager 注入）；base_url 留空走 OpenAI 官方。
+type ModerationConfig struct {
+	Driver  string `yaml:"driver"`
+	APIKey  string `yaml:"api_key"`
+	BaseURL string `yaml:"base_url"`
 }
 
 // ServerConfig HTTP 服务器层配置。
@@ -75,7 +126,7 @@ type FileOutboxSection struct {
 }
 
 // KafkaOutboxSection driver=kafka 时的字段：嵌入 infra.KafkaConfig（brokers
-// 等连接字段）+ Topic（业务侧关切，不属于 infra）。
+// 等连接字段）+ Topic（业务侧关切，不属于 infra）+ 异步 / DLQ 选项。
 //
 // yaml `,inline` 让嵌入字段直接出现在 outbox.kafka 这一级，不嵌套：
 //
@@ -83,9 +134,49 @@ type FileOutboxSection struct {
 //	  kafka:
 //	    brokers: [...]   # 来自 infra.KafkaConfig
 //	    topic: ...       # 本类型独有
+//	    async: true      # 用 AsyncKafkaOutbox（生产推荐）
+//	    buffer_size: 1024
+//	    max_retries: 3
+//	    dlq_topic: ai-gateway.usage.dlq
 type KafkaOutboxSection struct {
 	infra.KafkaConfig `yaml:",inline"`
-	Topic             string `yaml:"topic"`
+	Topic             string        `yaml:"topic"`
+	Async             bool          `yaml:"async"`        // true = 用 AsyncKafkaOutbox（生产推荐）
+	BufferSize        int           `yaml:"buffer_size"`  // async 模式 channel 容量；0 = 默认 1024
+	MaxRetries        int           `yaml:"max_retries"`  // async 单事件最多 retry 次数；0 = 默认 3
+	BackoffBase       time.Duration `yaml:"backoff_base"` // 指数退避起始；0 = 默认 200ms
+	DLQTopic          string        `yaml:"dlq_topic"`    // 重试耗尽后的 DLQ topic；空 = 直接丢
+}
+
+// SchedulerConfig M7 端点选路 + cooldown + 重试配置。
+//
+// **filters**：执行顺序就是数组顺序；可用值（v0.5）：
+//   - `cooldown`         排除冷却中 endpoint
+//   - `limit_read`       排除 endpoint quota 超限
+//   - `weighted_random`  最终选一个（必须是最后一个；其它 filter 跑完再这个）
+//
+// **cooldown.<class>**：endpoint 失败后冷却时长，按 ErrorClass 分。0 = 不冷却。
+//
+// **max_attempts**：M7 全局尝试上限（含 L1 同 ep 内部重试）；客户端 X-Gateway-Max-Attempts 可覆盖。
+//
+// **max_per_endpoint**：同 endpoint 最大尝试次数（含首次）；默认 1 = 无 L1 retry，
+// 失败立刻换 ep。设 2-3 可吸收上游网络偶发抖动。
+type SchedulerConfig struct {
+	Filters        []string       `yaml:"filters"`
+	Cooldown       CooldownConfig `yaml:"cooldown"`
+	MaxAttempts    int            `yaml:"max_attempts"`
+	MaxPerEndpoint int            `yaml:"max_per_endpoint"`
+}
+
+// CooldownConfig 各 ErrorClass 对应的冷却时长。
+//
+// 命中 admin 标记后，candidate 在 TTL 内被 CooldownFilter 排除。
+type CooldownConfig struct {
+	Transient time.Duration `yaml:"transient"` // 上游 5xx / 网络错 / timeout 等暂时性
+	Capacity  time.Duration `yaml:"capacity"`  // 上游 429 / quota 满 / overloaded
+	Permanent time.Duration `yaml:"permanent"` // 上游 401 / 配置错 / endpoint 本身坏
+	Invalid   time.Duration `yaml:"invalid"`   // 客户端 400-class（一般不冷却）
+	Unknown   time.Duration `yaml:"unknown"`   // 分类不出来时的兜底
 }
 
 // Load 从 YAML 文件读入 Config 并应用默认值。
@@ -132,6 +223,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Database.DSN == "" {
 		c.Database.DSN = "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
 	}
+	if c.Redis.Addr == "" {
+		c.Redis.Addr = "localhost:6379"
+	}
 	if c.Outbox.Driver == "" {
 		c.Outbox.Driver = "file"
 	}
@@ -139,4 +233,44 @@ func (c *Config) ApplyDefaults() {
 		c.Outbox.File.Path = "/tmp/ai-gateway-usage.log"
 	}
 	// Outbox.Kafka 不给默认（driver=kafka 时必须显式配置）
+
+	// Scheduler defaults
+	if len(c.Scheduler.Filters) == 0 {
+		c.Scheduler.Filters = []string{"cooldown", "limit_read", "weighted_random"}
+	}
+	if c.Scheduler.MaxAttempts == 0 {
+		c.Scheduler.MaxAttempts = 3
+	}
+	if c.Scheduler.MaxPerEndpoint == 0 {
+		c.Scheduler.MaxPerEndpoint = 1 // 默认无 L1 retry；显式开启需配置
+	}
+	if c.Scheduler.Cooldown.Transient == 0 {
+		c.Scheduler.Cooldown.Transient = 30 * time.Second
+	}
+	if c.Scheduler.Cooldown.Capacity == 0 {
+		c.Scheduler.Cooldown.Capacity = 60 * time.Second
+	}
+	if c.Scheduler.Cooldown.Permanent == 0 {
+		c.Scheduler.Cooldown.Permanent = 5 * time.Minute
+	}
+	if c.Scheduler.Cooldown.Unknown == 0 {
+		c.Scheduler.Cooldown.Unknown = 10 * time.Second
+	}
+	// Cooldown.Invalid 默认 0（客户端错误不该冷却 endpoint）
+
+	// Budget defaults
+	if c.Budget.Driver == "" {
+		c.Budget.Driver = "alwayspass"
+	}
+	// Moderation defaults
+	if c.Moderation.Driver == "" {
+		c.Moderation.Driver = "none"
+	}
+	// Trace defaults
+	if c.Trace.Driver == "" {
+		c.Trace.Driver = "slog"
+	}
+	if c.Trace.ServiceName == "" {
+		c.Trace.ServiceName = "ai-gateway"
+	}
 }

@@ -10,133 +10,135 @@ import (
 
 const testTenant = "default"
 
-// seedEndpoint 用 raw SQL 插测试 endpoint。tenant_id 默认 "default"。
+// seedEndpoint 用 NamedExec 插测试 endpoint。
+//
+// 走 NamedExec 是为了让 Auth/Routing/Quota/Capabilities 字段经 Valuer 接口
+// 转 JSON / 加密——raw INSERT 字符串拿不到这层魔法。
+//
+// **v0.3 改动**：endpoint 表去掉 tenant_id（全局上游池）。
 func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 	t.Helper()
-	if ep.TenantID == "" {
-		ep.TenantID = testTenant
-	}
 	if ep.Group == "" {
 		ep.Group = "default"
 	}
 	if ep.Weight == 0 {
 		ep.Weight = 100
 	}
-	caps, _ := ep.Capabilities.Value()
-	_, err := db.Exec(
+	ep.Enabled = true
+	if ep.Auth.Type == "" {
+		auth, err := EncodePayload(AuthTypeBearer, BearerAuth{APIKey: "sk-test"})
+		if err != nil {
+			t.Fatalf("encode bearer: %v", err)
+		}
+		ep.Auth = auth
+	}
+	if (ep.Routing == RoutingConfig{}) {
+		ep.Routing = RoutingConfig{URL: "https://upstream.test/v1/chat"}
+	}
+	res, err := db.NamedExec(
 		`INSERT INTO endpoints
-		 (tenant_id, id, vendor, url, api_key, group_name, model, weight, rpm, tpm, rps, capabilities, extra)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.TenantID, ep.ID, ep.Vendor, ep.URL, string(ep.APIKey), ep.Group, ep.Model,
-		ep.Weight, ep.RPM, ep.TPM, ep.RPS, caps, datatypesJSONOrNil(ep.Extra),
+		 (name, vendor, model, group_name, weight, enabled,
+		  auth, routing, quota, capabilities, extra)
+		 VALUES
+		 (:name, :vendor, :model, :group_name, :weight, :enabled,
+		  :auth, :routing, :quota, :capabilities, :extra)`,
+		ep,
 	)
 	if err != nil {
 		t.Fatalf("seed endpoint: %v", err)
+	}
+	if id, err := res.LastInsertId(); err == nil {
+		ep.ID = id
 	}
 }
 
 func TestSQLEndpointReader_PickForModel(t *testing.T) {
 	db := newTestDB(t)
-	seedEndpoint(t, db, &Endpoint{
-		ID:           "openai_main",
+	ep := &Endpoint{
+		Name:         "openai_main",
 		Vendor:       "openai",
-		URL:          "https://api.openai.com",
-		APIKey:       Secret("sk-xxx"),
-		Group:        "default",
 		Model:        "gpt-4o",
+		Group:        "default",
 		Weight:       100,
-		RPM:          600,
-		TPM:          100000,
+		Routing:      RoutingConfig{URL: "https://api.openai.com/v1/chat/completions"},
 		Capabilities: EndpointCapabilities{SelfHosted: false, PrefixCacheEnabled: true},
 		Extra:        datatypes.JSON(`{"region":"us-east-1"}`),
-	})
+	}
+	auth, _ := EncodePayload(AuthTypeBearer, BearerAuth{APIKey: "sk-xxx"})
+	ep.Auth = auth
+	seedEndpoint(t, db, ep)
 
 	r := NewSQLEndpointReader(db)
-	got, err := r.PickForModel(context.Background(), testTenant, "gpt-4o", "default")
+	got, err := r.PickForModel(context.Background(), "gpt-4o", "default")
 	if err != nil {
 		t.Fatalf("PickForModel: %v", err)
 	}
-	if got.ID != "openai_main" || got.APIKey.Reveal() != "sk-xxx" {
-		t.Errorf("got %+v", got)
+	if got.Name != "openai_main" {
+		t.Errorf("Name = %q", got.Name)
 	}
-	if !got.Capabilities.PrefixCacheEnabled {
-		t.Error("Capabilities not round-tripped")
+	bearer, err := DecodePayload[BearerAuth](got.Auth)
+	if err != nil {
+		t.Fatalf("DecodePayload: %v", err)
 	}
-	if !jsonEqual(t, got.Extra, []byte(`{"region":"us-east-1"}`)) {
-		t.Errorf("Extra = %s", got.Extra)
+	if bearer.APIKey != "sk-xxx" {
+		t.Errorf("APIKey = %q (encryption broken?)", bearer.APIKey)
 	}
 }
 
 func TestSQLEndpointReader_PickEmptyGroupTreatedAsDefault(t *testing.T) {
 	db := newTestDB(t)
-	seedEndpoint(t, db, &Endpoint{ID: "x", Vendor: "v", URL: "u", Model: "m"})
+	seedEndpoint(t, db, &Endpoint{Name: "x", Vendor: "openai", Model: "m"})
 
 	r := NewSQLEndpointReader(db)
-	got, err := r.PickForModel(context.Background(), testTenant, "m", "")
+	got, err := r.PickForModel(context.Background(), "m", "")
 	if err != nil {
 		t.Fatalf("PickForModel: %v", err)
 	}
-	if got.ID != "x" {
-		t.Errorf("got %q", got.ID)
+	if got.Name != "x" {
+		t.Errorf("got %q", got.Name)
 	}
 }
 
 func TestSQLEndpointReader_PickNotFound(t *testing.T) {
 	db := newTestDB(t)
-	seedEndpoint(t, db, &Endpoint{ID: "x", Vendor: "v", URL: "u", Model: "m", Group: "default"})
+	seedEndpoint(t, db, &Endpoint{Name: "x", Vendor: "openai", Model: "m", Group: "default"})
 
 	r := NewSQLEndpointReader(db)
-	if _, err := r.PickForModel(context.Background(), testTenant, "missing", "default"); err == nil {
+	if _, err := r.PickForModel(context.Background(), "missing", "default"); err == nil {
 		t.Fatal("want not-found for missing model")
 	}
-	if _, err := r.PickForModel(context.Background(), testTenant, "m", "reserved"); err == nil {
+	if _, err := r.PickForModel(context.Background(), "m", "reserved"); err == nil {
 		t.Fatal("want not-found for missing group")
-	}
-}
-
-func TestSQLEndpointReader_PickTenantIsolation(t *testing.T) {
-	// 不同租户同 model 互不可见
-	db := newTestDB(t)
-	seedEndpoint(t, db, &Endpoint{TenantID: "tenant_a", ID: "ep_a", Vendor: "v", URL: "u", Model: "shared"})
-	seedEndpoint(t, db, &Endpoint{TenantID: "tenant_b", ID: "ep_b", Vendor: "v", URL: "u", Model: "shared"})
-
-	r := NewSQLEndpointReader(db)
-	a, _ := r.PickForModel(context.Background(), "tenant_a", "shared", "default")
-	b, _ := r.PickForModel(context.Background(), "tenant_b", "shared", "default")
-	if a.ID != "ep_a" || b.ID != "ep_b" {
-		t.Errorf("tenant isolation broken: a=%v b=%v", a, b)
-	}
-	if _, err := r.PickForModel(context.Background(), "tenant_c", "shared", "default"); err == nil {
-		t.Error("tenant_c should see nothing")
 	}
 }
 
 func TestSQLEndpointReader_GetByID(t *testing.T) {
 	db := newTestDB(t)
-	seedEndpoint(t, db, &Endpoint{ID: "ep1", Vendor: "v", URL: "u", Model: "m"})
+	ep := &Endpoint{Name: "ep1", Vendor: "openai", Model: "m"}
+	seedEndpoint(t, db, ep)
 
 	r := NewSQLEndpointReader(db)
-	got, err := r.GetByID(context.Background(), testTenant, "ep1")
+	got, err := r.GetByID(context.Background(), ep.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
-	if got.Vendor != "v" {
+	if got.Vendor != "openai" {
 		t.Errorf("got %+v", got)
 	}
 
-	if _, err := r.GetByID(context.Background(), testTenant, "missing"); err == nil {
+	if _, err := r.GetByID(context.Background(), 99999); err == nil {
 		t.Error("want not-found")
 	}
 }
 
 func TestSQLEndpointReader_List(t *testing.T) {
 	db := newTestDB(t)
-	for _, id := range []string{"a", "b", "c"} {
-		seedEndpoint(t, db, &Endpoint{ID: id, Vendor: "v", URL: "u", Model: "m"})
+	for _, name := range []string{"a", "b", "c"} {
+		seedEndpoint(t, db, &Endpoint{Name: name, Vendor: "openai", Model: "m"})
 	}
 
 	r := NewSQLEndpointReader(db)
-	all, _ := r.List(context.Background(), testTenant)
+	all, _ := r.List(context.Background())
 	if len(all) != 3 {
 		t.Errorf("len = %d, want 3", len(all))
 	}

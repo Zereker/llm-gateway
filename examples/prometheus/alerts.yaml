@@ -1,0 +1,159 @@
+# examples/prometheus/alerts.yaml
+#
+# Prometheus alert rules for ai-gateway。
+#
+# 名字约定：pkg/metric/names.go 用 `.` 分隔（"ai_gateway.http.request_duration_ms"），
+# 落 Prometheus 时自动 ReplaceAll(".", "_") → 这里全部用下划线版本。
+#
+# 用法：把本文件放到 prometheus.yml 的 rule_files: 列表里，重启 prometheus 加载。
+# 配套 Alertmanager 收 alert，按 severity / team label 路由到 PD / Slack。
+
+groups:
+  - name: ai-gateway-availability
+    interval: 30s
+    rules:
+
+      - alert: AiGatewayUpstreamHighErrorRate
+        expr: |
+          sum by(class) (rate(ai_gateway_schedule_result_total{class!~"success|invalid"}[5m]))
+            /
+          sum by(class) (rate(ai_gateway_schedule_result_total[5m]))
+            > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          team: ai-platform
+        annotations:
+          summary: "ai-gateway: upstream error rate > 10% (class={{ $labels.class }})"
+          description: |
+            过去 5 分钟有超过 10% 的请求被分类为 {{ $labels.class }}。
+            检查上游 vendor 状态 / 网络 / 配额。
+
+      - alert: AiGatewayUpstreamCallFailing
+        expr: |
+          sum(rate(ai_gateway_scheduler_endpoint_call_total{outcome="fail"}[2m]))
+            /
+          sum(rate(ai_gateway_scheduler_endpoint_call_total[2m]))
+            > 0.30
+        for: 3m
+        labels:
+          severity: critical
+          team: ai-platform
+        annotations:
+          summary: "ai-gateway: > 30% upstream calls failing"
+          description: |
+            过去 2 分钟超过 30% 的上游调用失败（任意 endpoint / 任意 vendor）。
+            可能：所有上游同时坏 / DNS 错 / 网络分区。
+
+  - name: ai-gateway-latency
+    interval: 30s
+    rules:
+
+      - alert: AiGatewayHttpLatencyP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum by(le) (rate(ai_gateway_http_request_duration_ms_bucket[5m]))
+          ) > 5000
+        for: 10m
+        labels:
+          severity: warning
+          team: ai-platform
+        annotations:
+          summary: "ai-gateway: HTTP p99 latency > 5s"
+          description: "p99 = {{ $value | humanize }}ms"
+
+      - alert: AiGatewayAdapterLatencyP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum by(le, vendor) (rate(ai_gateway_adapter_request_duration_ms_bucket[5m]))
+          ) > 8000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ai-gateway: adapter p99 latency > 8s (vendor={{ $labels.vendor }})"
+
+  - name: ai-gateway-rate-limit
+    interval: 30s
+    rules:
+
+      - alert: AiGatewayRateLimitHighRejection
+        expr: |
+          sum by(scope) (rate(ai_gateway_rate_limit_check_total{result="reject"}[5m]))
+            /
+          sum by(scope) (rate(ai_gateway_rate_limit_check_total[5m]))
+            > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ai-gateway: rate limit rejecting > 20% (scope={{ $labels.scope }})"
+          description: |
+            过去 5 分钟限流拒了超过 20% 的请求。可能：客户端突发流量 / quota 配低了。
+            检查对应 scope 的 quota_policies 配置。
+
+      - alert: AiGatewayRateLimitOversell
+        expr: ai_gateway_rate_limit_oversell_ratio > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ai-gateway: rate limit oversell ratio > 5%"
+          description: |
+            限流超卖比例 = (放过的真实 cost - 估算 cost) / 估算 cost。
+            > 5% 说明 token estimator 偏差大；检查 estimator 实现 / 改更保守的预估。
+
+  - name: ai-gateway-cooldown
+    interval: 1m
+    rules:
+
+      - alert: AiGatewayCooldownStorm
+        expr: sum(rate(ai_gateway_scheduler_cooldown_enter_total[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ai-gateway: > 5 endpoints/sec entering cooldown"
+          description: "endpoints 大量进 cooldown。检查上游普遍异常或 cooldown 阈值是否过激"
+
+  - name: ai-gateway-budget-moderation
+    interval: 1m
+    rules:
+
+      - alert: AiGatewayBudgetCheckFailing
+        expr: sum(rate(ai_gateway_budget_check_total{result="error"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ai-gateway: budget service erroring out"
+          description: "Budget Gate 调用大量报错。计费系统挂？"
+
+  - name: ai-gateway-process
+    interval: 30s
+    rules:
+
+      - alert: AiGatewayPanicSeen
+        expr: rate(ai_gateway_panic_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ai-gateway: panic recovered (any goroutine)"
+          description: |
+            M9 Recover 兜住了 panic。看日志找 stack trace；任何 panic 都该被定位修复。
+
+      - alert: AiGatewayUsageBusBacklog
+        expr: |
+          sum(rate(ai_gateway_usage_locallog_write_total{result="error"}[5m]))
+            +
+          sum(rate(ai_gateway_usage_bus_publish_total{result="error"}[5m]))
+            > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ai-gateway: usage outbox dropping events"
+          description: |
+            usage 事件写 file / kafka 失败。检查盘空间 / kafka broker 健康度。
+            usage 事件丢失意味着计费数据不全。

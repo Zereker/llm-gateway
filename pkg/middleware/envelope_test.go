@@ -12,16 +12,7 @@ import (
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 )
 
-// stubDetector / stubParser let tests force specific outcomes.
-type stubDetector struct {
-	proto domain.Protocol
-	mod   domain.Modality
-}
-
-func (s stubDetector) Detect(_ string, _ []byte) (domain.Protocol, domain.Modality) {
-	return s.proto, s.mod
-}
-
+// stubParser lets tests force specific outcomes from M3.
 type stubParser struct {
 	out domain.CanonicalRequest
 	err error
@@ -31,15 +22,22 @@ func (s stubParser) Parse(_ []byte, _ domain.Protocol, _ domain.Modality) (domai
 	return s.out, s.err
 }
 
-func TestEnvelope_PopulatesRC(t *testing.T) {
-	r := newGinTest(
+// envelopeChain 给测试装一条 minimum 链：TraceContext + Recover + WithSourceProtocol + Envelope。
+// proto = ProtoUnknown 时跳过 WithSourceProtocol 用于"忘挂打标"的负面 case。
+func envelopeChain(proto domain.Protocol, parser Parser) *gin.Engine {
+	if proto == domain.ProtoUnknown {
+		return newGinTest(TraceContext(), Recover(), Envelope(EnvelopeDeps{Parser: parser}))
+	}
+	return newGinTest(
 		TraceContext(),
 		Recover(),
-		Envelope(EnvelopeDeps{
-			Detector: stubDetector{proto: domain.ProtoOpenAI, mod: domain.ModalityChat},
-			Parser:   stubParser{out: domain.CanonicalRequest{Model: "gpt-4o"}},
-		}),
+		WithSourceProtocol(proto, domain.ModalityChat),
+		Envelope(EnvelopeDeps{Parser: parser}),
 	)
+}
+
+func TestEnvelope_PopulatesRC(t *testing.T) {
+	r := envelopeChain(domain.ProtoOpenAI, stubParser{out: domain.CanonicalRequest{Model: "gpt-4o"}})
 	var captured *domain.RequestEnvelope
 	r.POST("/x", func(c *gin.Context) {
 		captured = GetRequestContext(c).Envelope
@@ -72,16 +70,8 @@ func TestEnvelope_PopulatesRC(t *testing.T) {
 }
 
 func TestEnvelope_RestoresBody(t *testing.T) {
-	r := newGinTest(
-		TraceContext(),
-		Recover(),
-		Envelope(EnvelopeDeps{
-			Detector: stubDetector{proto: domain.ProtoOpenAI, mod: domain.ModalityChat},
-			Parser:   stubParser{},
-		}),
-	)
+	r := envelopeChain(domain.ProtoOpenAI, stubParser{})
 	r.POST("/x", func(c *gin.Context) {
-		// downstream re-reads body — should still get full payload
 		readBack, _ := io.ReadAll(c.Request.Body)
 		if string(readBack) != `{"a":1}` {
 			t.Errorf("body re-read = %q, want %q", readBack, `{"a":1}`)
@@ -97,38 +87,25 @@ func TestEnvelope_RestoresBody(t *testing.T) {
 	}
 }
 
-func TestEnvelope_RejectsUnknownProtocol(t *testing.T) {
-	r := newGinTest(
-		TraceContext(),
-		Recover(),
-		Envelope(EnvelopeDeps{
-			Detector: stubDetector{proto: domain.ProtoUnknown},
-			Parser:   stubParser{},
-		}),
-	)
+func TestEnvelope_RejectsMissingProtocolTag(t *testing.T) {
+	// 路由忘挂 WithSourceProtocol → Envelope 应 500
+	r := envelopeChain(domain.ProtoUnknown, stubParser{})
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	req := httptest.NewRequest("POST", "/x", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != 400 {
-		t.Errorf("status = %d, want 400", w.Code)
+	if w.Code != 500 {
+		t.Errorf("status = %d, want 500", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "unknown source protocol") {
+	if !strings.Contains(w.Body.String(), "WithSourceProtocol") {
 		t.Errorf("body = %s", w.Body.String())
 	}
 }
 
 func TestEnvelope_ParserError(t *testing.T) {
-	r := newGinTest(
-		TraceContext(),
-		Recover(),
-		Envelope(EnvelopeDeps{
-			Detector: stubDetector{proto: domain.ProtoOpenAI, mod: domain.ModalityChat},
-			Parser:   stubParser{err: errors.New("bad json")},
-		}),
-	)
+	r := envelopeChain(domain.ProtoOpenAI, stubParser{err: errors.New("bad json")})
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	req := httptest.NewRequest("POST", "/x", strings.NewReader(`{garbage}`))
@@ -140,35 +117,5 @@ func TestEnvelope_ParserError(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "bad json") {
 		t.Errorf("body should include parser error: %s", w.Body.String())
-	}
-}
-
-func TestEnvelope_DefaultDetectorParser_Integration(t *testing.T) {
-	// Compose with the real DefaultDetector + DefaultParser to ensure
-	// they wire correctly with M3.
-	r := newGinTest(
-		TraceContext(),
-		Recover(),
-		Envelope(EnvelopeDeps{Detector: DefaultDetector{}, Parser: DefaultParser{}}),
-	)
-	var got *domain.RequestEnvelope
-	r.POST("/v1/chat/completions", func(c *gin.Context) {
-		got = GetRequestContext(c).Envelope
-		c.Status(200)
-	})
-
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"gpt-4o","messages":[]}`))
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("status %d body=%s", w.Code, w.Body.String())
-	}
-	if got.SourceProtocol != domain.ProtoOpenAI || got.Modality != domain.ModalityChat {
-		t.Errorf("got proto=%v modality=%v", got.SourceProtocol, got.Modality)
-	}
-	if got.Parsed.Model != "gpt-4o" {
-		t.Errorf("Parsed.Model = %q", got.Parsed.Model)
 	}
 }
