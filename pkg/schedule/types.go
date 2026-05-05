@@ -34,17 +34,30 @@ import (
 )
 
 // Request M7 选路所需的请求元信息。
+//
+// **候选 endpoint 由调用方提供**（v0.5+ 重构）：caller（middleware）拉好
+// 主 model 的候选传 `Candidates`；L3 跨 model fallback 走 `LoadFallback` 回调。
+// schedule 不再持有 `repo.EndpointReader` 依赖。
 type Request struct {
 	Model               string // canonical model name（M5 ms.Model）
 	Group               string // 路由分组（rc.Identity.Group）
 	TPMCost             uint32 // M6 估算的 token cost；LimitReadFilter 用作 endpoint TPM bucket cost
 	MaxAttemptsOverride int    // 0 = 用 cfg.scheduler.max_attempts；非 0 = 客户端 header 覆盖
 
+	// Candidates 主 Model 对应的候选 endpoint 列表（必填，由 caller 拉好）。
+	// 空 = BeginSelection 直接报错（caller 在 M7 abort 503）。
+	Candidates []*domain.Endpoint
+
+	// LoadFallback L3 跨 model fallback 时回调拉新 model 的候选。
+	// nil 等价于关闭 L3（即便 FallbackModels 非空，也不会切换）。
+	// 实现通常 = repo.EndpointReader.ListForModel 的 method value。
+	LoadFallback func(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
+
 	// FallbackModels L3 跨模型降级序列。当前 Model 的 candidates 全部跑完都失败时，
-	// scheduler 按本数组顺序换 model 重 list candidates 再 try（attempts 计数继续累加，
-	// 不重置；max_attempts 仍然是全局上限）。
+	// scheduler 按本数组顺序换 model（用 LoadFallback 拉新 candidates）再 try
+	// （attempts 计数继续累加，不重置；max_attempts 仍然是全局上限）。
 	//
-	// 留空 = L3 关闭（v0.5 默认行为）。
+	// 留空或 LoadFallback==nil = L3 关闭。
 	//
 	// 来源：M7 从 X-Gateway-Fallback-Models header（逗号分隔）读，或 admin 在
 	// model_services 配 fallback 链。
@@ -117,17 +130,10 @@ type Decision struct {
 	Result     Result
 }
 
-// CandidatesProvider 返回 (model, group) 匹配的全部候选；schedule 内部调用。
-//
-// 实现：repo.EndpointReader.ListForModel。
-type CandidatesProvider interface {
-	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
-}
-
 // Scheduler M7 调用入口。
 type Scheduler interface {
-	// BeginSelection 拿候选 + 构造 per-request Selection 状态机。
-	// 候选拿不到 / 完全空 → 返回 err（M7 abort 503）。
+	// BeginSelection 用 caller 提供的候选构造 per-request Selection 状态机。
+	// req.Candidates 为空 → 返回 err（M7 abort 503）。
 	BeginSelection(ctx context.Context, req *Request) (Selection, error)
 }
 
