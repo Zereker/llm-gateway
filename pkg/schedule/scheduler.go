@@ -10,11 +10,13 @@ import (
 )
 
 // Config 构造默认 Scheduler 的依赖集。
+//
+// **不持有候选 provider**：Candidates 由 caller 通过 Request.Candidates 传入；
+// L3 跨 model fallback 走 Request.LoadFallback 回调。
 type Config struct {
-	Candidates  CandidatesProvider // 通常是 repo.SQLEndpointReader（实现 ListForModel）
-	Filters     []Filter           // Filter 链；顺序就是执行顺序；最后一个一般是 selector（如 WeightedRandom）
-	Cooldown    CooldownManager    // CooldownFilter + Selection.Report 失败时调用
-	MaxAttempts int                // 全局尝试上限（含 L1 同 ep 内部重试）；0 → 默认 3
+	Filters     []Filter        // Filter 链；顺序就是执行顺序；最后一个一般是 selector（如 WeightedRandom）
+	Cooldown    CooldownManager // CooldownFilter + Selection.Report 失败时调用
+	MaxAttempts int             // 全局尝试上限（含 L1 同 ep 内部重试）；0 → 默认 3
 	// MaxPerEndpoint 同 endpoint 最大尝试次数（含首次）。
 	//
 	// 默认 1 = **无 L1 retry**（向后兼容旧行为：失败立刻换 ep）。
@@ -41,11 +43,7 @@ func (s *defaultScheduler) BeginSelection(ctx context.Context, req *Request) (Se
 	if req == nil || req.Model == "" {
 		return nil, errors.New("schedule: request.model required")
 	}
-	cands, err := s.cfg.Candidates.ListForModel(ctx, req.Model, req.Group)
-	if err != nil {
-		return nil, fmt.Errorf("schedule: list candidates: %w", err)
-	}
-	if len(cands) == 0 {
+	if len(req.Candidates) == 0 {
 		return nil, fmt.Errorf("schedule: no endpoint for model=%q group=%q", req.Model, req.Group)
 	}
 
@@ -59,8 +57,8 @@ func (s *defaultScheduler) BeginSelection(ctx context.Context, req *Request) (Se
 		ctx:          ctx,
 		cfg:          s.cfg,
 		req:          req,
-		allCands:     cands,
-		epAttempts:   make(map[int64]int, len(cands)),
+		allCands:     req.Candidates,
+		epAttempts:   make(map[int64]int, len(req.Candidates)),
 		maxAttempts:  maxAttempts,
 		currentModel: req.Model,
 		fallbacks:    append([]string(nil), req.FallbackModels...),
@@ -144,18 +142,24 @@ func (s *defaultSelection) Pick() *domain.Endpoint {
 
 // advanceFallback 切到下一个 fallback model：拿新 candidates，清 epAttempts。
 //
-// 返回 true = 切成功（继续 try）；false = fallback 用完 / 没 fallback / 拿不到候选。
+// 返回 true = 切成功（继续 try）；false = fallback 用完 / 没 fallback / 没回调 /
+// 拿不到候选。
 //
-// **失败容错**：拿候选拿不到（DB 错 / 该 model 没 endpoint）跳过这个 fallback，
-// 接着试下一个；全部跳完返 false。
+// **失败容错**：req.LoadFallback 拿候选拿不到（DB 错 / 该 model 没 endpoint）
+// 跳过这个 fallback，接着试下一个；全部跳完返 false。
+//
+// req.LoadFallback == nil 时直接返 false（L3 关闭）。
 func (s *defaultSelection) advanceFallback() bool {
+	if s.req.LoadFallback == nil {
+		return false
+	}
 	for len(s.fallbacks) > 0 {
 		next := s.fallbacks[0]
 		s.fallbacks = s.fallbacks[1:]
 		if next == "" || next == s.currentModel {
 			continue
 		}
-		cands, err := s.cfg.Candidates.ListForModel(s.ctx, next, s.req.Group)
+		cands, err := s.req.LoadFallback(s.ctx, next, s.req.Group)
 		if err != nil || len(cands) == 0 {
 			continue
 		}

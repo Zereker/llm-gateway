@@ -11,6 +11,7 @@ import (
 	"github.com/zereker-labs/ai-gateway/pkg/middleware"
 	"github.com/zereker-labs/ai-gateway/pkg/repo"
 	"github.com/zereker-labs/ai-gateway/pkg/schedule"
+	"github.com/zereker-labs/ai-gateway/pkg/upstream"
 )
 
 // stubIdentity 永远拒（router 这层只关心路由 + middleware 链是否注册，
@@ -82,11 +83,12 @@ func minDeps() Deps {
 			Pricing:       stubPricing{},
 		},
 		Schedule: middleware.ScheduleDeps{
+			Endpoints: stubEPProvider{},
 			Scheduler: schedule.New(schedule.Config{
-				Candidates:  stubEPProvider{},
 				Filters:     []schedule.Filter{schedule.NewWeightedRandomSelector()},
 				MaxAttempts: 3,
 			}),
+			Sender: upstream.New(),
 		},
 	}
 }

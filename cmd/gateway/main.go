@@ -31,6 +31,7 @@ import (
 	"github.com/zereker-labs/ai-gateway/pkg/schedule"
 	"github.com/zereker-labs/ai-gateway/pkg/server"
 	"github.com/zereker-labs/ai-gateway/pkg/trace"
+	"github.com/zereker-labs/ai-gateway/pkg/upstream"
 	"github.com/zereker-labs/ai-gateway/pkg/usage"
 
 	// adapter blank imports：init() 自动注册到 adapter registry
@@ -136,8 +137,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 			Policies: ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0),
 		},
 		Schedule: middleware.ScheduleDeps{
+			Endpoints: repo.NewSQLEndpointReader(sqldb),
 			Scheduler: schedule.New(schedule.Config{
-				Candidates: repo.NewSQLEndpointReader(sqldb),
 				Filters: buildSchedulerFilters(
 					cfg.Scheduler.Filters,
 					ratelimit.NewRedisStore(rdb),
@@ -159,6 +160,9 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 				MaxAttempts:    cfg.Scheduler.MaxAttempts,
 				MaxPerEndpoint: cfg.Scheduler.MaxPerEndpoint,
 			}),
+			// Sender 默认走 adapter 全局 registry + http.DefaultClient；
+			// 后续要换 client（自签名 CA / proxy / mTLS）在此 New(WithHTTPClient(...))
+			Sender: upstream.New(),
 		},
 		Tracing: middleware.TracingDeps{
 			Outbox: outbox,
