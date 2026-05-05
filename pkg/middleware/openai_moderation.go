@@ -22,12 +22,14 @@ const openaiModerationModel = "omni-moderation-latest"
 
 // OpenAIModerator 调 OpenAI /v1/moderations 接口做内容审核。
 //
-// **CheckInput**：从 rc.Envelope.Parsed.Messages 提取 user / system 文本拼起来发给
+// **CheckInput**：从 rc.Envelope.RawBytes 提取 user / system 文本拼起来发给
 // OpenAI moderation；任一类别命中（"hate" / "harassment" / "sexual" / "violence" 等）
 // → 返 error 让 M8 拒绝请求。
 //
-// **CheckOutput**：v0.5 不支持流式审核——直接 nil（即不审核 output）。生产里需要审核
-// 输出的话 v0.6 嵌进 translator.ResponseHandler.Feed 再做。
+// **CheckOutput**：v1.0 装饰器架构已就绪（M8 → ctx → M7 wrapWithModerator），但
+// 本 Moderator 实现还是 noop——chunk 级 moderation 需要：(a) 解 SSE / 拼成连续文本
+// (b) 按 sentence boundary 累积调 OpenAI API (c) 控制 API QPS 防被限流。
+// 这些 v1.x 单独 ticket 真做；当前 stub 让架构能跑通端到端测试。
 //
 // **HTTP client**：内置 http.Client（Timeout 5s）；moderation 走轻量 endpoint，
 // 一般 < 200ms。timeout 5s 给慢网络留余地。
@@ -144,10 +146,12 @@ func (m *OpenAIModerator) CheckInput(ctx context.Context, env *domain.RequestEnv
 	return fmt.Errorf("flagged by moderation: %s", strings.Join(hits, ","))
 }
 
-// CheckOutput v0.5 不实现流式审核：直接 nil 透过。
+// CheckOutput stub：装饰器架构（pkg/middleware/moderation_handler.go）会调本方法
+// 传 chunk 字节，但本实现暂返 nil 透过——真做需要 SSE 解析 + sentence 累积 +
+// API 限流，留 v1.x 单独 ticket。
 //
-// 想真审输出：v0.6 把 OpenAI moderation 嵌进 translator.ResponseHandler.Feed，
-// 按 token / sentence boundary 累积一段调一次（trade off：延迟 vs 实时拦截）。
+// 自定义 Moderator 实现想接 chunk-level 审核可基于 chunk 字节做（注意 chunk
+// 是经 translator 翻译后**客户端会真看到的字节**，不是上游原始 chunk）。
 func (m *OpenAIModerator) CheckOutput(_ context.Context, _ []byte) error {
 	return nil
 }

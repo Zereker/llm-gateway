@@ -28,13 +28,13 @@ type stubAuthError string
 func (e stubAuthError) Error() string { return string(e) }
 
 // stubMSProvider for tests.
-type stubMSProvider struct{ snap *domain.ModelServiceSnapshot }
+type stubMSProvider struct{ snap *domain.ModelService }
 
-func (s stubMSProvider) GetByModel(_ context.Context, _ string) (*domain.ModelServiceSnapshot, error) {
+func (s stubMSProvider) GetByModel(_ context.Context, _ string) (*domain.ModelService, error) {
 	return s.snap, nil
 }
-func (s stubMSProvider) List(_ context.Context) ([]*domain.ModelServiceSnapshot, error) {
-	return []*domain.ModelServiceSnapshot{s.snap}, nil
+func (s stubMSProvider) List(_ context.Context) ([]*domain.ModelService, error) {
+	return []*domain.ModelService{s.snap}, nil
 }
 
 // stubSubscriptions for tests; never reached because stubIdentity rejects auth first.

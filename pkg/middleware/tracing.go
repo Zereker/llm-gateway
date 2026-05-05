@@ -10,19 +10,17 @@ import (
 
 	"github.com/zereker-labs/ai-gateway/pkg/domain"
 	"github.com/zereker-labs/ai-gateway/pkg/metric"
-	"github.com/zereker-labs/ai-gateway/pkg/ratelimit"
 	"github.com/zereker-labs/ai-gateway/pkg/trace"
 	"github.com/zereker-labs/ai-gateway/pkg/usage"
 )
 
 // TracingDeps M10 Tracing middleware 的依赖。
 //
-// **RateLimitStore**：M6 reserve 时按 estimated tokens 扣 TPM 桶；M10 拿到真实
-// usage 后调账（AdjustBatch）让下个请求看到准确剩余配额。
+// **职责**：聚合 metric + 发计量事件到 outbox + 写 SchedulingDecision trace。
+// 不管 RateLimit 调账（那是 M6 自己的事，洋葱模型 post-side 处理）。
 type TracingDeps struct {
-	Outbox          usage.OutboxPublisher
-	Tracer          trace.Tracer
-	RateLimitStore  ratelimit.Store
+	Outbox usage.OutboxPublisher
+	Tracer trace.Tracer
 }
 
 // Tracing 是 M10：聚合 metric + 发计量事件 + 写 SchedulingDecision trace。
@@ -59,8 +57,6 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 
 		if rc.Usage != nil {
 			fillUsageMeta(rc, now, elapsed.Milliseconds())
-			// TPM commit：reserve 估值 vs 实际差额调账（best-effort，失败仅 log）
-			adjustTPM(rc, deps.RateLimitStore)
 		}
 
 		if rc.Usage != nil && deps.Outbox != nil {
@@ -83,34 +79,6 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 			deps.Tracer.Log(rc.Ctx, "scheduling_decision", rc.SchedulingDecision)
 		}
 	}
-}
-
-// adjustTPM 根据 rc.Usage.Total - rc.RateLimit.ReservedTPM 调账 M6 预扣的 TPM 桶。
-//
-// **best-effort**：失败仅 log，不影响响应（请求已成功；调账失败下个请求看到的剩余配额
-// 偏不准，acceptable）。
-//
-// **窗口写死 1min**：M6 buildBuckets 里 TPM bucket Window 也是 time.Minute；
-// 两边必须一致。如果将来 TPM 改 5min 等，要把 window 也存进 RateLimitState。
-func adjustTPM(rc *domain.RequestContext, store ratelimit.Store) {
-	if store == nil || rc.RateLimit == nil || len(rc.RateLimit.TPMBucketKeys) == 0 {
-		return
-	}
-	delta := int32(rc.Usage.Total) - int32(rc.RateLimit.ReservedTPM)
-	if delta == 0 {
-		return
-	}
-	adjustments := make([]ratelimit.BucketAdjust, len(rc.RateLimit.TPMBucketKeys))
-	for i, k := range rc.RateLimit.TPMBucketKeys {
-		adjustments[i] = ratelimit.BucketAdjust{
-			Key:    k,
-			Delta:  delta,
-			Window: time.Minute,
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = store.AdjustBatch(ctx, adjustments) // log 等下版加；现在静默
 }
 
 // fillUsageMeta 把 rc 全链路状态聚合到 rc.Usage.Meta，给下游 billing 用。

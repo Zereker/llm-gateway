@@ -161,9 +161,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 			}),
 		},
 		Tracing: middleware.TracingDeps{
-			Outbox:         outbox,
-			Tracer:         buildTracer(srv, cfg.Trace),
-			RateLimitStore: ratelimit.NewRedisStore(rdb),
+			Outbox: outbox,
+			Tracer: buildTracer(srv, cfg.Trace),
 		},
 	})
 

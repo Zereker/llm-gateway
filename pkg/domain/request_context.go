@@ -38,7 +38,7 @@ type RequestContext struct {
 	// BudgetGate 接口返回，不在 RC 上 cache。
 
 	// === M5 ModelService 写入 ===
-	ModelService *ModelServiceSnapshot
+	ModelService *ModelService
 	Pricing      PricingSnapshot
 
 	// === M6 Limit 写入 ===

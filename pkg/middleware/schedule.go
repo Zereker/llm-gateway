@@ -254,7 +254,9 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 			c.Writer.WriteHeaderNow()
 
 			// chunk → translator handler → client
-			handler := trans.NewResponseHandler()
+			// M8 如果装了 Moderator 会在 ctx 里；wrapWithModerator 会装一层 decorator
+			// 在每 chunk 流出前调 CheckOutput，违规返 error 让本 loop 中止
+			handler := wrapWithModerator(trans.NewResponseHandler(), rc.Ctx)
 			bufPtr := chunkBufPool.Get().(*[]byte)
 			buf := *bufPtr
 			var feedErr error
