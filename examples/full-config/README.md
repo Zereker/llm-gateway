@@ -18,11 +18,11 @@ Kafka outbox + 多 model + 多 endpoint + 多 quota_policy + pricing_version。
 docker compose up -d
 
 # 2) 建表
-docker exec -i $(docker compose ps -q mysql) mysql -uroot ai_gateway < pkg/infra/schema.sql
+docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < pkg/infra/schema.sql
 
 # 3) seed 示例数据（**仅 quota_policies / tenants / model_services / subscriptions / pricing**；
 #    endpoints + api_keys 必须走 admin POST 走加密路径，见下文）
-docker exec -i $(docker compose ps -q mysql) mysql -uroot ai_gateway < examples/full-config/seed.sql
+docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < examples/full-config/seed.sql
 
 # 4) 起 admin
 go run ./cmd/admin -config ./examples/full-config/admin.yaml &
@@ -73,4 +73,4 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 - **gateway 启动报 "schema check failed"**：先跑 `pkg/infra/schema.sql`
 - **请求 401**：检查 api_key hash 是否入库（admin POST 路径）
 - **请求 503 "no endpoint succeeded"**：检查 endpoint 的 auth/routing 是否配对
-- **没看到 cost 事件**：检查 Kafka topic 是否存在 + `/tmp/ai-gateway-usage.log` 没在用 file 兜底
+- **没看到 cost 事件**：检查 Kafka topic 是否存在 + `/tmp/llm-gateway-usage.log` 没在用 file 兜底

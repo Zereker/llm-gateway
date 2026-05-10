@@ -2,19 +2,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "ai-gateway.fullname" . }}-admin
+  name: {{ include "llm-gateway.fullname" . }}-admin
   labels:
-    {{- include "ai-gateway.labels" . | nindent 4 }}
+    {{- include "llm-gateway.labels" . | nindent 4 }}
     app.kubernetes.io/component: admin
 spec:
   replicas: {{ .Values.admin.replicaCount }}
   selector:
     matchLabels:
-      {{- include "ai-gateway.admin.selectorLabels" . | nindent 6 }}
+      {{- include "llm-gateway.admin.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "ai-gateway.admin.selectorLabels" . | nindent 8 }}
+        {{- include "llm-gateway.admin.selectorLabels" . | nindent 8 }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap-admin.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
@@ -30,23 +30,23 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              envsubst < /etc/ai-gateway/admin.yaml.tmpl > /tmp/admin.yaml && \
-              exec /usr/local/bin/ai-gateway-admin -config /tmp/admin.yaml
+              envsubst < /etc/llm-gateway/admin.yaml.tmpl > /tmp/admin.yaml && \
+              exec /usr/local/bin/llm-gateway-admin -config /tmp/admin.yaml
           env:
             - name: DATABASE_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "ai-gateway.fullname" . }}-secrets
+                  name: {{ include "llm-gateway.fullname" . }}-secrets
                   key: database-dsn
             - name: DATA_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "ai-gateway.fullname" . }}-secrets
+                  name: {{ include "llm-gateway.fullname" . }}-secrets
                   key: data-key
             - name: ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "ai-gateway.fullname" . }}-secrets
+                  name: {{ include "llm-gateway.fullname" . }}-secrets
                   key: admin-token
           ports:
             - name: http
@@ -68,23 +68,23 @@ spec:
             {{- toYaml .Values.admin.resources | nindent 12 }}
           volumeMounts:
             - name: config
-              mountPath: /etc/ai-gateway/admin.yaml.tmpl
+              mountPath: /etc/llm-gateway/admin.yaml.tmpl
               subPath: admin.yaml
             - name: tmp
               mountPath: /tmp
       volumes:
         - name: config
           configMap:
-            name: {{ include "ai-gateway.fullname" . }}-admin
+            name: {{ include "llm-gateway.fullname" . }}-admin
         - name: tmp
           emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "ai-gateway.fullname" . }}-admin
+  name: {{ include "llm-gateway.fullname" . }}-admin
   labels:
-    {{- include "ai-gateway.labels" . | nindent 4 }}
+    {{- include "llm-gateway.labels" . | nindent 4 }}
     app.kubernetes.io/component: admin
 spec:
   type: {{ .Values.admin.service.type }}
@@ -94,5 +94,5 @@ spec:
       protocol: TCP
       name: http
   selector:
-    {{- include "ai-gateway.admin.selectorLabels" . | nindent 4 }}
+    {{- include "llm-gateway.admin.selectorLabels" . | nindent 4 }}
 {{- end }}

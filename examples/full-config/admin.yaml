@@ -13,7 +13,7 @@ admin:
 
 database:
   driver: mysql
-  dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/ai_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
+  dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/llm_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
 
 # 必须跟 gateway.yaml 的 data_key 一致。
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

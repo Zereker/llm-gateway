@@ -1,6 +1,6 @@
 # Architecture Decision Records (ADR)
 
-本目录记录 ai-gateway **架构层面**的决策。bug fix / 实现细节走 commit message + PR 描述；架构选择、组件边界、向后不兼容改动走 ADR。
+本目录记录 llm-gateway **架构层面**的决策。bug fix / 实现细节走 commit message + PR 描述；架构选择、组件边界、向后不兼容改动走 ADR。
 
 > ADR 是**决策的过程记录**，不是 spec。每条 ADR 描述：当时的现状、考虑过的选项、为什么选了某个、放弃的代价。后人接手时知道"为什么不这么做"，避免回头路。
 

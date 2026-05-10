@@ -243,7 +243,7 @@ package request
 
 import "github.com/gin-gonic/gin"
 
-const ctxKey = "ai_gateway.request_context"
+const ctxKey = "llm_gateway.request_context"
 
 // Attach 将 *Context 挂到 *gin.Context 上。仅 M1 TraceContext middleware 调用。
 func Attach(c *gin.Context, rc *Context) {
@@ -984,11 +984,11 @@ MustField(rc, "Envelope", rc.Envelope != nil)
 
 | Metric | 类型 | 标签 | 告警 |
 |--------|------|------|-----|
-| `ai_gateway.middleware.duration_ms` | histogram | `mw_name` | P95 突增 |
-| `ai_gateway.middleware.error_total` | counter | `mw_name`, `class` | rate > 阈值 |
-| `ai_gateway.context.field_miss_total` | counter | `field_name` | rate > 0 即 P1 告警（顺序异常）|
-| `ai_gateway.panic_total` | counter | `component` | rate > 0 即 P0 告警 |
-| `ai_gateway.http.request_duration_ms` | histogram | `method`, `path`, `status` | P99 突增 |
+| `llm_gateway.middleware.duration_ms` | histogram | `mw_name` | P95 突增 |
+| `llm_gateway.middleware.error_total` | counter | `mw_name`, `class` | rate > 阈值 |
+| `llm_gateway.context.field_miss_total` | counter | `field_name` | rate > 0 即 P1 告警（顺序异常）|
+| `llm_gateway.panic_total` | counter | `component` | rate > 0 即 P0 告警 |
+| `llm_gateway.http.request_duration_ms` | histogram | `method`, `path`, `status` | P99 突增 |
 
 详细命名规约 / 告警阈值 / Runbook 见 [07-roadmap](07-roadmap.md) 与未来 `docs/operations/`。
 

@@ -1,6 +1,6 @@
 # examples/prometheus — 监控告警配置
 
-ai-gateway 自带 `/metrics` endpoint（Prometheus exposition format）；本目录给出推荐 alert / dashboard 模板。
+llm-gateway 自带 `/metrics` endpoint（Prometheus exposition format）；本目录给出推荐 alert / dashboard 模板。
 
 ## 文件
 
@@ -10,19 +10,19 @@ ai-gateway 自带 `/metrics` endpoint（Prometheus exposition format）；本目
 
 ## 接入步骤
 
-### 1. 让 Prometheus 抓 ai-gateway metrics
+### 1. 让 Prometheus 抓 llm-gateway metrics
 
 `prometheus.yml` 加 scrape target：
 
 ```yaml
 scrape_configs:
-  - job_name: ai-gateway
+  - job_name: llm-gateway
     metrics_path: /metrics
     scrape_interval: 15s
     static_configs:
-      - targets: ['ai-gateway.internal:8080']
+      - targets: ['llm-gateway.internal:8080']
         labels:
-          service: ai-gateway
+          service: llm-gateway
 ```
 
 ### 2. 加载 alert rules
@@ -31,7 +31,7 @@ scrape_configs:
 
 ```yaml
 rule_files:
-  - /etc/prometheus/rules/ai-gateway-alerts.yaml
+  - /etc/prometheus/rules/llm-gateway-alerts.yaml
 ```
 
 把本目录 `alerts.yaml` 复制到 `/etc/prometheus/rules/`，重启 prometheus（或 `kill -HUP`）让它重读规则。
@@ -54,7 +54,7 @@ route:
 
 ## Metric 命名约定
 
-ai-gateway 用 `ai_gateway.<component>.<name>` 命名（见 `pkg/metric/names.go`）；
+llm-gateway 用 `llm_gateway.<component>.<name>` 命名（见 `pkg/metric/names.go`）；
 落 Prometheus 时 `.` → `_`，所以这里 alert 表达式都是下划线版本。
 
 label 维度：`vendor` / `model` / `class` / `endpoint_id` / `result` / `scope`，

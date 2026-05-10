@@ -40,7 +40,7 @@ const defaultRuleClass = "standard"
 func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "ai-gateway.model_service")
+		ctx, end := startSpan(rc.Ctx, "llm-gateway.model_service")
 		defer end()
 		rc.Ctx = ctx
 		if rc.Envelope == nil {

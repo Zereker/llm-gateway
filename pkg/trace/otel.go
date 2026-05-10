@@ -26,7 +26,7 @@ import (
 
 // NewOtelProvider 构造 OTLP gRPC exporter + TracerProvider。
 //
-// service：写到 OTel resource.service.name；推荐 "ai-gateway"。
+// service：写到 OTel resource.service.name；推荐 "llm-gateway"。
 // endpoint：OTLP collector 的 gRPC 地址（如 "otel-collector.observability:4317"）；
 // 留空时走 OTel SDK 默认环境变量（OTEL_EXPORTER_OTLP_ENDPOINT）。
 //
@@ -85,7 +85,7 @@ type OtelTracer struct {
 
 // NewOtelTracer 用给定 TracerProvider 构造（typically 拿 NewOtelProvider 返回的）。
 func NewOtelTracer(tp oteltrace.TracerProvider) *OtelTracer {
-	return &OtelTracer{tracer: tp.Tracer("ai-gateway")}
+	return &OtelTracer{tracer: tp.Tracer("llm-gateway")}
 }
 
 // Log 在当前 span 上加 event；无 span 时静默忽略。

@@ -57,7 +57,7 @@ outbox:
   driver: kafka
   kafka:
     brokers: ["broker1:9092","broker2:9092"]
-    topic: ai-gateway.usage
+    topic: llm-gateway.usage
 `
 	if err := os.WriteFile(p, []byte(yamlBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ outbox:
 	if cfg.Outbox.Driver != "kafka" {
 		t.Errorf("Outbox.Driver = %q", cfg.Outbox.Driver)
 	}
-	if len(cfg.Outbox.Kafka.Brokers) != 2 || cfg.Outbox.Kafka.Topic != "ai-gateway.usage" {
+	if len(cfg.Outbox.Kafka.Brokers) != 2 || cfg.Outbox.Kafka.Topic != "llm-gateway.usage" {
 		t.Errorf("Outbox.Kafka = %+v", cfg.Outbox.Kafka)
 	}
 }
@@ -106,7 +106,7 @@ func TestLoad_OutboxDefaultsToFile(t *testing.T) {
 	if cfg.Outbox.Driver != "file" {
 		t.Errorf("Outbox.Driver = %q, want file", cfg.Outbox.Driver)
 	}
-	if cfg.Outbox.File.Path != "/tmp/ai-gateway-usage.log" {
+	if cfg.Outbox.File.Path != "/tmp/llm-gateway-usage.log" {
 		t.Errorf("Outbox.File.Path = %q", cfg.Outbox.File.Path)
 	}
 }

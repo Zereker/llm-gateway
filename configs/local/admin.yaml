@@ -1,4 +1,4 @@
-# admin.yaml — ai-gateway-admin 本地启动配置
+# admin.yaml — llm-gateway-admin 本地启动配置
 #
 # admin 是控制平面：通过 HTTP CRUD 维护 model_services / endpoints。
 # 跟 gateway 共享同一份 MySQL（dsn 必须与 gateway.yaml 一致）。
@@ -24,7 +24,7 @@ admin:
 database:
   # 与 configs/local/gateway.yaml 的 database 段一致；admin 拥有 schema 演进。
   driver: mysql
-  dsn: "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
+  dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
 
 # data_key: AES-256-GCM 加密 endpoints.auth 列；必须跟 gateway.yaml 一致。
 # 本地 dev 用固定值；**绝不能上生产**。

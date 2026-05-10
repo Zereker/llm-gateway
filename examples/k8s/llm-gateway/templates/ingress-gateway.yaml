@@ -2,9 +2,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "ai-gateway.fullname" . }}-gateway
+  name: {{ include "llm-gateway.fullname" . }}-gateway
   labels:
-    {{- include "ai-gateway.labels" . | nindent 4 }}
+    {{- include "llm-gateway.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -27,7 +27,7 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "ai-gateway.fullname" $ }}-gateway
+                name: {{ include "llm-gateway.fullname" $ }}-gateway
                 port:
                   number: {{ $.Values.gateway.service.port }}
           {{- end }}

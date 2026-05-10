@@ -4,9 +4,9 @@
 # api_keys）由 admin 进程通过 HTTP CRUD 维护，存 DB；本目录只持有 yaml + README。
 #
 # 部署：
-#   1. 把本 yaml 拷到目标机：/etc/ai-gateway/gateway.yaml
+#   1. 把本 yaml 拷到目标机：/etc/llm-gateway/gateway.yaml
 #   2. 启动 admin（cmd/admin）建表 + 录入 model_services / endpoints / api_keys
-#   3. 启动 gateway：ai-gateway -config /etc/ai-gateway/gateway.yaml
+#   3. 启动 gateway：llm-gateway -config /etc/llm-gateway/gateway.yaml
 
 server:
   addr: ":8080"
@@ -20,15 +20,15 @@ middleware:
 database:
   # 生产 MySQL；用户名密码从 secret 注入（环境变量 / k8s Secret 渲染）。
   driver: mysql
-  dsn: "ai_gateway:CHANGE_ME@tcp(db:3306)/ai_gateway?parseTime=true&charset=utf8mb4&tls=preferred"
+  dsn: "llm_gateway:CHANGE_ME@tcp(db:3306)/llm_gateway?parseTime=true&charset=utf8mb4&tls=preferred"
 
 outbox:
   # 生产建议 kafka：usage 事件流入下游计费 / 审计 / 监控管道。
   driver: kafka
   kafka:
     brokers: ["broker1:9092", "broker2:9092", "broker3:9092"]
-    topic: ai-gateway.usage
+    topic: llm-gateway.usage
   # 想本地起步也可用 file：
   # driver: file
   # file:
-  #   path: /var/log/ai-gateway/usage.log
+  #   path: /var/log/llm-gateway/usage.log

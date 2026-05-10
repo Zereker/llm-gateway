@@ -24,7 +24,7 @@ var middlewareTracer = otel.Tracer("github.com/zereker/llm-gateway/pkg/middlewar
 //
 // 调用模板（middleware 第一行）：
 //
-//	ctx, end := startSpan(rc.Ctx, "ai-gateway.<name>")
+//	ctx, end := startSpan(rc.Ctx, "llm-gateway.<name>")
 //	defer end()
 //	rc.Ctx = ctx
 //

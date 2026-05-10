@@ -49,7 +49,7 @@ const defaultMaxOutputTokens uint32 = 4096
 func Limit(deps LimitDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "ai-gateway.limit")
+		ctx, end := startSpan(rc.Ctx, "llm-gateway.limit")
 		defer end()
 		rc.Ctx = ctx
 

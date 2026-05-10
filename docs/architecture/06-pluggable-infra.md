@@ -261,7 +261,7 @@ type Store struct {
 
 > 配置文件结构示例：
 > ```
-> /etc/ai-gateway/
+> /etc/llm-gateway/
 > ├── modelservice/svc_gpt4o.json
 > ├── ratelimit/apikey/ak_xxx/svc_gpt4o.json
 > └── scheduling/profile/svc_gpt4o.json
@@ -275,7 +275,7 @@ package etcd
 
 type Store struct {
     Client *clientv3.Client
-    Prefix string // "/ai-gateway/"
+    Prefix string // "/llm-gateway/"
 }
 ```
 
@@ -298,7 +298,7 @@ type Store struct {
 ### 5.4 Key 分层约定
 
 ```
-/ai-gateway/
+/llm-gateway/
 ├── modelservice/{service_id}              → domain.ModelServiceSnapshot
 ├── ratelimit/
 │   ├── apikey/{api_key_id}/{service_id}   → domain.LayerSpec
@@ -368,7 +368,7 @@ package redis
 
 type Store struct {
     Client redis.UniversalClient
-    Prefix string // "ai-gateway:"
+    Prefix string // "llm-gateway:"
 }
 
 // EvalLimit 用 Lua 脚本（详见 [04] 第 5.1 节）
@@ -618,13 +618,13 @@ import (
 )
 
 func main() {
-    cfgStore, _ := file.New("/etc/ai-gateway")
+    cfgStore, _ := file.New("/etc/llm-gateway")
     cacheStore := memory.New()
-    bus, _ := file.NewEventBus("/var/log/ai-gateway/usage.log")
+    bus, _ := file.NewEventBus("/var/log/llm-gateway/usage.log")
     tracer := slog.New(slog.Default())
 
     deps := middleware.Deps{
-        Auth:         middleware.AuthDeps{Provider: apikey.MustNewFromFile("/etc/ai-gateway/apikeys.yaml")},
+        Auth:         middleware.AuthDeps{Provider: apikey.MustNewFromFile("/etc/llm-gateway/apikeys.yaml")},
         Envelope:     middleware.EnvelopeDeps{Detector: defaultDetector(), Parser: defaultParser()},
         Budget:       middleware.BudgetDeps{Checker: alwayspass.Checker{}},
         ModelService: middleware.ModelServiceDeps{Loader: loader.New(cfgStore, 1000)},
@@ -660,8 +660,8 @@ func handler(c *gin.Context) {
 
 > **生产部署**只需替换默认实现：
 > ```go
-> cfgStore, _ := etcd.New(etcdClient, "/ai-gateway/")
-> cacheStore := redis.New(redisClient, "ai-gateway:")
+> cfgStore, _ := etcd.New(etcdClient, "/llm-gateway/")
+> cacheStore := redis.New(redisClient, "llm-gateway:")
 > bus, _ := kafka.NewEventBus(kafkaProducer, "usage-events")
 > ```
 > 业务代码 0 改动。

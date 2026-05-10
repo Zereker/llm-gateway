@@ -5,18 +5,18 @@
 # 全清：  docker compose down -v
 #
 # 启动后默认连接：
-#   MYSQL_DSN=root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4
+#   MYSQL_DSN=root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4
 #   redis://localhost:6379
 #   kafka://localhost:9092
 
 services:
   mysql:
     image: mysql:8.0
-    container_name: ai-gateway-mysql
+    container_name: llm-gateway-mysql
     restart: unless-stopped
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"   # 仅本地开发；生产必须设密码
-      MYSQL_DATABASE: ai_gateway
+      MYSQL_DATABASE: llm_gateway
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -33,7 +33,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: ai-gateway-redis
+    container_name: llm-gateway-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -49,7 +49,7 @@ services:
     # Redpanda：Kafka 协议 100% 兼容，单二进制无 JVM 无 ZK，本地启动 < 1s。
     # segmentio/kafka-go 直连。
     image: redpandadata/redpanda:latest
-    container_name: ai-gateway-redpanda
+    container_name: llm-gateway-redpanda
     restart: unless-stopped
     command:
       - redpanda
