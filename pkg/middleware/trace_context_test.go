@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/hex"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -30,8 +31,8 @@ func TestTraceContext_GeneratesIDs(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/x", nil))
 
-	if !strings.HasPrefix(gotTrace, "tr_") {
-		t.Errorf("trace = %q, want tr_ prefix", gotTrace)
+	if _, err := hex.DecodeString(gotTrace); err != nil || len(gotTrace) != 32 {
+		t.Errorf("trace = %q, want W3C 32-hex trace_id", gotTrace)
 	}
 	if !strings.HasPrefix(gotRequest, "req_") {
 		t.Errorf("request = %q, want req_ prefix", gotRequest)
@@ -46,13 +47,14 @@ func TestTraceContext_HonorsXTraceIdHeader(t *testing.T) {
 		c.Status(200)
 	})
 
+	const externalTraceID = "0102030405060708090a0b0c0d0e0f10"
 	req := httptest.NewRequest("GET", "/x", nil)
-	req.Header.Set("X-Trace-Id", "tr_externalABC")
+	req.Header.Set("X-Trace-Id", externalTraceID)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if got != "tr_externalABC" {
-		t.Errorf("got %q, want tr_externalABC", got)
+	if got != externalTraceID {
+		t.Errorf("got %q, want %q", got, externalTraceID)
 	}
 }
 

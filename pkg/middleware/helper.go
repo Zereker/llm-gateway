@@ -49,10 +49,17 @@ func TryGetRequestContext(c *gin.Context) *domain.RequestContext {
 
 // AttachRequestContext 将 *RequestContext 挂到 c.Request.Context()；仅 M1 TraceContext 调用。
 //
-// 调用后 `c.Request.Context()` 链路上多一个 WithValue 节点；rc.Ctx 字段同步更新
-// 指向这个新 ctx（保证 rc.Ctx 跟 c.Request.Context() 一致）。
+// 以 rc.Ctx 作为 base（caller 已经预填 SpanContext / baggage 等），叠一个
+// requestContextKey 节点，再同步写回 c.Request 与 rc.Ctx。这样 caller 在调用前
+// 对 ctx 做的所有 enrichment 不会被丢弃。rc.Ctx 为 nil 时退到 c.Request.Context()。
+//
+// 调用后 `c.Request.Context()` == `rc.Ctx`，含 caller 的 enrichment + requestContextKey。
 func AttachRequestContext(c *gin.Context, rc *domain.RequestContext) {
-	ctx := context.WithValue(c.Request.Context(), requestContextKey, rc)
+	base := rc.Ctx
+	if base == nil {
+		base = c.Request.Context()
+	}
+	ctx := context.WithValue(base, requestContextKey, rc)
 	c.Request = c.Request.WithContext(ctx)
 	rc.Ctx = ctx
 }

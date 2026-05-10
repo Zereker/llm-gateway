@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -23,15 +24,20 @@ func TestRecover_CatchesPanicReturns500(t *testing.T) {
 	if w.Code != 500 {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, "internal server error") {
-		t.Errorf("body missing message: %s", body)
+	if !strings.Contains(w.Body.String(), "internal server error") {
+		t.Errorf("body missing message: %s", w.Body.String())
 	}
-	if !strings.Contains(body, `"trace_id":"tr_`) {
-		t.Errorf("body missing trace_id: %s", body)
+	var parsed map[string]map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.Contains(body, `"request_id":"req_`) {
-		t.Errorf("body missing request_id: %s", body)
+	if tid := parsed["error"]["trace_id"]; len(tid) != 32 {
+		t.Errorf("trace_id = %q, want W3C 32-hex", tid)
+	} else if _, err := hex.DecodeString(tid); err != nil {
+		t.Errorf("trace_id = %q, not valid hex", tid)
+	}
+	if rid := parsed["error"]["request_id"]; !strings.HasPrefix(rid, "req_") {
+		t.Errorf("request_id = %q, want req_ prefix", rid)
 	}
 }
 
