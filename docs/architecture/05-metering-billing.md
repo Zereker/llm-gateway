@@ -6,7 +6,7 @@
 
 ## 1. 范围与目标
 
-**范围**：从 Adapter 拿到上游响应那一刻起，到把"按请求时价格计算的成本"产出为账单事件为止的整条链路。
+**范围**：从 Adapter 拿到上游响应那一刻起，到把"按请求时价格计算的成本"产出为账单事件为止的整条链路。**反向通道**（账单系统 → 网关的欠费 / 状态广播）参见 §13。
 
 **目标**：
 
@@ -539,3 +539,205 @@ pricing.calculator_duration_ms{quantile}
 - **修改 Pricing JSON schema**：向后兼容（旧字段保留）；history 表无需迁移（历史快照保持原 schema）
 - **修改 Kafka 消息 schema**：版本化 `event_schema_version` 字段；流处理器按版本分支处理
 - **修改本地日志 / 归档策略**：本文档第 6.3 节同步；评估 Filebeat 等部署侧配置变更
+- **修改 account-status schema / 拦截策略**：本文档第 13 节同步；账单系统侧需协同发版（compacted topic 不能强制清空，schema 必须向后兼容）
+
+## 13. 反向通道：account-status 广播（草案）
+
+> **状态**：v0.1 后扩展，尚未落地。本节定义"账单系统 → 网关"反向控制流的契约：账单系统判定欠费 / 配额超限后，如何让网关 M4 Budget 在秒级拦下后续请求，且**不引入网关到账单系统的同步调用**。
+
+### 13.1 范围与目标
+
+**范围**：从账单系统判定一个账户进入 `suspended`（或恢复 `active`）那一刻起，到网关 M4 Budget 把该账户的请求拒掉为止的整条反向链路。
+不含：账单系统内部如何聚合 / 阈值判定（属账单系统自身设计）。
+
+**目标**：
+
+| # | 目标 | 成功判据 |
+|---|------|---------|
+| B1 | 账户状态变更秒级到达网关 | p99 < 5s（账单聚合周期 + Kafka 端到端延迟）|
+| B2 | 网关 M4 不发任何同步 RPC | 每请求零 RPC / Redis RTT；纯本地内存 map 查询 |
+| B3 | 网关重启后状态可重建 | 启动期从 compacted topic 拉一份全量快照 |
+| B4 | Kafka 故障降级有界 | 长时间断连进入 fail-stale，旧状态继续生效 + metric 告警 |
+| B5 | 双向通道职责清晰 | `usage-events`（出，§6.2）与 `account-status`（入，§13.4）两条 topic 互不耦合 |
+
+### 13.2 设计原则
+
+| # | 原则 | 含义 |
+|---|------|------|
+| BR1 | **Push > Pull** | 网关订阅 topic 拿状态变更，不轮询 admin DB / Redis |
+| BR2 | **Compacted topic 即快照** | `cleanup.policy=compact`；topic 自身就是当前所有 key 的最新状态，无需额外 snapshot API |
+| BR3 | **每实例独立 consumer group** | `gateway-budget-{instance_id}`；每实例必须看到全量事件，禁止瓜分 partition |
+| BR4 | **Fail-open + readiness gate** | warm-up 期 `/readyz` 返回 503；K8s 不切流量；不会因为没拿到状态就拒服务 |
+| BR5 | **运行期 fail-stale** | Kafka 断连不清空缓存；用旧状态继续拦截；metric 告警 |
+| BR6 | **状态扁平、面向枚举** | `status ∈ {active, suspended, throttled}`；不广播"剩余额度"等细节（属账单系统内部） |
+| BR7 | **网关不订阅账单系统内部 topic** | 账单系统对外只承诺 `account-status` 一条 topic 的 schema；其内部聚合 topic 与网关无关 |
+
+### 13.3 与现有数据流的关系
+
+```
+   ┌──────────┐  usage-events (§6.2)   ┌─────────┐  billing-events (§7.4)  ┌─────────┐
+   │ gateway  │ ─────────────────────► │ stream  │ ──────────────────────► │ billing │
+   │  (M10)   │      Kafka             │ proc.   │      Kafka              │ system  │
+   └──────────┘                        └─────────┘                         └────┬────┘
+        ▲                                                                       │
+        │  account-status (§13.4)                                               │
+        │  Kafka, compacted                                                     │
+        └───────────────────────────────────────────────────────────────────────┘
+                  网关 M4 Budget 内嵌 consumer，本地内存判定，零 RPC
+```
+
+> **职责切分**：
+> - 流处理器（§7）只负责"算 + 压缩流量"，不直接改账户状态
+> - 账单系统消费 `billing-events` 后，按业务规则判定 → 发 `account-status` 广播
+> - 网关不感知账单系统内部存在；只读 `account-status` 一个契约
+
+### 13.4 account-status Kafka 配置
+
+```
+topic:                     account-status
+cleanup.policy:            compact
+min.cleanable.dirty.ratio: 0.1
+segment.ms:                600000        # 10min；让 compaction 较快生效
+retention.ms:              -1            # 永久保留 + compaction
+partitions:                N             # ≥ 网关实例数；后续按租户量扩
+key:                       {scope}:{tenant_id}[:{api_key_id}]
+```
+
+**关键**：`cleanup.policy=compact` 让 Kafka 把同一 key 的旧 value 回收，topic 永远只保留每个 key 的最新状态。新启动的网关从 earliest 消费即可拿到当前全量状态。
+
+### 13.5 消息 schema
+
+```json
+{
+  "tenant_id":    "t_alice",
+  "api_key_id":   "ak_xxx",         // 可空；空时表示 tenant 级
+  "scope":        "tenant",         // tenant | api_key | model_service
+  "status":       "suspended",      // active | suspended | throttled
+  "reason":       "monthly_quota_exceeded",
+  "version":      42,               // 单调递增；用于幂等 + 乱序检测
+  "effective_at": "2026-05-10T08:30:00Z",
+  "ttl_sec":      3600              // 可选；suspended 自动过期回 active（账单系统兜底）
+}
+```
+
+**删除语义**：账单系统**不发** tombstone（null value）；恢复活跃用 `status=active` 显式覆盖。tombstone 在 compaction 后会引起"key 是不存在还是已活跃"的歧义。
+
+**幂等 + 乱序**：网关按 `version` 比较，旧消息丢弃。同一 key 内 version 严格单调由账单系统保证（建议来源：MySQL 自增 ID 或 Snowflake）。
+
+### 13.6 BudgetGate 实现
+
+接口已在 [06] 定义；新增 `kafka` driver：
+
+```go
+// pkg/budget/kafka_gate.go
+type kafkaGate struct {
+    cache       sync.Map      // key="{scope}:{tenant_id}[:{api_key_id}]" -> Status
+    ready       atomic.Bool
+    lastVersion sync.Map      // 同 key -> 最大已 apply 的 version
+}
+
+type Status struct {
+    Status      string
+    Reason      string
+    Version     int64
+    EffectiveAt time.Time
+}
+
+func (g *kafkaGate) Allow(ctx context.Context, ident *domain.UserIdentity) error {
+    if !g.ready.Load() {
+        metric.Inc(metric.BudgetWarmupPassthroughTotal)
+        return nil // fail-open during warm-up
+    }
+    if v, ok := g.cache.Load(keyOf(ident)); ok {
+        st := v.(Status)
+        if st.Status == StatusSuspended {
+            return domain.NewErrPermanent("account_suspended", st.Reason)
+        }
+    }
+    return nil
+}
+
+func (g *kafkaGate) Ready() bool { return g.ready.Load() }
+```
+
+后台 goroutine 持续消费 topic：
+
+```
+for msg := range consumer.Messages() {
+    apply(msg)               // 写 sync.Map；按 version 拒绝乱序旧消息
+    if !g.ready.Load() && consumerLag() == 0 {
+        g.ready.Store(true)  // 第一次追上 HWM 时翻牌
+    }
+}
+```
+
+### 13.7 冷启动 / Warm-up
+
+1. 网关启动 → consumer 从 earliest 开始消费
+2. `/readyz` 增加 `budgetGate.Ready()` check：与现有 `repo.CheckSchema` 共同决定是否 200
+3. consumer 第一次消费到 high watermark → `ready.Store(true)`
+4. K8s readiness probe 通过 → 流量切入
+
+**估算**：百万级租户、每条消息 ~200B，compacted 后 topic 大小 ~200MB；千兆网卡满速 < 2s 拉完。绝大多数场景 warm-up < 10s。
+
+**超时兜底**：`warmup_timeout` 配置上限（默认 30s）；超时仍未追上 HWM 也强制 `ready=true` 并告警，避免启动卡死。
+
+### 13.8 运行期降级
+
+| 故障 | 网关行为 | 监控 |
+|------|---------|------|
+| Kafka broker 短暂不可达（< 30s） | 用本地缓存继续拦截；consumer 自动重连 | `budget_consumer_disconnected_total` |
+| 长时间断连（> 5min） | 缓存继续生效（fail-stale）；告警通知运维 | `budget_consumer_stale_seconds` |
+| 消息积压 | lag metric 告警；不影响拦截正确性（旧状态仍在） | `budget_consumer_lag_max` |
+| version 倒退 / 乱序 | 按 version 比较丢弃旧消息 | `budget_out_of_order_dropped_total` |
+| 反复 panic（apply 异常） | 由 M9 Recover 兜底；consumer 重启 | `budget_apply_panic_total` |
+
+### 13.9 与 M4 Budget 的协作
+
+`pkg/middleware/budget.go`（M4）形态不变：调用 `BudgetGate.Allow(ident)`。本节只是新增一个 driver；`cmd/gateway/main.go` 的 `buildBudgetGate` 按 §[06] Pluggable infra 约定加 `case "kafka"` 分支。
+
+```yaml
+# configs/local/gateway.yaml
+budget:
+  driver: kafka            # alwayspass | kafka
+  kafka:
+    brokers:        ["localhost:9092"]
+    topic:          "account-status"
+    group_id:       "gateway-budget-${HOSTNAME}"  # 每实例唯一
+    warmup_timeout: 30s
+    fail_open:      true   # 默认 true；改 false 即 fail-close（不推荐）
+```
+
+### 13.10 可观测性
+
+```
+budget.consumer.lag_max{topic}
+budget.consumer.disconnected_total
+budget.consumer.stale_seconds                # 距上次成功消费的秒数
+budget.cache.size                            # 当前缓存的 key 总数
+budget.warmup.passthrough_total              # warm-up 期间 fail-open 计数
+budget.warmup.duration_seconds               # 启动到首次 ready 的耗时
+budget.allow.denied_total{reason}            # 拦截计数（含 reason 维度）
+budget.out_of_order_dropped_total            # 按 version 丢弃的旧消息
+budget.apply_panic_total
+```
+
+### 13.11 测试矩阵
+
+| # | 场景 | 预期 |
+|---|------|-----|
+| B1 | 网关启动期收到请求 | fail-open 放行；passthrough metric +1；`/readyz=503` |
+| B2 | warm-up 完成后收到 suspended 租户请求 | 拒绝；返回 `ErrPermanent("account_suspended")` |
+| B3 | 同租户 status: active → suspended → active | 第二次请求拒；第三次放行 |
+| B4 | version 倒退消息 | 丢弃；`out_of_order` metric +1；缓存不变 |
+| B5 | Kafka 短暂断连后重连 | 旧状态继续生效；重连后 lag 追平；无误拦 |
+| B6 | Compacted topic 网关重启 | 从 earliest 拉到全量当前状态；warm-up 内完成 |
+| B7 | 配置 `driver=alwayspass` | M4 一律放行；不创建 consumer |
+| B8 | warmup_timeout 超时 | 强制 ready=true；告警 metric +1；`/readyz` 转 200 |
+| B9 | api_key 级 + tenant 级同时存在 | 优先 api_key 级；缺失再回落 tenant 级 |
+
+### 13.12 演进点
+
+- **细粒度状态**：当前只支持 `active/suspended/throttled` 三态。后续如要广播"剩余额度数值"，建议另开 `account-quota` topic，避免冲淡 status 语义
+- **反向告警通道**：网关在 BudgetGate 持续被拒后，可选反向往 `account-status` 发 ack 事件，让账单系统知道"拦截已生效"。v1 不做
+- **跨集群广播**：单 Kafka 集群即可；多 region 部署时通过 MirrorMaker / Confluent Replicator 同步 `account-status`
