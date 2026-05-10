@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/infra"
 )
 
 func TestLoad_AppliesDefaults(t *testing.T) {

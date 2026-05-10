@@ -28,7 +28,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/zereker-labs/ai-gateway/pkg/middleware"
+	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
 // Deps 是 NewEngine 的依赖集合，按 middleware 切分。

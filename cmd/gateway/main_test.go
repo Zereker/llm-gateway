@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/config"
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/config"
+	"github.com/zereker/llm-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // devDataKey 是 e2e tests 用的 AES KEK；TestMain 装载，供 endpoints.auth 加解密。

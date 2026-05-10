@@ -77,9 +77,9 @@ package limit
 import (
     "context"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/schedule"
-    "github.com/zereker-labs/ai-gateway/pkg/usage"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/schedule"
+    "github.com/zereker/llm-gateway/pkg/usage"
 )
 
 type Checker interface {

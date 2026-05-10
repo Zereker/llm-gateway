@@ -18,14 +18,14 @@
 //
 // 想接入时在 cmd/gateway/main.go 加 blank import：
 //
-//	import _ "github.com/zereker-labs/ai-gateway/pkg/adapter/gemini"
+//	import _ "github.com/zereker/llm-gateway/pkg/adapter/gemini"
 package gemini
 
 import (
 	"context"
 
-	"github.com/zereker-labs/ai-gateway/pkg/adapter"
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Factory 实现 adapter.Factory。

@@ -3,8 +3,8 @@ package anthropic
 import (
 	"encoding/json"
 
-	"github.com/zereker-labs/ai-gateway/pkg/adapter"
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Classify 实现 adapter.Classifier，覆盖 DefaultClassifier 给 Anthropic 协议族细化分类。

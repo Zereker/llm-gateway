@@ -6,7 +6,7 @@ import (
 
 	"gorm.io/datatypes"
 
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // dto.go 提供 admin REST API 边界用的传输结构体。

@@ -3,7 +3,7 @@ package schedule
 import (
 	"context"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Filter 是 Filter 链的单元；输入候选 → 输出（缩减后的）候选。

@@ -23,9 +23,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/translator"
-	"github.com/zereker-labs/ai-gateway/pkg/usage/extractor"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/translator"
+	"github.com/zereker/llm-gateway/pkg/usage/extractor"
 )
 
 // Anthropic Messages API 必填 max_tokens；client 没传时用这个 default。

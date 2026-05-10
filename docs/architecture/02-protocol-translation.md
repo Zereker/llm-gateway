@@ -224,8 +224,8 @@ import (
     "context"
     "net/http"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/schedule"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/schedule"
 )
 
 // Adapter 是单个上游厂商的接入实现。
@@ -291,7 +291,7 @@ func Vendors() []string {
 package openai
 
 import (
-    "github.com/zereker-labs/ai-gateway/pkg/adapter"
+    "github.com/zereker/llm-gateway/pkg/adapter"
 )
 
 func init() {
@@ -308,13 +308,13 @@ type Adapter struct {
 ```go
 // cmd/gateway/main.go
 import (
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/openai"
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/anthropic"
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/google"
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/aws_bedrock"
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/azure_openai"
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/vllm"
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/ollama"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/openai"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/anthropic"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/google"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/aws_bedrock"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/azure_openai"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/vllm"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/ollama"
     // 部署方按需选择 import 哪些厂商
 )
 ```
@@ -326,8 +326,8 @@ import (
 package adapter
 
 import (
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/usage"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/usage"
 )
 
 // ResponseSession 处理上游响应（流式 / 非流式统一）。
@@ -391,7 +391,7 @@ type Choice struct {
 // pkg/translator/translator.go
 package translator
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 // Translator 把请求 / 响应在两个协议族之间双向翻译。
 //
@@ -413,7 +413,7 @@ type Translator interface {
 // pkg/translator/registry.go
 package translator
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 type key struct {
     Src domain.Protocol
@@ -451,7 +451,7 @@ func (identityTranslator) TranslateStreamChunk(c []byte) ([]byte, error) { retur
 // pkg/translator/anthropic_to_openai.go
 package translator
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 func init() {
     Register(domain.ProtoAnthropic, domain.ProtoOpenAI, &anthropicToOpenAI{})
@@ -556,7 +556,7 @@ type ParamSpecProvider interface {
 // pkg/adapter/anthropic/paramspec.go
 package anthropic
 
-import "github.com/zereker-labs/ai-gateway/pkg/adapter"
+import "github.com/zereker/llm-gateway/pkg/adapter"
 
 func (*Adapter) ParamSpec() *adapter.ParamSpec {
     return &adapter.ParamSpec{
@@ -584,7 +584,7 @@ func (*Adapter) ParamSpec() *adapter.ParamSpec {
 // pkg/adapter/classifier.go
 package adapter
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 // Classifier 把上游 HTTP 状态 + body 映射到 domain.ErrorClass。
 //
@@ -623,7 +623,7 @@ func (DefaultClassifier) Classify(httpStatus int, body []byte) *domain.AdapterEr
 // pkg/adapter/openai/classifier.go
 package openai
 
-import "github.com/zereker-labs/ai-gateway/pkg/adapter"
+import "github.com/zereker/llm-gateway/pkg/adapter"
 
 func (*Adapter) Classifier() adapter.Classifier {
     return openaiClassifier{}
@@ -651,8 +651,8 @@ import (
     "context"
     "time"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/usage"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/usage"
 )
 
 // TaskAdapter 是 Task 模态 Adapter 必须额外实现的差异 Hook。
@@ -708,7 +708,7 @@ func (f *BaseTaskFlow) Run(
 // pkg/adapter/capabilities.go
 package adapter
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 type ModelCapabilities struct {
     MaxContextTokens      int

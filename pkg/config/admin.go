@@ -8,7 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/infra"
 )
 
 // AdminConfig admin（控制平面）服务的启动配置（admin.yaml 的根）。

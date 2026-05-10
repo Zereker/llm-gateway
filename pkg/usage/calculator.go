@@ -1,6 +1,6 @@
 package usage
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 // PriceCalculator 把 Usage + PricingSpec 转换成 per-request cost。
 //

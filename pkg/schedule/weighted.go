@@ -4,7 +4,7 @@ import (
 	"context"
 	"math/rand"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // WeightedRandomSelector Filter 链最后的选 1 步：按 endpoint.weight 概率分布选 1 个。

@@ -1,6 +1,6 @@
 package openai
 
-import "github.com/zereker-labs/ai-gateway/pkg/adapter"
+import "github.com/zereker/llm-gateway/pkg/adapter"
 
 // init 注册一组 OpenAI-compatible 的 vendor 别名。
 //

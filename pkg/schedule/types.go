@@ -30,7 +30,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Request M7 选路所需的请求元信息。

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Config 构造默认 Scheduler 的依赖集。

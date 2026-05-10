@@ -25,7 +25,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Metadata 是静态、厂商级别的元信息（不绑定具体请求）。

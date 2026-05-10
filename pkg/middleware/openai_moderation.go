@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // openaiModerationDefaultBaseURL OpenAI 官方 moderation endpoint。

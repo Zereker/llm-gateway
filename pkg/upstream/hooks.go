@@ -3,7 +3,7 @@ package upstream
 import (
 	"context"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Hook 是 observer 的统一类型；按实现的 Observer 子接口被 Sender 分发。

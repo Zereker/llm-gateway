@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 func TestAlwaysPassGate_AlwaysActive(t *testing.T) {

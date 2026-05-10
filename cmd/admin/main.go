@@ -28,11 +28,11 @@ import (
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
-	"github.com/zereker-labs/ai-gateway/pkg/admin"
-	"github.com/zereker-labs/ai-gateway/pkg/config"
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
-	"github.com/zereker-labs/ai-gateway/pkg/server"
+	"github.com/zereker/llm-gateway/pkg/admin"
+	"github.com/zereker/llm-gateway/pkg/config"
+	"github.com/zereker/llm-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/server"
 )
 
 func main() {

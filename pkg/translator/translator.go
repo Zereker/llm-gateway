@@ -26,7 +26,7 @@ package translator
 import (
 	"sync"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Translator 把客户端协议翻译成上游协议（请求方向 + 响应方向）。

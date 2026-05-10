@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // InMemoryBudgetGate 进程内余额跟踪：按 userID 维度维护 remaining_balance（USD 金额）。

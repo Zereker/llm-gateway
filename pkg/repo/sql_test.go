@@ -7,7 +7,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/infra"
 )
 
 // truncateAll 关 FOREIGN_KEY_CHECKS 后清空所有业务表，再 seed default tenant。

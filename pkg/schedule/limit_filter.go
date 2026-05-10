@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/ratelimit"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
 // LimitReadFilter 用 ratelimit.Store 检查每个候选的 endpoint quota；超限的排除。

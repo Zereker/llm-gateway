@@ -13,7 +13,7 @@
 ```go
 // pkg/domain/endpoint.go
 package domain
-import "github.com/zereker-labs/ai-gateway/pkg/repo"
+import "github.com/zereker/llm-gateway/pkg/repo"
 type (
     Endpoint             = repo.Endpoint
     EndpointCapabilities = repo.EndpointCapabilities

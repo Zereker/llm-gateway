@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // PolicyRule 是 quota_policies.rule_json 解析后的 typed shape：

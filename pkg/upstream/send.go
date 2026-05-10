@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/adapter"
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/schedule"
-	"github.com/zereker-labs/ai-gateway/pkg/translator"
+	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
 // Send 调一次上游，不做 retry / cooldown / 选路。

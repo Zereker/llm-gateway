@@ -1,6 +1,6 @@
 package domain
 
-import "github.com/zereker-labs/ai-gateway/pkg/repo"
+import "github.com/zereker/llm-gateway/pkg/repo"
 
 // Endpoint / EndpointCapabilities / EndpointForm 都是 pkg/repo 同名类型的别名。
 //
