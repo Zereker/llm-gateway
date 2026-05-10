@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "ai-gateway.fullname" . }}-gateway
+  name: {{ include "llm-gateway.fullname" . }}-gateway
   labels:
-    {{- include "ai-gateway.labels" . | nindent 4 }}
+    {{- include "llm-gateway.labels" . | nindent 4 }}
 data:
   gateway.yaml: |
     {{- $cfg := .Values.gateway.config }}

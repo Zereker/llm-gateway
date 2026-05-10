@@ -44,7 +44,7 @@ func Budget(deps BudgetDeps) gin.HandlerFunc {
 		}
 
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "ai-gateway.budget")
+		ctx, end := startSpan(rc.Ctx, "llm-gateway.budget")
 		defer end()
 		rc.Ctx = ctx
 

@@ -1,13 +1,13 @@
 # examples/beam — usage outbox 流处理示例
 
-把 ai-gateway 的 usage outbox（Kafka topic `ai-gateway.usage`）接到 Apache Beam 做计费聚合的参考骨架。
+把 llm-gateway 的 usage outbox（Kafka topic `llm-gateway.usage`）接到 Apache Beam 做计费聚合的参考骨架。
 
 ## 架构
 
 ```
-ai-gateway (M10 Tracing)
+llm-gateway (M10 Tracing)
     ↓ JSON event
-Kafka [ai-gateway.usage]
+Kafka [llm-gateway.usage]
     ↓
 Beam pipeline (本示例)
     ↓
@@ -95,4 +95,4 @@ go run ./usage_pipeline.go \
 - **Materialize / RisingWave**（SQL streaming）
 - **简单 Go consumer**（自己写 group consumer + window 聚合，最少依赖）
 
-ai-gateway 不绑定任何流处理器；Kafka topic schema 是合约。
+llm-gateway 不绑定任何流处理器；Kafka topic schema 是合约。

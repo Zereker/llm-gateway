@@ -1,4 +1,4 @@
-# ai-gateway
+# llm-gateway
 
 A Go-based gateway that routes LLM API requests to multiple upstream providers
 (OpenAI, Anthropic, Google, AWS Bedrock, vLLM / Ollama self-hosted, etc.) under
@@ -13,7 +13,7 @@ roadmap to v1.0.
 ## Layout
 
 ```
-ai-gateway/
+llm-gateway/
 ├── cmd/
 │   ├── gateway/         data plane: serves /v1/* LLM requests, reads DB
 │   └── admin/           control plane: CRUD APIs over model_services / endpoints,
@@ -107,8 +107,8 @@ curl http://localhost:8080/v1/chat/completions \
 ```
 
 The gateway authenticates `sk-test-alice` against `configs/local/apikeys.json`,
-forwards to the OpenAI endpoint stored in MySQL (`ai_gateway.endpoints`), and
-writes a usage event to `/tmp/ai-gateway-usage.log` (file outbox; switch to
+forwards to the OpenAI endpoint stored in MySQL (`llm_gateway.endpoints`), and
+writes a usage event to `/tmp/llm-gateway-usage.log` (file outbox; switch to
 Kafka via `outbox.driver: kafka` in gateway.yaml).
 
 ### Configuration files

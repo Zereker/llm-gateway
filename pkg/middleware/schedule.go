@@ -40,7 +40,7 @@ type ScheduleDeps struct {
 func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "ai-gateway.schedule")
+		ctx, end := startSpan(rc.Ctx, "llm-gateway.schedule")
 		defer end()
 		rc.Ctx = ctx
 

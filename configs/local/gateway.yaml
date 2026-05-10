@@ -1,4 +1,4 @@
-# gateway.yaml — ai-gateway 本地启动配置
+# gateway.yaml — llm-gateway 本地启动配置
 #
 # 所有字段都可省略；省略时取 pkg/config.ApplyDefaults 中的默认值。
 # 运行：
@@ -18,9 +18,9 @@ middleware:
 
 database:
   # ModelService / Endpoint / APIKey 的存储；admin 增删改、gateway 启动期 CheckSchema + 读。
-  # docker-compose 起的 MySQL：root 无密码、库名 ai_gateway
+  # docker-compose 起的 MySQL：root 无密码、库名 llm_gateway
   driver: mysql
-  dsn: "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
+  dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
 
 redis:
   # M6 RateLimit 限流计数 + 未来 hot-path cache 共享 Redis。
@@ -40,10 +40,10 @@ outbox:
   # 本地默认 file（JSONL 追加），生产建议 kafka。
   driver: file
   file:
-    path: /tmp/ai-gateway-usage.log
+    path: /tmp/llm-gateway-usage.log
   # kafka:
   #   brokers: ["localhost:9092"]
-  #   topic: ai-gateway.usage
+  #   topic: llm-gateway.usage
 
 budget:
   # M4 Budget Gate driver：

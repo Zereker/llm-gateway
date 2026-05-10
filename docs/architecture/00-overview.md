@@ -2,7 +2,7 @@
 
 ## 1. 项目目标
 
-ai-gateway 是一个统一的 LLM 推理请求入口，对上承接客户端流量（兼容多种主流协议），对下路由到多种推理后端：
+llm-gateway 是一个统一的 LLM 推理请求入口，对上承接客户端流量（兼容多种主流协议），对下路由到多种推理后端：
 
 - **闭源 SaaS**：OpenAI、Anthropic、Google Vertex、AWS Bedrock、Azure OpenAI、Mistral、DeepSeek …
 - **开源自部署**：vLLM、Ollama、Text Generation Inference、SGLang …

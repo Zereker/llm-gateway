@@ -43,7 +43,7 @@ const (
 //
 //	database:
 //	  driver: mysql
-//	  dsn: root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4
+//	  dsn: root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4
 //
 // 直接落到 *Config.Database 字段。DSN 必须带 `parseTime=true`，否则
 // time.Time 字段读取会出错。

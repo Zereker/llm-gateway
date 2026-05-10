@@ -1,10 +1,10 @@
 //go:build beam
 
-// Command usage_pipeline 示范用 Apache Beam Go SDK 消费 ai-gateway 的 usage outbox。
+// Command usage_pipeline 示范用 Apache Beam Go SDK 消费 llm-gateway 的 usage outbox。
 //
 // **DAG**：
 //
-//	Kafka(ai-gateway.usage)
+//	Kafka(llm-gateway.usage)
 //	   → JSON parse → UsageEvent
 //	   → Dedup by request_id (windowed)
 //	   → Enrich (join pricing snapshot from PG)
@@ -21,7 +21,7 @@
 //
 //	go run ./examples/beam/usage_pipeline.go \
 //	  --runner=direct --kafka.brokers=localhost:9092 \
-//	  --kafka.topic=ai-gateway.usage --output=./out
+//	  --kafka.topic=llm-gateway.usage --output=./out
 package main
 
 import (
@@ -39,7 +39,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/x/beamx"
 )
 
-// UsageEvent 是 ai-gateway outbox 写出的 JSON 结构（pkg/usage/outbox.go 定义；这里
+// UsageEvent 是 llm-gateway outbox 写出的 JSON 结构（pkg/usage/outbox.go 定义；这里
 // 只取后续聚合用得到的字段，松散反序列化）。
 type UsageEvent struct {
 	RequestID  string  `json:"request_id"`
@@ -72,8 +72,8 @@ func init() {
 var (
 	runner       = flag.String("runner", "direct", "Beam runner")
 	kafkaBrokers = flag.String("kafka.brokers", "localhost:9092", "Kafka brokers (csv)")
-	kafkaTopic   = flag.String("kafka.topic", "ai-gateway.usage", "Kafka topic")
-	output       = flag.String("output", "/tmp/ai-gateway-cost", "output prefix (textio sink)")
+	kafkaTopic   = flag.String("kafka.topic", "llm-gateway.usage", "Kafka topic")
+	output       = flag.String("output", "/tmp/llm-gateway-cost", "output prefix (textio sink)")
 )
 
 func main() {
@@ -88,7 +88,7 @@ func main() {
 	rawKV := kafkaio.Read(s,
 		map[string]interface{}{
 			"bootstrap.servers": *kafkaBrokers,
-			"group.id":          "ai-gateway-cost-pipeline",
+			"group.id":          "llm-gateway-cost-pipeline",
 			"auto.offset.reset": "latest",
 		},
 		[]string{*kafkaTopic},

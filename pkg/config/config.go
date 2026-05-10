@@ -69,7 +69,7 @@ type BudgetConfig struct {
 //	  otel — OpenTelemetry OTLP gRPC export
 //
 // otel 时 endpoint 是 collector 地址（如 "otel-collector:4317"）；
-// service_name 写到 OTel resource（默认 "ai-gateway"）。
+// service_name 写到 OTel resource（默认 "llm-gateway"）。
 type TraceConfig struct {
 	Driver      string `yaml:"driver"`
 	Endpoint    string `yaml:"endpoint"`
@@ -137,7 +137,7 @@ type FileOutboxSection struct {
 //	    async: true      # 用 AsyncKafkaOutbox（生产推荐）
 //	    buffer_size: 1024
 //	    max_retries: 3
-//	    dlq_topic: ai-gateway.usage.dlq
+//	    dlq_topic: llm-gateway.usage.dlq
 type KafkaOutboxSection struct {
 	infra.KafkaConfig `yaml:",inline"`
 	Topic             string        `yaml:"topic"`
@@ -221,7 +221,7 @@ func (c *Config) ApplyDefaults() {
 		c.Database.Driver = infra.DriverMySQL
 	}
 	if c.Database.DSN == "" {
-		c.Database.DSN = "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
+		c.Database.DSN = "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
 	}
 	if c.Redis.Addr == "" {
 		c.Redis.Addr = "localhost:6379"
@@ -230,7 +230,7 @@ func (c *Config) ApplyDefaults() {
 		c.Outbox.Driver = "file"
 	}
 	if c.Outbox.File.Path == "" {
-		c.Outbox.File.Path = "/tmp/ai-gateway-usage.log"
+		c.Outbox.File.Path = "/tmp/llm-gateway-usage.log"
 	}
 	// Outbox.Kafka 不给默认（driver=kafka 时必须显式配置）
 
@@ -271,6 +271,6 @@ func (c *Config) ApplyDefaults() {
 		c.Trace.Driver = "slog"
 	}
 	if c.Trace.ServiceName == "" {
-		c.Trace.ServiceName = "ai-gateway"
+		c.Trace.ServiceName = "llm-gateway"
 	}
 }

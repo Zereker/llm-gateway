@@ -50,7 +50,7 @@ func Moderation(deps ModerationDeps) gin.HandlerFunc {
 		}
 
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "ai-gateway.moderation")
+		ctx, end := startSpan(rc.Ctx, "llm-gateway.moderation")
 		defer end()
 		rc.Ctx = ctx
 

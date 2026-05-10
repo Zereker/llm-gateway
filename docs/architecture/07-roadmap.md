@@ -70,7 +70,7 @@
 | V6 | 不带 Authorization 请求返回 401 | 手测 |
 | V7 | panic 时返回 500 + log 含 stack | 单元测试 |
 | V8 | `curl /healthz` 返回 200；`curl /readyz` 在 ConfigStore 未就绪时返回 503 | 手测 |
-| V9 | `curl /metrics` 返回 Prometheus 格式（含 `ai_gateway.http.request_duration_ms` 等） | 手测 |
+| V9 | `curl /metrics` 返回 Prometheus 格式（含 `llm_gateway.http.request_duration_ms` 等） | 手测 |
 | V10 | 请求体超过限制 → 返回 413 Payload Too Large | 手测（`curl --data-binary @big.json`） |
 | V11 | 请求超时 → 返回 504 Gateway Timeout（不阻塞、不泄漏 goroutine）| 集成测试 |
 | V12 | SIGTERM 后 in-flight 请求完成、新请求拒绝、进程在 30s 内退出 | 手测 |

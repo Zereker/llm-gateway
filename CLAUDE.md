@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-ai-gateway 是一个 Go 实现的 LLM 推理网关：对外提供 OpenAI / Anthropic 兼容协议，对下路由到多家上游（OpenAI、Anthropic、Gemini、vLLM 等）。架构与契约的唯一真源在 `docs/architecture/00-overview.md` ~ `07-roadmap.md`，**改主链路代码前先读对应章节**。
+llm-gateway 是一个 Go 实现的 LLM 推理网关：对外提供 OpenAI / Anthropic 兼容协议，对下路由到多家上游（OpenAI、Anthropic、Gemini、vLLM 等）。架构与契约的唯一真源在 `docs/architecture/00-overview.md` ~ `07-roadmap.md`，**改主链路代码前先读对应章节**。
 
 ## 双进程拆分
 
@@ -30,7 +30,7 @@ make run-gateway        # 跑 gateway
 
 # 单测试用例（按包 / 按名称）
 go test -run TestAuth ./pkg/middleware
-MYSQL_DSN='root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4' go test ./pkg/repo
+MYSQL_DSN='root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4' go test ./pkg/repo
 ```
 
 `go test ./...` 是 CI 真相来源；Make 只是本地便捷。

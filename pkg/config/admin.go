@@ -68,6 +68,6 @@ func (c *AdminConfig) ApplyDefaults() {
 		c.Database.Driver = infra.DriverMySQL
 	}
 	if c.Database.DSN == "" {
-		c.Database.DSN = "root:@tcp(localhost:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
+		c.Database.DSN = "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
 	}
 }

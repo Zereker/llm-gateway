@@ -1,4 +1,4 @@
-// Command ai-gateway-admin 是控制平面：通过 HTTP CRUD 维护
+// Command llm-gateway-admin 是控制平面：通过 HTTP CRUD 维护
 // model_services / endpoints 表；schema 演进也归 admin（启动期 infra.Migrate）。
 //
 // 用法：
@@ -40,7 +40,7 @@ func main() {
 	flag.Parse()
 
 	if err := run(*configPath); err != nil {
-		slog.Error("ai-gateway-admin exit", "err", err)
+		slog.Error("llm-gateway-admin exit", "err", err)
 		os.Exit(1)
 	}
 }

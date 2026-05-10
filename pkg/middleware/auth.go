@@ -28,7 +28,7 @@ type AuthDeps struct {
 func Auth(deps AuthDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "ai-gateway.auth")
+		ctx, end := startSpan(rc.Ctx, "llm-gateway.auth")
 		defer end()
 		rc.Ctx = ctx
 

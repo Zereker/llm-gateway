@@ -1,6 +1,6 @@
-# ai-gateway Helm chart
+# llm-gateway Helm chart
 
-把 ai-gateway 部署到 Kubernetes 的参考 chart。包括：
+把 llm-gateway 部署到 Kubernetes 的参考 chart。包括：
 
 - gateway 多副本 + HPA
 - admin 单副本（只在内网走，不暴露 ingress）
@@ -12,21 +12,21 @@
 
 ## 镜像约定
 
-需要构造一个含 `ai-gateway` + `ai-gateway-admin` 双 binary + `envsubst`（gettext 包）的镜像。
+需要构造一个含 `llm-gateway` + `llm-gateway-admin` 双 binary + `envsubst`（gettext 包）的镜像。
 建议 Dockerfile：
 
 ```dockerfile
 FROM golang:1.22 AS builder
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/ai-gateway       ./cmd/gateway
-RUN CGO_ENABLED=0 go build -o /out/ai-gateway-admin ./cmd/admin
+RUN CGO_ENABLED=0 go build -o /out/llm-gateway       ./cmd/gateway
+RUN CGO_ENABLED=0 go build -o /out/llm-gateway-admin ./cmd/admin
 
 FROM gcr.io/distroless/base-debian12:nonroot
 # 注：distroless 没 envsubst；如果走 envsubst 模式要用 alpine 或单独 sidecar
 # 也可以考虑改 chart 让 gateway 直接读 env var（要求改代码 config loader）
-COPY --from=builder /out/ai-gateway       /usr/local/bin/
-COPY --from=builder /out/ai-gateway-admin /usr/local/bin/
+COPY --from=builder /out/llm-gateway       /usr/local/bin/
+COPY --from=builder /out/llm-gateway-admin /usr/local/bin/
 USER nonroot
 ```
 
@@ -36,13 +36,13 @@ USER nonroot
 FROM golang:1.22 AS builder
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/ai-gateway       ./cmd/gateway
-RUN CGO_ENABLED=0 go build -o /out/ai-gateway-admin ./cmd/admin
+RUN CGO_ENABLED=0 go build -o /out/llm-gateway       ./cmd/gateway
+RUN CGO_ENABLED=0 go build -o /out/llm-gateway-admin ./cmd/admin
 
 FROM alpine:3.20
 RUN apk add --no-cache gettext ca-certificates
-COPY --from=builder /out/ai-gateway       /usr/local/bin/
-COPY --from=builder /out/ai-gateway-admin /usr/local/bin/
+COPY --from=builder /out/llm-gateway       /usr/local/bin/
+COPY --from=builder /out/llm-gateway-admin /usr/local/bin/
 USER 65532:65532
 ```
 
@@ -52,7 +52,7 @@ USER 65532:65532
 # 1. 准备 secret 值（**不要 commit**）
 cat > my-values.yaml <<EOF
 secrets:
-  databaseDSN: "user:pwd@tcp(mysql:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
+  databaseDSN: "user:pwd@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
   redisAddr:   "redis:6379"
   redisPassword: "redis-pwd"
   dataKey:     "$(openssl rand -hex 32)"
@@ -60,17 +60,17 @@ secrets:
 EOF
 
 # 2. install
-helm install ai-gw ./examples/k8s/ai-gateway -f my-values.yaml
+helm install ai-gw ./examples/k8s/llm-gateway -f my-values.yaml
 
 # 3. 检查
-kubectl get pods -l app.kubernetes.io/name=ai-gateway
+kubectl get pods -l app.kubernetes.io/name=llm-gateway
 kubectl logs -l app.kubernetes.io/component=gateway --tail=50
 ```
 
 ## 升级 / 回滚
 
 ```bash
-helm upgrade ai-gw ./examples/k8s/ai-gateway -f my-values.yaml
+helm upgrade ai-gw ./examples/k8s/llm-gateway -f my-values.yaml
 helm rollback ai-gw 1
 ```
 
@@ -81,7 +81,7 @@ ConfigMap / Secret 改动会触发 deployment rolling restart（`checksum/config
 ```bash
 helm uninstall ai-gw
 # Note: secret 不会被自动删除（防止误删）
-kubectl delete secret ai-gw-ai-gateway-secrets
+kubectl delete secret ai-gw-llm-gateway-secrets
 ```
 
 ## 生产建议

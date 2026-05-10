@@ -45,7 +45,7 @@ func TestKafkaProducer_CloseNeverUsed(t *testing.T) {
 // 跑法：
 //
 //	docker run -p 9092:9092 apache/kafka:latest
-//	KAFKA_BROKERS=localhost:9092 KAFKA_TOPIC=ai-gateway-test go test ./pkg/infra/...
+//	KAFKA_BROKERS=localhost:9092 KAFKA_TOPIC=llm-gateway-test go test ./pkg/infra/...
 func TestKafkaProducer_WriteIntegration(t *testing.T) {
 	brokers := os.Getenv("KAFKA_BROKERS")
 	if brokers == "" {
@@ -53,7 +53,7 @@ func TestKafkaProducer_WriteIntegration(t *testing.T) {
 	}
 	topic := os.Getenv("KAFKA_TOPIC")
 	if topic == "" {
-		topic = "ai-gateway-test"
+		topic = "llm-gateway-test"
 	}
 
 	p, err := NewKafkaProducer(KafkaConfig{Brokers: strings.Split(brokers, ",")})

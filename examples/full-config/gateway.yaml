@@ -21,7 +21,7 @@ middleware:
 database:
   driver: mysql
   # 生产 DSN：开 multiStatements + connection pool（pkg/infra 默认 maxOpenConns=20）
-  dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/ai_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
+  dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/llm_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
 
 redis:
   # 生产配主备 / sentinel；本文件只示意单实例。M6 限流的 hard dependency。
@@ -39,11 +39,11 @@ outbox:
   driver: kafka
   kafka:
     brokers: ["kafka-1.internal:9092", "kafka-2.internal:9092", "kafka-3.internal:9092"]
-    topic: ai-gateway.usage
+    topic: llm-gateway.usage
   # 切回 file 的话注释 driver 改成 file 即可：
   # driver: file
   # file:
-  #   path: /var/log/ai-gateway/usage.log
+  #   path: /var/log/llm-gateway/usage.log
 
 budget:
   # 生产单实例 demo：用 inmemory + 默认余额 100 USD；要支持 admin 调拨改 SetBalance API。

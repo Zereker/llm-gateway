@@ -1,6 +1,6 @@
 apiVersion: v2
-name: ai-gateway
-description: ai-gateway data plane (gateway) + control plane (admin) Helm chart
+name: llm-gateway
+description: llm-gateway data plane (gateway) + control plane (admin) Helm chart
 type: application
 version: 0.1.0
 appVersion: "1.0.0"

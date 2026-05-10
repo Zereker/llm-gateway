@@ -1,4 +1,4 @@
-// Command ai-gateway 是数据面：接 LLM 客户端请求 → 跑 10-middleware 链 → 转发上游。
+// Command llm-gateway 是数据面：接 LLM 客户端请求 → 跑 10-middleware 链 → 转发上游。
 //
 // 用法（最小起步）：
 //
@@ -56,7 +56,7 @@ func main() {
 	slog.SetDefault(slog.New(trace.NewCtxHandler(slog.NewJSONHandler(os.Stderr, nil))))
 
 	if err := run(*configPath); err != nil {
-		slog.Error("ai-gateway exit", "err", err)
+		slog.Error("llm-gateway exit", "err", err)
 		os.Exit(1)
 	}
 }

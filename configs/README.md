@@ -12,7 +12,7 @@ configs/
 │   └── gateway.db          # sqlite 数据库（首次 boot 自动创建；空表）
 │
 └── prod/                   # 生产模板
-    └── gateway.yaml        # paths 指向 /etc/ai-gateway/...；database 推 postgres
+    └── gateway.yaml        # paths 指向 /etc/llm-gateway/...；database 推 postgres
 ```
 
 `gateway.db` 是 sqlite 文件，首次启动 gateway 时由 `infra.Migrate` 自动创建并建表
@@ -24,7 +24,7 @@ configs/
 **相对 yaml 文件位置**解析的（详见 `pkg/config.Load`）。
 `local/gateway.yaml` 写 `dsn: gateway.db` 就指向 `configs/local/gateway.db`，跟 CWD 无关。
 
-→ 整个 env 目录可整体复制到任何机器（如 `/etc/ai-gateway/`），结构不变就能用。
+→ 整个 env 目录可整体复制到任何机器（如 `/etc/llm-gateway/`），结构不变就能用。
 
 `":memory:"`、绝对路径、`postgres://...` URL 都不会被相对解析。
 
@@ -45,7 +45,7 @@ go run ./cmd/gateway -config ./configs/staging/gateway.yaml
 |------|------|
 | local dev | `apikeys.json` 用测试 key（如 `sk-test-xxx`），committable；DB 由 admin 录入测试 endpoint |
 | CI / staging | 部署脚本从 CI secret 渲染 apikeys.json；DB 用独立 staging 实例 |
-| prod | k8s Secret 挂载 apikeys.json 到 `/etc/ai-gateway/`；DB 用独立 postgres，凭证走 Vault / secret manager |
+| prod | k8s Secret 挂载 apikeys.json 到 `/etc/llm-gateway/`；DB 用独立 postgres，凭证走 Vault / secret manager |
 
 `prod/gateway.yaml` 默认 `database.driver: postgres` 并占位一个 DSN，部署时替换。
 endpoint 的 `api_key` 字段以明文存 DB（v0.1）；后续可加 KMS / sealed-secret 包裹。

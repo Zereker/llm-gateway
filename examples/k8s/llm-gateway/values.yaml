@@ -1,4 +1,4 @@
-# values.yaml — ai-gateway Helm chart 默认值
+# values.yaml — llm-gateway Helm chart 默认值
 #
 # 部署模式：gateway 多副本 + admin 单副本 + 共享 MySQL + Redis（外部依赖）。
 # 不内置 MySQL / Redis / Kafka——生产应该用 cloud managed（RDS / ElastiCache /
@@ -46,7 +46,7 @@ gateway:
     initialDelaySeconds: 10
     periodSeconds: 10
 
-  # gateway.yaml 通过 ConfigMap 注入到 /etc/ai-gateway/gateway.yaml
+  # gateway.yaml 通过 ConfigMap 注入到 /etc/llm-gateway/gateway.yaml
   config:
     server:
       addr: ":8080"
@@ -60,7 +60,7 @@ gateway:
       driver: kafka  # 生产推荐
       kafka:
         brokers: ["kafka:9092"]
-        topic: ai-gateway.usage
+        topic: llm-gateway.usage
     scheduler:
       filters: [cooldown, limit_read, weighted_random]
       max_attempts: 3
@@ -78,7 +78,7 @@ gateway:
     trace:
       driver: otel
       endpoint: otel-collector:4317
-      service_name: ai-gateway
+      service_name: llm-gateway
 
 # Admin 控制平面
 admin:
@@ -111,19 +111,19 @@ ingress:
     # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
     # nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
   hosts:
-    - host: ai-gateway.example.com
+    - host: llm-gateway.example.com
       paths:
         - path: /
           pathType: Prefix
   tls: []
-    # - secretName: ai-gateway-tls
-    #   hosts: [ai-gateway.example.com]
+    # - secretName: llm-gateway-tls
+    #   hosts: [llm-gateway.example.com]
 
 # Secret 字段 — 部署前必须提供值（用 --set 或单独 secret yaml 覆盖）
 # **不要把真值 commit 进本文件**
 secrets:
-  # MySQL DSN：root:pwd@tcp(mysql:3306)/ai_gateway?...
-  databaseDSN: "root:CHANGEME@tcp(mysql:3306)/ai_gateway?parseTime=true&charset=utf8mb4"
+  # MySQL DSN：root:pwd@tcp(mysql:3306)/llm_gateway?...
+  databaseDSN: "root:CHANGEME@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
   # Redis password（空 = 无密码）
   redisPassword: ""
   redisAddr: "redis:6379"

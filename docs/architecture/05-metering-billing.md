@@ -348,10 +348,10 @@ type LocalLog interface {
 # 部署侧示例（Filebeat）
 filebeat.inputs:
   - type: filestream
-    paths: ["/var/log/ai-gateway/usage-*.log.gz"]
+    paths: ["/var/log/llm-gateway/usage-*.log.gz"]
     parsers: [{ ndjson: {} }]
 output.s3:    # 或任何 S3 兼容对象存储
-  bucket: "ai-gateway-usage-archive"
+  bucket: "llm-gateway-usage-archive"
   prefix: "%{+yyyy/MM/dd/HH}/"
 ```
 

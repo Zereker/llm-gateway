@@ -44,7 +44,7 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 
 		// 注意：本 span 在 c.Next() 之后开；只覆盖"事后聚合 + outbox publish"这一段，
 		// 不包括上游 middleware（它们各自有自己的 span）。
-		ctx, end := startSpan(rc.Ctx, "ai-gateway.tracing")
+		ctx, end := startSpan(rc.Ctx, "llm-gateway.tracing")
 		defer end()
 		rc.Ctx = ctx
 
