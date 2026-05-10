@@ -10,7 +10,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // tokenProvider Gemini 的认证抽象——三种凭证形态：

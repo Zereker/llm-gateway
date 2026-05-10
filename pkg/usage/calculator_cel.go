@@ -8,7 +8,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // CELCalculator 用 google/cel-go 求 spec.Expression 表达式得到 cost。

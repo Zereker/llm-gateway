@@ -8,7 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // ModelServiceStore 用 gorm 写 model_services 表。

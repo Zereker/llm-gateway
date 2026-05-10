@@ -3,7 +3,7 @@ package middleware
 import (
 	"context"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // AlwaysPassGate 是 BudgetGate 的零依赖默认实现：永远返回 BudgetActive。

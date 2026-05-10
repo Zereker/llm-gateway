@@ -6,9 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/baggage"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/metric"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/metric"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // AuthDeps M2 Auth middleware 的依赖。

@@ -143,7 +143,7 @@ package middleware
 import (
     "context"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type Checker interface {
@@ -448,7 +448,7 @@ package middleware
 import (
     "context"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type Moderator interface {
@@ -598,23 +598,23 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/middleware/apikey"
-    "github.com/zereker-labs/ai-gateway/pkg/middleware/alwayspass"
-    "github.com/zereker-labs/ai-gateway/pkg/cache/memory"
-    "github.com/zereker-labs/ai-gateway/pkg/store/file"
-    "github.com/zereker-labs/ai-gateway/pkg/usage/file"
-    "github.com/zereker-labs/ai-gateway/pkg/middleware"
-    "github.com/zereker-labs/ai-gateway/pkg/trace/slog"
-    "github.com/zereker-labs/ai-gateway/pkg/middleware"
+    "github.com/zereker/llm-gateway/pkg/middleware/apikey"
+    "github.com/zereker/llm-gateway/pkg/middleware/alwayspass"
+    "github.com/zereker/llm-gateway/pkg/cache/memory"
+    "github.com/zereker/llm-gateway/pkg/store/file"
+    "github.com/zereker/llm-gateway/pkg/usage/file"
+    "github.com/zereker/llm-gateway/pkg/middleware"
+    "github.com/zereker/llm-gateway/pkg/trace/slog"
+    "github.com/zereker/llm-gateway/pkg/middleware"
 
     // 注册 Adapter
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/openai"
-    _ "github.com/zereker-labs/ai-gateway/pkg/adapter/anthropic"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/openai"
+    _ "github.com/zereker/llm-gateway/pkg/adapter/anthropic"
     // ...
 
     // 注册 TokenExtractor
-    _ "github.com/zereker-labs/ai-gateway/pkg/usage/extractor/openai_compat"
-    _ "github.com/zereker-labs/ai-gateway/pkg/usage/extractor/anthropic"
+    _ "github.com/zereker/llm-gateway/pkg/usage/extractor/openai_compat"
+    _ "github.com/zereker/llm-gateway/pkg/usage/extractor/anthropic"
 )
 
 func main() {

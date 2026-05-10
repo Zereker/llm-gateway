@@ -8,7 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // TenantStore 用 gorm 写 tenants 表（业务线 / pin 元信息 + quota_policy 引用）。

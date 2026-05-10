@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // validateRoutingURL 拒绝指向危险目标的 endpoint URL（防 SSRF + 配置事故）。

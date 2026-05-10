@@ -14,7 +14,7 @@ import (
 //
 // instrumentation name 用 `pkg/middleware`——OTel 推荐用代码包路径作 instrumentation
 // 名，方便 collector 端按 lib 维度 filter。
-var middlewareTracer = otel.Tracer("github.com/zereker-labs/ai-gateway/pkg/middleware")
+var middlewareTracer = otel.Tracer("github.com/zereker/llm-gateway/pkg/middleware")
 
 // startSpan 开启一个 OTel span，返回 (新 ctx, end 函数)。
 //

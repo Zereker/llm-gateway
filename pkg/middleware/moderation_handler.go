@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/translator"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
 // =============================================================================

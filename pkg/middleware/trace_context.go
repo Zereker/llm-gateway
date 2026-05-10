@@ -14,7 +14,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // TraceContext 是 M1：构造 *domain.RequestContext，挂到 *gin.Context。

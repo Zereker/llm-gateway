@@ -15,8 +15,8 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 const testToken = "test-admin-token"

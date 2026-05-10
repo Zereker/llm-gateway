@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/metric"
+	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
 // AsyncKafkaOutbox 生产级 Kafka outbox：异步 + 重试 + DLQ + metric。

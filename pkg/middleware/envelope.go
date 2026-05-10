@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // WithSourceProtocol 把客户端协议钉在路由注册期。

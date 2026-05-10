@@ -23,27 +23,27 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/zereker-labs/ai-gateway/pkg/config"
-	"github.com/zereker-labs/ai-gateway/pkg/middleware"
-	"github.com/zereker-labs/ai-gateway/pkg/ratelimit"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
-	"github.com/zereker-labs/ai-gateway/pkg/router"
-	"github.com/zereker-labs/ai-gateway/pkg/schedule"
-	"github.com/zereker-labs/ai-gateway/pkg/server"
-	"github.com/zereker-labs/ai-gateway/pkg/trace"
-	"github.com/zereker-labs/ai-gateway/pkg/upstream"
-	"github.com/zereker-labs/ai-gateway/pkg/usage"
+	"github.com/zereker/llm-gateway/pkg/config"
+	"github.com/zereker/llm-gateway/pkg/middleware"
+	"github.com/zereker/llm-gateway/pkg/ratelimit"
+	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/router"
+	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/server"
+	"github.com/zereker/llm-gateway/pkg/trace"
+	"github.com/zereker/llm-gateway/pkg/upstream"
+	"github.com/zereker/llm-gateway/pkg/usage"
 
 	// adapter blank imports：init() 自动注册到 adapter registry
-	_ "github.com/zereker-labs/ai-gateway/pkg/adapter/anthropic"
-	_ "github.com/zereker-labs/ai-gateway/pkg/adapter/gemini"
-	_ "github.com/zereker-labs/ai-gateway/pkg/adapter/openai"
+	_ "github.com/zereker/llm-gateway/pkg/adapter/anthropic"
+	_ "github.com/zereker/llm-gateway/pkg/adapter/gemini"
+	_ "github.com/zereker/llm-gateway/pkg/adapter/openai"
 
 	// translator blank imports：init() 自动注册到 translator registry
-	_ "github.com/zereker-labs/ai-gateway/pkg/translator/anthropic_openai"
-	_ "github.com/zereker-labs/ai-gateway/pkg/translator/identity"
-	_ "github.com/zereker-labs/ai-gateway/pkg/translator/openai_anthropic"
-	_ "github.com/zereker-labs/ai-gateway/pkg/translator/openai_gemini"
+	_ "github.com/zereker/llm-gateway/pkg/translator/anthropic_openai"
+	_ "github.com/zereker/llm-gateway/pkg/translator/identity"
+	_ "github.com/zereker/llm-gateway/pkg/translator/openai_anthropic"
+	_ "github.com/zereker/llm-gateway/pkg/translator/openai_gemini"
 )
 
 func main() {

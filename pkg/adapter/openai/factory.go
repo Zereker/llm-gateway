@@ -3,7 +3,7 @@
 // init() 注册到 adapter registry，vendor 名 "openai"。
 // 想接入 OpenAI 时在 cmd/gateway/main.go 加 blank import：
 //
-//	import _ "github.com/zereker-labs/ai-gateway/pkg/adapter/openai"
+//	import _ "github.com/zereker/llm-gateway/pkg/adapter/openai"
 //
 // 用作 OpenAI-compatible 上游（Azure / DeepSeek / vLLM-OpenAI / Ollama）也直接复用本 Adapter，
 // 只要 Endpoint.URL 指向各自的 /v1/chat/completions 路径。
@@ -12,8 +12,8 @@ package openai
 import (
 	"context"
 
-	"github.com/zereker-labs/ai-gateway/pkg/adapter"
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Factory 实现 adapter.Factory。

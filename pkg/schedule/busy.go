@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // BusyMetricProvider 反查 endpoint 当前 busy score（0.0-1.0；越大越忙）。

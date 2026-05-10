@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/middleware"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
-	"github.com/zereker-labs/ai-gateway/pkg/schedule"
-	"github.com/zereker-labs/ai-gateway/pkg/upstream"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/middleware"
+	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/upstream"
 )
 
 // stubIdentity 永远拒（router 这层只关心路由 + middleware 链是否注册，

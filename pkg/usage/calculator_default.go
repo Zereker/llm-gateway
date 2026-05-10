@@ -1,7 +1,7 @@
 package usage
 
 import (
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // DefaultCalculator 默认 PriceCalculator 实现：rates × usage 各维度 × ratios。

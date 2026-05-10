@@ -8,10 +8,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
-	"github.com/zereker-labs/ai-gateway/pkg/schedule"
-	"github.com/zereker-labs/ai-gateway/pkg/upstream"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/upstream"
 )
 
 // ScheduleDeps M7 Schedule middleware 的依赖。

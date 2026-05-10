@@ -6,9 +6,9 @@ import (
 	"io"
 	"testing"
 
-	"github.com/zereker-labs/ai-gateway/pkg/adapter"
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // **v0.5 slim 后**：openai adapter 只剩 BuildRequest + Close。

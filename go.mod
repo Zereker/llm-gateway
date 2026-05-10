@@ -1,4 +1,4 @@
-module github.com/zereker-labs/ai-gateway
+module github.com/zereker/llm-gateway
 
 go 1.25.7
 

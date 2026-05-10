@@ -1,6 +1,6 @@
 package anthropic
 
-import "github.com/zereker-labs/ai-gateway/pkg/adapter"
+import "github.com/zereker/llm-gateway/pkg/adapter"
 
 // ParamSpec 实现 adapter.ParamSpecProvider，声明 Anthropic Messages API 字段约束。
 //

@@ -104,12 +104,12 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/adapter"
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/ratelimit"
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/schedule"
-    "github.com/zereker-labs/ai-gateway/pkg/usage"
+    "github.com/zereker/llm-gateway/pkg/adapter"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/ratelimit"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/schedule"
+    "github.com/zereker/llm-gateway/pkg/usage"
 )
 
 // Context 是一次 HTTP 请求的全链路可变状态。
@@ -319,7 +319,7 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 func TraceContext() gin.HandlerFunc {
@@ -360,9 +360,9 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/metric"
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/metric"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 func Recover() gin.HandlerFunc {
@@ -407,10 +407,10 @@ package middleware
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/middleware" // 见 [06]
-    "github.com/zereker-labs/ai-gateway/pkg/metric"
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/middleware" // 见 [06]
+    "github.com/zereker/llm-gateway/pkg/metric"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type AuthDeps struct {
@@ -465,7 +465,7 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type EnvelopeDeps struct {
@@ -522,10 +522,10 @@ package middleware
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    bud "github.com/zereker-labs/ai-gateway/pkg/middleware" // 见 [06]：抽象接口
-    "github.com/zereker-labs/ai-gateway/pkg/metric"
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    bud "github.com/zereker/llm-gateway/pkg/middleware" // 见 [06]：抽象接口
+    "github.com/zereker/llm-gateway/pkg/metric"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type BudgetDeps struct {
@@ -581,7 +581,7 @@ package middleware
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type ModelServiceDeps struct {
@@ -628,9 +628,9 @@ package middleware
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/ratelimit"
-    "github.com/zereker-labs/ai-gateway/pkg/metric"
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/ratelimit"
+    "github.com/zereker/llm-gateway/pkg/metric"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type LimitDeps struct {
@@ -674,8 +674,8 @@ package middleware
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/middleware" // 见 [06]
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/middleware" // 见 [06]
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type ModerationDeps struct {
@@ -717,9 +717,9 @@ package middleware
 import (
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/metric"
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/schedule"
+    "github.com/zereker/llm-gateway/pkg/metric"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/schedule"
 )
 
 type ScheduleDeps struct {
@@ -756,10 +756,10 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/trace" // 见 [06]
-    "github.com/zereker-labs/ai-gateway/pkg/metric"
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
-    "github.com/zereker-labs/ai-gateway/pkg/usage"
+    "github.com/zereker/llm-gateway/pkg/trace" // 见 [06]
+    "github.com/zereker/llm-gateway/pkg/metric"
+    "github.com/zereker/llm-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/usage"
 )
 
 type TracingDeps struct {

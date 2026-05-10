@@ -1,6 +1,6 @@
 package adapter
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 // ModelCapabilities 模型对外暴露的能力（可选实现，本期不强制）。
 type ModelCapabilities struct {

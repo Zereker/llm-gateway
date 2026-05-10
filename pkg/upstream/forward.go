@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
-	"github.com/zereker-labs/ai-gateway/pkg/translator"
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
 // chunkBufPool 复用 stream forward 用的 4KiB read buffer。

@@ -10,9 +10,9 @@ keywords:
   - gateway
   - openai
   - anthropic
-home: https://github.com/zereker-labs/ai-gateway
+home: https://github.com/zereker/llm-gateway
 sources:
-  - https://github.com/zereker-labs/ai-gateway
+  - https://github.com/zereker/llm-gateway
 maintainers:
   - name: zereker
     email: zereker.h@gmail.com

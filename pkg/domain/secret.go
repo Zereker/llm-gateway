@@ -1,6 +1,6 @@
 package domain
 
-import "github.com/zereker-labs/ai-gateway/pkg/repo"
+import "github.com/zereker/llm-gateway/pkg/repo"
 
 // Secret 是 repo.Secret 的别名（真实定义在 pkg/repo）。
 //

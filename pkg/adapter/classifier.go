@@ -1,6 +1,6 @@
 package adapter
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 // Classifier 把上游 HTTP 状态 + body 映射到 domain.AdapterError。
 //

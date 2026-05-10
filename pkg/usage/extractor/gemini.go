@@ -3,7 +3,7 @@ package extractor
 import (
 	"encoding/json"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // NewGemini 构造一个 Gemini 协议 usage Session。

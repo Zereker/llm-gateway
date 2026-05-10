@@ -131,7 +131,7 @@ package schedule
 import (
     "context"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Scheduler 是调度链路的入口；输入候选池 + 上下文，输出一个 endpoint。
@@ -314,7 +314,7 @@ import (
 
     "github.com/gin-gonic/gin"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // RetryExecutor 是 M7 Schedule 的执行体：选 endpoint → 调 Adapter → 失败决定 retry / fallback。
@@ -429,7 +429,7 @@ import (
     "context"
     "time"
 
-    "github.com/zereker-labs/ai-gateway/pkg/domain"
+    "github.com/zereker/llm-gateway/pkg/domain"
 )
 
 type CooldownManager interface {
@@ -573,7 +573,7 @@ var DefaultProfile = Profile{
 // pkg/schedule/adapter_factory.go
 package schedule
 
-import "github.com/zereker-labs/ai-gateway/pkg/adapter"
+import "github.com/zereker/llm-gateway/pkg/adapter"
 
 // AdapterFactory 抽象"按 Vendor 取出 Adapter 工厂"。
 // 默认实现是 adapter.Get；测试可注入 mock。

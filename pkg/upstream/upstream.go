@@ -31,9 +31,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/zereker-labs/ai-gateway/pkg/adapter"
-	"github.com/zereker-labs/ai-gateway/pkg/schedule"
-	"github.com/zereker-labs/ai-gateway/pkg/translator"
+	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
 // FactoryLookup 抽象 vendor → adapter.Factory 查询。

@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
 
-	"github.com/zereker-labs/ai-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // registerPricingRoutes 挂在 /admin/v1/modelservices/:model 子路径下：

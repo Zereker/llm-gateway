@@ -30,7 +30,7 @@
 // **并发**：单 Session 实例**不**保证 goroutine-safe；M7 在同一 handler goroutine 内顺序调用。
 package extractor
 
-import "github.com/zereker-labs/ai-gateway/pkg/domain"
+import "github.com/zereker/llm-gateway/pkg/domain"
 
 // Session 一次请求的 usage 提取会话。
 //

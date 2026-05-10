@@ -34,7 +34,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/infra"
 )
 
 // Server 持有 closer 链 + 日志器；不强制单例，每个 binary 各自 New 一个。

@@ -24,7 +24,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/zereker-labs/ai-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/infra"
 )
 
 // Config 是 gateway.yaml 的根。

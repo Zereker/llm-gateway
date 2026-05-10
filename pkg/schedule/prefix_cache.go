@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/zereker-labs/ai-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // PrefixCacheFilter 把同 prefix 的请求路由到同一个 endpoint，让 self-hosted 模型（vLLM /

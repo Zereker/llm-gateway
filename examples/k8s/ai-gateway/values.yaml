@@ -5,7 +5,7 @@
 # MSK）或独立 Helm chart 部署，避免本 chart 关心 stateful infra。
 
 image:
-  repository: ghcr.io/zereker-labs/ai-gateway
+  repository: ghcr.io/zereker/llm-gateway
   tag: "latest"
   pullPolicy: IfNotPresent
 
