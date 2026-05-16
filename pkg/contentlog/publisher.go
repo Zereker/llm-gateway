@@ -69,6 +69,50 @@ type NoopPublisher struct{}
 func (NoopPublisher) Publish(_ context.Context, _ *Record) error { return nil }
 
 // =============================================================================
+// KafkaPublisher：发到 Kafka topic（docs/08 §6 默认 topic llm-gateway.content）
+// =============================================================================
+
+// KafkaWriter Kafka producer 抽象（与 pkg/usage.KafkaWriter 同语义；避免跨包依赖）。
+type KafkaWriter interface {
+	Write(ctx context.Context, topic string, key, value []byte) error
+	Close() error
+}
+
+// KafkaPublisher 把 Record 序列化成 JSON 发到 Kafka topic。
+//
+// **partition key**：account_id 优先；缺失则 request_id。
+type KafkaPublisher struct {
+	w     KafkaWriter
+	topic string
+}
+
+func NewKafkaPublisher(w KafkaWriter, topic string) *KafkaPublisher {
+	return &KafkaPublisher{w: w, topic: topic}
+}
+
+func (p *KafkaPublisher) Publish(ctx context.Context, r *Record) error {
+	if p.topic == "" {
+		return fmt.Errorf("contentlog: KafkaPublisher: empty topic")
+	}
+	buf, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	key := r.AccountID
+	if key == "" {
+		key = r.RequestID
+	}
+	return p.w.Write(ctx, p.topic, []byte(key), buf)
+}
+
+func (p *KafkaPublisher) Close() error {
+	if p.w == nil {
+		return nil
+	}
+	return p.w.Close()
+}
+
+// =============================================================================
 // 占位防 unused import
 // =============================================================================
 var _ = bytes.NewBuffer

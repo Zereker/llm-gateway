@@ -37,13 +37,14 @@ data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 outbox:
   # M10 Tracing 输出 usage 事件去哪：file 或 kafka。
-  # 本地默认 file（JSONL 追加），生产建议 kafka。
-  driver: file
-  file:
-    path: /tmp/llm-gateway-usage.log
-  # kafka:
-  #   brokers: ["localhost:9092"]
-  #   topic: llm-gateway.usage
+  driver: kafka
+  kafka:
+    brokers: ["localhost:9092"]
+    topic: llm-gateway.usage
+    async: true
+    buffer_size: 1024
+    max_retries: 3
+    dlq_topic: llm-gateway.usage.dlq
 
 budget:
   # M4 Budget Gate driver：
@@ -77,3 +78,13 @@ scheduler:
 
   # 全局尝试上限；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
   max_attempts: 3
+
+content_log:
+  # 内容记录通道（docs/05 §2 + docs/08 §6）
+  driver: kafka
+  sample_rate: 1.0       # e2e 测试全采
+  buffer_size: 1024
+  backpressure: drop_oldest
+  kafka:
+    brokers: ["localhost:9092"]
+    topic: llm-gateway.content
