@@ -9,25 +9,14 @@ import (
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
-// LimitReadFilter 用 ratelimit.Store 检查每个候选的 endpoint quota；超限的排除。
+// LimitReadFilter 用 SnapshotBatch 做**只读**过滤（docs/04 §5 §10）：
+// 检查每个候选 endpoint 的 quota 是否还有余量；超限的剔除。
 //
-// 跟 user 维度的 M6 RateLimit 区别：
-//   - M6：用户视角"这个用户该请求吗"；任一桶超限 → 429（用户违规）
-//   - 此 filter：endpoint 视角"这个 endpoint 还能接吗"；超限 → 排除候选；全排完 → 503（容量问题）
+// **关键约束**：filter 阶段**不**做 ReserveBatch（不能在所有候选 endpoint 上扣减）；
+// 真正的 reserve 在 M7 选中 endpoint 之后单独做（避免不被选中的 endpoint 被多扣）。
 //
-// **bucket 命名**：`rl:endpoint:<id>:<dim>`（rpm/tpm/rps）
-//
-// **TPM 估值**：req.TPMCost 来自 M6 EnsureTPMEstimate（input chars/4 + max_tokens）；
-// 跟 M6 user 维度共用同一估值，调账时由 M10 一起 AdjustBatch。
-//
-// **TPM 调账 keys**：filter 在 reserve 成功后，把命中的 TPM bucket key 追加到
-// rc.RateLimit.TPMBucketKeys（M7 driver 调用时传过来；这里通过 callback）。
-//
-// 不在 filter 接口里塞 callback 太丑——简化做法：filter 只做检查；调账 keys 收集
-// 由 M7 在 Pick 之后基于选中 ep 自己算。
-//
-// **Redis 错误处理**：fail-open（让请求通过）。endpoint quota 不是用户违规，
-// Redis 临时故障时容忍多打几个请求；准确性 vs 可用性的 trade-off。
+// **Fail-open on Redis error**（docs/04 §8）：endpoint quota read-only filter 不能
+// 因 Redis 故障变成硬依赖；故障时保留所有候选，让请求继续 try。
 type LimitReadFilter struct {
 	store ratelimit.Store
 }
@@ -43,46 +32,52 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 		return candidates
 	}
 
+	// 把所有候选的 RPM/RPS bucket 平铺，一次 SnapshotBatch 全部查
+	type slot struct{ epIdx int }
+	var slots []slot
+	var allBuckets []ratelimit.Bucket
+	for i, ep := range candidates {
+		bs := buildEndpointReserveBuckets(ep, 1)
+		for _, b := range bs {
+			allBuckets = append(allBuckets, b)
+			slots = append(slots, slot{epIdx: i})
+		}
+	}
+	if len(allBuckets) == 0 {
+		// 候选 endpoint 都没配 quota → 全保留
+		return candidates
+	}
+
+	states, err := f.store.SnapshotBatch(ctx, allBuckets)
+	if err != nil {
+		// fail-open：Redis 错时保留所有候选
+		return candidates
+	}
+
+	// 标记超限的 ep
+	exhausted := make(map[int]bool, len(candidates))
+	for i, st := range states {
+		if st.Used+1 > st.Limit { // 已用满
+			exhausted[slots[i].epIdx] = true
+		}
+	}
 	out := make([]*domain.Endpoint, 0, len(candidates))
-	for _, ep := range candidates {
-		buckets := buildEndpointBuckets(ep, req.TPMCost)
-		if len(buckets) == 0 {
-			// endpoint 没配 quota → 不限，直接保留
-			out = append(out, ep)
-			continue
-		}
-		allowed, _, err := f.store.ReserveBatch(ctx, buckets)
-		if err != nil {
-			// fail-open：Redis 错时保留候选
-			out = append(out, ep)
-			continue
-		}
-		if allowed {
+	for i, ep := range candidates {
+		if !exhausted[i] {
 			out = append(out, ep)
 		}
-		// 超限就跳；不加进 out
 	}
 	return out
 }
 
-// EndpointTPMBucketKeys 给 M7 用：选中某个 endpoint 后，拿它的 TPM bucket keys
-// 追加到 rc.RateLimit.TPMBucketKeys（M10 commit 时一起 adjust）。
-//
-// 没在 LimitReadFilter.Apply 里直接写 rc 是因为 filter 不应有 rc 副作用——
-// 选中 ep 后由 M7 driver 显式调本函数。
-func EndpointTPMBucketKeys(ep *domain.Endpoint) []string {
-	q := ep.Quota
-	if q.TPM == nil || *q.TPM == 0 {
-		return nil
-	}
-	return []string{fmt.Sprintf("rl:endpoint:%d:tpm", ep.ID)}
-}
+// =============================================================================
+// Endpoint bucket 构造
+// =============================================================================
 
-// buildEndpointBuckets 把 ep.Quota 展开成 ratelimit.Bucket 列表。
+// buildEndpointReserveBuckets 把 endpoint quota 展开成 RPM + RPS bucket（前扣用）。
 //
-// 跟 user 维度不同：endpoint 没有 per_model 概念（endpoint 已经是 model 维度的实体）；
-// 只有一组 quota。
-func buildEndpointBuckets(ep *domain.Endpoint, tpmCost uint32) []ratelimit.Bucket {
+// **不**包含 TPM——TPM 走 ChargeBatch 后扣（docs/04 §10）。
+func buildEndpointReserveBuckets(ep *domain.Endpoint, rpsCost uint32) []ratelimit.Bucket {
 	var buckets []ratelimit.Bucket
 	q := ep.Quota
 	if q.RPM != nil && *q.RPM > 0 {
@@ -90,14 +85,6 @@ func buildEndpointBuckets(ep *domain.Endpoint, tpmCost uint32) []ratelimit.Bucke
 			Key:    fmt.Sprintf("rl:endpoint:%d:rpm", ep.ID),
 			Limit:  *q.RPM,
 			Cost:   1,
-			Window: time.Minute,
-		})
-	}
-	if q.TPM != nil && *q.TPM > 0 {
-		buckets = append(buckets, ratelimit.Bucket{
-			Key:    fmt.Sprintf("rl:endpoint:%d:tpm", ep.ID),
-			Limit:  *q.TPM,
-			Cost:   tpmCost,
 			Window: time.Minute,
 		})
 	}
@@ -110,6 +97,36 @@ func buildEndpointBuckets(ep *domain.Endpoint, tpmCost uint32) []ratelimit.Bucke
 		})
 	}
 	return buckets
+}
+
+// EndpointReserveBuckets 给 M7 用：选中 endpoint 后构造 RPM/RPS reserve buckets（docs/04 §10）。
+func EndpointReserveBuckets(ep *domain.Endpoint) []ratelimit.Bucket {
+	return buildEndpointReserveBuckets(ep, 1)
+}
+
+// EndpointTPMChargeBucket 给 M7 用：成功响应后 charge endpoint TPM bucket。
+//
+// cost 由调用方传入 rc.Usage.Total。endpoint 没配 TPM 时返 nil。
+func EndpointTPMChargeBucket(ep *domain.Endpoint, cost uint32) *ratelimit.Bucket {
+	q := ep.Quota
+	if q.TPM == nil || *q.TPM == 0 || cost == 0 {
+		return nil
+	}
+	return &ratelimit.Bucket{
+		Key:    fmt.Sprintf("rl:endpoint:%d:tpm", ep.ID),
+		Limit:  *q.TPM,
+		Cost:   cost,
+		Window: time.Minute,
+	}
+}
+
+// EndpointTPMBucketKeys 已废弃：旧 M6 用，新模型 endpoint TPM 在 M7/M10 post-side 直接 ChargeBatch。
+// 保留 stub 兼容旧 caller。
+func EndpointTPMBucketKeys(ep *domain.Endpoint) []string {
+	if ep == nil || ep.Quota.TPM == nil || *ep.Quota.TPM == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("rl:endpoint:%d:tpm", ep.ID)}
 }
 
 // 编译期断言。

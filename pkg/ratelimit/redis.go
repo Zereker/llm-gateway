@@ -9,30 +9,31 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisStore Store 的唯一实现，多实例共享计数器。
+// RedisStore Store 的唯一实现，多实例共享计数器（docs/04 §5 §7）。
 //
 // 三段 Lua 脚本：
-//   - reserveBatchLua：sliding window counter + 多 key 原子检查 + 消耗
-//   - adjustBatchLua：M10 调账（INCRBY / DECRBY 但 floor at 0）
-//   - snapshotLua：读单 bucket 当前 effective count
-//
-// 所有 Lua 都用 Cluster-friendly 写法（KEYS[*] 显式声明，避免 redis cluster 跨 slot
-// 报错；同主账号的多 bucket 应该 hashtag 化保证落同一 slot——见 keyHashTag）。
+//   - reserveBatchLua  : sliding window counter + 多 key 原子检查 + 消耗（all-or-nothing）
+//   - chargeBatchLua   : 后扣写真实 cost；过 Limit 返 Overflow 标记
+//   - snapshotBatchLua : 批量读多 bucket 当前 effective + reset_at；只读
 type RedisStore struct {
-	rdb           *redis.Client
-	scriptReserve *redis.Script
-	scriptAdjust  *redis.Script
-	scriptSnap    *redis.Script
+	rdb            *redis.Client
+	scriptReserve  *redis.Script
+	scriptCharge   *redis.Script
+	scriptSnapshot *redis.Script
 }
 
 func NewRedisStore(rdb *redis.Client) *RedisStore {
 	return &RedisStore{
-		rdb:           rdb,
-		scriptReserve: redis.NewScript(reserveBatchLua),
-		scriptAdjust:  redis.NewScript(adjustBatchLua),
-		scriptSnap:    redis.NewScript(snapshotLua),
+		rdb:            rdb,
+		scriptReserve:  redis.NewScript(reserveBatchLua),
+		scriptCharge:   redis.NewScript(chargeBatchLua),
+		scriptSnapshot: redis.NewScript(snapshotBatchLua),
 	}
 }
+
+// =============================================================================
+// Lua 脚本
+// =============================================================================
 
 // Sliding window counter:
 //
@@ -42,9 +43,6 @@ func NewRedisStore(rdb *redis.Client) *RedisStore {
 //	<key>:<prevStart>  上一窗口的计数
 //
 // effective_now = current_count + previous_count × ((window - elapsed) / window)
-//
-// elapsed = 当前时刻距 curStart 的秒数；prevWeight 随 elapsed 增大而线性减少，
-// 模拟"上窗口的影响逐渐淡出"。
 //
 // **多 key 原子**：先 phase 1 检查所有 buckets，全过才 phase 2 INCRBY。
 //
@@ -60,7 +58,7 @@ local n = #KEYS
 local checks = {}
 
 for i = 1, n do
-    local base = 1 + (i - 1) * 3 + 1  -- ARGV index of this bucket's window
+    local base = 1 + (i - 1) * 3 + 1
     local window = tonumber(ARGV[base])
     local limit = tonumber(ARGV[base + 1])
     local cost = tonumber(ARGV[base + 2])
@@ -81,7 +79,6 @@ for i = 1, n do
     checks[i] = curStart
 end
 
--- 全部检查通过；mutate
 for i = 1, n do
     local base = 1 + (i - 1) * 3 + 1
     local window = tonumber(ARGV[base])
@@ -94,57 +91,79 @@ end
 return {1, 0, 0, 0, 0}
 `
 
-// AdjustBatch Lua：每个 bucket 加 delta（可正可负）。
+// ChargeBatch Lua：每个 bucket 写 cost；不拒绝，但返 Overflow 标记。
 //
-// delta>0: INCRBY 直接加
-// delta<0: GET → max(0, cur+delta) → SET（floor at 0，避免负计数）
+// **跟 ReserveBatch 区别**（docs/04 §5 §7）：
+//   - reserve 是原子 all-or-nothing；charge 总是写入（除非 Redis 故障）
+//   - reserve 拒绝时本次请求失败；charge 写入后超限只标 Overflow 给 metric
 //
-// 注意：调账只动 current 窗口；上一窗口已经在自然衰减，调账意义不大。
+// **不读 prev 窗口**：charge 是事后记账，不需要 sliding 校验——直接 INCRBY 当前
+// 窗口。effective 由 SnapshotBatch / observability 读出来时再算 prev 衰减。
 //
-// ARGV: now, then per-bucket {window, delta}
-const adjustBatchLua = `
+// ARGV: now, then per-bucket {window, limit, cost}
+// 返回 {used_after, limit, overflow} × N （平铺）
+const chargeBatchLua = `
 local now = tonumber(ARGV[1])
 local n = #KEYS
+local out = {}
+
+for i = 1, n do
+    local base = 1 + (i - 1) * 3 + 1
+    local window = tonumber(ARGV[base])
+    local limit = tonumber(ARGV[base + 1])
+    local cost = tonumber(ARGV[base + 2])
+
+    local curStart = math.floor(now / window) * window
+    local key = KEYS[i] .. ':' .. curStart
+    local used = 0
+    if cost > 0 then
+        used = redis.call('INCRBY', key, cost)
+        redis.call('EXPIRE', key, window * 2)
+    else
+        used = tonumber(redis.call('GET', key) or '0')
+    end
+    local overflow = 0
+    if used > limit then overflow = 1 end
+    out[(i - 1) * 3 + 1] = used
+    out[(i - 1) * 3 + 2] = limit
+    out[(i - 1) * 3 + 3] = overflow
+end
+return out
+`
+
+// SnapshotBatch Lua：批量读 bucket effective + reset_at；只读不写。
+//
+// ARGV: now, then per-bucket {window, limit}
+// 返回 {used, limit, reset_at} × N （平铺）
+const snapshotBatchLua = `
+local now = tonumber(ARGV[1])
+local n = #KEYS
+local out = {}
 
 for i = 1, n do
     local base = 1 + (i - 1) * 2 + 1
     local window = tonumber(ARGV[base])
-    local delta = tonumber(ARGV[base + 1])
+    local limit = tonumber(ARGV[base + 1])
 
-    if delta ~= 0 then
-        local curStart = math.floor(now / window) * window
-        local key = KEYS[i] .. ':' .. curStart
-        if delta > 0 then
-            redis.call('INCRBY', key, delta)
-        else
-            local cur = tonumber(redis.call('GET', key) or '0')
-            local newval = cur + delta
-            if newval < 0 then newval = 0 end
-            redis.call('SET', key, newval)
-        end
-        redis.call('EXPIRE', key, window * 2)
-    end
+    local curStart = math.floor(now / window) * window
+    local prevStart = curStart - window
+    local elapsed = now - curStart
+    local prevWeight = (window - elapsed) / window
+
+    local cur = tonumber(redis.call('GET', KEYS[i] .. ':' .. curStart) or '0')
+    local prev = tonumber(redis.call('GET', KEYS[i] .. ':' .. prevStart) or '0')
+    local effective = cur + math.floor(prev * prevWeight)
+
+    out[(i - 1) * 3 + 1] = effective
+    out[(i - 1) * 3 + 2] = limit
+    out[(i - 1) * 3 + 3] = curStart + window
 end
-return 1
+return out
 `
 
-// Snapshot Lua：读单 bucket 当前 effective + reset_at。
-//
-// KEYS = {key}; ARGV = {now, window}
-// 返回 {effective_count, reset_at_unix_sec}
-const snapshotLua = `
-local now = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local curStart = math.floor(now / window) * window
-local prevStart = curStart - window
-local elapsed = now - curStart
-local prevWeight = (window - elapsed) / window
-
-local cur = tonumber(redis.call('GET', KEYS[1] .. ':' .. curStart) or '0')
-local prev = tonumber(redis.call('GET', KEYS[1] .. ':' .. prevStart) or '0')
-local effective = cur + math.floor(prev * prevWeight)
-return {effective, curStart + window}
-`
+// =============================================================================
+// Store impl
+// =============================================================================
 
 // ReserveBatch 实现 Store.ReserveBatch。
 func (s *RedisStore) ReserveBatch(ctx context.Context, buckets []Bucket) (bool, *BucketViolation, error) {
@@ -191,53 +210,88 @@ func (s *RedisStore) ReserveBatch(ctx context.Context, buckets []Bucket) (bool, 
 	return false, violated, nil
 }
 
-// AdjustBatch 实现 Store.AdjustBatch。
-func (s *RedisStore) AdjustBatch(ctx context.Context, adjustments []BucketAdjust) error {
-	if len(adjustments) == 0 {
-		return nil
+// ChargeBatch 实现 Store.ChargeBatch（docs/04 §5 §7）。
+func (s *RedisStore) ChargeBatch(ctx context.Context, buckets []Bucket) ([]BucketChargeResult, error) {
+	if len(buckets) == 0 {
+		return nil, nil
 	}
-	keys := make([]string, len(adjustments))
-	args := make([]any, 0, 1+len(adjustments)*2)
+	keys := make([]string, len(buckets))
+	args := make([]any, 0, 1+len(buckets)*3)
 	args = append(args, time.Now().Unix())
-	for i, a := range adjustments {
-		keys[i] = a.Key
-		windowSec := int64(a.Window.Seconds())
+	for i, b := range buckets {
+		keys[i] = b.Key
+		windowSec := int64(b.Window.Seconds())
 		if windowSec <= 0 {
 			windowSec = 60
 		}
-		args = append(args, windowSec, a.Delta)
+		args = append(args, windowSec, b.Limit, b.Cost)
 	}
-	if _, err := s.scriptAdjust.Run(ctx, s.rdb, keys, args...).Result(); err != nil {
-		return fmt.Errorf("ratelimit: adjust batch: %w", err)
-	}
-	return nil
-}
 
-// Snapshot 实现 Store.Snapshot。
-func (s *RedisStore) Snapshot(ctx context.Context, b Bucket) (BucketState, error) {
-	windowSec := int64(b.Window.Seconds())
-	if windowSec <= 0 {
-		windowSec = 60
-	}
-	res, err := s.scriptSnap.Run(ctx, s.rdb, []string{b.Key}, time.Now().Unix(), windowSec).Result()
+	res, err := s.scriptCharge.Run(ctx, s.rdb, keys, args...).Result()
 	if err != nil {
-		return BucketState{}, fmt.Errorf("ratelimit: snapshot: %w", err)
+		return nil, fmt.Errorf("ratelimit: charge batch: %w", err)
 	}
 	arr, ok := res.([]any)
-	if !ok || len(arr) != 2 {
-		return BucketState{}, fmt.Errorf("ratelimit: unexpected snapshot result %v", res)
+	if !ok || len(arr) != len(buckets)*3 {
+		return nil, fmt.Errorf("ratelimit: unexpected charge result len=%d want=%d", len(arr), len(buckets)*3)
 	}
-	used, _ := toInt(arr[0])
-	resetSec, _ := toInt(arr[1])
-	st := BucketState{
-		Used:    uint32(used),
-		Limit:   b.Limit,
-		ResetAt: time.Unix(resetSec, 0),
+	out := make([]BucketChargeResult, len(buckets))
+	for i := range buckets {
+		used, _ := toInt(arr[i*3])
+		lim, _ := toInt(arr[i*3+1])
+		overflow, _ := toInt(arr[i*3+2])
+		out[i] = BucketChargeResult{
+			Key:      buckets[i].Key,
+			Used:     uint32(used),
+			Limit:    uint32(lim),
+			Overflow: overflow == 1,
+		}
 	}
-	if b.Limit > st.Used {
-		st.Remaining = b.Limit - st.Used
+	return out, nil
+}
+
+// SnapshotBatch 实现 Store.SnapshotBatch。
+func (s *RedisStore) SnapshotBatch(ctx context.Context, buckets []Bucket) ([]BucketState, error) {
+	if len(buckets) == 0 {
+		return nil, nil
 	}
-	return st, nil
+	keys := make([]string, len(buckets))
+	args := make([]any, 0, 1+len(buckets)*2)
+	args = append(args, time.Now().Unix())
+	for i, b := range buckets {
+		keys[i] = b.Key
+		windowSec := int64(b.Window.Seconds())
+		if windowSec <= 0 {
+			windowSec = 60
+		}
+		args = append(args, windowSec, b.Limit)
+	}
+
+	res, err := s.scriptSnapshot.Run(ctx, s.rdb, keys, args...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("ratelimit: snapshot batch: %w", err)
+	}
+	arr, ok := res.([]any)
+	if !ok || len(arr) != len(buckets)*3 {
+		return nil, fmt.Errorf("ratelimit: unexpected snapshot result len=%d want=%d", len(arr), len(buckets)*3)
+	}
+	out := make([]BucketState, len(buckets))
+	for i := range buckets {
+		used, _ := toInt(arr[i*3])
+		lim, _ := toInt(arr[i*3+1])
+		reset, _ := toInt(arr[i*3+2])
+		st := BucketState{
+			Key:     buckets[i].Key,
+			Used:    uint32(used),
+			Limit:   uint32(lim),
+			ResetAt: time.Unix(reset, 0),
+		}
+		if st.Limit > st.Used {
+			st.Remaining = st.Limit - st.Used
+		}
+		out[i] = st
+	}
+	return out, nil
 }
 
 // toInt 把 Lua 返回的数字解出来（go-redis 把整数返回成 int64，但小心 string）。
