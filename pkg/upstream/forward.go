@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/translator"
@@ -29,9 +30,34 @@ var chunkBufPool = sync.Pool{
 // Usage 可能为 nil（translator 没解析到 / 上游没返回）。
 // FeedErr 是流式过程中的中止错误（resp.Body Read / handler.Feed / Flush 出错）；
 // 非 nil 表示流已经从客户端角度看也中断（已写出的字节无法召回）。
+//
+// TTFTMs：从 Forward 开始到首个有内容的客户端 chunk 之间的耗时（docs/05 §4）。
+// 0 表示未捕获（buffer-then-translate / 上游空响应 / handler 在 Feed 阶段不输出）。
 type ForwardResult struct {
 	Usage   *domain.Usage
 	FeedErr error
+	TTFTMs  int64
+}
+
+// startTimeKey 给 Forward 注入 "请求开始时间" 用于 TTFT 计算的 context key。
+//
+// 如果 caller（M7）希望 TTFT 从 Sender.Send 之前开始计时（包含 BuildRequest /
+// translator / client.Do 全程），就 ctx 里塞 startTime。否则 Forward 用自己开始
+// 时刻当 baseline（仅算"客户端可见的首字节延迟"）。
+type startTimeCtxKey struct{}
+
+// WithRequestStartTime 让 caller 把 "请求开始时间" 注入 ctx 供 Forward 计算 TTFT。
+//
+// M7 应在 Send 之前调一次：`ctx = upstream.WithRequestStartTime(ctx, time.Now())`。
+func WithRequestStartTime(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, startTimeCtxKey{}, t)
+}
+
+func requestStartTime(ctx context.Context, fallback time.Time) time.Time {
+	if v, ok := ctx.Value(startTimeCtxKey{}).(time.Time); ok && !v.IsZero() {
+		return v
+	}
+	return fallback
 }
 
 // Forward 把成功上游响应流式 forward 给 ResponseWriter。
@@ -72,21 +98,25 @@ func (s *Sender) Forward(
 	bufPtr := chunkBufPool.Get().(*[]byte)
 	defer chunkBufPool.Put(bufPtr)
 
+	startTime := requestStartTime(ctx, time.Now())
 	tw := &translatorWriter{
-		inner:   w,
-		handler: handler,
-		ctx:     ctx,
-		ep:      ep,
-		hooks:   s.hooks,
+		inner:     w,
+		handler:   handler,
+		ctx:       ctx,
+		ep:        ep,
+		hooks:     s.hooks,
+		startTime: startTime,
 	}
 	_, feedErr := io.CopyBuffer(tw, resp.Body, *bufPtr)
 
 	finalOut, usage, fErr := handler.Flush()
 	if len(finalOut) > 0 {
+		// 流式过程没输出过任何 chunk（buffer-then-translate），把 Flush 当首包记 TTFT
+		if tw.ttftMs == 0 {
+			tw.ttftMs = time.Since(startTime).Milliseconds()
+		}
 		_, _ = w.Write(finalOut)
 		flush(w)
-		// 最后一截也 fan-out（buffer-then-translate 模式下 Feed 期间不输出，
-		// Flush 时一次性翻译完整 body——observer 必须能看到这部分字节）
 		s.hooks.fireClientChunk(ctx, ep, finalOut)
 	}
 
@@ -94,7 +124,7 @@ func (s *Sender) Forward(
 		feedErr = fErr
 	}
 
-	return ForwardResult{Usage: usage, FeedErr: feedErr}
+	return ForwardResult{Usage: usage, FeedErr: feedErr, TTFTMs: tw.ttftMs}
 }
 
 // translatorWriter 把上游 chunk 喂给 translator.ResponseHandler.Feed，把 Feed
@@ -105,16 +135,16 @@ func (s *Sender) Forward(
 // **Write 返回值约定**：返回 len(chunk)（原 chunk 长度，不是 Feed 输出长度）——
 // 这是 io.Copy 协议要求的"消费完整个输入"。Feed 出错时返 (0, err) 让 CopyBuffer 立即停。
 type translatorWriter struct {
-	inner   http.ResponseWriter
-	handler translator.ResponseHandler
-	ctx     context.Context
-	ep      *domain.Endpoint
-	hooks   hookSet
+	inner     http.ResponseWriter
+	handler   translator.ResponseHandler
+	ctx       context.Context
+	ep        *domain.Endpoint
+	hooks     hookSet
+	startTime time.Time
+	ttftMs    int64 // 首个非空客户端 chunk 写出后填；0=未捕获
 }
 
 func (tw *translatorWriter) Write(chunk []byte) (int, error) {
-	// 上游原始 chunk fan-out（Feed 之前）；buffer-then-translate 模式下也只有这里
-	// 能拿到上游真实分包字节。
 	tw.hooks.fireUpstreamChunk(tw.ctx, tw.ep, chunk)
 
 	out, err := tw.handler.Feed(chunk)
@@ -126,8 +156,10 @@ func (tw *translatorWriter) Write(chunk []byte) (int, error) {
 			return 0, werr
 		}
 		flush(tw.inner)
-		// 客户端 chunk fan-out（inner.Write 之后）；moderator 装饰器拦下的
-		// chunk 不会到这里（Feed 早早返 err）。
+		// 记 TTFT：首个非空 chunk 写出后到 startTime 的耗时（docs/05 §4）
+		if tw.ttftMs == 0 {
+			tw.ttftMs = time.Since(tw.startTime).Milliseconds()
+		}
 		tw.hooks.fireClientChunk(tw.ctx, tw.ep, out)
 	}
 	return len(chunk), nil

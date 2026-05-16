@@ -20,10 +20,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker/llm-gateway/pkg/config"
+	"github.com/zereker/llm-gateway/pkg/contentlog"
+	"github.com/zereker/llm-gateway/pkg/health"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/repo"
@@ -117,6 +120,22 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		return nil, nil, fmt.Errorf("usage outbox: %w", err)
 	}
 
+	// Content Log（docs/05 §2 + docs/08 §6）。none = 不构造，零开销
+	contentLogger := buildContentLogger(srv, cfg.ContentLog)
+
+	// Runtime Scoring（docs/03 §8）：未启用时 scorer = nil，scheduler 走纯静态 weight
+	stats, scorer := buildScoring(cfg.Scoring)
+
+	// Health Probing（docs/03 §10）：未启用时不启动 prober
+	startHealthProber(srv, cfg.Health, repo.NewSQLEndpointReader(sqldb), stats)
+
+	// Sender 装配：Content Logger 通过 hooks 接入字节流（可选）
+	senderOpts := []upstream.Option{}
+	if contentLogger != nil {
+		senderOpts = append(senderOpts, upstream.WithHooks(contentLogger))
+	}
+	sender := upstream.New(senderOpts...)
+
 	engine = router.NewEngine(router.Deps{
 		BodyLimit: cfg.Middleware.BodyLimitBytes,
 		Timeout:   cfg.Middleware.Timeout,
@@ -160,9 +179,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 					Invalid:   cfg.Scheduler.Cooldown.Invalid,
 					Unknown:   cfg.Scheduler.Cooldown.Unknown,
 				}),
+				Scorer: scorer,
+				Stats:  stats,
 			}),
-			// Sender 默认走 adapter 全局 registry + http.DefaultClient
-			Sender:      upstream.New(),
+			Sender:      sender,
 			MaxAttempts: cfg.Scheduler.MaxAttempts,
 		},
 		Tracing: middleware.TracingDeps{
@@ -224,6 +244,92 @@ func buildTracer(srv *server.Server, cfg config.TraceConfig) trace.Tracer {
 		return trace.NewOtelTracer(tp)
 	default:
 		panic("unknown trace driver: " + cfg.Driver)
+	}
+}
+
+// buildScoring 构造 Runtime Scoring 的 stats store + scorer（docs/03 §8）。
+//
+// 未启用时返回 (nil, nil) —— scheduler 将走纯静态 weight，无任何运行时打分。
+func buildScoring(cfg config.ScoringConfig) (schedule.EndpointStatsStore, schedule.Scorer) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	decay := cfg.EMADecay
+	if decay <= 0 {
+		decay = 0.2
+	}
+	store := schedule.NewInMemoryStatsStore(decay)
+	baselineMs := float64(200)
+	if cfg.LatencyBaseline > 0 {
+		baselineMs = float64(cfg.LatencyBaseline.Milliseconds())
+	}
+	scorer := schedule.NewDefaultScorer(store, cfg.MinSamples, baselineMs)
+	return store, scorer
+}
+
+// startHealthProber 按 cfg 启动 Health Prober（docs/03 §10）。
+//
+// 未启用时不做任何事。stats == nil 时也跳过（probe 结果没人消费没意义）。
+func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister health.EndpointLister, stats schedule.EndpointStatsStore) {
+	if !cfg.Enabled || stats == nil {
+		return
+	}
+	prober := health.New(health.Config{
+		Source:     health.FilteredSource{Lister: lister},
+		Stats:      stats,
+		Interval:   cfg.Interval,
+		Timeout:    cfg.Timeout,
+		Concurrent: cfg.Concurrent,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	prober.Run(ctx)
+	srv.AddCloser("health-prober", func() error {
+		cancel()
+		prober.Stop()
+		return nil
+	})
+}
+
+// buildContentLogger 按 cfg.Driver 构造 ContentLogger（返回 nil = 不开启）。
+//
+//   - none/"":  返回 nil，零开销（不挂 hooks）
+//   - file:     JSONL append 到本地文件
+//   - kafka:    暂未实现（占位；可参考 kafka_outbox 实现）
+//
+// 找不到的 driver 直接 panic。
+func buildContentLogger(srv *server.Server, cfg config.ContentLogConfig) *contentlog.Logger {
+	switch cfg.Driver {
+	case "", "none":
+		return nil
+	case "file":
+		pub, err := contentlog.NewFilePublisher(cfg.File.Path)
+		if err != nil {
+			panic(fmt.Sprintf("content_log: open file %s: %v", cfg.File.Path, err))
+		}
+		srv.AddCloser("content-log-file", pub.Close)
+		bp := contentlog.BackpressureDropOldest
+		switch cfg.Backpressure {
+		case "drop_newest":
+			bp = contentlog.BackpressureDropNewest
+		case "block":
+			bp = contentlog.BackpressureBlock
+		}
+		logger := contentlog.New(contentlog.Config{
+			Publisher:    pub,
+			SampleRate:   cfg.SampleRate,
+			MaxBodyBytes: cfg.MaxBodyBytes,
+			BufferSize:   cfg.BufferSize,
+			Backpressure: bp,
+			BlockTimeout: cfg.BlockTimeout,
+		})
+		srv.AddCloser("content-log-logger", func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return logger.Close(ctx)
+		})
+		return logger
+	default:
+		panic("unknown content_log driver: " + cfg.Driver)
 	}
 }
 
