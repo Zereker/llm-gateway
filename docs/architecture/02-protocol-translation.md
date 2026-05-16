@@ -319,6 +319,34 @@ import (
 )
 ```
 
+#### 包粒度约定：一家 vendor 一个 package
+
+| 反例 | 正例 |
+|------|------|
+| 把 OpenAI / Azure OpenAI / DeepSeek / Mistral / Ollama-OpenAI / vLLM-OpenAI 全塞进 `pkg/adapter/openai/`，差异由内部分支处理 | 每家独立成包：`pkg/adapter/openai`、`pkg/adapter/azure_openai`、`pkg/adapter/deepseek`、`pkg/adapter/mistral`、`pkg/adapter/ollama`、`pkg/adapter/vllm` |
+
+**理由**：
+
+- **差异天然增长**：今天看起来 OpenAI 兼容的厂商，明天就会出现 reasoning 字段名差异、tool-call 行为差异、自家专有 header 等。共用包会让 `openai/adapter.go` 长成"if vendor=='deepseek' else if vendor=='mistral'"链。
+- **可独立裁剪**：`cmd/gateway/main.go` 用 blank import 选择构建哪些 vendor。一家一包，可以精确决定 binary 体积与依赖面。
+- **配置与 Registry 对齐**：`adapter.Register("<vendor>", ...)` 的 key 就是包名，配置中的 `vendor: deepseek` 直接对应 `_ "pkg/adapter/deepseek"`，无歧义。
+- **测试边界清晰**：每个 vendor 包独立 `adapter_test.go`，不必通过 `if vendor==X` 分支选择 fixture。
+
+**复用机制**：差异化不靠包合并，而是靠**接口默认实现 + 内嵌**：
+
+```go
+// pkg/adapter/openai_session/default.go  —— 默认 ResponseSession 实现，OpenAI 兼容厂商内嵌使用
+package openai_session
+func NewDefault(...) adapter.ResponseSession { ... }
+
+// pkg/adapter/deepseek/adapter.go
+func (a *Adapter) NewResponseSession(...) adapter.ResponseSession {
+    return openai_session.NewDefault(...)   // 复用，不继承
+}
+```
+
+> 例外：纯命名别名（如 `azure_openai` 仅 URL 模板和 header 略不同）可考虑由 `openai` 包工厂带参生成；但**只要存在协议字段层面差异（哪怕只有一个），一律独立包**。
+
 ### 4.2 ResponseSession 接口
 
 ```go
