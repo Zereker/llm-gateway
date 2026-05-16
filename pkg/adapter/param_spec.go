@@ -17,8 +17,9 @@ import "fmt"
 //   - Validator 链跑完才进 translator
 //
 // 当前 v0.5 没有 middleware 真去查 ParamSpec；定义在这里是为了：
-//  (a) 让 OpenAI/Anthropic adapter 用代码声明各自的字段约束（生为文档生效）
-//  (b) v1.0 加 enforcement 时不需要回头改 adapter
+//
+//	(a) 让 OpenAI/Anthropic adapter 用代码声明各自的字段约束（生为文档生效）
+//	(b) v1.0 加 enforcement 时不需要回头改 adapter
 type ParamSpec struct {
 	SupportedParams    map[string]struct{}       // 白名单：该上游支持的参数（成员判定，不存值）
 	ParamMapping       map[string]string         // canonical 字段 → 上游字段名

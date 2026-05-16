@@ -37,10 +37,7 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
 
-		rc := TryGetRequestContext(c)
-		if rc == nil {
-			return
-		}
+		rc := GetRequestContext(c)
 
 		// 注意：本 span 在 c.Next() 之后开；只覆盖"事后聚合 + outbox publish"这一段，
 		// 不包括上游 middleware（它们各自有自己的 span）。
@@ -105,7 +102,7 @@ func fillUsageMeta(rc *domain.RequestContext, endTime time.Time, totalLatencyMs 
 	m.TraceID = TraceIDFromCtx(rc.Ctx)
 
 	// 身份维度
-	m.UserID = rc.Identity.UserID
+	m.SubAccountID = rc.Identity.SubAccountID
 	m.APIKeyID = rc.Identity.APIKeyID
 
 	// 模型维度

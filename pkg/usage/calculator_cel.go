@@ -40,9 +40,9 @@ import (
 //
 // Concurrent-safe（compileCache 用 sync.Map）。
 type CELCalculator struct {
-	cache sync.Map // expression string → *cel.Program
-	env   *cel.Env
-	once  sync.Once
+	cache  sync.Map // expression string → *cel.Program
+	env    *cel.Env
+	once   sync.Once
 	envErr error
 }
 

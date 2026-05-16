@@ -6,7 +6,7 @@ import (
 
 // registerModelServiceRoutes 注册 /admin/v1/modelservices CRUD。
 //
-// **v0.3 改动**：去 ?tenant_id= 参数（modelservices 全局 catalog）。
+// **v0.3 改动**：去 ?account_id= 参数（modelservices 全局 catalog）。
 //
 //	GET    /modelservices                  列表
 //	POST   /modelservices                  创建

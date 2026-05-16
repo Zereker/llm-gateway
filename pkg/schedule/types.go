@@ -59,8 +59,9 @@ type Request struct {
 	//
 	// 留空或 LoadFallback==nil = L3 关闭。
 	//
-	// 来源：M7 从 X-Gateway-Fallback-Models header（逗号分隔）读，或 admin 在
-	// model_services 配 fallback 链。
+	// 来源：M7 从 X-Gateway-Fallback-Models header（逗号分隔）读。
+	// 跨模型 fallback 改变模型语义，必须由调用方显式声明；网关不从 admin 默认链路
+	// 隐式替换模型。
 	FallbackModels []string
 
 	// PrefixKey 用于 PrefixCacheFilter 的一致性哈希 key；同 prefix 的请求路同 ep
@@ -77,11 +78,11 @@ type ErrorClass int
 
 const (
 	ClassUnknown   ErrorClass = iota // 分类不出来
-	ClassSuccess                      // 2xx
-	ClassTransient                    // 5xx / 网络错 / timeout / DNS
-	ClassCapacity                     // 上游 429 / overloaded
-	ClassPermanent                    // 上游 401 / 403 / 配置错
-	ClassInvalid                      // 客户端 4xx（除 401/403/429）；不该重试
+	ClassSuccess                     // 2xx
+	ClassTransient                   // 5xx / 网络错 / timeout / DNS
+	ClassCapacity                    // 上游 429 / overloaded
+	ClassPermanent                   // 上游 401 / 403 / 配置错
+	ClassInvalid                     // 客户端 4xx（除 401/403/429）；不该重试
 )
 
 func (c ErrorClass) String() string {

@@ -4,8 +4,8 @@
 // 2× burst 问题；Cloudflare / Kong 业界标准。
 //
 // **多 key 原子**：ReserveBatch 在一次 Redis Lua call 里检查 + 消耗 N 个 bucket，
-// all-or-nothing。tenant + apikey + per-model + default 多个桶可一起原子检查，
-// 避免"tenant 通了但 apikey 失败时 tenant 已扣"的不一致。
+// all-or-nothing。主账号 + apikey + per-model + default 多个桶可一起原子检查，
+// 避免"主账号层通了但 apikey 失败时主账号层已扣"的不一致。
 //
 // **TPM 两阶段**（Reserve → Adjust）：
 //   - M6 ReserveBatch 时 cost = estimated_input + estimated_output（粗估）
@@ -30,16 +30,16 @@ import (
 //   - RPM/RPS：固定 1（每请求 +1）
 //   - TPM：估算 token 数（M6 reserve）或差值（M10 adjust）
 //
-// **Key 命名约定**：`rl:<scope>:<subject>:<model_or_*>:<dim>`
+// **Key 命名约定**：`rl:quota:<scope>:<subject>:<model_or_*>:<dim>`
 //   - scope:    user | endpoint | model | global
-//   - subject:  tenant_pin / api_key_id / endpoint_id
+//   - subject:  主账号 pin / api_key_id / endpoint_id
 //   - model:    实际 model 名 或 "*"（default 跨模型桶）
 //   - dim:      rpm | tpm | rps
 //
 // 例：
-//   - rl:user:tenant:default:gpt-4o:rpm   tenant default 在 gpt-4o 上的 RPM 桶
-//   - rl:user:tenant:default:*:rpm        tenant default 跨模型 default RPM 桶
-//   - rl:user:apikey:ak_alice_xxx:*:tpm   apikey 跨模型 default TPM 桶
+//   - rl:quota:account:default:gpt-4o:rpm   主账号 default 在 gpt-4o 上的 RPM 桶
+//   - rl:quota:account:default:*:rpm        主账号 default 跨模型 default RPM 桶
+//   - rl:quota:apikey:ak_alice_xxx:*:tpm    apikey 跨模型 default TPM 桶
 //   - rl:endpoint:42:rpm                  endpoint id=42 的 RPM 桶
 type Bucket struct {
 	Key    string        // 见上方命名约定

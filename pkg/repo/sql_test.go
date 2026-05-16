@@ -10,13 +10,13 @@ import (
 	"github.com/zereker/llm-gateway/pkg/infra"
 )
 
-// truncateAll 关 FOREIGN_KEY_CHECKS 后清空所有业务表，再 seed default tenant。
+// truncateAll 关 FOREIGN_KEY_CHECKS 后清空所有业务表，再 seed default account。
 //
 // FK 关系下普通 TRUNCATE 会报错（即使子表为空，schema-level reference 已经触发拒绝）。
 // 测试 setup 阶段绕过 FK check 是惯例做法。
 //
-// **default tenant**：很多测试用 testTenant="default"，其它表 FK → tenants(pin)，所以
-// truncate 后必须重新 seed 一行 tenants("default")。
+// **default account**：很多测试用 testAccount="default"，其它表 FK → accounts(pin)，所以
+// truncate 后必须重新 seed 一行 accounts("default")。
 func truncateAll(db *sqlx.DB) error {
 	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 0`); err != nil {
 		return err
@@ -25,19 +25,19 @@ func truncateAll(db *sqlx.DB) error {
 
 	for _, table := range []string{
 		"pricing_versions",
-		"tenant_model_subscriptions",
+		"account_model_subscriptions",
 		"endpoints",
 		"api_keys",
 		"model_services",
-		"tenants",
+		"accounts",
 		"quota_policies",
 	} {
 		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
 			return err
 		}
 	}
-	// seed default tenant（FK 锚点）
-	if _, err := db.Exec(`INSERT INTO tenants (pin, name) VALUES ('default', 'Default Tenant')`); err != nil {
+	// seed default account（FK 锚点）
+	if _, err := db.Exec(`INSERT INTO accounts (pin, name) VALUES ('default', 'Default Account')`); err != nil {
 		return err
 	}
 	return nil

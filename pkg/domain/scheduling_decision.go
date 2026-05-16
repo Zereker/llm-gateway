@@ -39,10 +39,10 @@ type AttemptOutcome int
 
 const (
 	AttemptUnknown  AttemptOutcome = iota
-	AttemptSuccess                  // 上游返回成功
-	AttemptRetry                    // 同 endpoint 重试中（中间状态）
-	AttemptFallback                 // 失败，已切到下一 endpoint
-	AttemptFail                     // 终态失败
+	AttemptSuccess                 // 上游返回成功
+	AttemptRetry                   // 同 endpoint 重试中（中间状态）
+	AttemptFallback                // 失败，已切到下一 endpoint
+	AttemptFail                    // 终态失败
 )
 
 func (o AttemptOutcome) String() string {

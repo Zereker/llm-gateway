@@ -58,11 +58,11 @@ func newTestEngine(t *testing.T) *gin.Engine {
 	}
 	for _, table := range []string{
 		"pricing_versions",
-		"tenant_model_subscriptions",
+		"account_model_subscriptions",
 		"api_keys",
 		"endpoints",
 		"model_services",
-		"tenants",
+		"accounts",
 		"quota_policies",
 	} {
 		if _, err := sqldb.Exec("TRUNCATE TABLE " + table); err != nil {
@@ -74,10 +74,10 @@ func newTestEngine(t *testing.T) *gin.Engine {
 		_ = sqldb.Close()
 		t.Fatalf("re-enable FK checks: %v", err)
 	}
-	// seed default tenant（FK 锚点；其它表 FK → tenants(pin)）
-	if _, err := sqldb.Exec(`INSERT INTO tenants (pin, name) VALUES ('default', 'Default Tenant')`); err != nil {
+	// seed default account（FK 锚点；其它表 FK → accounts(pin)）
+	if _, err := sqldb.Exec(`INSERT INTO accounts (pin, name) VALUES ('default', 'Default Account')`); err != nil {
 		_ = sqldb.Close()
-		t.Fatalf("seed default tenant: %v", err)
+		t.Fatalf("seed default account: %v", err)
 	}
 	t.Cleanup(func() { _ = sqldb.Close() })
 
@@ -89,7 +89,7 @@ func newTestEngine(t *testing.T) *gin.Engine {
 
 	return NewEngine(Deps{
 		Token:             testToken,
-		TenantStore:       NewTenantStore(gdb),
+		AccountStore:      NewAccountStore(gdb),
 		QuotaPolicyStore:  NewQuotaPolicyStore(gdb),
 		ModelServiceStore: NewModelServiceStore(gdb),
 		SubscriptionStore: NewSubscriptionStore(gdb),
@@ -175,7 +175,7 @@ func TestAuth_EmptyConfiguredTokenRefusesAll(t *testing.T) {
 
 	engine := NewEngine(Deps{
 		Token:             "",
-		TenantStore:       NewTenantStore(gdb),
+		AccountStore:      NewAccountStore(gdb),
 		QuotaPolicyStore:  NewQuotaPolicyStore(gdb),
 		ModelServiceStore: NewModelServiceStore(gdb),
 		SubscriptionStore: NewSubscriptionStore(gdb),
@@ -413,7 +413,7 @@ func TestAPIKey_CreateReturnsPlaintextOnce(t *testing.T) {
 	engine := newTestEngine(t)
 
 	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{
-		UserID:       "alice",
+		SubAccountID: "alice",
 		Name:         "prod",
 		Group:        "default",
 		ExternalUser: false,
@@ -446,8 +446,8 @@ func TestAPIKey_CreateReturnsPlaintextOnce(t *testing.T) {
 	if resp.Name != "prod" {
 		t.Errorf("name = %q", resp.Name)
 	}
-	if resp.TenantID != "default" {
-		t.Errorf("tenant_id = %q, want default", resp.TenantID)
+	if resp.AccountID != "default" {
+		t.Errorf("account_id = %q, want default", resp.AccountID)
 	}
 
 	// 后续 GET 不返明文 api_key（但会返 prefix）
@@ -467,14 +467,14 @@ func TestAPIKey_CreateReturnsPlaintextOnce(t *testing.T) {
 func TestAPIKey_ListByUser(t *testing.T) {
 	engine := newTestEngine(t)
 	for _, u := range []string{"alice", "alice", "bob"} {
-		w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: u})
+		w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{SubAccountID: u})
 		if w.Code != 201 {
 			t.Fatalf("create for %s: %d", u, w.Code)
 		}
 	}
 
 	// alice 有 2 个 key
-	w := do(t, engine, "GET", "/admin/v1/apikeys?user_id=alice", nil)
+	w := do(t, engine, "GET", "/admin/v1/apikeys?sub_account_id=alice", nil)
 	var resp struct {
 		Items []apiKeyDTO `json:"items"`
 	}
@@ -486,7 +486,7 @@ func TestAPIKey_ListByUser(t *testing.T) {
 
 func TestAPIKey_ToggleEnabled(t *testing.T) {
 	engine := newTestEngine(t)
-	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: "alice"})
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{SubAccountID: "alice"})
 	var created apiKeyCreateResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 
@@ -507,7 +507,7 @@ func TestAPIKey_ToggleEnabled(t *testing.T) {
 
 func TestAPIKey_SetExpiresAt(t *testing.T) {
 	engine := newTestEngine(t)
-	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: "alice"})
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{SubAccountID: "alice"})
 	var created apiKeyCreateResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 
@@ -530,7 +530,7 @@ func TestAPIKey_SetExpiresAt(t *testing.T) {
 
 func TestAPIKey_Revoke(t *testing.T) {
 	engine := newTestEngine(t)
-	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: "alice"})
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{SubAccountID: "alice"})
 	var created apiKeyCreateResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 
@@ -550,7 +550,7 @@ func TestAPIKey_Revoke(t *testing.T) {
 
 func TestAPIKey_Delete(t *testing.T) {
 	engine := newTestEngine(t)
-	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: "alice"})
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{SubAccountID: "alice"})
 	var created apiKeyCreateResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 
@@ -685,8 +685,8 @@ func TestEndToEnd_AdminCreatesKey_GatewayResolves(t *testing.T) {
 
 	// 用 admin 创建一个 key，拿到明文
 	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{
-		UserID: "alice",
-		Name:   "e2e",
+		SubAccountID: "alice",
+		Name:         "e2e",
 	})
 	if w.Code != 201 {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
@@ -705,8 +705,8 @@ func TestEndToEnd_AdminCreatesKey_GatewayResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve plaintext: %v", err)
 	}
-	if id.UserID != "alice" {
-		t.Errorf("UserID = %q, want alice", id.UserID)
+	if id.SubAccountID != "alice" {
+		t.Errorf("SubAccountID = %q, want alice", id.SubAccountID)
 	}
 
 	// 错的 key 应该 fail
@@ -719,7 +719,7 @@ func TestEndToEnd_AdminCreatesKey_GatewayResolves(t *testing.T) {
 func TestEndToEnd_RevokedKeyRejected(t *testing.T) {
 	engine := newTestEngine(t)
 
-	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{UserID: "alice"})
+	w := do(t, engine, "POST", "/admin/v1/apikeys", apiKeyCreateRequest{SubAccountID: "alice"})
 	var created apiKeyCreateResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 

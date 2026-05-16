@@ -8,14 +8,14 @@ import (
 	"gorm.io/datatypes"
 )
 
-const testTenant = "default"
+const testAccount = "default"
 
 // seedEndpoint 用 NamedExec 插测试 endpoint。
 //
 // 走 NamedExec 是为了让 Auth/Routing/Quota/Capabilities 字段经 Valuer 接口
 // 转 JSON / 加密——raw INSERT 字符串拿不到这层魔法。
 //
-// **v0.3 改动**：endpoint 表去掉 tenant_id（全局上游池）。
+// **v0.3 改动**：endpoint 表去掉 account_id（全局上游池）。
 func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 	t.Helper()
 	if ep.Group == "" {

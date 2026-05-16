@@ -15,7 +15,7 @@ import (
 // rcCtxKey 用 stdlib context.Value 的 typed-key 模式：私有 struct 类型作 key，
 // 跟其它包的 ctx value 不会撞 key（哪怕字面 string 一样）。
 //
-// 不导出，外部一律通过 GetRequestContext / TryGetRequestContext / AttachRequestContext
+// 不导出，外部一律通过 GetRequestContext / AttachRequestContext
 // 间接访问，杜绝散落 c.Get("...") 用法。
 type rcCtxKey struct{}
 
@@ -36,15 +36,6 @@ func GetRequestContext(c *gin.Context) *domain.RequestContext {
 		panic("RequestContext not set: M1 TraceContext middleware missing")
 	}
 	return rc
-}
-
-// TryGetRequestContext 是 GetRequestContext 的安全版：取不到返回 nil，
-// 专供 M9 Recover 等兜底场景使用。
-func TryGetRequestContext(c *gin.Context) *domain.RequestContext {
-	if c == nil || c.Request == nil {
-		return nil
-	}
-	return fromCtx(c.Request.Context())
 }
 
 // AttachRequestContext 将 *RequestContext 挂到 c.Request.Context()；仅 M1 TraceContext 调用。
@@ -86,12 +77,11 @@ func fromCtx(ctx context.Context) *domain.RequestContext {
 //
 // status == 0 时由 domain.DefaultHTTPStatus 按 class 推导。
 func abort(c *gin.Context, status int, class domain.ErrorClass, message string) {
-	if rc := TryGetRequestContext(c); rc != nil {
-		rc.Error = &domain.AdapterError{
-			Class:      class,
-			HTTPStatus: status,
-			Message:    message,
-		}
+	rc := GetRequestContext(c)
+	rc.Error = &domain.AdapterError{
+		Class:      class,
+		HTTPStatus: status,
+		Message:    message,
 	}
 	c.Abort()
 }

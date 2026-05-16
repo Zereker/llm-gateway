@@ -7,9 +7,9 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// InMemoryBudgetGate 进程内余额跟踪：按 userID 维度维护 remaining_balance（USD 金额）。
+// InMemoryBudgetGate 进程内余额跟踪：按 subAccountID 维度维护 remaining_balance（USD 金额）。
 //
-// **适用场景**：单实例 demo / 单租户私有部署 / 开发期联调。生产多副本部署需要外部存储
+// **适用场景**：单实例 demo / 单主账号私有部署 / 开发期联调。生产多副本部署需要外部存储
 // （Redis / DB），本实现不能跨进程共享余额。
 //
 // **deduction 不在本组件**：BudgetGate.Check 是 pre-flight gate（请求进来时判余额），
@@ -18,8 +18,8 @@ import (
 // Gate 维持每个 user 配置的初始余额作为 hard cap。
 //
 // **配置方式**：
-//   - 全局默认余额：用 NewInMemoryBudgetGate(default)，新 userID 首次出现时分配
-//   - 显式按 user 设置：SetBalance(userID, balance)，覆盖默认
+//   - 全局默认余额：用 NewInMemoryBudgetGate(default)，新 subAccountID 首次出现时分配
+//   - 显式按 user 设置：SetBalance(subAccountID, balance)，覆盖默认
 //   - 余额 ≤ 0 → BudgetInactive；> 0 → BudgetActive
 //
 // **零余额行为**：默认余额 0 = 所有未显式 SetBalance 的 user 都被拒绝（safe-by-default）。
@@ -34,7 +34,7 @@ type InMemoryBudgetGate struct {
 
 // NewInMemoryBudgetGate 构造一个进程内余额 Gate。
 //
-// defaultBalance：未在 SetBalance 显式配过的 userID 用这个值。0 = 默认拒绝（safe-by-default）。
+// defaultBalance：未在 SetBalance 显式配过的 subAccountID 用这个值。0 = 默认拒绝（safe-by-default）。
 func NewInMemoryBudgetGate(defaultBalance float64) *InMemoryBudgetGate {
 	return &InMemoryBudgetGate{
 		balances:       make(map[string]float64),
@@ -45,9 +45,9 @@ func NewInMemoryBudgetGate(defaultBalance float64) *InMemoryBudgetGate {
 // Check 实现 BudgetGate.Check：余额 > 0 返回 BudgetActive，否则 BudgetInactive。
 //
 // 不修改余额；纯读判断。
-func (g *InMemoryBudgetGate) Check(_ context.Context, userID string) (domain.BudgetStatus, error) {
+func (g *InMemoryBudgetGate) Check(_ context.Context, subAccountID string) (domain.BudgetStatus, error) {
 	g.mu.RLock()
-	balance, ok := g.balances[userID]
+	balance, ok := g.balances[subAccountID]
 	g.mu.RUnlock()
 	if !ok {
 		balance = g.defaultBalance
@@ -59,35 +59,35 @@ func (g *InMemoryBudgetGate) Check(_ context.Context, userID string) (domain.Bud
 }
 
 // SetBalance 设置 / 覆盖某 user 的余额。admin 调用 / 测试 seed。
-func (g *InMemoryBudgetGate) SetBalance(userID string, balance float64) {
+func (g *InMemoryBudgetGate) SetBalance(subAccountID string, balance float64) {
 	g.mu.Lock()
-	g.balances[userID] = balance
+	g.balances[subAccountID] = balance
 	g.mu.Unlock()
 }
 
-// Deduct 从 userID 余额扣 cost；不存在的 userID 按 defaultBalance 起算。
+// Deduct 从 subAccountID 余额扣 cost；不存在的 subAccountID 按 defaultBalance 起算。
 //
 // 返回扣完后的剩余余额；负数说明这次请求把余额打穿了（M10 完成后调用，事后扣账，
 // 当前请求不会被拒；下次 Check 才生效）。
 //
 // 没接订阅 outbox 事件之前不会被自动调用——v0.5 留为公共 API 让外部脚本 / 测试可以模拟。
-func (g *InMemoryBudgetGate) Deduct(userID string, cost float64) float64 {
+func (g *InMemoryBudgetGate) Deduct(subAccountID string, cost float64) float64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	balance, ok := g.balances[userID]
+	balance, ok := g.balances[subAccountID]
 	if !ok {
 		balance = g.defaultBalance
 	}
 	balance -= cost
-	g.balances[userID] = balance
+	g.balances[subAccountID] = balance
 	return balance
 }
 
 // GetBalance 读当前余额（admin / 测试）。
-func (g *InMemoryBudgetGate) GetBalance(userID string) float64 {
+func (g *InMemoryBudgetGate) GetBalance(subAccountID string) float64 {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	balance, ok := g.balances[userID]
+	balance, ok := g.balances[subAccountID]
 	if !ok {
 		return g.defaultBalance
 	}

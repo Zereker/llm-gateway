@@ -36,8 +36,8 @@ type UsageMeta struct {
 	Model        string
 	Vendor       string
 	EndpointID   string
-	UserID       string
-	APIKeyID     string
+	SubAccountID string // 子账户 / 操作者
+	APIKeyID     string // 命中的 API key
 	ServiceID    string
 	RequestID    string
 	TraceID      string

@@ -89,9 +89,9 @@ func (DefaultCalculator) Calculate(u *domain.Usage, spec *PricingSpec) (float64,
 	if spec.ModelRatio > 0 {
 		ratio *= spec.ModelRatio
 	}
-	if g, ok := spec.GroupRatios[u.Meta.UserID]; ok && g > 0 {
+	if g, ok := spec.GroupRatios[u.Meta.SubAccountID]; ok && g > 0 {
 		// 注意：roadmap 里 group ratio 按 user group（不是 user id）查；
-		// v0.5 简化：UserID 当 group key 用，等 Identity 把 Group 提出来再换
+		// v0.5 简化：SubAccountID 当 group key 用，等 Identity 把 Group 提出来再换
 		ratio *= g
 	}
 	cost := preRatio * ratio

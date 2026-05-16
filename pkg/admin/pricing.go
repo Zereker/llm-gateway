@@ -44,10 +44,10 @@ func listPricingHistory(msStore *ModelServiceStore, pStore *PricingStore) gin.Ha
 		if !ok {
 			return
 		}
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
+		accountID := accountOrDefault(c.Query("account_id"))
 		ruleClass := defaultIfEmpty(c.Query("rule_class"), "standard")
 
-		all, err := pStore.ListHistory(c.Request.Context(), tenantID, msID, ruleClass)
+		all, err := pStore.ListHistory(c.Request.Context(), accountID, msID, ruleClass)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -66,10 +66,10 @@ func getActivePricing(msStore *ModelServiceStore, pStore *PricingStore) gin.Hand
 		if !ok {
 			return
 		}
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
+		accountID := accountOrDefault(c.Query("account_id"))
 		ruleClass := defaultIfEmpty(c.Query("rule_class"), "standard")
 
-		pv, err := pStore.GetActive(c.Request.Context(), tenantID, msID, ruleClass)
+		pv, err := pStore.GetActive(c.Request.Context(), accountID, msID, ruleClass)
 		if err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
@@ -95,10 +95,10 @@ func rotatePricing(msStore *ModelServiceStore, pStore *PricingStore) gin.Handler
 			c.JSON(400, gin.H{"error": "rule_json required"})
 			return
 		}
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
+		accountID := accountOrDefault(c.Query("account_id"))
 		ruleClass := defaultIfEmpty(req.RuleClass, "standard")
 
-		pv, err := pStore.RotatePrice(c.Request.Context(), tenantID, msID, ruleClass,
+		pv, err := pStore.RotatePrice(c.Request.Context(), accountID, msID, ruleClass,
 			datatypes.JSON(req.RuleJSON), req.CreatedBy, req.Notes)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -113,22 +113,22 @@ func rotatePricing(msStore *ModelServiceStore, pStore *PricingStore) gin.Handler
 // =============================================================================
 
 type pricingVersionDTO struct {
-	ID               int64           `json:"id"`
-	TenantID         string          `json:"tenant_id"`
-	ModelServiceID   int64           `json:"model_service_id"`
-	RuleClass        string          `json:"rule_class"`
-	EffectiveFrom    time.Time       `json:"effective_from"`
-	EffectiveTo      *time.Time      `json:"effective_to,omitempty"`
-	RuleJSON         json.RawMessage `json:"rule_json"`
-	CreatedAt        time.Time       `json:"created_at"`
-	CreatedBy        string          `json:"created_by,omitempty"`
-	Notes            string          `json:"notes,omitempty"`
+	ID             int64           `json:"id"`
+	AccountID      string          `json:"account_id"`
+	ModelServiceID int64           `json:"model_service_id"`
+	RuleClass      string          `json:"rule_class"`
+	EffectiveFrom  time.Time       `json:"effective_from"`
+	EffectiveTo    *time.Time      `json:"effective_to,omitempty"`
+	RuleJSON       json.RawMessage `json:"rule_json"`
+	CreatedAt      time.Time       `json:"created_at"`
+	CreatedBy      string          `json:"created_by,omitempty"`
+	Notes          string          `json:"notes,omitempty"`
 }
 
 func pricingToDTO(p *repo.PricingVersion) pricingVersionDTO {
 	return pricingVersionDTO{
 		ID:             p.ID,
-		TenantID:       p.TenantID,
+		AccountID:      p.AccountID,
 		ModelServiceID: p.ModelServiceID,
 		RuleClass:      p.RuleClass,
 		EffectiveFrom:  p.EffectiveFrom,

@@ -135,7 +135,7 @@ func (r *PolicyRule) PickRulesAdditive(model string) []ScopedRule {
 
 // ScopedRule "某个 scope 上的限流配置"。M6 据此构造 Bucket。
 type ScopedRule struct {
-	Scope string           // "*" (default) 或 实际 model 名
+	Scope string            // "*" (default) 或 实际 model 名
 	Quota *repo.QuotaConfig // RPM/TPM/RPS/ConcurrentRequests 任填
 }
 

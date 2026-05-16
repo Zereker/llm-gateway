@@ -14,8 +14,8 @@ import (
 // **抽取来源**：
 //
 //  1. **OTel SpanContext**（从 W3C traceparent 来）→ trace_id / span_id
-//  2. **OTel Baggage** → 全部 members 当 attr（业务侧用 baggage.SetMember 加 user_id /
-//     request_id 等会自动出现在 log）
+//  2. **OTel Baggage** → 全部 members 当 attr（业务侧用 baggage.SetMember 加
+//     sub_account_id / request_id 等会自动出现在 log）
 //
 // **使用约定**：所有需要 trace 关联的 log 都用 `slog.InfoContext(ctx, ...)`（带 ctx 的变体），
 // 不要用 `slog.Info` —— 后者拿不到 ctx，handler 提取不到 trace 信息。
@@ -26,7 +26,7 @@ import (
 //	slog.SetDefault(slog.New(trace.NewCtxHandler(base)))
 //
 // 之后任何代码 `slog.InfoContext(rc.Ctx, "msg", ...)` 自动带 trace_id / span_id /
-// 已注入 baggage 的字段（user_id 等）。
+// 已注入 baggage 的字段（sub_account_id 等）。
 //
 // **没装 OTel TracerProvider 时也工作**：M1 TraceContext middleware 自己用
 // W3C propagator 注入 SpanContext，与是否启用 OTel 上报无关；CtxHandler 只看 ctx，

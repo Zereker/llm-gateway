@@ -47,12 +47,12 @@ type Deps struct {
 	BodyLimit int64         // 0 = 不限制
 	Timeout   time.Duration // 0 = 不限超时
 
-	// Middleware deps（按 M-编号顺序；M3 Envelope 无 deps 不在此列）
+	// Middleware deps（按组件分组；实际执行顺序由各模态路由文件声明）
 	Auth         middleware.AuthDeps         // M2
 	Budget       middleware.BudgetDeps       // M4
 	ModelService middleware.ModelServiceDeps // M5
-	Limit        middleware.LimitDeps        // M6
 	Moderation   middleware.ModerationDeps   // M8
+	Limit        middleware.LimitDeps        // M6
 	Schedule     middleware.ScheduleDeps     // M7
 	Tracing      middleware.TracingDeps      // M10
 }

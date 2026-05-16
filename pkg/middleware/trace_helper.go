@@ -55,4 +55,3 @@ func TraceIDFromCtx(ctx context.Context) string {
 	}
 	return sc.TraceID().String()
 }
-

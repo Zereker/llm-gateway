@@ -19,28 +19,28 @@ import (
 //  3. 字段裁剪 / 计算字段 / 版本演进：API 演化不污染 DB 模型
 //
 // **v0.3 改动**：
-//   - modelServiceDTO 删 tenant_id/group/spec_detail
-//   - endpointDTO 删 tenant_id
+//   - modelServiceDTO 删 account_id/group/spec_detail
+//   - endpointDTO 删 account_id
 //   - apiKeyDTO 加 quota_policy_id
-//   - 新增 tenantDTO / quotaPolicyDTO / subscriptionDTO
+//   - 新增 accountDTO / quotaPolicyDTO / subscriptionDTO
 
 // =============================================================================
-// Tenant
+// Account
 // =============================================================================
 
-type tenantDTO struct {
-	Pin             string  `json:"pin"`
-	Name            string  `json:"name"`
-	Enabled         bool    `json:"enabled"`
-	QuotaPolicyID   *int64  `json:"quota_policy_id,omitempty"`
+type accountDTO struct {
+	Pin           string `json:"pin"`
+	Name          string `json:"name"`
+	Enabled       bool   `json:"enabled"`
+	QuotaPolicyID *int64 `json:"quota_policy_id,omitempty"`
 
 	CreatedAt time.Time  `json:"created_at,omitempty"`
 	UpdatedAt time.Time  `json:"updated_at,omitempty"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
-func tenantToDTO(t *repo.Tenant) tenantDTO {
-	return tenantDTO{
+func accountToDTO(t *repo.Account) accountDTO {
+	return accountDTO{
 		Pin:           t.Pin,
 		Name:          t.Name,
 		Enabled:       t.Enabled,
@@ -51,8 +51,8 @@ func tenantToDTO(t *repo.Tenant) tenantDTO {
 	}
 }
 
-func dtoToTenant(d tenantDTO) *repo.Tenant {
-	return &repo.Tenant{
+func dtoToAccount(d accountDTO) *repo.Account {
+	return &repo.Account{
 		Pin:           d.Pin,
 		Name:          d.Name,
 		Enabled:       d.Enabled,
@@ -104,20 +104,20 @@ func dtoToQuotaPolicy(d quotaPolicyDTO) *repo.QuotaPolicy {
 // =============================================================================
 
 type subscriptionDTO struct {
-	ID               int64  `json:"id,omitempty"`
-	TenantID         string `json:"tenant_id"`
-	ModelServiceID   int64  `json:"model_service_id"`
-	Enabled          bool   `json:"enabled"`
+	ID             int64  `json:"id,omitempty"`
+	AccountID      string `json:"account_id"`
+	ModelServiceID int64  `json:"model_service_id"`
+	Enabled        bool   `json:"enabled"`
 
 	CreatedAt time.Time  `json:"created_at,omitempty"`
 	UpdatedAt time.Time  `json:"updated_at,omitempty"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
-func subscriptionToDTO(s *repo.TenantModelSubscription) subscriptionDTO {
+func subscriptionToDTO(s *repo.AccountModelSubscription) subscriptionDTO {
 	return subscriptionDTO{
 		ID:             s.ID,
-		TenantID:       s.TenantID,
+		AccountID:      s.AccountID,
 		ModelServiceID: s.ModelServiceID,
 		Enabled:        s.Enabled,
 		CreatedAt:      s.CreatedAt,
@@ -131,9 +131,9 @@ func subscriptionToDTO(s *repo.TenantModelSubscription) subscriptionDTO {
 // =============================================================================
 
 type modelServiceDTO struct {
-	ID         int64  `json:"id,omitempty"`
-	ServiceID  string `json:"service_id"`
-	Model      string `json:"model"`
+	ID        int64  `json:"id,omitempty"`
+	ServiceID string `json:"service_id"`
+	Model     string `json:"model"`
 
 	CreatedAt time.Time  `json:"created_at,omitempty"`
 	UpdatedAt time.Time  `json:"updated_at,omitempty"`
@@ -169,13 +169,13 @@ func dtoToMS(d modelServiceDTO) *repo.ModelService {
 //   - 入站（POST/PUT body）：明文 {"type":"bearer", "payload":{"api_key":"sk-..."}}
 //   - 出站（GET 响应）：repo.AuthConfig.MarshalJSON 屏蔽成 {"type":"bearer","payload":"***"}
 type endpointDTO struct {
-	ID       int64  `json:"id,omitempty"`
-	Name     string `json:"name"`
-	Vendor   string `json:"vendor"`
-	Model    string `json:"model"`
-	Group    string `json:"group"`
-	Weight   uint32 `json:"weight"`
-	Enabled  bool   `json:"enabled"`
+	ID      int64  `json:"id,omitempty"`
+	Name    string `json:"name"`
+	Vendor  string `json:"vendor"`
+	Model   string `json:"model"`
+	Group   string `json:"group"`
+	Weight  uint32 `json:"weight"`
+	Enabled bool   `json:"enabled"`
 
 	Auth         repo.AuthConfig           `json:"auth"`
 	Routing      repo.RoutingConfig        `json:"routing"`
@@ -232,11 +232,11 @@ func dtoToEp(d endpointDTO) *repo.Endpoint {
 // apiKeyDTO 普通 GET / List 用：**不返明文 api_key**（已 hash），只返 prefix。
 type apiKeyDTO struct {
 	ID            int64      `json:"id,omitempty"`
-	TenantID      string     `json:"tenant_id"`
+	AccountID     string     `json:"account_id"`
 	APIKeyID      string     `json:"api_key_id"`
 	APIKeyPrefix  string     `json:"api_key_prefix"`
 	Name          string     `json:"name,omitempty"`
-	UserID        string     `json:"user_id"`
+	SubAccountID  string     `json:"sub_account_id"`
 	Group         string     `json:"group"`
 	ExternalUser  bool       `json:"external_user"`
 	Enabled       bool       `json:"enabled"`
@@ -253,11 +253,11 @@ type apiKeyDTO struct {
 func apiKeyToDTO(k *repo.APIKey) apiKeyDTO {
 	return apiKeyDTO{
 		ID:            k.ID,
-		TenantID:      k.TenantID,
+		AccountID:     k.AccountID,
 		APIKeyID:      k.APIKeyID,
 		APIKeyPrefix:  k.APIKeyPrefix,
 		Name:          k.Name,
-		UserID:        k.UserID,
+		SubAccountID:  k.SubAccountID,
 		Group:         k.Group,
 		ExternalUser:  k.ExternalUser,
 		Enabled:       k.Enabled,

@@ -53,7 +53,7 @@ type Config struct {
 //
 //	driver:
 //	  alwayspass — 默认；永远放行（开发 / 无付费体系）
-//	  inmemory   — 进程内余额跟踪（适合单实例 demo / 单租户）；丢内存重启清零
+//	  inmemory   — 进程内余额跟踪（适合单实例 demo / 单主账号）；丢内存重启清零
 //
 // inmemory 时 default_balance 是新 user 首次出现时分配的余额（USD）。
 // 0 = safe-by-default 拒绝（必须 admin 显式 SetBalance 才能用）。

@@ -6,8 +6,8 @@ import (
 
 // EndpointReader gateway 数据平面（M7 Schedule middleware）+ admin 读侧接口。
 //
-// **v0.3 改动**：去 tenantID 参数——endpoints 是全局上游池，不再 per-tenant。
-// 未来 BYOK（tenant 自带 endpoint）需要时再加 nullable tenant_id 过滤。
+// **v0.3 改动**：去 accountID 参数——endpoints 是全局上游池，不再 per-account。
+// 未来 BYOK（account 自带 endpoint）需要时再加 nullable account_id 过滤。
 //
 // gateway 用 PickForModel；admin 用 GetByID + List。
 //

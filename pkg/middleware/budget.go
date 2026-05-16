@@ -16,7 +16,7 @@ import (
 //
 // Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
 type BudgetGate interface {
-	Check(c context.Context, userID string) (domain.BudgetStatus, error)
+	Check(c context.Context, subAccountID string) (domain.BudgetStatus, error)
 }
 
 // BudgetDeps M4 Budget middleware 的依赖。
@@ -27,7 +27,7 @@ type BudgetDeps struct {
 	Gate BudgetGate
 }
 
-// Budget 是 M4：调 BudgetGate 判断当前 userID 是否仍可消费。
+// Budget 是 M4：调 BudgetGate 判断当前 subAccountID 是否仍可消费。
 //
 // 失败行为：
 //   - Gate 报错 → 502 / ErrUnknown / "budget check error: <err>"（计费系统挂；不应放过）
@@ -48,7 +48,7 @@ func Budget(deps BudgetDeps) gin.HandlerFunc {
 		defer end()
 		rc.Ctx = ctx
 
-		status, err := deps.Gate.Check(rc.Ctx, rc.Identity.UserID)
+		status, err := deps.Gate.Check(rc.Ctx, rc.Identity.SubAccountID)
 		if err != nil {
 			metric.Inc(metric.BudgetCheckTotal, "result", "error")
 			abort(c, 502, domain.ErrUnknown, "budget check error: "+err.Error())

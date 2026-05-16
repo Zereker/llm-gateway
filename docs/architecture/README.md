@@ -1,32 +1,31 @@
 # Architecture
 
-本目录是 llm-gateway 的架构与实现规范文档，是代码实现的**唯一真源**。
+本目录记录 `llm-gateway` 的目标架构约定。项目仍在设计阶段，代码实现以本文档为准；若实现方案需要改变目标边界，应先更新本目录再改代码。
 
 ## 文档列表
 
-按依赖顺序阅读：
-
 | # | 文档 | 主题 |
-|---|------|-----|
-| 00 | [overview](00-overview.md) | 项目目标、设计原则、系统全景、术语表 |
-| 01 | [request-pipeline](01-request-pipeline.md) | `RequestContext` 数据结构 + 10 个 middleware 的契约（输入/输出/错误/顺序约束） |
-| 02 | [protocol-translation](02-protocol-translation.md) | `Adapter` / `RequestEnvelope` / `Translator` / `ResponseSession` 接口与数据流 |
-| 03 | [endpoint-scheduling](03-endpoint-scheduling.md) | `Scheduler` + Filter 链 + `RetryExecutor` 三级降级 + Cooldown / PrefixCache |
-| 04 | [rate-limiting](04-rate-limiting.md) | 三层限流（用户 / 模型 / endpoint）+ `LimitSpec` 四级查询链 + 预检 / Consume 协议 |
-| 05 | [metering-billing](05-metering-billing.md) | `Usage` 数据总线 + `TokenExtractor` + `PricingSpec` 版本化 + 异步管道 |
-| 06 | [pluggable-infra](06-pluggable-infra.md) | `ConfigStore` / `IdentityProvider` / `BudgetChecker` / `UsageEventBus` 抽象接口与默认实现策略 |
-| 07 | [roadmap](07-roadmap.md) | 开源版分阶段路线图（v0.1 MVP → v0.5 → v1.0）+ 验收标准 |
+|---|------|------|
+| 00 | [overview](00-overview.md) | 目标系统边界、组件分层、请求生命周期 |
+| 01 | [request-pipeline](01-request-pipeline.md) | `domain.RequestContext` 与 middleware 链路 |
+| 02 | [protocol-translation](02-protocol-translation.md) | slim adapter、translator、上游转发边界 |
+| 03 | [endpoint-scheduling](03-endpoint-scheduling.md) | endpoint 候选、批内选择、显式 fallback、runtime scoring |
+| 04 | [rate-limiting](04-rate-limiting.md) | 用户侧 RPM/RPS 前扣、TPM 后扣、endpoint quota |
+| 05 | [metering-billing](05-metering-billing.md) | 内容记录、Usage Event、Metrics / Trace、下游计费边界 |
+| 06 | [pluggable-infra](06-pluggable-infra.md) | DB、Redis、Kafka、OTel、预算和审核的注入点 |
+| 07 | [configuration](07-configuration.md) | gateway/admin 配置 schema、环境变量覆盖、校验规则 |
+| 08 | [observability](08-observability.md) | 日志、指标、trace、Usage Event、Content Log 观测契约 |
 
-## 文档约定
+## 目标实现重点
 
-- **接口签名权威**：文档中的 Go interface / struct 字段是实现规范，PR 修改代码必须同步修改对应文档。
-- **跨主题改动**：涉及多个主题的设计变更（如新增 middleware、新增字段到 `RequestContext`），需在同一 PR 中更新所有相关文档。
-- **示例代码**：仅示例，不要求逐字与代码一致；接口签名、字段名、错误语义是规范。
+- 数据面入口是 `cmd/gateway`，管理面入口是 `cmd/admin`。
+- catalog、endpoint、API key、订阅、quota policy 等由 SQL schema 管理；gateway 启动只校验 schema，不负责建表。
+- gateway 依赖 Redis 执行 M6 限流和 scheduler cooldown。
+- 客户端入口覆盖 OpenAI Chat、Anthropic Messages、OpenAI Responses、Images、Audio、Embeddings 路由；Gemini 当前作为上游协议支持，不暴露 Gemini 客户端入口。
+- adapter 是 HTTP 层工厂；协议 shape 转换和 usage 提取在 `pkg/translator` / `pkg/usage`。
 
-## 适用范围
+## 维护约定
 
-- ✅ 服务端架构、组件接口、跨组件协议
-- ✅ 可扩展性 / 插件接入指南（写在 06）
-- ❌ 用户使用指南（放在 `docs/usage/`）
-- ❌ Provider 接入教程（放在 `docs/providers/`）
-- ❌ 运维 / 部署文档（放在 `docs/operations/`）
+- 修改 `pkg/domain.RequestContext`、middleware 顺序、adapter/translator 接口、schema 或配置项时，同步更新本目录。
+- 示例代码只说明关键契约，不要求逐字复制实现；字段名、组件边界、错误语义必须准确。
+- 不要把未实现的远期蓝图写成已实现能力；未来功能按本目录目标边界逐步实现。

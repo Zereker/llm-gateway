@@ -13,7 +13,7 @@ import (
 //
 // 只声明读方法（admin 写走 pkg/admin.QuotaPolicyStore）。
 //
-// **v0.5 直查 DB，无缓存**——M6 每请求 2 次（tenant + apikey policy）。
+// **v0.5 直查 DB，无缓存**——M6 每请求 2 次（ account + apikey policy）。
 // 真上量后加 LRU + TTL；schema 不变。
 //
 // Implementations MUST be safe for concurrent use。

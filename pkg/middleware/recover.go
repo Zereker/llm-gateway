@@ -24,11 +24,8 @@ func Recover() gin.HandlerFunc {
 			if r := recover(); r != nil {
 				metric.Inc(metric.PanicTotal, "component", "middleware")
 				// 用带 ctx 的 log API：trace.CtxHandler 自动从 ctx 抽 trace_id /
-				// span_id / request_id / user_id 加进 record。
-				ctx := c.Request.Context() // fallback：没 RC 时用 gin 的原 ctx
-				if rc := TryGetRequestContext(c); rc != nil && rc.Ctx != nil {
-					ctx = rc.Ctx
-				}
+				// span_id / request_id / sub_account_id 加进 record。
+				ctx := GetRequestContext(c).Ctx
 				slog.ErrorContext(ctx, "panic recovered",
 					"recover", r,
 					"stack", string(debug.Stack()),
@@ -43,7 +40,7 @@ func Recover() gin.HandlerFunc {
 
 		c.Next()
 
-		if rc := TryGetRequestContext(c); rc != nil && rc.Error != nil && !c.Writer.Written() {
+		if rc := GetRequestContext(c); rc.Error != nil && !c.Writer.Written() {
 			writeError(c, rc.Error)
 		}
 	}
@@ -65,9 +62,8 @@ func writeError(c *gin.Context, e *domain.AdapterError) {
 		"code":    e.Class.String(),
 		"message": e.Message,
 	}
-	if rc := TryGetRequestContext(c); rc != nil {
-		errBody["request_id"] = rc.RequestID
-		errBody["trace_id"] = TraceIDFromCtx(rc.Ctx)
-	}
+	rc := GetRequestContext(c)
+	errBody["request_id"] = rc.RequestID
+	errBody["trace_id"] = TraceIDFromCtx(rc.Ctx)
 	c.AbortWithStatusJSON(status, gin.H{"error": errBody})
 }

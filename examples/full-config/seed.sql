@@ -1,6 +1,6 @@
 -- examples/full-config/seed.sql
 --
--- 示例数据：3 quota policies + 1 tenant + 3 model services + 4 endpoints + 1 api key
+-- 示例数据：3 quota policies + 1 account + 3 model services + 4 endpoints + 1 api key
 --                     + 3 model subscriptions + 3 pricing versions
 --
 -- 先跑 pkg/infra/schema.sql 建表，再跑本文件 seed 数据。
@@ -30,10 +30,10 @@ INSERT INTO quota_policies (name, description, rule_json) VALUES
  JSON_OBJECT('default', JSON_OBJECT()));
 
 -- ============================================================================
--- 2) tenants
+-- 2) accounts
 -- ============================================================================
 
-INSERT INTO tenants (pin, name, quota_policy_id) VALUES
+INSERT INTO accounts (pin, name, quota_policy_id) VALUES
 ('demo-acme', 'ACME Corp (demo)', (SELECT id FROM quota_policies WHERE name='tier1'));
 
 -- ============================================================================
@@ -47,10 +47,10 @@ INSERT INTO model_services (service_id, model) VALUES
 ('openai/gpt-4o-via-gemini',            'gemini-1.5-pro');
 
 -- ============================================================================
--- 4) tenant_model_subscriptions：demo-acme 订阅全部三个 model
+-- 4) account_model_subscriptions：demo-acme 订阅全部三个 model
 -- ============================================================================
 
-INSERT INTO tenant_model_subscriptions (tenant_id, model_service_id)
+INSERT INTO account_model_subscriptions (account_id, model_service_id)
 SELECT 'demo-acme', id FROM model_services;
 
 -- ============================================================================
@@ -78,18 +78,18 @@ SELECT 'demo-acme', id FROM model_services;
 -- ============================================================================
 
 -- 占位：admin 生成 hash 后这里看起来类似：
---   INSERT INTO api_keys (tenant_id, api_key_hash, api_key_prefix, api_key_id, user_id, group_name, quota_policy_id)
+--   INSERT INTO api_keys (account_id, api_key_hash, api_key_prefix, api_key_id, sub_account_id, group_name, quota_policy_id)
 --     VALUES ('demo-acme', '<sha256-of-sk-demo-abc...>', 'sk-demo', 'ak_demo_alice',
 --             'alice@demo-acme', 'default', (SELECT id FROM quota_policies WHERE name='tier1'));
 
 -- ============================================================================
--- 7) pricing_versions：每个 (tenant, model_service, rule_class) 至少一条 effective_to=NULL 当前价
+-- 7) pricing_versions：每个 (account, model_service, rule_class) 至少一条 effective_to=NULL 当前价
 --
 -- rule_json 是 PricingSpec 的 JSON 表示（pkg/usage/pricing.go）。
 -- 这里给三个 model 都配 standard 档；BaseUnit=1K_tokens；只配 input/output 单价。
 -- ============================================================================
 
-INSERT INTO pricing_versions (tenant_id, model_service_id, rule_class, effective_from, rule_json, notes) VALUES
+INSERT INTO pricing_versions (account_id, model_service_id, rule_class, effective_from, rule_json, notes) VALUES
 ('demo-acme',
  (SELECT id FROM model_services WHERE service_id='openai/gpt-4o'),
  'standard',

@@ -24,7 +24,7 @@ type AuthDeps struct {
 //
 // 成功后：
 //   - rc.Identity 字段全部填充
-//   - user_id 写入 OTel baggage；trace.CtxHandler 让所有后续 log record 自动带 user_id 字段
+//   - sub_account_id 写入 OTel baggage；trace.CtxHandler 让所有后续 log record 自动带 sub_account_id 字段
 func Auth(deps AuthDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -47,12 +47,12 @@ func Auth(deps AuthDeps) gin.HandlerFunc {
 		}
 
 		rc.Identity = *u
-		if member, err := baggage.NewMember("user_id", u.UserID); err == nil {
+		if member, err := baggage.NewMember("sub_account_id", u.SubAccountID); err == nil {
 			if newBag, err := baggage.FromContext(rc.Ctx).SetMember(member); err == nil {
 				rc.Ctx = baggage.ContextWithBaggage(rc.Ctx, newBag)
 			}
 		}
-		
+
 		metric.Inc(metric.AuthTotal, "result", "ok")
 		c.Next()
 	}

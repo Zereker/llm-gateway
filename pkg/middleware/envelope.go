@@ -44,7 +44,7 @@ func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerF
 //   - 校验 body 合法性——translator 在 TranslateRequest 内部失败即可
 //   - 流式判断——translator 内部从 body 自己读 stream 字段
 //
-// **不重置 c.Request.Body**：所有 body 消费者（M6 / M7 / M8 / token estimator /
+// **不重置 c.Request.Body**：所有 body 消费者（M8 / M6 / M7 / token estimator /
 // translator）都走 rc.Envelope.RawBytes；adapter 已 slim 化只构 HTTP request from
 // translator 输出，不读 c.Request.Body。0 个真消费者后 NopCloser 重置就是 noise。
 //

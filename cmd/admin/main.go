@@ -93,7 +93,7 @@ func buildEngine(cfg *config.AdminConfig) (engine *gin.Engine, srv *server.Serve
 
 	engine = admin.NewEngine(admin.Deps{
 		Token:             cfg.Admin.Token,
-		TenantStore:       admin.NewTenantStore(gdb),
+		AccountStore:      admin.NewAccountStore(gdb),
 		QuotaPolicyStore:  admin.NewQuotaPolicyStore(gdb),
 		ModelServiceStore: admin.NewModelServiceStore(gdb),
 		SubscriptionStore: admin.NewSubscriptionStore(gdb),

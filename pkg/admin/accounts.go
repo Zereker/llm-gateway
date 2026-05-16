@@ -4,71 +4,71 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// registerTenantRoutes 注册 /admin/v1/tenants CRUD。
+// registerAccountRoutes 注册 /admin/v1/accounts CRUD。
 //
-//	GET    /tenants                列表
-//	POST   /tenants                创建（pin + name 必填）
-//	GET    /tenants/:pin           详情
-//	PUT    /tenants/:pin           改 name / enabled / quota_policy_id
-//	DELETE /tenants/:pin           软删
-func registerTenantRoutes(api *gin.RouterGroup, s *TenantStore) {
-	api.GET("/tenants", listTenants(s))
-	api.POST("/tenants", createTenant(s))
-	api.GET("/tenants/:pin", getTenant(s))
-	api.PUT("/tenants/:pin", updateTenant(s))
-	api.DELETE("/tenants/:pin", deleteTenant(s))
+//	GET    /accounts                列表
+//	POST   /accounts                创建（pin + name 必填）
+//	GET    /accounts/:pin           详情
+//	PUT    /accounts/:pin           改 name / enabled / quota_policy_id
+//	DELETE /accounts/:pin           软删
+func registerAccountRoutes(api *gin.RouterGroup, s *AccountStore) {
+	api.GET("/accounts", listAccounts(s))
+	api.POST("/accounts", createAccount(s))
+	api.GET("/accounts/:pin", getAccount(s))
+	api.PUT("/accounts/:pin", updateAccount(s))
+	api.DELETE("/accounts/:pin", deleteAccount(s))
 }
 
-func listTenants(s *TenantStore) gin.HandlerFunc {
+func listAccounts(s *AccountStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		all, err := s.List(c.Request.Context())
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		items := make([]tenantDTO, len(all))
+		items := make([]accountDTO, len(all))
 		for i := range all {
-			items[i] = tenantToDTO(&all[i])
+			items[i] = accountToDTO(&all[i])
 		}
 		c.JSON(200, gin.H{"items": items})
 	}
 }
 
-func getTenant(s *TenantStore) gin.HandlerFunc {
+func getAccount(s *AccountStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		t, err := s.GetByPin(c.Request.Context(), c.Param("pin"))
 		if err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, tenantToDTO(t))
+		c.JSON(200, accountToDTO(t))
 	}
 }
 
-func createTenant(s *TenantStore) gin.HandlerFunc {
+func createAccount(s *AccountStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var dto tenantDTO
+		var dto accountDTO
 		if err := c.ShouldBindJSON(&dto); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		t := dtoToTenant(dto)
+		t := dtoToAccount(dto)
 		if err := s.Create(c.Request.Context(), t); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(201, tenantToDTO(t))
+		c.JSON(201, accountToDTO(t))
 	}
 }
 
-func updateTenant(s *TenantStore) gin.HandlerFunc {
+func updateAccount(s *AccountStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req tenantUpdateRequest
+		var req accountUpdateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		updates := TenantUpdates{
+		updates := AccountUpdates{
 			Name:             req.Name,
 			Enabled:          req.Enabled,
 			QuotaPolicyID:    req.QuotaPolicyID,
@@ -84,11 +84,11 @@ func updateTenant(s *TenantStore) gin.HandlerFunc {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, tenantToDTO(t))
+		c.JSON(200, accountToDTO(t))
 	}
 }
 
-func deleteTenant(s *TenantStore) gin.HandlerFunc {
+func deleteAccount(s *AccountStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := s.Delete(c.Request.Context(), c.Param("pin")); err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
@@ -98,8 +98,8 @@ func deleteTenant(s *TenantStore) gin.HandlerFunc {
 	}
 }
 
-// tenantUpdateRequest PUT body；nil = 不动。
-type tenantUpdateRequest struct {
+// accountUpdateRequest PUT body；nil = 不动。
+type accountUpdateRequest struct {
 	Name             *string `json:"name,omitempty"`
 	Enabled          *bool   `json:"enabled,omitempty"`
 	QuotaPolicyID    *int64  `json:"quota_policy_id,omitempty"`

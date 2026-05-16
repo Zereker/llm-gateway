@@ -6,7 +6,7 @@
 #   - cooldown 按 ErrorClass 分维度配
 #   - 多 model + 多 endpoint 的典型配置（数据走 admin SQL，本文件只配运行时）
 #
-# 配套 seed：seed.sql（多 tenant / model_services / endpoints / api_keys / quota_policies）
+# 配套 seed：seed.sql（多 account / model_services / endpoints / api_keys / quota_policies）
 # 启动顺序：docker compose up -d → mysql < seed.sql → 启动 admin → 启动 gateway
 
 server:
@@ -60,7 +60,7 @@ moderation:
   # base_url: "https://api.openai.com"
 
 scheduler:
-  # 生产推荐 filter chain：cooldown（隔离故障 ep）→ limit_read（避开已限流 ep）
+  # 生产推荐 filter chain：cooldown（隔离故障 ep）→ limit_read（read-only 避开已限流 ep）
   #                       → weighted_random（按权重抽样）。
   # weighted_random 必须放最后（其它 filter 是 prune；它是 select）。
   filters: [cooldown, limit_read, weighted_random]
@@ -72,5 +72,4 @@ scheduler:
     invalid:   0s     # 客户端 400-class，**不该 cooldown endpoint**
     unknown:   10s    # 兜底；分类不出来的错都按 transient 处理但短时
 
-  max_attempts: 3       # 全局尝试上限（含 L1 同 ep 重试）；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
-  max_per_endpoint: 2   # 同 ep 内部重试 2 次再换 ep；适合 transient 网络抖动场景。1 = 不做 L1 retry
+  max_attempts: 3       # 全局尝试上限；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）

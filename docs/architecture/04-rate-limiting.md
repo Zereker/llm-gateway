@@ -1,443 +1,243 @@
 # 04 — Rate Limiting
 
-本文定义限流层：`domain.LimitSpec` 数据结构、`ratelimit.Checker` 接口、三层 AND 级联、`BuildSpec` 四级查询链，以及与计量 `Usage` 的对接（预检 + 后置 Consume 双阶段）。
+本文记录限流设计目标。限流分两类：
 
-> **阅读前**：[01-request-pipeline](01-request-pipeline.md) 的 M6 Limit 与 M10 Tracing 契约；[02](02-protocol-translation.md) 的 `domain.ErrRateLimit`；[03](03-endpoint-scheduling.md) 的 endpoint Filter 链。
+1. **用户侧 quota**：account / API key / model 维度，M6 处理。
+2. **Endpoint quota**：上游 endpoint 自身容量，M7 选中 endpoint 后处理。
 
-## 1. 范围与目标
+限流 bucket 只服务流控，不作为计费账本。计费以 usage outbox 为准。
 
-**范围**：从 M6 Limit 进入到响应成功后由 M10 Tracing 调 `Consume` 的整条限流链路。
-不含：限流配置如何下发（详见 [06] ConfigStore）；底层存储（Redis / 内存抽象在 [06]）。
+## 1. 设计原则
 
-**目标**：
+- M6 只处理用户侧 quota，不混入 endpoint quota。
+- M7 只对最终选中的 endpoint 做 endpoint quota reserve，不在候选 filter 阶段扣所有 endpoint。
+- 用户侧 RPM / RPS 在请求前 reserve。
+- TPM 不请求前预扣，不读取 `max_tokens`，只在响应后按真实 usage 后扣；它是事后计数器，不保证请求开始前的 token 上限。
+- 不返回 `X-RateLimit-*` headers；限流状态不作为客户端契约暴露。
+- Redis 是生产唯一 Store；多副本 gateway 必须共享计数器。
 
-| # | 目标 | 成功判据 |
-|---|------|---------|
-| G1 | 三层限流全部在主链路生效 | 用户层 / 模型层 / endpoint 层都同步前置 |
-| G2 | 多租户公平 | 单租户超限不影响其他租户；reserved group 独占资源 |
-| G3 | 与 Usage 同源 | 限流扣减输入 = `domain.Usage`；不再独立解析 token |
-| G4 | 超售可控 | 用户配额总和允许 > 模型容量；模型层兜底 + 监控 |
-| G5 | 配置秒级生效 | 通过 [06] ConfigStore Watch 推送；无需发版 |
-| G6 | 副作用剔除 | 调度期 read-only；扣减只在响应成功后做一次 |
+## 2. M6 用户侧限流
 
-## 2. 设计原则
+M6 位于 M5 ModelService 之后、M7 Schedule 之前。
 
-| # | 原则 | 含义 |
-|---|------|------|
-| L1 | **三层 AND 级联** | 用户层 AND 模型层（仅 default group）AND endpoint 层；任一超限即拒 |
-| L2 | **预检 + 后置 Consume 双阶段** | M6 调 `CheckReadOnly`（不写）；M10 调 `Consume(usage)`（按真实用量扣三层桶）|
-| L3 | **Group 决定路径** | `domain.UserIdentity.Group` × `Endpoint.Group` 配置匹配，自然实现 reserved / default 隔离；无 if 分支 |
-| L4 | **模型层共享桶** | 同模型所有 default 用户共享同一个 Redis key，争抢式分配；reserved group 不接触此 key |
-| L5 | **超售允许 + 兜底监控** | 不做"用户配额总和 ≤ 模型容量"校验；模型层硬上限是真实容量保护；超售比 metric 持续观察 |
-| L6 | **四级查询链** | 阈值优先级：apikey > user > model_service.default > 硬编码兜底 |
-| L7 | **Usage 多维** | `Spec` 三层都基于 `domain.Usage` 多维（Input/Output/Reasoning + Details）扣减；新维度自动参与 |
+流程：
 
-## 3. 数据结构
+```text
+identity = rc.Identity
+model = rc.ModelService.Model
 
-### 3.1 domain.LimitSpec
+rules = load account quota policy + api key quota policy
+buckets = build user RPM/RPS buckets by additive policy
+ReserveBatch(buckets)
+if denied:
+    return 429 + Retry-After
 
-```go
-// pkg/ratelimit/spec.go
-package limit
+c.Next()
 
-// Spec 是 M6 Limit 为本次请求构建的三层阈值快照。
-type Spec struct {
-    User     LayerSpec   // 用户层（按 UserID / APIKeyID 维度）
-    Service  *LayerSpec  // 模型层（仅 identity.Group == "default" 时非 nil）
-    Endpoint *LayerSpec  // endpoint 层（M7 选定 endpoint 后由 [03] 填，本层在 M6 时仅占位）
-
-    // 来源标识
-    UserSource    Source // 该层阈值的来源（用于 trace / debug）
-    ServiceSource Source
-}
-
-type LayerSpec struct {
-    RPM   int64 // 每分钟请求数；0 = 不限
-    TPM   int64 // 每分钟 token 数（含 input + output + reasoning + details 总和）
-    RPS   int64 // 每秒请求数；0 = 不限
-    Extra map[string]int64 // 可选维度，如 audio_seconds_per_min
-}
-
-type Source int
-
-const (
-    SourceHardcoded Source = iota // 代码兜底默认值
-    SourceModelDefault            // ModelService.SpecDetail 中的默认值
-    SourceUser                    // 用户级配置
-    SourceAPIKey                  // API Key 级配置
-)
+if rc.Usage != nil:
+    build user TPM buckets by additive policy
+    ChargeBatch(TPM buckets with cost = rc.Usage.Total)
 ```
 
-### 3.2 ratelimit.Checker 接口
+RPM / RPS 是前扣：cost 固定为 1，请求开始前已知，用于挡住请求洪峰。
+
+TPM 是后扣：请求已经完成后才知道真实 token，因此不做 pre-reserve。TPM 后扣失败不改变本次响应。用户侧 ReserveBatch 默认不读取 TPM bucket，所以 TPM 超限本身不会拒绝后续请求；它用于事后观测、报表和运营告警。需要强 token 上限的业务应配置更严格的 RPM/RPS 或另行引入显式的 TPM soft-check 方案。
+
+## 3. 数据来源
+
+身份来自 M2：
 
 ```go
-// pkg/ratelimit/checker.go
-package limit
-
-import (
-    "context"
-
-    "github.com/zereker/llm-gateway/pkg/domain"
-    "github.com/zereker/llm-gateway/pkg/schedule"
-    "github.com/zereker/llm-gateway/pkg/usage"
-)
-
-type Checker interface {
-    // BuildSpec 为本次请求构建三层阈值（不含 Endpoint 层；endpoint 选定后由 [03] 单独 read 检查）
-    BuildSpec(id domain.UserIdentity, ms *domain.ModelServiceSnapshot) *Spec
-
-    // CheckReadOnly 三层预检（用户层 + 模型层）。read-only，不写桶。
-    // Endpoint 层不在此处检查（在 [03] 的 LimitReadFilter 内做）。
-    CheckReadOnly(ctx context.Context, spec *Spec, id domain.UserIdentity, ms *domain.ModelServiceSnapshot) CheckResult
-
-    // PeekEndpoint 给 [03] LimitReadFilter 用：读 endpoint 层当前使用率。
-    PeekEndpoint(ctx context.Context, ep *domain.Endpoint) EndpointUsage
-
-    // Consume 响应成功后由 M10 调用。按真实 Usage 扣三层桶。
-    Consume(ctx context.Context, spec *Spec, id domain.UserIdentity, ep *domain.Endpoint, u *domain.Usage) error
-}
-
-type CheckResult struct {
-    UserBlocked    bool   // 用户层超限 → M6 直接 abort 429
-    ServiceBlocked bool   // 模型层超限 → 不 abort，写 rc.Extras["service_blocked"]，让 [03] 决定 fallback
-    Reason         string
-}
-
-type EndpointUsage struct {
-    RPMUsed int64 // 当前分钟已用
-    RPMCap  int64
-    TPMUsed int64
-    TPMCap  int64
-    RPSUsed int64
-    RPSCap  int64
+type UserIdentity struct {
+    AccountID             string
+    SubAccountID          string
+    APIKeyID              string
+    Group                 string
+    ExternalUser          bool
+    AccountQuotaPolicyID  *int64
+    APIKeyQuotaPolicyID   *int64
 }
 ```
 
-## 4. BuildSpec 四级查询链
+quota policy 来自 SQL 表 `quota_policies`，`rule_json` 解析为：
 
 ```go
-func (c *DefaultChecker) BuildSpec(id domain.UserIdentity, ms *domain.ModelServiceSnapshot) *Spec {
-    spec := &Spec{}
-
-    // 用户层：APIKey > User > ModelService.default > Hardcoded
-    if userLayer, src := c.lookupUser(id, ms); userLayer != nil {
-        spec.User = *userLayer
-        spec.UserSource = src
-    } else {
-        spec.User = c.hardcoded.User
-        spec.UserSource = SourceHardcoded
-    }
-
-    // 模型层：仅 default group 走
-    if id.Group == "default" {
-        if svcLayer := c.lookupService(ms); svcLayer != nil {
-            spec.Service = svcLayer
-            spec.ServiceSource = SourceModelDefault
-        }
-    }
-
-    // Endpoint 层：M7 选定 endpoint 后由 [03] 内的 LimitReadFilter 单独读
-    return spec
-}
-
-func (c *DefaultChecker) lookupUser(id domain.UserIdentity, ms *domain.ModelServiceSnapshot) (*LayerSpec, Source) {
-    if l := c.store.GetAPIKeyLimit(id.APIKeyID, ms.ServiceID); l != nil {
-        return l, SourceAPIKey
-    }
-    if l := c.store.GetUserLimit(id.UserID, ms.ServiceID); l != nil {
-        return l, SourceUser
-    }
-    if l := c.store.GetServiceDefaultUserLimit(ms.ServiceID); l != nil {
-        return l, SourceModelDefault
-    }
-    return nil, SourceHardcoded
+type PolicyRule struct {
+    Default  *QuotaConfig           `json:"default,omitempty"`
+    PerModel map[string]QuotaConfig `json:"per_model,omitempty"`
 }
 ```
 
-## 5. Redis Key Schema
+示例：
 
-| 层 | Key 模式 | 维度 | 语义 |
-|---|---------|------|------|
-| 用户层 | `rl:user:{user_id_or_apikey}:{service_id}:{window}` | 每用户一桶 | 防单用户挤占 |
-| 模型层 | `rl:service:{service_id}:default:{window}` | 全局单桶（default group 共享）| 防整体超模型容量 |
-| Endpoint 层 | `rl:endpoint:{endpoint_id}:{window}` | 每 endpoint 一桶 | 防打爆上游 |
-
-`{window}` 由 `WindowKey(now)` 计算，按算法不同：
-
-```go
-// 默认 Fixed Window
-func WindowKey(now time.Time, granularity time.Duration) string {
-    return strconv.FormatInt(now.Truncate(granularity).Unix(), 10)
+```json
+{
+  "default": {"rpm": 60, "tpm": 100000},
+  "per_model": {
+    "gpt-4o": {"rpm": 10, "tpm": 30000}
+  }
 }
-// RPM: granularity = time.Minute → "1714723200"
-// RPS: granularity = time.Second → "1714723245"
 ```
 
-> **重要**：模型层 key 不含 `user_id`；所有 default group 用户**共用同一桶**，争抢式分配。reserved group 用户的请求路径根本不接触此 key（M6 内 `if id.Group == "default"` 判断后才查）。
+## 4. Additive 语义
 
-### 5.1 Lua 脚本（原子 INCRBY + EXPIRE）
+`PolicyRule.PickRulesAdditive(model)` 同时返回：
 
-```lua
--- limit_check.lua
--- KEYS[1] = bucket key
--- ARGV[1] = capacity（阈值）
--- ARGV[2] = increment（本次预扣量；CheckReadOnly 时 = 0，Consume 时 = usage 值）
--- ARGV[3] = ttl_seconds
--- 返回：{current, blocked}  blocked = 1 表示超限
+- default rule，scope 为 `*`
+- 命中的 per-model rule，scope 为当前 model
 
-local current = redis.call('GET', KEYS[1])
-if current == false then current = 0 else current = tonumber(current) end
+两者都存在时会同时消耗。这样 per-model 是 default 的子上限，避免“命中 per-model 后绕过总量上限”。
 
-local cap = tonumber(ARGV[1])
-local incr = tonumber(ARGV[2])
+主账号层和 API key 层也会同时消耗；两层策略彼此独立、叠加生效。RPM/RPS 这类前扣 bucket 任一超限则整批拒绝；TPM bucket 是后扣计数器，不参与请求前拒绝。
 
-if cap > 0 and current + incr > cap then
-    return {current, 1}
-end
+## 5. Redis Store 接口
 
-if incr > 0 then
-    local new = redis.call('INCRBY', KEYS[1], incr)
-    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
-    return {new, 0}
-end
-
-return {current, 0}
-```
-
-**调用方式**：
-- `CheckReadOnly`：`incr = 0`，仅读 + 比较，不写
-- `Consume`：`incr = 实际 Usage 值`，原子 INCR + EXPIRE
-
-### 5.2 Store 接口（[06] 中定义）
+目标接口：
 
 ```go
-// pkg/ratelimit/store.go
-package limit
-
-import "context"
-
 type Store interface {
-    EvalLimit(ctx context.Context, key string, cap, incr int64, ttlSec int64) (current int64, blocked bool, err error)
-
-    // 配置查询：从 ConfigStore 加载并缓存（详见 [06]）
-    GetAPIKeyLimit(apiKeyID, serviceID string) *LayerSpec
-    GetUserLimit(userID, serviceID string) *LayerSpec
-    GetServiceDefaultUserLimit(serviceID string) *LayerSpec
-    GetServiceLimit(serviceID string) *LayerSpec        // 模型层硬上限
-    GetEndpointLimit(endpointID string) *LayerSpec      // endpoint 层硬上限
+    ReserveBatch(ctx context.Context, buckets []Bucket) (allowed bool, violated *BucketViolation, err error)
+    ChargeBatch(ctx context.Context, buckets []Bucket) ([]BucketChargeResult, error)
+    SnapshotBatch(ctx context.Context, buckets []Bucket) ([]BucketState, error)
 }
 ```
 
-> 默认实现支持 Redis（多实例共享）和内存（单实例 / 测试），切换走 [06] Cache 抽象。
+`ReserveBatch` 用于请求前限流，是多 key 原子 all-or-nothing；任一 bucket 超限则整批不写入，调用方返回 429 或换 endpoint。算法使用 sliding window counter，避免 fixed window 边界 2 倍突刺。
 
-## 6. 数据流
+`ChargeBatch` 用于响应后记账，必须写入实际 usage；即使写入后超过上限，也不能拒绝已经完成的响应。返回值可标记哪些 bucket 已经 over limit，供日志、metric 和运营告警使用。
 
-### 6.1 default group 用户
+`SnapshotBatch` 是 read-only，用于后续 endpoint quota / 可观测场景读取当前状态，不产生扣减副作用。
 
-```
-M6 Limit:
-  spec = checker.BuildSpec(rc.Identity, rc.ModelService)
-  // spec.User = APIKey 配置；spec.Service = Model 默认；spec.Endpoint = nil（待 [03] 填）
+## 6. Bucket 命名
 
-  result = checker.CheckReadOnly(ctx, spec, id, ms)
-  // 内部：
-  //   evalLimit("rl:user:alice:gpt-4:current_minute", spec.User.RPM, 0, 60)
-  //   evalLimit("rl:service:gpt-4:default:current_minute", spec.Service.RPM, 0, 60)
-  //   两者均通过 → result = {UserBlocked: false, ServiceBlocked: false}
+M6 用户侧 bucket：
 
-  rc.LimitSpec = spec
-  c.Next()
-
-[03] LimitReadFilter（M7 内）:
-  for ep in candidates:
-    u = checker.PeekEndpoint(ctx, ep)
-    if u.RPMUsed/u.RPMCap > 0.95: 淘汰
-
-[03] 选中 ep1 → callAdapter → 200 → Usage
-
-M10 Tracing:
-  spec.Endpoint = LayerSpec{RPM: ep1.RPM, TPM: ep1.TPM, RPS: ep1.RPS}
-  checker.Consume(ctx, spec, id, ep1, rc.Usage)
-  // 内部三层 INCRBY：
-  //   incr 用户层：input + output + reasoning + sum(details) tokens
-  //   incr 模型层：同上
-  //   incr endpoint 层：同上 + RPM/RPS 各 +1
+```text
+rl:quota:<layer>:<subject>:<scope>:<dim>
 ```
 
-### 6.2 reserved group 用户（如 PTU 客户）
+字段含义：
 
-```
-M6 Limit:
-  spec.Service = nil  （因为 id.Group != "default"）
-  CheckReadOnly:
-    evalLimit("rl:user:bob:gpt-4:current_minute", ..., 0, 60)
-    模型层跳过
-  通过
+- `layer`：`account` 或 `apikey`
+- `subject`：主账号 pin 或 api_key_id
+- `scope`：`*` 或实际 model
+- `dim`：`rpm`、`tpm`、`rps`
 
-M7 Schedule:
-  GroupFilter 只保留 ep.Group == "reserved" 的 endpoint
-  → 选中 reservedEp1
+示例：
 
-M10 Tracing:
-  Consume: 仅扣用户层 + endpoint 层；模型层不动
+```text
+rl:quota:account:default:*:rpm
+rl:quota:account:default:gpt-4o:tpm
+rl:quota:apikey:ak_alice:*:rps
 ```
 
-### 6.3 用户层超限
+M7 endpoint 侧 bucket：
 
-```
-M6 Limit:
-  CheckReadOnly → UserBlocked = true
-  metric.Inc(RateLimitCheckTotal, "layer", "user", "result", "blocked")
-  abort(c, 429, "user rate limit exceeded")
+```text
+rl:endpoint:<endpoint_id>:<dim>
 ```
 
-### 6.4 模型层超限（仅 default group）
+endpoint quota 不暴露给客户端，只用于保护上游容量。
 
-```
-M6 Limit:
-  CheckReadOnly → ServiceBlocked = true
-  metric.Inc(RateLimitCheckTotal, "layer", "service", "result", "blocked")
-  rc.Extras["service_blocked"] = true
-  c.Next()  // 继续走 M7
+## 7. TPM 后扣
 
-M7 Schedule:
-  RetryExecutor 检查 rc.Extras["service_blocked"]：
-  - 如果用户有 reserved group 权限 → 优先尝试 reserved endpoint（需要业务侧授权）
-  - 否则按 default group 走 fallback；全部 cooldown 后返回 429
-```
+不再使用请求体估算 TPM：
 
-> **设计权衡**：模型层超限不直接 429，是为了允许"模型层硬上限达到，但部分 endpoint 还有空闲"时仍能服务（fallback 内的 endpoint 层硬上限更细粒度）。
+- 不读 `max_tokens`。
+- 不使用全局默认输出 token。
+- 不做 `input_chars / 4 + max_tokens` 预扣。
+- 不因为估算过大而提前拒绝请求。
 
-### 6.5 Endpoint 层硬上限
+M7 成功拿到上游响应并提取 usage 后，M6 post-side 按真实值写入用户侧 TPM：
 
-```
-[03] LimitReadFilter:
-  PeekEndpoint(ep1) → RPMUsed/RPMCap = 0.97
-  ep1 被淘汰
-
-如果所有 endpoint 都打满：
-  Scheduler.Pick → nil → RetryExecutor 返回 domain.ErrRateLimit (429)
+```text
+cost = rc.Usage.Total
+ChargeBatch(TPM buckets, cost)
 ```
 
-## 7. 配置 Schema
+如果 `rc.Usage == nil`，本次请求不扣 TPM bucket。该情况应通过 usage extractor / translator 覆盖率逐步减少。
 
-通过 [06] `ConfigStore` 下发；本节定义 schema。
+TPM 后扣的取舍：
 
-```go
-// pkg/ratelimit/config.go
-package limit
+- 优点：不会因预估过大错杀正常请求；实现更简单；不依赖客户端 `max_tokens`。
+- 缺点：并发高时可能超出 TPM 上限，且超限不自动阻断后续请求；这是明确取舍，计费仍以 usage outbox 为准。
 
-// LimitConfig 是 ConfigStore 中限流相关的所有配置的统一形态。
-// 各字段独立放置在不同 ConfigStore 路径下，按需 Watch / 加载。
-type LimitConfig struct {
-    // /ratelimit/apikey/{api_key_id}/{service_id}
-    APIKey map[string]map[string]LayerSpec
+如果 `ChargeBatch` 发现写入后超过 TPM 上限，必须记录 `llm_gateway_tpm_overflow_total{layer,dimension}`，供运营观察“后扣 token 已超过配置上限”的次数。
 
-    // /ratelimit/user/{user_id}/{service_id}
-    User map[string]map[string]LayerSpec
+## 8. Redis 故障行为
 
-    // /ratelimit/service/{service_id}
-    Service map[string]ServiceLimits
-}
+Redis 是限流和 cooldown 的生产依赖，启动期连不上直接 fail-fast。运行期故障按调用点区分：
 
-type ServiceLimits struct {
-    Model       LayerSpec  // 模型层硬上限
-    DefaultUser LayerSpec  // 该模型下用户层默认值（四级查询链的第三级）
-}
+| 调用点 | 默认行为 | 说明 |
+|--------|----------|------|
+| M6 用户侧 `ReserveBatch` | fail-closed，返回 503 + `Retry-After` | 不能确认配额时不放行，避免绕过限流 |
+| M6 用户侧 `ChargeBatch` | 不改变本次响应，记录错误 metric | 请求已经完成，不能再改响应 |
+| M7 endpoint `ReserveBatch` | 当前 endpoint 视为不可用，尝试下一个 endpoint；全部失败则 503 | 避免把 Redis 抖动误判为上游成功 |
+| M7 endpoint `SnapshotBatch` | 不影响调度，该 endpoint 视为无可读配额信息 | read-only filter 不能成为硬依赖 |
+| cooldown set/report | 不影响本次响应，记录错误 metric | cooldown 是保护机制，不是响应成功的必要条件 |
 
-// /ratelimit/endpoint/{endpoint_id} 在 domain.Endpoint.RPM/TPM/RPS 中
+可选 fail-open 只能作为显式配置，必须打 warn log 和 `llm_gateway_ratelimit_fail_open_total`，生产默认关闭。
+
+## 9. Headers
+
+不返回 `X-RateLimit-*` headers。
+
+原因：
+
+- 当前 quota 是 account / API key / model 多桶叠加，很难用一组 header 准确表达。
+- endpoint quota 是上游容量，不是用户权益，不应暴露给客户端。
+- 后扣 TPM 下，请求开始前无法准确给出 token remaining。
+
+拒绝请求时只返回：
+
+- HTTP 429
+- `Retry-After`
+- 错误 body 中包含超限维度和 bucket key，便于排查
+
+## 10. Endpoint 限流
+
+Endpoint quota 属于 M7。
+
+目标流程：
+
+```text
+candidates = list + eligibility filter + cooldown filter
+optional: SnapshotBatch(endpoint buckets) 做 read-only 过滤
+ep = weighted/scored pick
+
+ReserveBatch(endpoint RPM/RPS buckets for selected ep)
+if denied:
+    Scheduler.Report(ep, capacity)
+    exclude ep
+    pick next endpoint
+
+call upstream
+
+if usage != nil:
+    ChargeBatch(endpoint TPM bucket, cost = usage.Total)
 ```
 
-```yaml
-# 示例 ConfigStore key/value
-/ratelimit/apikey/ak_123/svc_gpt4o:
-  RPM: 600
-  TPM: 100000
-/ratelimit/user/alice/svc_gpt4o:
-  RPM: 200
-  TPM: 30000
-/ratelimit/service/svc_gpt4o:
-  Model:
-    RPM: 10000
-    TPM: 5000000
-  DefaultUser:
-    RPM: 60
-    TPM: 10000
-```
+关键约束：
 
-## 8. Hardcoded 兜底
+- 不在 filter 阶段对所有候选 endpoint reserve。
+- 只有最终要尝试的 endpoint 才能扣 endpoint RPM/RPS。
+- endpoint TPM 也按真实 usage 后扣。
+- read-only 过滤只能使用 `SnapshotBatch`。
 
-```go
-// pkg/ratelimit/hardcoded.go
-package limit
+## 11. PolicyCache
 
-var DefaultHardcoded = struct {
-    User LayerSpec
-}{
-    User: LayerSpec{
-        RPM: 60,    // 1 req/sec
-        TPM: 10000, // 10K tokens/min
-        RPS: 5,
-    },
-}
-```
+`ratelimit.PolicyCache` 包装 middleware 定义的 `QuotaPolicyReader`：
 
-> 仅当四级查询链全 miss 时使用；正常运行时应永远命中前三级。
-
-## 9. 超售监控
-
-```
-ratelimit.oversell_ratio{service}
-  = sum_active_users(user_layer.TPM) / model_layer.TPM
-  告警阈值：> 5 持续 1 小时
-
-ratelimit.rejection_rate{service, layer}
-  = blocked_count / total_count
-  告警阈值：layer=user > 0.5%；layer=service > 1%；layer=endpoint > 3%
-```
-
-## 10. 可观测性
-
-```
-ratelimit.check_duration_ms{layer, quantile}
-ratelimit.consume_duration_ms{layer, quantile}
-ratelimit.check_total{layer, result}            # result=pass / blocked
-ratelimit.bucket_value{layer, key_type}         # 当前桶值（不带具体 key 防高基数）
-ratelimit.config_reload_total{source}           # 配置重载次数
-ratelimit.oversell_ratio{service}
-ratelimit.rejection_rate{service, layer}
-```
-
-trace 字段（写入 `rc.LimitSpec`，由 M10 落 trace）：
-
-```
-limit.spec.user.rpm / .tpm / .rps
-limit.spec.user.source           # SourceAPIKey / User / ModelDefault / Hardcoded
-limit.spec.service.rpm / .tpm    # 仅 default group 有
-limit.check.user_used_pct
-limit.check.service_used_pct
-```
-
-## 11. 测试矩阵
-
-| # | 场景 | 预期 |
-|---|------|-----|
-| L1 | 用户层未超 | CheckResult.UserBlocked = false；通过 |
-| L2 | 用户层超 RPM | UserBlocked = true；M6 abort 429 |
-| L3 | 用户层超 TPM | 同上 |
-| L4 | 模型层超（default 用户）| ServiceBlocked = true；M6 不 abort，rc.Extras 写入 |
-| L5 | 模型层超（reserved 用户）| 跳过模型层检查，通过 |
-| L6 | Endpoint 层超 | [03] LimitReadFilter 淘汰该 endpoint；可能触发 fallback |
-| L7 | Consume 写三层 | Redis 三个 key 都 INCRBY；TTL 60s |
-| L8 | Consume reserved 用户 | 仅写用户层 + endpoint 层 |
-| L9 | BuildSpec 四级查询 | APIKey 命中优先；APIKey 缺失退 User；User 缺失退 ModelDefault；全 miss 用 Hardcoded |
-| L10 | 超售比 metric | 配置 sum > 模型容量时，metric 反映正确 |
-| L11 | Lua 脚本原子性 | 并发 100 个 Consume 同 key，最终值 = 100 × incr |
+- 默认 TTL 30 秒。
+- 缓存预解析后的 `PolicyRule`。
+- policy 不存在返回 `nil, nil`，表示该层不限。
+- admin 改 policy 后可调用 `Invalidate` 主动清缓存；否则等待 TTL。
 
 ## 12. 演进规则
 
-- **新增维度**（如 `audio_seconds_per_min`）：在 `LayerSpec.Extra` 加；Consume 时同步扣减；Spec 加可选阈值；本文档第 3.1 节同步
-- **新增分组**（如 "premium"）：identity / endpoint 配置加新值；M6 不需改代码（已通过 group 字段路径分流）；本文档第 6 节加场景
-- **修改 Lua 脚本**：必须保证原子性；测试覆盖并发场景；版本化部署（同时支持新旧）
-- **修改 BuildSpec 查询顺序**：本文档第 4 节同步；评估对存量配置的影响
-- **新增 Source**：`Source` 加常量；本文档第 3.1 节同步；trace label 同步
+- 修改 quota JSON schema 时，同步更新 domain/ratelimit quota 类型、repo row/mapper、admin DTO、示例配置和本文档。
+- 新增限流维度时，必须定义 bucket key 规则、reserve cost 规则和拒绝语义。
+- 不引入内存 Store 作为生产兜底；多副本 gateway 必须共享 Redis 计数器。
+- endpoint quota 不允许在候选 filter 阶段产生扣减副作用。
+- RPM/RPS 前扣使用 `ReserveBatch`；TPM 后扣使用 `ChargeBatch`，不能用 reserve 语义吞掉真实用量。
+- TPM 不做预扣；任何重新引入 TPM 预估的方案都必须说明错杀风险和回滚策略。

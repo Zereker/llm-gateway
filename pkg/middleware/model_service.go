@@ -13,8 +13,8 @@ import (
 //
 // **v0.3 改动**：加 Subscriptions 依赖。M5 三步走：
 //  1. 模型在全局 catalog？
-//  2. 当前 tenant 订阅了？
-//  3. tenant 维度有 active price？
+//  2. 当前 account 订阅了？
+//  3. account 维度有 active price？
 type ModelServiceDeps struct {
 	Provider      repo.ModelServiceReader
 	Subscriptions repo.SubscriptionProvider
@@ -26,8 +26,8 @@ type ModelServiceDeps struct {
 // 失败行为：
 //   - rc.Envelope 为 nil（M3 顺序错） → 500（应该早期 panic / fail-fast）
 //   - 模型未注册（catalog 没这个 model） → 404 / ErrInvalid / "model not found"
-//   - 模型存在但 tenant 没订阅 → 403 / ErrPermanent / "model not subscribed"
-//   - 订阅了但 tenant 维度没 active price → 503 / ErrTransient / "no active version..."
+//   - 模型存在但 account 没订阅 → 403 / ErrPermanent / "model not subscribed"
+//   - 订阅了但 account 维度没 active price → 503 / ErrTransient / "no active version..."
 //
 // 成功后：
 //   - rc.ModelService 字段就绪
@@ -56,7 +56,7 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 		}
 
 		// Step 2: 订阅 ACL
-		subscribed, err := deps.Subscriptions.Has(rc.Ctx, rc.Identity.TenantID, ms.ID)
+		subscribed, err := deps.Subscriptions.Has(rc.Ctx, rc.Identity.AccountID, ms.ID)
 		if err != nil {
 			abort(c, 500, domain.ErrUnknown, "subscription lookup: "+err.Error())
 			return
@@ -68,7 +68,7 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 		}
 
 		// Step 3: 价格快照
-		pv, err := deps.Pricing.GetActive(rc.Ctx, rc.Identity.TenantID, ms.ID, defaultRuleClass, time.Now().UTC())
+		pv, err := deps.Pricing.GetActive(rc.Ctx, rc.Identity.AccountID, ms.ID, defaultRuleClass, time.Now().UTC())
 		if err != nil {
 			abort(c, 503, domain.ErrTransient, err.Error())
 			return

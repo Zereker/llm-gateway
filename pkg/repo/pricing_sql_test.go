@@ -12,8 +12,8 @@ import (
 // seedPricingVersion 直接 INSERT 一条 pricing_versions 行；FK 要求 model_service 已存在。
 func seedPricingVersion(t *testing.T, db *sqlx.DB, pv *PricingVersion) {
 	t.Helper()
-	if pv.TenantID == "" {
-		pv.TenantID = testTenant
+	if pv.AccountID == "" {
+		pv.AccountID = testAccount
 	}
 	if pv.RuleClass == "" {
 		pv.RuleClass = "standard"
@@ -26,10 +26,10 @@ func seedPricingVersion(t *testing.T, db *sqlx.DB, pv *PricingVersion) {
 	}
 	res, err := db.NamedExec(
 		`INSERT INTO pricing_versions
-		 (tenant_id, model_service_id, rule_class, effective_from, effective_to,
+		 (account_id, model_service_id, rule_class, effective_from, effective_to,
 		  rule_json, created_by, notes)
 		 VALUES
-		 (:tenant_id, :model_service_id, :rule_class, :effective_from, :effective_to,
+		 (:account_id, :model_service_id, :rule_class, :effective_from, :effective_to,
 		  :rule_json, :created_by, :notes)`,
 		pv,
 	)
@@ -57,7 +57,7 @@ func TestSQLPricingProvider_GetActive(t *testing.T) {
 	seedPricingVersion(t, db, pv)
 
 	r := NewSQLPricingProvider(db)
-	got, err := r.GetActive(context.Background(), testTenant, ms.ID, "standard", now)
+	got, err := r.GetActive(context.Background(), testAccount, ms.ID, "standard", now)
 	if err != nil {
 		t.Fatalf("GetActive: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSQLPricingProvider_GetActiveSelectsLatestActive(t *testing.T) {
 	seedPricingVersion(t, db, v2)
 
 	r := NewSQLPricingProvider(db)
-	got, err := r.GetActive(context.Background(), testTenant, ms.ID, "standard", now)
+	got, err := r.GetActive(context.Background(), testAccount, ms.ID, "standard", now)
 	if err != nil {
 		t.Fatalf("GetActive: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestSQLPricingProvider_GetActiveNoneFails(t *testing.T) {
 	seedModelService(t, db, ms)
 
 	r := NewSQLPricingProvider(db)
-	_, err := r.GetActive(context.Background(), testTenant, ms.ID, "standard", time.Now().UTC())
+	_, err := r.GetActive(context.Background(), testAccount, ms.ID, "standard", time.Now().UTC())
 	if err == nil {
 		t.Fatal("expected error for missing active price")
 	}
@@ -127,7 +127,7 @@ func TestSQLPricingProvider_ListHistoryDescByEffectiveFrom(t *testing.T) {
 	}
 
 	r := NewSQLPricingProvider(db)
-	all, err := r.ListHistory(context.Background(), testTenant, ms.ID, "standard")
+	all, err := r.ListHistory(context.Background(), testAccount, ms.ID, "standard")
 	if err != nil {
 		t.Fatalf("ListHistory: %v", err)
 	}

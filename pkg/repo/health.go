@@ -17,10 +17,10 @@ import (
 func CheckSchema(ctx context.Context, db *sqlx.DB) error {
 	for _, t := range []string{
 		"quota_policies",
-		"tenants",
+		"accounts",
 		"model_services",
 		"endpoints",
-		"tenant_model_subscriptions",
+		"account_model_subscriptions",
 		"api_keys",
 		"pricing_versions",
 	} {

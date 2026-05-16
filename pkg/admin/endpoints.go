@@ -8,7 +8,7 @@ import (
 
 // registerEndpointRoutes 注册 /admin/v1/endpoints CRUD。
 //
-// **v0.3 改动**：去 ?tenant_id=（endpoints 全局上游池）。BYOK 真做时再加。
+// **v0.3 改动**：去 ?account_id=（endpoints 全局上游池）。BYOK 真做时再加。
 //
 //	GET    /endpoints                  列表（?name=foo 走单查）
 //	POST   /endpoints                  创建

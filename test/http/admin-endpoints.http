@@ -1,7 +1,7 @@
 # admin-endpoints.http —— Endpoint CRUD（全局上游池）。
 #
 # 路由：/admin/v1/endpoints*
-# **v0.3 改动**：删 tenant_id（平台运营者统一管理上游；BYOK 等真要做时加 nullable tenant_id）。
+# **v0.3 改动**：删 account_id（平台运营者统一管理上游；BYOK 等真要做时加 nullable account_id）。
 # id 是 BIGINT autoinc；URL 路径用数字 id；?name= 走名字检索。
 #
 # auth 字段是 vendor-tagged sum type：

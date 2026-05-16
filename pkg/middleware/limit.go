@@ -25,12 +25,12 @@ type LimitDeps struct {
 // 默认估算用：客户端没传 max_tokens 时按 4096 reserve，事后 M10 调账退多余。
 const defaultMaxOutputTokens uint32 = 4096
 
-// Limit 是 M6：tenant + apikey 双层、原子 RPM/TPM/RPS 限流。
+// Limit 是 M6：主账号 + apikey 双层、原子 RPM/TPM/RPS 限流。
 //
 // **顺序**：M5（拿到 ModelService）之后；M7（调上游）之前。
 //
 // **流程**：
-//  1. 从 PolicyCache 拉两层 PolicyRule（tenant.QuotaPolicyID + apikey.QuotaPolicyID）
+//  1. 从 PolicyCache 拉两层 PolicyRule（主账号 QuotaPolicyID + apikey.QuotaPolicyID）
 //  2. 按 additive 语义展开 buckets：default + per_model 都消耗
 //  3. 估算 TPM cost（input chars/4 + max_tokens）
 //  4. ReserveBatch 一次原子检查所有 buckets（all-or-nothing）
@@ -141,22 +141,22 @@ func EnsureTPMEstimate(rc *domain.RequestContext, rawBody []byte) uint32 {
 
 // buildBuckets 按 additive 语义把两层 PolicyRule 展开成 bucket 列表 + TPM keys。
 //
-// 命名约定：rl:user:<scope>:<subject>:<model_or_*>:<dim>
-//   - scope = tenant | apikey
-//   - subject = pin / api_key_id
+// 命名约定：rl:quota:<scope>:<subject>:<model_or_*>:<dim>
+//   - scope = account | apikey
+//   - subject = 主账号 pin / api_key_id
 //   - model_or_* = currentModel（per_model 命中）或 *（default fallback）
 //   - dim = rpm | tpm | rps
 func buildBuckets(ctx context.Context, deps LimitDeps, id *repo.UserIdentity, model string, tpmCost uint32) ([]ratelimit.Bucket, []string, error) {
 	var buckets []ratelimit.Bucket
 	var tpmKeys []string
 
-	// 第 1 层：tenant
-	if id.TenantQuotaPolicyID != nil {
-		rule, err := deps.Policies.Get(ctx, *id.TenantQuotaPolicyID)
+	// 第 1 层：主账号（历史字段名仍为 account）
+	if id.AccountQuotaPolicyID != nil {
+		rule, err := deps.Policies.Get(ctx, *id.AccountQuotaPolicyID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("tenant policy: %w", err)
+			return nil, nil, fmt.Errorf("account policy: %w", err)
 		}
-		buckets, tpmKeys = appendLayerBuckets(buckets, tpmKeys, "tenant", id.TenantID, rule, model, tpmCost)
+		buckets, tpmKeys = appendLayerBuckets(buckets, tpmKeys, "account", id.AccountID, rule, model, tpmCost)
 	}
 	// 第 2 层：apikey
 	if id.APIKeyQuotaPolicyID != nil {
@@ -180,14 +180,14 @@ func appendLayerBuckets(
 	for _, sr := range rule.PickRulesAdditive(model) {
 		if sr.Quota.RPM != nil && *sr.Quota.RPM > 0 {
 			buckets = append(buckets, ratelimit.Bucket{
-				Key:    fmt.Sprintf("rl:user:%s:%s:%s:rpm", layer, subject, sr.Scope),
+				Key:    fmt.Sprintf("rl:quota:%s:%s:%s:rpm", layer, subject, sr.Scope),
 				Limit:  *sr.Quota.RPM,
 				Cost:   1,
 				Window: time.Minute,
 			})
 		}
 		if sr.Quota.TPM != nil && *sr.Quota.TPM > 0 {
-			key := fmt.Sprintf("rl:user:%s:%s:%s:tpm", layer, subject, sr.Scope)
+			key := fmt.Sprintf("rl:quota:%s:%s:%s:tpm", layer, subject, sr.Scope)
 			buckets = append(buckets, ratelimit.Bucket{
 				Key:    key,
 				Limit:  *sr.Quota.TPM,
@@ -198,7 +198,7 @@ func appendLayerBuckets(
 		}
 		if sr.Quota.RPS != nil && *sr.Quota.RPS > 0 {
 			buckets = append(buckets, ratelimit.Bucket{
-				Key:    fmt.Sprintf("rl:user:%s:%s:%s:rps", layer, subject, sr.Scope),
+				Key:    fmt.Sprintf("rl:quota:%s:%s:%s:rps", layer, subject, sr.Scope),
 				Limit:  *sr.Quota.RPS,
 				Cost:   1,
 				Window: time.Second,

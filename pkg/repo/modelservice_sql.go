@@ -11,7 +11,7 @@ import (
 
 // SQLModelServiceReader 是 ModelServiceReader 的 sqlx 实现。
 //
-// **v0.3 改动**：去 tenant_id（model_services 是全局 catalog）；GetByModel 签名去 tenantID 参数。
+// **v0.3 改动**：去 account_id（model_services 是全局 catalog）；GetByModel 签名去 accountID 参数。
 type SQLModelServiceReader struct {
 	db *sqlx.DB
 }
