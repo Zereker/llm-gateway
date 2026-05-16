@@ -183,6 +183,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 				Stats:  stats,
 			}),
 			Sender:      sender,
+			RateStore:   ratelimit.NewRedisStore(rdb),
 			MaxAttempts: cfg.Scheduler.MaxAttempts,
 		},
 		Tracing: middleware.TracingDeps{
