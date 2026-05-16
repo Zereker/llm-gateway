@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -102,7 +103,87 @@ func TraceContext() gin.HandlerFunc {
 		}
 
 		AttachRequestContext(c, rc)
+
+		// 启动 gateway.request 根 span（docs/08 §4），子 middleware 的 span 自动续 parent
+		ctx2, rootSpan := middlewareTracer.Start(rc.Ctx, "gateway.request",
+			oteltrace.WithAttributes(
+				attribute.String("gen_ai.operation.name", "chat"), // 默认；具体 modality 在 M3 后可覆盖
+				attribute.String("http.method", c.Request.Method),
+				attribute.String("http.route", c.FullPath()),
+				attribute.String("llm_gateway.request_id", requestID),
+			),
+		)
+		rc.Ctx = ctx2
+		c.Request = c.Request.WithContext(ctx2)
+
+		// request.start log event（debug；docs/08 §2）
+		slog.DebugContext(ctx2, "request.start",
+			"method", c.Request.Method,
+			"path", c.FullPath(),
+			"request_id", requestID,
+		)
+
 		c.Next()
+
+		// request.end log event + 在 root span 上写最终 attributes
+		statusCode := c.Writer.Status()
+		elapsedMs := time.Since(rc.StartTime).Milliseconds()
+		rootSpan.SetAttributes(
+			attribute.Int("http.status_code", statusCode),
+			attribute.Int64("llm_gateway.duration_ms", elapsedMs),
+		)
+		if rc.ModelService != nil {
+			rootSpan.SetAttributes(attribute.String("gen_ai.request.model", rc.ModelService.Model))
+		}
+		if rc.RoutedModelService != nil {
+			rootSpan.SetAttributes(attribute.String("gen_ai.response.model", rc.RoutedModelService.Model))
+		}
+		if rc.Endpoint != nil {
+			rootSpan.SetAttributes(
+				attribute.String("gen_ai.system", rc.Endpoint.Vendor),
+				attribute.Int64("llm_gateway.endpoint.id", rc.Endpoint.ID),
+			)
+		}
+		if rc.Identity.AccountID != "" {
+			rootSpan.SetAttributes(attribute.String("llm_gateway.account.id", rc.Identity.AccountID))
+		}
+		if rc.Identity.SubAccountID != "" {
+			rootSpan.SetAttributes(attribute.String("llm_gateway.sub_account.id", rc.Identity.SubAccountID))
+		}
+		if rc.Identity.APIKeyID != "" {
+			rootSpan.SetAttributes(attribute.String("llm_gateway.api_key.id", rc.Identity.APIKeyID))
+		}
+		if rc.Usage != nil {
+			rootSpan.SetAttributes(
+				attribute.Int64("gen_ai.usage.input_tokens", rc.Usage.Input),
+				attribute.Int64("gen_ai.usage.output_tokens", rc.Usage.Output),
+				attribute.Int64("gen_ai.usage.total_tokens", rc.Usage.Total),
+			)
+			if rc.Usage.Meta.TTFTMs > 0 {
+				rootSpan.SetAttributes(attribute.Int64("gen_ai.response.ttft_ms", rc.Usage.Meta.TTFTMs))
+			}
+		}
+		if rc.Error != nil {
+			rootSpan.SetAttributes(
+				attribute.String("llm_gateway.error.code", rc.Error.Code),
+				attribute.String("llm_gateway.error.class", rc.Error.Class.String()),
+			)
+		}
+		rootSpan.End()
+
+		level := slog.LevelInfo
+		if statusCode >= 500 {
+			level = slog.LevelError
+		} else if statusCode >= 400 {
+			level = slog.LevelWarn
+		}
+		slog.Log(ctx2, level, "request.end",
+			"request_id", requestID,
+			"method", c.Request.Method,
+			"path", c.FullPath(),
+			"status", statusCode,
+			"latency_ms", elapsedMs,
+		)
 	}
 }
 
