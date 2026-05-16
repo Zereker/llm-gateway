@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/middleware"
@@ -41,18 +40,8 @@ func (s stubMSProvider) List(_ context.Context) ([]*domain.ModelService, error) 
 // stubSubscriptions for tests; never reached because stubIdentity rejects auth first.
 type stubSubscriptions struct{}
 
-func (stubSubscriptions) Has(_ context.Context, _ string, _ int64) (bool, error) {
+func (stubSubscriptions) HasModel(_ context.Context, _ string, _ int64) (bool, error) {
 	return false, nil
-}
-
-// stubPricing for tests; never reached because stubIdentity rejects auth first.
-type stubPricing struct{}
-
-func (stubPricing) GetActive(_ context.Context, _ string, _ int64, _ string, _ time.Time) (*repo.PricingVersion, error) {
-	return nil, nil
-}
-func (stubPricing) ListHistory(_ context.Context, _ string, _ int64, _ string) ([]*repo.PricingVersion, error) {
-	return nil, nil
 }
 
 // stubEPProvider for tests.
@@ -78,9 +67,8 @@ func minDeps() Deps {
 	return Deps{
 		Auth: middleware.AuthDeps{Provider: stubIdentity{}},
 		ModelService: middleware.ModelServiceDeps{
-			Provider:      stubMSProvider{},
+			Catalog:       stubMSProvider{},
 			Subscriptions: stubSubscriptions{},
-			Pricing:       stubPricing{},
 		},
 		Schedule: middleware.ScheduleDeps{
 			Endpoints: stubEPProvider{},

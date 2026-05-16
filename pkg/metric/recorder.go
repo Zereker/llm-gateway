@@ -45,6 +45,15 @@ func Inc(name string, labels ...string) {
 	getCounter(name, keys).WithLabelValues(vals...).Inc()
 }
 
+// Add 给 counter 累加任意值（用于 usage tokens 之类的"数值型计数"）。
+func Add(name string, val float64, labels ...string) {
+	if val <= 0 {
+		return
+	}
+	keys, vals := splitLabels(labels)
+	getCounter(name, keys).WithLabelValues(vals...).Add(val)
+}
+
 // Observe 记录一次观测值（histogram，默认秒级桶）。
 func Observe(name string, val float64, labels ...string) {
 	keys, vals := splitLabels(labels)

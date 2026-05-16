@@ -5,15 +5,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// 注入 Identity + Envelope shell + RawBytes 的最简 chain（M5 上游契约）。
+// attachM5Inputs：M3 之后的状态（Identity + Envelope shell）。
 func attachM5Inputs(model, account string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -28,23 +26,21 @@ func attachM5Inputs(model, account string) gin.HandlerFunc {
 	}
 }
 
-func defaultMSDeps(ms *repo.ModelService, pv *repo.PricingVersion) ModelServiceDeps {
+func newMSDeps(ms *domain.ModelService) ModelServiceDeps {
 	return ModelServiceDeps{
-		Provider:      stubMSReader{ms: ms},
+		Catalog:       stubCatalog{ms: ms},
 		Subscriptions: stubSubs{has: true},
-		Pricing:       stubPricing{pv: pv},
 	}
 }
 
-func TestModelService_HappyPath_FillsRCFields(t *testing.T) {
-	ms := &repo.ModelService{ID: 7, ServiceID: "svc1", Model: "gpt-4o"}
-	pv := &repo.PricingVersion{ID: 42, EffectiveFrom: time.Now()}
+func TestModelService_HappyPath_FillsRC(t *testing.T) {
+	ms := &domain.ModelService{ID: 7, ServiceID: "svc1", Model: "gpt-4o"}
 
 	var rc *domain.RequestContext
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("gpt-4o", "acc1"),
-		ModelService(defaultMSDeps(ms, pv)),
+		ModelService(newMSDeps(ms)),
 	)
 	r.POST("/x", func(c *gin.Context) {
 		rc = GetRequestContext(c)
@@ -59,16 +55,10 @@ func TestModelService_HappyPath_FillsRCFields(t *testing.T) {
 	if rc.ModelService == nil || rc.ModelService.ID != 7 {
 		t.Errorf("rc.ModelService=%+v", rc.ModelService)
 	}
-	if rc.Pricing.ModelServiceID != 7 || rc.Pricing.PricingVersionID != 42 {
-		t.Errorf("rc.Pricing=%+v", rc.Pricing)
-	}
-	if rc.Pricing.RuleClass != "standard" {
-		t.Errorf("RuleClass=%q, want=standard", rc.Pricing.RuleClass)
-	}
 }
 
 func TestModelService_500_EnvelopeMissing(t *testing.T) {
-	r := newGinTest(TraceContext(), Recover(), ModelService(defaultMSDeps(nil, nil)))
+	r := newGinTest(TraceContext(), Recover(), ModelService(newMSDeps(nil)))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -83,9 +73,8 @@ func TestModelService_500_EnvelopeMissing(t *testing.T) {
 
 func TestModelService_404_ModelNotFound(t *testing.T) {
 	deps := ModelServiceDeps{
-		Provider:      stubMSReader{err: errors.New("not found")},
+		Catalog:       stubCatalog{ms: nil},
 		Subscriptions: stubSubs{},
-		Pricing:       stubPricing{},
 	}
 	r := newGinTest(
 		TraceContext(), Recover(),
@@ -99,17 +88,16 @@ func TestModelService_404_ModelNotFound(t *testing.T) {
 	if w.Code != 404 {
 		t.Fatalf("status=%d, want=404", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "model not found") {
+	if !strings.Contains(w.Body.String(), "model_not_found") {
 		t.Errorf("body=%s", w.Body.String())
 	}
 }
 
 func TestModelService_403_NotSubscribed(t *testing.T) {
-	ms := &repo.ModelService{ID: 1, Model: "gpt-4o"}
+	ms := &domain.ModelService{ID: 1, Model: "gpt-4o"}
 	deps := ModelServiceDeps{
-		Provider:      stubMSReader{ms: ms},
+		Catalog:       stubCatalog{ms: ms},
 		Subscriptions: stubSubs{has: false},
-		Pricing:       stubPricing{},
 	}
 	r := newGinTest(
 		TraceContext(), Recover(),
@@ -123,17 +111,16 @@ func TestModelService_403_NotSubscribed(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatalf("status=%d, want=403", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "not subscribed") {
+	if !strings.Contains(w.Body.String(), "model_not_subscribed") {
 		t.Errorf("body=%s", w.Body.String())
 	}
 }
 
-func TestModelService_500_SubscriptionLookupError(t *testing.T) {
-	ms := &repo.ModelService{ID: 1, Model: "x"}
+func TestModelService_503_CatalogError(t *testing.T) {
+	// SQL/dep failure → fail-closed 503（docs/01 §7）
 	deps := ModelServiceDeps{
-		Provider:      stubMSReader{ms: ms},
-		Subscriptions: stubSubs{err: errors.New("db down")},
-		Pricing:       stubPricing{},
+		Catalog:       stubCatalog{err: errors.New("db down")},
+		Subscriptions: stubSubs{},
 	}
 	r := newGinTest(
 		TraceContext(), Recover(),
@@ -144,20 +131,19 @@ func TestModelService_500_SubscriptionLookupError(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
-	if w.Code != 500 {
-		t.Fatalf("status=%d, want=500", w.Code)
+	if w.Code != 503 {
+		t.Fatalf("status=%d, want=503 (dep failure)", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "subscription lookup") {
+	if !strings.Contains(w.Body.String(), "dependency_unavailable") {
 		t.Errorf("body=%s", w.Body.String())
 	}
 }
 
-func TestModelService_503_PricingNoActive(t *testing.T) {
-	ms := &repo.ModelService{ID: 1, Model: "x"}
+func TestModelService_503_SubscriptionError(t *testing.T) {
+	ms := &domain.ModelService{ID: 1, Model: "x"}
 	deps := ModelServiceDeps{
-		Provider:      stubMSReader{ms: ms},
-		Subscriptions: stubSubs{has: true},
-		Pricing:       stubPricing{err: errors.New("no active version for x")},
+		Catalog:       stubCatalog{ms: ms},
+		Subscriptions: stubSubs{err: errors.New("db down")},
 	}
 	r := newGinTest(
 		TraceContext(), Recover(),
@@ -170,8 +156,5 @@ func TestModelService_503_PricingNoActive(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
 	if w.Code != 503 {
 		t.Fatalf("status=%d, want=503", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "no active version") {
-		t.Errorf("body=%s", w.Body.String())
 	}
 }

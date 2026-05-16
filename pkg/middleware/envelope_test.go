@@ -184,8 +184,8 @@ func TestEnvelope_ResponseStartedAlready_StatusCode(t *testing.T) {
 
 	var body map[string]map[string]string
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
-	if body["error"]["code"] != domain.ErrInvalid.String() {
-		t.Errorf("error.code=%q, want=invalid", body["error"]["code"])
+	if body["error"]["class"] != domain.ErrInvalid.String() {
+		t.Errorf("error.class=%q, want=invalid", body["error"]["class"])
 	}
 }
 

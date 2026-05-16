@@ -27,49 +27,82 @@ type TracingDeps struct {
 // 在 c.Next() 之后执行（defer 模式）。
 //
 // 发布失败不影响业务返回（best-effort）。
-//
-// 用 context.Background()（带 5s 超时）发 Outbox，避免 client 已断开时
-// 还是要把 usage 落出（计费需要）。
-//
-// **填 Meta**：dump 前从 rc 各字段聚合 UsageMeta —— Pricing 是 billing 的灵魂指针，
-// 缺了 billing pipeline 完全没法工作；其它 ID/时间维度也都填上方便审计。
+// 用 context.Background()（带超时）发 Outbox，避免 client 已断开时
+// 还是要把 usage 落出（docs/05 §3）。
 func Tracing(deps TracingDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
 
 		rc := GetRequestContext(c)
 
-		// 注意：本 span 在 c.Next() 之后开；只覆盖"事后聚合 + outbox publish"这一段，
-		// 不包括上游 middleware（它们各自有自己的 span）。
 		ctx, end := startSpan(rc.Ctx, "llm-gateway.tracing")
 		defer end()
 		rc.Ctx = ctx
 
 		now := time.Now().UTC()
 		elapsed := now.Sub(rc.StartTime)
-		// metric 走秒（Prometheus base unit），UsageMeta.TotalLatency 走毫秒（业务 schema 兼容）
+
+		// HTTP latency metric（docs/08 §3）
+		// labels: method / route / status / model / routed_model
+		var model, routedModel string
+		if rc.ModelService != nil {
+			model = rc.ModelService.Model
+		}
+		if rc.RoutedModelService != nil {
+			routedModel = rc.RoutedModelService.Model
+		} else {
+			routedModel = model
+		}
 		metric.Observe(metric.HTTPRequestDurationSeconds, elapsed.Seconds(),
 			"method", c.Request.Method,
-			"path", c.FullPath(),
-			"status", strconv.Itoa(c.Writer.Status()))
+			"route", c.FullPath(),
+			"status", strconv.Itoa(c.Writer.Status()),
+			"model", model,
+			"routed_model", routedModel,
+		)
+
+		// llm_gateway_http_requests_total counter
+		errClass := ""
+		if rc.Error != nil {
+			errClass = rc.Error.Class.String()
+		}
+		metric.Inc(metric.HTTPRequestsTotal,
+			"method", c.Request.Method,
+			"route", c.FullPath(),
+			"status", strconv.Itoa(c.Writer.Status()),
+			"error_class", errClass,
+		)
 
 		if rc.Usage != nil {
 			fillUsageMeta(rc, now, elapsed.Milliseconds())
+			// usage tokens metric
+			metric.Add(metric.UsageTokensTotal, float64(rc.Usage.Input),
+				"model", model, "routed_model", routedModel,
+				"vendor", rc.Usage.Meta.Vendor, "direction", "input")
+			metric.Add(metric.UsageTokensTotal, float64(rc.Usage.Output),
+				"model", model, "routed_model", routedModel,
+				"vendor", rc.Usage.Meta.Vendor, "direction", "output")
 		}
 
+		// Usage Event outbox
 		if rc.Usage != nil && deps.Outbox != nil {
 			publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			payload, err := json.Marshal(rc.Usage)
+			evt := buildUsageEvent(rc)
+			payload, err := json.Marshal(evt)
 			if err == nil {
-				key := ""
-				if rc.Endpoint != nil {
-					key = strconv.FormatInt(rc.Endpoint.ID, 10)
+				key := rc.Identity.AccountID
+				if key == "" {
+					key = rc.RequestID
 				}
-				_ = deps.Outbox.Publish(publishCtx, &usage.OutboxEvent{
+				result := "ok"
+				if err := deps.Outbox.Publish(publishCtx, &usage.OutboxEvent{
 					Payload: payload,
 					Key:     key,
-				})
+				}); err != nil {
+					result = "error"
+				}
+				metric.Inc(metric.UsagePublishTotal, "backend", "outbox", "result", result)
 			}
 		}
 
@@ -79,44 +112,54 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 	}
 }
 
-// fillUsageMeta 把 rc 全链路状态聚合到 rc.Usage.Meta，给下游 billing 用。
+// fillUsageMeta 把 rc 全链路状态聚合到 rc.Usage.Meta。
 //
-// 各字段来源：
-//   - ID 类（Model/Vendor/EndpointID/Service/User/APIKey/Trace/Request）：M2/M5/M7 沉淀的状态
-//   - 时间类（Start/End/TotalLatency）：M1 的 StartTime + 现在
-//   - **Pricing**：M5 拍的快照（billing pipeline 据此 join pricing_versions 拿真实价格）
-//
-// 防御性：rc.Endpoint / rc.ModelService 可能为 nil（M5/M7 未跑通就走到了 M10 的失败路径），
-// 此时对应字段留空，不要 nil deref。
+// 按 docs/05 §4 字段来源表。RoutedModelService 优先；fallback 时
+// usage.meta.Model = 实际成功的 model（不是请求的 model）。
 func fillUsageMeta(rc *domain.RequestContext, endTime time.Time, totalLatencyMs int64) {
 	m := &rc.Usage.Meta
 
-	// 时间维度
 	m.StartTime = rc.StartTime
 	m.EndTime = endTime
 	m.TotalLatency = totalLatencyMs
-	// TTFTMs 暂未捕获（要在 adapter session 第一个 Feed 时记一下时间，下个迭代再加）
+	// TTFTMs 由 upstream/forward.go 在首字节流出时回写
 
-	// 请求维度
 	m.RequestID = rc.RequestID
 	m.TraceID = TraceIDFromCtx(rc.Ctx)
 
-	// 身份维度
+	m.AccountID = rc.Identity.AccountID
 	m.SubAccountID = rc.Identity.SubAccountID
 	m.APIKeyID = rc.Identity.APIKeyID
 
-	// 模型维度
-	if rc.ModelService != nil {
-		m.Model = rc.ModelService.Model
-		m.ServiceID = rc.ModelService.ServiceID
+	// 路由后的 model（docs/05 §4）；fallback 时不同于请求 model
+	routed := rc.RoutedModelService
+	if routed == nil {
+		routed = rc.ModelService
+	}
+	if routed != nil {
+		m.Model = routed.Model
+		m.ServiceID = routed.ServiceID
 	}
 
-	// 路由维度
 	if rc.Endpoint != nil {
 		m.Vendor = rc.Endpoint.Vendor
 		m.EndpointID = strconv.FormatInt(rc.Endpoint.ID, 10)
 	}
+}
 
-	// 价格快照——billing pipeline 据此查 rule_json 算钱
-	m.Pricing = rc.Pricing
+// buildUsageEvent 按 docs/05 §5 + docs/08 §5 的 envelope 形态打包 Usage Event。
+func buildUsageEvent(rc *domain.RequestContext) usage.UsageEvent {
+	return usage.UsageEvent{
+		SchemaVersion: usage.SchemaVersionV1,
+		EventID:       newEventID(),
+		RequestID:     rc.RequestID,
+		TraceID:       TraceIDFromCtx(rc.Ctx),
+		Usage:         *rc.Usage,
+		CreatedAt:     time.Now().UTC(),
+	}
+}
+
+// newEventID 简单 UUID 形态。
+func newEventID() string {
+	return "evt_" + randHex(8)
 }

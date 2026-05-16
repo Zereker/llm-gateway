@@ -1,48 +1,78 @@
 package domain
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
-// MetricKey 是 string 别名常量；这里只断言常量值，作为兼容性保护
-// （改动 string 字面值会影响 outbox JSON shape）。
-func TestMetricKey_StableConstants(t *testing.T) {
-	cases := map[MetricKey]string{
-		CachedInputTokens:   "cached_input_tokens",
-		CacheCreationTokens: "cache_creation_tokens",
-		AudioInputSeconds:   "audio_input_seconds",
-		AudioOutputSeconds:  "audio_output_seconds",
-		VideoOutputSeconds:  "video_output_seconds",
-		ImageInputCount:     "image_input_count",
-		ImageOutputCount:    "image_output_count",
-		TextCharCount:       "text_char_count",
-	}
-	for k, want := range cases {
-		if string(k) != want {
-			t.Errorf("MetricKey=%q, want=%q", string(k), want)
-		}
-	}
-}
+// Usage 新 schema (docs/05 §3): Raw / Source / Estimator / Confidence / Truncated。
+// 不再有 Details map[MetricKey]int64 / Reasoning 字段。
 
 func TestUsage_ZeroValue(t *testing.T) {
 	var u Usage
-	if u.Total != 0 || u.Input != 0 || u.Output != 0 || u.Reasoning != 0 {
+	if u.Total != 0 || u.Input != 0 || u.Output != 0 {
 		t.Errorf("zero usage has nonzero fields: %+v", u)
 	}
-	if u.Details != nil {
-		t.Errorf("zero usage Details should be nil, got %v", u.Details)
+	if u.Raw != nil {
+		t.Errorf("zero usage Raw should be nil, got %v", u.Raw)
+	}
+	if u.Source != "" {
+		t.Errorf("zero usage Source should be empty, got %q", u.Source)
 	}
 }
 
-func TestUsage_DetailsAttachable(t *testing.T) {
+func TestUsage_UpstreamExact(t *testing.T) {
 	u := Usage{
-		Input:  100,
-		Output: 200,
-		Total:  300,
+		Input:      100,
+		Output:     50,
+		Total:      150,
+		Raw:        json.RawMessage(`{"prompt_tokens":100,"completion_tokens":50}`),
+		Source:     UsageSourceUpstream,
+		Confidence: UsageConfidenceExact,
 	}
-	u.Details = map[MetricKey]int64{
-		CachedInputTokens:   50,
-		CacheCreationTokens: 10,
+	if u.Source != "upstream" {
+		t.Errorf("Source = %q", u.Source)
 	}
-	if u.Details[CachedInputTokens] != 50 {
-		t.Errorf("Details[CachedInputTokens]=%d, want=50", u.Details[CachedInputTokens])
+	if u.Confidence != "exact" {
+		t.Errorf("Confidence = %q", u.Confidence)
+	}
+}
+
+func TestUsage_EstimatedApproximate(t *testing.T) {
+	u := Usage{
+		Input:      100,
+		Output:     50,
+		Source:     UsageSourceEstimated,
+		Estimator:  UsageEstimatorNaiveChars,
+		Confidence: UsageConfidenceApproximate,
+	}
+	if u.Estimator != "naive_chars" {
+		t.Errorf("Estimator = %q", u.Estimator)
+	}
+}
+
+func TestUsage_TruncatedFlag(t *testing.T) {
+	u := Usage{Truncated: true}
+	if !u.Truncated {
+		t.Error("Truncated should round-trip")
+	}
+}
+
+// UsageSource / UsageEstimator / UsageConfidence 常量稳定性
+func TestUsageEnum_StableValues(t *testing.T) {
+	cases := map[string]string{
+		string(UsageSourceUpstream):       "upstream",
+		string(UsageSourceExtracted):      "extracted",
+		string(UsageSourceEstimated):      "estimated",
+		string(UsageEstimatorTiktoken):    "tiktoken",
+		string(UsageEstimatorNaiveChars):  "naive_chars",
+		string(UsageConfidenceExact):      "exact",
+		string(UsageConfidenceDerived):    "derived",
+		string(UsageConfidenceApproximate): "approximate",
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("constant value drift: got=%q want=%q", got, want)
+		}
 	}
 }

@@ -60,7 +60,7 @@ func TestBudget_Inactive_402_Permanent(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "budget inactive") {
 		t.Errorf("body=%s", w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"code":"permanent"`) {
+	if !strings.Contains(w.Body.String(), `"class":"permanent"`) {
 		t.Errorf("expected class=permanent, body=%s", w.Body.String())
 	}
 }

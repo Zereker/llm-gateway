@@ -1,29 +1,18 @@
 // Package metric 集中定义 Prometheus metric 命名常量与封装。
 //
-// **命名约定**：直接 Prometheus-native 下划线格式 `<namespace>_<subsystem>_<name>_<unit>`，
-// 跟 https://prometheus.io/docs/practices/naming/ 完全一致。本包**不**做任何 string
-// rewrite，const 值字面就是 Prometheus 端展示的 name。
-//
-// **单位约定**：
-//   - 时间：`_seconds`（base SI unit；Prometheus 官方推荐，比 _ms 更通用）
-//   - 计数：`_total`（counter）
-//   - 比率：`_ratio`（0-1 区间）
-//   - 字节：`_bytes`
-//
-// **强制使用 const**：业务代码 `metric.Inc(metric.AuthTotal, ...)`，**不要**写
-// `metric.Inc("llm_gateway_auth_total", ...)`——字面量分散后改名找不到 / typo 难发现。
-//
-// 加新 metric：在本文件加 const → 业务代码引用。如果暂时不想加 const 就别加 metric，
-// 反之命名会回到散落字面量的混乱状态。
+// 命名遵循 docs/08-observability.md §3：`llm_gateway_<subsystem>_<name>_<unit>`。
+// 单位约定：seconds / total / ratio / bytes / count。
 package metric
 
-// === Middleware 通用 metric ===
+// === HTTP / Middleware 通用 metric（docs/08 §3）===
 const (
-	HTTPRequestDurationSeconds = "llm_gateway_http_request_duration_seconds"
+	HTTPRequestsTotal          = "llm_gateway_http_requests_total"           // counter: method/route/status/error_class
+	HTTPRequestDurationSeconds = "llm_gateway_http_request_duration_seconds" // histogram: method/route/status/model/routed_model
 	MiddlewareDurationSeconds  = "llm_gateway_middleware_duration_seconds"
 	MiddlewareErrorTotal       = "llm_gateway_middleware_error_total"
 	ContextFieldMissTotal      = "llm_gateway_context_field_miss_total"
 	PanicTotal                 = "llm_gateway_panic_total"
+	RequestAbortedByShutdown   = "llm_gateway_request_aborted_by_shutdown_total"
 )
 
 // === Auth (M2) ===
@@ -36,37 +25,55 @@ const (
 	BudgetCheckTotal = "llm_gateway_budget_check_total"
 )
 
-// === RateLimit (M6 / docs/architecture/04) ===
+// === RateLimit (M6) ===
 const (
-	RateLimitCheckTotal    = "llm_gateway_rate_limit_check_total"
-	RateLimitConsumeTotal  = "llm_gateway_rate_limit_consume_total"
-	RateLimitOversellRatio = "llm_gateway_rate_limit_oversell_ratio"
-	RateLimitRejectionRate = "llm_gateway_rate_limit_rejection_rate"
+	RateLimitCheckTotal     = "llm_gateway_rate_limit_check_total"
+	RateLimitConsumeTotal   = "llm_gateway_rate_limit_consume_total"
+	RateLimitDecisionsTotal = "llm_gateway_ratelimit_decisions_total" // scope / dimension / result
+	RateLimitChargeTotal    = "llm_gateway_ratelimit_charge_total"    // dimension / result
+	RateLimitFailOpenTotal  = "llm_gateway_ratelimit_fail_open_total" // scope / dimension
+	TPMOverflowTotal        = "llm_gateway_tpm_overflow_total"        // layer / dimension
+	PolicyCacheTotal        = "llm_gateway_policy_cache_requests_total" // layer / result
+	RateLimitOversellRatio  = "llm_gateway_rate_limit_oversell_ratio"
+	RateLimitRejectionRate  = "llm_gateway_rate_limit_rejection_rate"
 )
 
-// === Schedule (M7 / docs/architecture/03) ===
+// === Schedule (M7 / docs/03) ===
 const (
+	SchedulerAttemptsTotal         = "llm_gateway_scheduler_attempts_total" // model / routed_model / vendor / endpoint_id / attempt_role / result / error_class
+	SchedulerCandidates            = "llm_gateway_scheduler_candidates"     // histogram: model / stage
+	SchedulingDurationSeconds      = "llm_gateway_scheduling_duration_seconds" // model / attempts
+	EligibilityDurationSeconds     = "llm_gateway_eligibility_duration_seconds" // model
+	SchedulerCooldownEnterTotal    = "llm_gateway_scheduler_cooldown_enter_total"
 	ScheduleResultTotal            = "llm_gateway_schedule_result_total"
 	SchedulerEndpointSelectedTotal = "llm_gateway_scheduler_endpoint_selected_total"
 	SchedulerEndpointFilteredTotal = "llm_gateway_scheduler_endpoint_filtered_total"
 	SchedulerEndpointCallTotal     = "llm_gateway_scheduler_endpoint_call_total"
-	SchedulerCooldownEnterTotal    = "llm_gateway_scheduler_cooldown_enter_total"
 )
 
-// === Adapter (docs/architecture/02) ===
+// === Upstream (docs/03) ===
 const (
+	UpstreamRequestsTotal         = "llm_gateway_upstream_requests_total"          // vendor / endpoint_id / model / native_protocol / result / error_class
+	UpstreamDurationSeconds       = "llm_gateway_upstream_duration_seconds"         // vendor / endpoint_id / model / result / error_class
 	AdapterRequestTotal           = "llm_gateway_adapter_request_total"
 	AdapterRequestDurationSeconds = "llm_gateway_adapter_request_duration_seconds"
 	AdapterErrorTotal             = "llm_gateway_adapter_error_total"
 	AdapterTranslateTotal         = "llm_gateway_adapter_translate_total"
 )
 
-// === Usage / Pricing (docs/architecture/05) ===
+// === Usage / Content Log (docs/05 + docs/08) ===
 const (
-	UsageExtractorSessionTotal = "llm_gateway_usage_extractor_session_total"
-	UsageBusPublishTotal       = "llm_gateway_usage_bus_publish_total"
-	UsageBusQueueDepth         = "llm_gateway_usage_bus_queue_depth"   // gauge
-	UsageBusDroppedTotal       = "llm_gateway_usage_bus_dropped_total" // counter
-	UsageLocalLogWriteTotal    = "llm_gateway_usage_locallog_write_total"
-	PricingLookupTotal         = "llm_gateway_pricing_lookup_total"
+	UsageTokensTotal              = "llm_gateway_usage_tokens_total"   // model / routed_model / vendor / direction
+	UsagePublishTotal             = "llm_gateway_usage_publish_total"  // backend / result
+	ContentLogPublishTotal        = "llm_gateway_content_log_publish_total" // backend / result / sampled
+	OutboxBufferSize              = "llm_gateway_outbox_buffer_size"   // gauge: backend
+	OutboxPublishDurationSeconds  = "llm_gateway_outbox_publish_duration_seconds" // driver / result
+	OutboxDroppedTotal            = "llm_gateway_outbox_dropped_total" // driver / reason
+	OutboxDLQTotal                = "llm_gateway_outbox_dlq_total"     // driver / result
+	UsageExtractorSessionTotal    = "llm_gateway_usage_extractor_session_total"
+)
+
+// === Endpoint / Health (docs/08) ===
+const (
+	EndpointMisconfiguredTotal = "llm_gateway_endpoint_misconfigured_total" // vendor / reason
 )

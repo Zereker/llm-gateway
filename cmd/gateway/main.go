@@ -126,10 +126,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		Budget: middleware.BudgetDeps{Gate: buildBudgetGate(cfg.Budget)},
 		// M8 Moderation：driver 决定实现。none = pass-through；openai = 调 OpenAI moderation API
 		Moderation: middleware.ModerationDeps{Moderator: buildModerator(cfg.Moderation)},
+		// M5：catalog + subscription（pricing 不在请求路径，docs/01 §7 + docs/05 §6）
 		ModelService: middleware.ModelServiceDeps{
-			Provider:      repo.NewSQLModelServiceReader(sqldb),
-			Subscriptions: repo.NewSQLSubscriptionProvider(sqldb),
-			Pricing:       repo.NewSQLPricingProvider(sqldb),
+			Catalog:       middleware.AdaptRepoCatalog(repo.NewSQLModelServiceReader(sqldb)),
+			Subscriptions: middleware.AdaptRepoSubscriptions(repo.NewSQLSubscriptionProvider(sqldb)),
 		},
 		// M6 RateLimit：Redis 唯一实现 + PolicyCache 包一层 LRU+TTL（30s 默认）
 		Limit: middleware.LimitDeps{
