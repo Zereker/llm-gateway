@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -20,66 +21,66 @@ import (
 // =============================================================================
 
 type stubEndpointReader struct {
-	eps []*domain.Endpoint
+	eps map[string][]*domain.Endpoint // model → endpoints
 	err error
 }
 
-func (s stubEndpointReader) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
-	return s.eps, s.err
+func (s stubEndpointReader) ListForModel(_ context.Context, model, _ string) ([]*domain.Endpoint, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.eps == nil {
+		return nil, nil
+	}
+	return s.eps[model], nil
 }
-func (s stubEndpointReader) PickForModel(_ context.Context, _, _ string) (*domain.Endpoint, error) {
-	return nil, nil
-}
-func (s stubEndpointReader) GetByID(_ context.Context, _ int64) (*domain.Endpoint, error) {
-	return nil, nil
-}
-func (s stubEndpointReader) List(_ context.Context) ([]*domain.Endpoint, error) { return nil, nil }
 
 // =============================================================================
-// stub: schedule.Scheduler / Selection
+// stub: schedule.Scheduler（无状态 Pick + Report）
 // =============================================================================
-
-// stubSelection 简单 Selection：按 series 顺序返回 ep；Report 都记录。
-type stubSelection struct {
-	series     []*domain.Endpoint
-	idx        int
-	decisions  []schedule.Decision
-	beginErr   error
-	reportLast schedule.Result
-}
-
-func (s *stubSelection) Pick() *domain.Endpoint {
-	if s.idx >= len(s.series) {
-		return nil
-	}
-	ep := s.series[s.idx]
-	s.idx++
-	return ep
-}
-func (s *stubSelection) Report(ep *domain.Endpoint, r schedule.Result) {
-	s.reportLast = r
-	if ep != nil {
-		s.decisions = append(s.decisions, schedule.Decision{
-			AttemptNum: len(s.decisions) + 1,
-			EndpointID: ep.ID,
-			Result:     r,
-		})
-	}
-}
-func (s *stubSelection) Decisions() []schedule.Decision { return s.decisions }
-func (s *stubSelection) Done()                          {}
 
 type stubScheduler struct {
-	sel      schedule.Selection
-	beginErr error
+	picks   []*domain.Endpoint // 按顺序返回；用尽则返 nil
+	idx     atomic.Int32
+	pickErr error
+	reports []reportEntry
 }
 
-func (s stubScheduler) BeginSelection(_ context.Context, _ *schedule.Request) (schedule.Selection, error) {
-	return s.sel, s.beginErr
+type reportEntry struct {
+	EpID int64
+	Cls  schedule.ErrorClass
+}
+
+func (s *stubScheduler) Pick(_ context.Context, req *schedule.Request) (*domain.Endpoint, error) {
+	if s.pickErr != nil {
+		return nil, s.pickErr
+	}
+	for {
+		i := int(s.idx.Load())
+		if i >= len(s.picks) {
+			return nil, nil
+		}
+		s.idx.Add(1)
+		ep := s.picks[i]
+		if ep == nil {
+			continue
+		}
+		// 尊重 ExcludeIDs
+		if _, excluded := req.ExcludeIDs[ep.ID]; excluded {
+			continue
+		}
+		return ep, nil
+	}
+}
+
+func (s *stubScheduler) Report(_ context.Context, ep *domain.Endpoint, r schedule.Result) {
+	if ep != nil {
+		s.reports = append(s.reports, reportEntry{EpID: ep.ID, Cls: r.Class})
+	}
 }
 
 // =============================================================================
-// attachM7Inputs：M5 / M6 之后的状态（Identity + Envelope + ModelService + RateLimit）
+// attachM7Inputs
 // =============================================================================
 
 func attachM7Inputs(model string) gin.HandlerFunc {
@@ -98,15 +99,28 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 	}
 }
 
+func defaultScheduleDeps(scheduler schedule.Scheduler, eps map[string][]*domain.Endpoint) ScheduleDeps {
+	return ScheduleDeps{
+		Endpoints: stubEndpointReader{eps: eps},
+		Catalog: stubCatalog{ms: &repo.ModelService{ID: 1, Model: "gpt-4o"}},
+		Subscriptions: stubSubs{has: true},
+		Scheduler:     scheduler,
+		Sender:        upstream.New(),
+		MaxAttempts:   3,
+	}
+}
+
 // =============================================================================
-// 失败 / 装配契约 tests
+// 装配契约
 // =============================================================================
 
 func TestSchedule_500_M3orM5Missing(t *testing.T) {
 	deps := ScheduleDeps{
-		Endpoints: stubEndpointReader{},
-		Scheduler: stubScheduler{},
-		Sender:    upstream.New(),
+		Endpoints:     stubEndpointReader{},
+		Catalog:       stubCatalog{},
+		Subscriptions: stubSubs{has: true},
+		Scheduler:     &stubScheduler{},
+		Sender:        upstream.New(),
 	}
 	r := newGinTest(TraceContext(), Recover(), Schedule(deps))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
@@ -114,104 +128,56 @@ func TestSchedule_500_M3orM5Missing(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
 	if w.Code != 500 {
-		t.Fatalf("status=%d, want=500", w.Code)
+		t.Fatalf("status=%d", w.Code)
 	}
 	if !strings.Contains(w.Body.String(), "M3/M5 did not run") {
 		t.Errorf("body=%s", w.Body.String())
 	}
 }
 
+// =============================================================================
+// list / candidates 失败路径
+// =============================================================================
+
 func TestSchedule_ListError_503(t *testing.T) {
 	deps := ScheduleDeps{
-		Endpoints: stubEndpointReader{err: errors.New("db down")},
-		Scheduler: stubScheduler{},
-		Sender:    upstream.New(),
+		Endpoints:     stubEndpointReader{err: errors.New("db down")},
+		Catalog:       stubCatalog{ms: &repo.ModelService{ID: 1}},
+		Subscriptions: stubSubs{has: true},
+		Scheduler:     &stubScheduler{},
+		Sender:        upstream.New(),
+		MaxAttempts:   3,
 	}
-	r := newGinTest(TraceContext(), Recover(),
-		attachM7Inputs("gpt-4o"),
-		Schedule(deps),
-	)
+	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(deps))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
 	if w.Code != 503 {
-		t.Fatalf("status=%d, want=503", w.Code)
+		t.Fatalf("status=%d", w.Code)
 	}
 	if !strings.Contains(w.Body.String(), "list endpoints") {
 		t.Errorf("body=%s", w.Body.String())
 	}
 }
 
-func TestSchedule_NoCandidates_503(t *testing.T) {
-	deps := ScheduleDeps{
-		Endpoints: stubEndpointReader{eps: nil},
-		Scheduler: stubScheduler{},
-		Sender:    upstream.New(),
-	}
-	r := newGinTest(TraceContext(), Recover(),
-		attachM7Inputs("gpt-4o"),
-		Schedule(deps),
-	)
+func TestSchedule_NoEndpointAtAll_503(t *testing.T) {
+	deps := defaultScheduleDeps(&stubScheduler{}, map[string][]*domain.Endpoint{})
+	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(deps))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
 	if w.Code != 503 {
-		t.Fatalf("status=%d, want=503", w.Code)
+		t.Fatalf("status=%d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "no endpoint for model") {
-		t.Errorf("body=%s", w.Body.String())
-	}
-}
-
-func TestSchedule_BeginSelectionError_503(t *testing.T) {
-	deps := ScheduleDeps{
-		Endpoints: stubEndpointReader{eps: []*domain.Endpoint{{ID: 1, Vendor: "openai", Weight: 100}}},
-		Scheduler: stubScheduler{beginErr: errors.New("schedule init failed")},
-		Sender:    upstream.New(),
-	}
-	r := newGinTest(TraceContext(), Recover(),
-		attachM7Inputs("gpt-4o"),
-		Schedule(deps),
-	)
-	r.POST("/x", func(c *gin.Context) { c.Status(200) })
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
-	if w.Code != 503 {
-		t.Fatalf("status=%d, want=503", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "schedule init failed") {
-		t.Errorf("body=%s", w.Body.String())
-	}
-}
-
-func TestSchedule_NoEndpointSucceeded_503(t *testing.T) {
-	// stubScheduler 返一个 stubSelection.Pick 永远返 nil → 触发 "no endpoint succeeded"
-	deps := ScheduleDeps{
-		Endpoints: stubEndpointReader{eps: []*domain.Endpoint{{ID: 1, Vendor: "openai", Weight: 100}}},
-		Scheduler: stubScheduler{sel: &stubSelection{}},
-		Sender:    upstream.New(),
-	}
-	r := newGinTest(TraceContext(), Recover(),
-		attachM7Inputs("gpt-4o"),
-		Schedule(deps),
-	)
-	r.POST("/x", func(c *gin.Context) { c.Status(200) })
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
-	if w.Code != 503 {
-		t.Fatalf("status=%d, want=503", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "no endpoint succeeded") {
+	if !strings.Contains(w.Body.String(), "no_endpoint_available") {
 		t.Errorf("body=%s", w.Body.String())
 	}
 }
 
 // =============================================================================
-// header 解析（直接调内部函数）
+// header 解析
 // =============================================================================
 
 func TestParseMaxAttempts(t *testing.T) {
@@ -257,6 +223,8 @@ func TestParseFallbackModels(t *testing.T) {
 		{"gpt-4o", []string{"gpt-4o"}},
 		{"gpt-4o,gpt-4-turbo", []string{"gpt-4o", "gpt-4-turbo"}},
 		{"  gpt-4o ,  claude-3 , ", []string{"gpt-4o", "claude-3"}},
+		// 去重保序（docs/03 §5）
+		{"a,b,a,c", []string{"a", "b", "c"}},
 	}
 	for _, tc := range cases {
 		r := gin.New()
@@ -289,51 +257,21 @@ func sliceEq(a, b []string) bool {
 	return true
 }
 
-func TestPrefixKeyFromBody(t *testing.T) {
-	// 空 body → nil
-	if got := prefixKeyFromBody(nil); got != nil {
-		t.Errorf("empty → got=%v", got)
-	}
-	// 短 body → 原样
-	short := []byte("hello")
-	if got := prefixKeyFromBody(short); string(got) != "hello" {
-		t.Errorf("short body modified: %q", got)
-	}
-	// 长 body → 截断到 4KiB
-	long := make([]byte, 5*1024)
-	for i := range long {
-		long[i] = 'a'
-	}
-	got := prefixKeyFromBody(long)
-	if len(got) != 4*1024 {
-		t.Errorf("len=%d, want=4096", len(got))
-	}
-}
+// =============================================================================
+// routedModelOf
+// =============================================================================
 
-func TestConvertDecisions(t *testing.T) {
-	decs := []schedule.Decision{
-		{AttemptNum: 1, EndpointID: 10, Result: schedule.Result{Class: schedule.ClassTransient}},
-		{AttemptNum: 2, EndpointID: 20, Result: schedule.Result{Class: schedule.ClassSuccess}},
+func TestRoutedModelOf(t *testing.T) {
+	rc := &domain.RequestContext{}
+	if routedModelOf(rc) != "" {
+		t.Error("empty RC should return empty")
 	}
-	got := convertDecisions(decs)
-	if len(got) != 2 {
-		t.Fatalf("len=%d", len(got))
+	rc.ModelService = &repo.ModelService{Model: "primary"}
+	if routedModelOf(rc) != "primary" {
+		t.Error("falls back to ModelService")
 	}
-	if got[0].Outcome != domain.AttemptFallback {
-		t.Errorf("decs[0].Outcome=%v, want=fallback (failed but not last)", got[0].Outcome)
-	}
-	if got[1].Outcome != domain.AttemptSuccess {
-		t.Errorf("decs[1].Outcome=%v, want=success", got[1].Outcome)
-	}
-}
-
-func TestConvertDecisions_AllFailLastIsFail(t *testing.T) {
-	decs := []schedule.Decision{
-		{AttemptNum: 1, EndpointID: 1, Result: schedule.Result{Class: schedule.ClassTransient}},
-		{AttemptNum: 2, EndpointID: 2, Result: schedule.Result{Class: schedule.ClassPermanent}},
-	}
-	got := convertDecisions(decs)
-	if got[len(got)-1].Outcome != domain.AttemptFail {
-		t.Errorf("last decision outcome=%v, want=fail", got[len(got)-1].Outcome)
+	rc.RoutedModelService = &repo.ModelService{Model: "routed"}
+	if routedModelOf(rc) != "routed" {
+		t.Error("prefers RoutedModelService")
 	}
 }

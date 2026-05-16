@@ -71,12 +71,12 @@ func minDeps() Deps {
 			Subscriptions: stubSubscriptions{},
 		},
 		Schedule: middleware.ScheduleDeps{
-			Endpoints: stubEPProvider{},
-			Scheduler: schedule.New(schedule.Config{
-				Filters:     []schedule.Filter{schedule.NewWeightedRandomSelector()},
-				MaxAttempts: 3,
-			}),
-			Sender: upstream.New(),
+			Endpoints:     middleware.AdaptRepoEndpoints(stubEPProvider{}),
+			Catalog:       stubMSProvider{},
+			Subscriptions: stubSubscriptions{},
+			Scheduler:     schedule.New(schedule.Config{}),
+			Sender:        upstream.New(),
+			MaxAttempts:   3,
 		},
 	}
 }
