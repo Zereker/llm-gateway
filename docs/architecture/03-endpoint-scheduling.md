@@ -51,6 +51,10 @@ type Endpoint struct {
     APIKey   string          // 凭证（运行时按需脱敏 / 存到 secret store）
     Group    string          // 与 domain.UserIdentity.Group 匹配；默认 "default"
     Model    string          // 该 endpoint 服务的模型名（与 ModelService.Model 对齐）
+
+    // 出口路径（可选）
+    EgressProxy string       // HTTP/SOCKS5 代理 URL，如 "http://10.0.0.1:8080" / "socks5://..."；空表示直连
+
     Weight   int             // 加权随机的基础权重；> 0
     RPM      int             // endpoint 层每分钟请求数硬上限
     TPM      int             // endpoint 层每分钟 token 硬上限
@@ -85,6 +89,27 @@ func (e *Endpoint) Form() EndpointForm {
 ```
 
 > `Capabilities.SelfHosted` 由配置直接声明，**不从 Vendor 字符串猜测**。这样开源后用户可声明任意厂商为"自部署"（配套补 KV metric endpoint 即可启用 busy / prefix-cache 调度）。
+
+#### EgressProxy：出口代理是 endpoint 配置属性
+
+跨境合规 / 内网穿透 / 多 region 出口等场景下，不同 endpoint 需要走不同 HTTP 出口代理。本项目把它建模为 **endpoint 的一个可选字段**，由 admin 在 `endpoints` 表里直接配置；**不引入独立的"代理选择器"层**。
+
+| 关注点 | 本项目（配置式） | 反例（规则匹配式，如 keycompute 的 `ProxySelector`）|
+|--------|------------------|----------------------------------------------------|
+| 出口归属可见性 | endpoints 表一查即知 | 要脑补 `vendor / account / *-cn` 通配符匹配链 |
+| 变更审计 | 与其他 endpoint 字段一致走 admin 审计 | proxy 规则表自成一套审计 |
+| 调度链路 | 零阶段新增；HTTP client 直接 `http.Transport.Proxy = endpoint.EgressProxy` | 多一个 selector 阶段 + 通配符冲突解决（如 `*-cn` 与 `openai-cn` 同时匹配的优先级） |
+| DRY 代价 | 每个需要代理的 endpoint 显式写一遍 | 一条规则覆盖一批 endpoint |
+
+实际上代理出口数量有限（典型场景下 2-3 档：直连 / cn-proxy / 合规-proxy），endpoint 数量也有限，per-endpoint 显式声明成本可忽略，换来"配置即真相、变更可追溯、调度链路无新增匹配开销"。
+
+**执行层契约**：
+
+- HTTP client 在向上游发请求前，若 `endpoint.EgressProxy != ""`，则按字段构造 `*url.URL` 并装到 `http.Transport.Proxy` / `http.ProxyURL(...)`
+- `http.Transport` 应按 (vendor, egress_proxy) 做 keyed 复用，避免每请求新建连接池
+- 解析失败 / proxy URL 非法 → fail-fast（启动期或配置 reload 期就拒绝该 endpoint，运行期不静默降级到直连）
+
+> Endpoint 凭证加密同样不变：`EgressProxy` 是明文（不含 credential），随 endpoint 一同下发；如代理本身需要 basic auth，把 credential 放进 URL `userinfo` 部分，配套 admin 侧加密存储策略与其他凭证一致。
 
 ### 3.2 domain.SchedulingDecision（调度决策 trace）
 
