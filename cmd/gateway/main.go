@@ -293,43 +293,56 @@ func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister healt
 //
 //   - none/"":  返回 nil，零开销（不挂 hooks）
 //   - file:     JSONL append 到本地文件
-//   - kafka:    暂未实现（占位；可参考 kafka_outbox 实现）
+//   - kafka:    发到 Kafka topic（生产推荐；topic 默认 llm-gateway.content）
 //
 // 找不到的 driver 直接 panic。
 func buildContentLogger(srv *server.Server, cfg config.ContentLogConfig) *contentlog.Logger {
+	var pub contentlog.Publisher
 	switch cfg.Driver {
 	case "", "none":
 		return nil
 	case "file":
-		pub, err := contentlog.NewFilePublisher(cfg.File.Path)
+		fp, err := contentlog.NewFilePublisher(cfg.File.Path)
 		if err != nil {
 			panic(fmt.Sprintf("content_log: open file %s: %v", cfg.File.Path, err))
 		}
-		srv.AddCloser("content-log-file", pub.Close)
-		bp := contentlog.BackpressureDropOldest
-		switch cfg.Backpressure {
-		case "drop_newest":
-			bp = contentlog.BackpressureDropNewest
-		case "block":
-			bp = contentlog.BackpressureBlock
+		srv.AddCloser("content-log-file", fp.Close)
+		pub = fp
+	case "kafka":
+		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
+		if err != nil {
+			panic(fmt.Sprintf("content_log: kafka producer: %v", err))
 		}
-		logger := contentlog.New(contentlog.Config{
-			Publisher:    pub,
-			SampleRate:   cfg.SampleRate,
-			MaxBodyBytes: cfg.MaxBodyBytes,
-			BufferSize:   cfg.BufferSize,
-			Backpressure: bp,
-			BlockTimeout: cfg.BlockTimeout,
-		})
-		srv.AddCloser("content-log-logger", func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			return logger.Close(ctx)
-		})
-		return logger
+		topic := cfg.Kafka.Topic
+		if topic == "" {
+			topic = "llm-gateway.content"
+		}
+		pub = contentlog.NewKafkaPublisher(producer, topic)
 	default:
 		panic("unknown content_log driver: " + cfg.Driver)
 	}
+
+	bp := contentlog.BackpressureDropOldest
+	switch cfg.Backpressure {
+	case "drop_newest":
+		bp = contentlog.BackpressureDropNewest
+	case "block":
+		bp = contentlog.BackpressureBlock
+	}
+	logger := contentlog.New(contentlog.Config{
+		Publisher:    pub,
+		SampleRate:   cfg.SampleRate,
+		MaxBodyBytes: cfg.MaxBodyBytes,
+		BufferSize:   cfg.BufferSize,
+		Backpressure: bp,
+		BlockTimeout: cfg.BlockTimeout,
+	})
+	srv.AddCloser("content-log-logger", func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return logger.Close(ctx)
+	})
+	return logger
 }
 
 // buildBudgetGate 按 cfg.Driver 构造 BudgetGate。
