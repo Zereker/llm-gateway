@@ -183,6 +183,126 @@ usage.Details[CacheCreationTokens] = upstream.CacheCreationInput
 
 > 与 Envoy AI Gateway 一致；下游一套逻辑，对账不会出错。
 
+### 4.4 本地兜底（tokenizer-based fallback）
+
+**问题**：部分上游在以下场景不返回 `usage`：
+
+- 自部署 vLLM / Ollama / TGI 默认配置（未开启 `--enable-usage-tokens` 等）
+- 流式响应中途中断（client cancel / 上游 5xx）
+- 厂商灰度功能（如新 reasoning 模型早期版本）
+
+此时 `Session.Finalize()` 返回 `*Usage = nil`，事件**不进计量管道**，下游账单缺失。
+
+**对策**：在 Extractor 层提供 **tokenizer fallback**，估算 input / output token，标记 `Source = Estimated`，让计量管道照常消费，账单层自行决定是否计费 / 折扣 / 告警。
+
+**接口扩展**：
+
+```go
+// pkg/usage/domain.go
+type UsageSource int8
+const (
+    SourceUpstream  UsageSource = iota // 上游 usage 字段
+    SourceEstimated                    // 本地 tokenizer 估算
+    SourceMixed                        // input=上游, output=估算（或反之）
+)
+
+type Usage struct {
+    Input, Output, Total int64
+    Source               UsageSource         // 新增
+    // ... 其他字段
+}
+```
+
+**注册新 Extractor**：
+
+```go
+// pkg/usage/extractor/tiktoken/extractor.go
+package tiktoken
+
+import "github.com/zereker/llm-gateway/pkg/usage"
+
+func init() {
+    usage.Register("tiktoken_fallback", &Extractor{
+        encoder: pickEncoder,  // 按 model 选 cl100k_base / o200k_base / ...
+    })
+}
+```
+
+**Adapter 声明兜底**（可选第二选择）：
+
+```go
+type Adapter interface {
+    UsageExtractor() string         // 主：如 "openai_compat"
+    UsageFallback() string          // 兜底：如 "tiktoken_fallback"；返回 "" 表示不兜底
+}
+```
+
+**Session 内部决策**（在 `pkg/usage` 默认 Session wrapper 中实现）：
+
+```
+Finalize():
+    u, err := primary.Finalize()
+    if u != nil && u.Output > 0 {
+        return u, err                       // 上游有 usage，照常用
+    }
+    if fallbackName == "" {
+        return u, err                       // 没配兜底，维持现状（*Usage = nil）
+    }
+    est := fallback.Estimate(messages, completionText)
+    if u == nil {
+        u = &Usage{Source: SourceEstimated, Input: est.Input, Output: est.Output, ...}
+    } else {
+        // 上游只有 input，没 output
+        u.Output = est.Output
+        u.Source = SourceMixed
+    }
+    return u, err
+```
+
+**Tokenizer 选择**（首批支持）：
+
+| 编码 | 适用模型 |
+|------|---------|
+| `cl100k_base` | GPT-4 / GPT-3.5-turbo / text-embedding-ada-002 |
+| `o200k_base`  | GPT-4o / GPT-4o-mini / o1 / o3 |
+| `claude` (近似)| Anthropic 模型；官方未开源 tokenizer，用 `cl100k_base` 近似 + 经验系数 |
+| `llama3` | Meta Llama 3 / Llama 3.1（开源 BPE）|
+| `qwen` | Qwen 2 / Qwen 2.5（开源）|
+| `char_div` | 兜底：字符数 ÷ 经验系数（按模型语言），用于无 tokenizer 时不丢日志 |
+
+**实现选项**（按优先级）：
+
+1. **`github.com/pkoukk/tiktoken-go`** — 纯 Go 实现的 tiktoken；启动加载 BPE 表（~1 MB）；约 50 ns/token，单核可达 20M tokens/s
+2. **CGo 绑定 `tiktoken-rs`** — 性能更好，但引入 CGo 依赖，破坏交叉编译；**不推荐**
+3. **`huggingface/tokenizers` 的 Go 绑定** — 覆盖 Llama / Qwen 等；同样 CGo，按需
+
+> 默认实现选 1；性能敏感场景再讨论。
+
+**精度承诺与对账**：
+
+- 估算结果**不保证位精确**；用于"账单不丢"而非"账单准"
+- `Usage.Source = Estimated/Mixed` 是计量管道的**一等字段**：
+  - Kafka 消息中包含；下游 Flink 可按 Source 分桶聚合
+  - Prometheus metric `usage.extracted_total{source}` 拆维度
+  - 价格表可对 `Estimated` 应用折扣 / 上限 / 告警（如 `Estimated` 占比 > 1% 触发告警）
+
+**配置**：
+
+```yaml
+# gateway.yaml
+usage:
+  fallback:
+    driver: tiktoken           # tiktoken | charlen | none
+    default_encoder: cl100k_base
+    encoder_mapping:           # 按模型名 prefix 匹配
+      "gpt-4o": o200k_base
+      "claude-": claude
+      "llama-3": llama3
+      "qwen2": qwen
+```
+
+> 默认 `driver: none`（保持现状：上游无 usage 则不入计量），需要兜底的部署改为 `tiktoken`。
+
 ## 5. PricingSpec
 
 ### 5.1 存储
