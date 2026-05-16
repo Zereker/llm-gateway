@@ -29,7 +29,7 @@ func attachEnvelopeFor(model string) gin.HandlerFunc {
 func TestModeration_NilModerator_PassThrough(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(),
 		attachEnvelopeFor("x"),
-		Moderation(ModerationDeps{Moderator: nil}),
+		Moderation(WithModerator(nil)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -42,7 +42,7 @@ func TestModeration_NilModerator_PassThrough(t *testing.T) {
 
 func TestModeration_500_EnvelopeMissing(t *testing.T) {
 	mod := &stubModerator{}
-	r := newGinTest(TraceContext(), Recover(), Moderation(ModerationDeps{Moderator: mod}))
+	r := newGinTest(TraceContext(), Recover(), Moderation(WithModerator(mod)))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -60,7 +60,7 @@ func TestModeration_CheckInputOK_InjectsModeratorInCtx(t *testing.T) {
 	var ctxMod Moderator
 	r := newGinTest(TraceContext(), Recover(),
 		attachEnvelopeFor("gpt-4o"),
-		Moderation(ModerationDeps{Moderator: mod}),
+		Moderation(WithModerator(mod)),
 	)
 	r.POST("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -88,7 +88,7 @@ func TestModeration_CheckInputReject_400_Invalid(t *testing.T) {
 	mod := &stubModerator{checkInputErr: errors.New("profanity detected")}
 	r := newGinTest(TraceContext(), Recover(),
 		attachEnvelopeFor("x"),
-		Moderation(ModerationDeps{Moderator: mod}),
+		Moderation(WithModerator(mod)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 

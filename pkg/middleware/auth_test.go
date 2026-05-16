@@ -24,7 +24,7 @@ func (p stubProvider) Resolve(_ context.Context, _ *repo.Credentials) (*domain.U
 }
 
 func TestAuth_RejectsMissingCreds(t *testing.T) {
-	r := newGinTest(TraceContext(), Recover(), Auth(AuthDeps{Provider: stubProvider{}}))
+	r := newGinTest(TraceContext(), Recover(), Auth(WithIdentityProvider(stubProvider{})))
 	r.GET("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -39,9 +39,9 @@ func TestAuth_RejectsMissingCreds(t *testing.T) {
 }
 
 func TestAuth_RejectsInvalidCreds(t *testing.T) {
-	r := newGinTest(TraceContext(), Recover(), Auth(AuthDeps{
-		Provider: stubProvider{err: errors.New("unknown api key")},
-	}))
+	r := newGinTest(TraceContext(), Recover(), Auth(
+		WithIdentityProvider(stubProvider{err: errors.New("unknown api key")}),
+	))
 	r.GET("/x", func(c *gin.Context) { c.Status(200) })
 
 	req := httptest.NewRequest("GET", "/x", nil)
@@ -59,9 +59,9 @@ func TestAuth_RejectsInvalidCreds(t *testing.T) {
 
 func TestAuth_AcceptsValidBearer(t *testing.T) {
 	want := domain.UserIdentity{SubAccountID: "alice", Group: "default"}
-	r := newGinTest(TraceContext(), Recover(), Auth(AuthDeps{
-		Provider: stubProvider{user: &want},
-	}))
+	r := newGinTest(TraceContext(), Recover(), Auth(
+		WithIdentityProvider(stubProvider{user: &want}),
+	))
 	var got domain.UserIdentity
 	r.GET("/x", func(c *gin.Context) {
 		got = GetRequestContext(c).Identity
@@ -83,9 +83,9 @@ func TestAuth_AcceptsValidBearer(t *testing.T) {
 
 func TestAuth_LoggerGetsSubAccountID(t *testing.T) {
 	want := domain.UserIdentity{SubAccountID: "carol"}
-	r := newGinTest(TraceContext(), Recover(), Auth(AuthDeps{
-		Provider: stubProvider{user: &want},
-	}))
+	r := newGinTest(TraceContext(), Recover(), Auth(
+		WithIdentityProvider(stubProvider{user: &want}),
+	))
 	r.GET("/x", func(c *gin.Context) {
 		_ = GetRequestContext(c) // Logger 字段已删；改 ctx-aware 后这个 test 不再断言 logger
 		c.Status(200)

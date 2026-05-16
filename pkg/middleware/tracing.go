@@ -14,13 +14,26 @@ import (
 	"github.com/zereker/llm-gateway/pkg/usage"
 )
 
-// TracingDeps M10 Tracing middleware 的依赖。
+// TracingOption 配置 Tracing middleware。
+type TracingOption func(*tracingConfig)
+
+type tracingConfig struct {
+	outbox usage.OutboxPublisher
+	tracer trace.Tracer
+}
+
+// WithUsageOutbox 注入 Usage Event outbox publisher。
 //
-// **职责**：聚合 metric + 发计量事件到 outbox + 写 SchedulingDecision trace。
-// 不管 RateLimit 调账（那是 M6 自己的事，洋葱模型 post-side 处理）。
-type TracingDeps struct {
-	Outbox usage.OutboxPublisher
-	Tracer trace.Tracer
+// 不传 = M10 不发 usage event（仅记 metric / trace）。
+func WithUsageOutbox(o usage.OutboxPublisher) TracingOption {
+	return func(c *tracingConfig) { c.outbox = o }
+}
+
+// WithTracer 注入 trace.Tracer 用于 scheduling_decision 日志。
+//
+// 不传 = M10 不写 scheduling_decision trace。
+func WithTracer(t trace.Tracer) TracingOption {
+	return func(c *tracingConfig) { c.tracer = t }
 }
 
 // Tracing 是 M10：聚合 metric + 发计量事件 + 写 SchedulingDecision trace。
@@ -29,7 +42,11 @@ type TracingDeps struct {
 // 发布失败不影响业务返回（best-effort）。
 // 用 context.Background()（带超时）发 Outbox，避免 client 已断开时
 // 还是要把 usage 落出（docs/05 §3）。
-func Tracing(deps TracingDeps) gin.HandlerFunc {
+func Tracing(opts ...TracingOption) gin.HandlerFunc {
+	cfg := &tracingConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	return func(c *gin.Context) {
 		c.Next()
 
@@ -85,7 +102,7 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 		}
 
 		// Usage Event outbox
-		if rc.Usage != nil && deps.Outbox != nil {
+		if rc.Usage != nil && cfg.outbox != nil {
 			publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			evt := buildUsageEvent(rc)
@@ -96,7 +113,7 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 					key = rc.RequestID
 				}
 				result := "ok"
-				if err := deps.Outbox.Publish(publishCtx, &usage.OutboxEvent{
+				if err := cfg.outbox.Publish(publishCtx, &usage.OutboxEvent{
 					Payload: payload,
 					Key:     key,
 				}); err != nil {
@@ -106,8 +123,8 @@ func Tracing(deps TracingDeps) gin.HandlerFunc {
 			}
 		}
 
-		if rc.SchedulingDecision != nil && deps.Tracer != nil {
-			deps.Tracer.Log(rc.Ctx, "scheduling_decision", rc.SchedulingDecision)
+		if rc.SchedulingDecision != nil && cfg.tracer != nil {
+			cfg.tracer.Log(rc.Ctx, "scheduling_decision", rc.SchedulingDecision)
 		}
 	}
 }

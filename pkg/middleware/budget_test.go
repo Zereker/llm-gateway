@@ -22,7 +22,7 @@ func attachIdentity(sub string) gin.HandlerFunc {
 }
 
 func TestBudget_NilGate_PassThrough(t *testing.T) {
-	r := newGinTest(TraceContext(), Recover(), attachIdentity("u1"), Budget(BudgetDeps{Gate: nil}))
+	r := newGinTest(TraceContext(), Recover(), attachIdentity("u1"), Budget(WithBudgetGate(nil)))
 	r.GET("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -34,7 +34,7 @@ func TestBudget_NilGate_PassThrough(t *testing.T) {
 
 func TestBudget_Active_PassThrough(t *testing.T) {
 	gate := &stubBudgetGate{status: domain.BudgetActive}
-	r := newGinTest(TraceContext(), Recover(), attachIdentity("u1"), Budget(BudgetDeps{Gate: gate}))
+	r := newGinTest(TraceContext(), Recover(), attachIdentity("u1"), Budget(WithBudgetGate(gate)))
 	r.GET("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -49,7 +49,7 @@ func TestBudget_Active_PassThrough(t *testing.T) {
 
 func TestBudget_Inactive_402_Permanent(t *testing.T) {
 	gate := &stubBudgetGate{status: domain.BudgetInactive}
-	r := newGinTest(TraceContext(), Recover(), attachIdentity("u1"), Budget(BudgetDeps{Gate: gate}))
+	r := newGinTest(TraceContext(), Recover(), attachIdentity("u1"), Budget(WithBudgetGate(gate)))
 	r.GET("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -67,7 +67,7 @@ func TestBudget_Inactive_402_Permanent(t *testing.T) {
 
 func TestBudget_GateError_502_Unknown(t *testing.T) {
 	gate := &stubBudgetGate{err: errors.New("billing down")}
-	r := newGinTest(TraceContext(), Recover(), attachIdentity("u1"), Budget(BudgetDeps{Gate: gate}))
+	r := newGinTest(TraceContext(), Recover(), attachIdentity("u1"), Budget(WithBudgetGate(gate)))
 	r.GET("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -82,7 +82,7 @@ func TestBudget_GateError_502_Unknown(t *testing.T) {
 
 func TestBudget_PassesSubAccountIDToGate(t *testing.T) {
 	gate := &stubBudgetGate{status: domain.BudgetActive}
-	r := newGinTest(TraceContext(), Recover(), attachIdentity("alice"), Budget(BudgetDeps{Gate: gate}))
+	r := newGinTest(TraceContext(), Recover(), attachIdentity("alice"), Budget(WithBudgetGate(gate)))
 	r.GET("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()

@@ -26,10 +26,10 @@ func attachM5Inputs(model, account string) gin.HandlerFunc {
 	}
 }
 
-func newMSDeps(ms *domain.ModelService) ModelServiceDeps {
-	return ModelServiceDeps{
-		Catalog:       stubCatalog{ms: ms},
-		Subscriptions: stubSubs{has: true},
+func newMSOpts(ms *domain.ModelService) []ModelServiceOption {
+	return []ModelServiceOption{
+		WithModelCatalog(stubCatalog{ms: ms}),
+		WithSubscriptionChecker(stubSubs{has: true}),
 	}
 }
 
@@ -40,7 +40,7 @@ func TestModelService_HappyPath_FillsRC(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("gpt-4o", "acc1"),
-		ModelService(newMSDeps(ms)),
+		ModelService(newMSOpts(ms)...),
 	)
 	r.POST("/x", func(c *gin.Context) {
 		rc = GetRequestContext(c)
@@ -58,7 +58,7 @@ func TestModelService_HappyPath_FillsRC(t *testing.T) {
 }
 
 func TestModelService_500_EnvelopeMissing(t *testing.T) {
-	r := newGinTest(TraceContext(), Recover(), ModelService(newMSDeps(nil)))
+	r := newGinTest(TraceContext(), Recover(), ModelService(newMSOpts(nil)...))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -72,14 +72,10 @@ func TestModelService_500_EnvelopeMissing(t *testing.T) {
 }
 
 func TestModelService_404_ModelNotFound(t *testing.T) {
-	deps := ModelServiceDeps{
-		Catalog:       stubCatalog{ms: nil},
-		Subscriptions: stubSubs{},
-	}
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("ghost", "acc1"),
-		ModelService(deps),
+		ModelService(WithModelCatalog(stubCatalog{ms: nil}), WithSubscriptionChecker(stubSubs{})),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -95,14 +91,10 @@ func TestModelService_404_ModelNotFound(t *testing.T) {
 
 func TestModelService_403_NotSubscribed(t *testing.T) {
 	ms := &domain.ModelService{ID: 1, Model: "gpt-4o"}
-	deps := ModelServiceDeps{
-		Catalog:       stubCatalog{ms: ms},
-		Subscriptions: stubSubs{has: false},
-	}
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("gpt-4o", "acc1"),
-		ModelService(deps),
+		ModelService(WithModelCatalog(stubCatalog{ms: ms}), WithSubscriptionChecker(stubSubs{has: false})),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -118,14 +110,10 @@ func TestModelService_403_NotSubscribed(t *testing.T) {
 
 func TestModelService_503_CatalogError(t *testing.T) {
 	// SQL/dep failure → fail-closed 503（docs/01 §7）
-	deps := ModelServiceDeps{
-		Catalog:       stubCatalog{err: errors.New("db down")},
-		Subscriptions: stubSubs{},
-	}
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("x", "acc1"),
-		ModelService(deps),
+		ModelService(WithModelCatalog(stubCatalog{err: errors.New("db down")}), WithSubscriptionChecker(stubSubs{})),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -141,14 +129,10 @@ func TestModelService_503_CatalogError(t *testing.T) {
 
 func TestModelService_503_SubscriptionError(t *testing.T) {
 	ms := &domain.ModelService{ID: 1, Model: "x"}
-	deps := ModelServiceDeps{
-		Catalog:       stubCatalog{ms: ms},
-		Subscriptions: stubSubs{err: errors.New("db down")},
-	}
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("x", "acc1"),
-		ModelService(deps),
+		ModelService(WithModelCatalog(stubCatalog{ms: ms}), WithSubscriptionChecker(stubSubs{err: errors.New("db down")})),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 

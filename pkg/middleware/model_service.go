@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
 
 	"github.com/gin-gonic/gin"
 
@@ -10,18 +9,9 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// ModelServiceDeps M5 ModelService middleware 的依赖。
-//
-// 按 docs/01 §7 + docs/03 §1：M5 只做 catalog + subscription 校验；
-// **不**查 active pricing（pricing 匹配下放给计费平台）。
-type ModelServiceDeps struct {
-	Catalog       ModelCatalog
-	Subscriptions SubscriptionChecker
-}
-
 // ModelCatalog M5 用：按 model 字符串查全局 catalog。
 //
-// 该接口是 middleware 自有契约，repo 实现层把 SQL 行映射为 domain.ModelService。
+// 该接口是 middleware-owned 契约，repo 实现层把 SQL 行映射为 domain.ModelService。
 type ModelCatalog interface {
 	GetByModel(c context.Context, model string) (*domain.ModelService, error)
 }
@@ -31,19 +21,43 @@ type SubscriptionChecker interface {
 	HasModel(c context.Context, accountID string, modelServiceID int64) (bool, error)
 }
 
-// ErrModelNotFound catalog 查不到模型。
-var ErrModelNotFound = errors.New("model not found")
+// ModelServiceOption 配置 ModelService middleware。
+type ModelServiceOption func(*modelServiceConfig)
+
+type modelServiceConfig struct {
+	catalog       ModelCatalog
+	subscriptions SubscriptionChecker
+}
+
+// WithModelCatalog 注入 ModelCatalog 实现。必填。
+func WithModelCatalog(c ModelCatalog) ModelServiceOption {
+	return func(cfg *modelServiceConfig) { cfg.catalog = c }
+}
+
+// WithSubscriptionChecker 注入 SubscriptionChecker 实现。必填。
+func WithSubscriptionChecker(s SubscriptionChecker) ModelServiceOption {
+	return func(cfg *modelServiceConfig) { cfg.subscriptions = s }
+}
 
 // ModelService 是 M5：rc.Envelope.Model → catalog → 验订阅 → rc.ModelService。
 //
-// 失败行为：
-//   - rc.Envelope nil（M3 没跑）→ 500 / ErrUnknown
-//   - catalog 找不到 → 404 / ErrInvalid / "model not found"
-//   - 主账号没订阅 → 403 / ErrPermanent / "model not subscribed"
-//   - SQL 错误 → 503 / ErrTransient（依赖故障 fail-closed，docs/01 §7）
-//
-// 成功后：rc.ModelService 字段就绪。
-func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
+// 失败行为（docs/01 §7）：
+//   - rc.Envelope nil（M3 没跑）→ 500
+//   - catalog SQL 错 → 503 / dependency_unavailable
+//   - catalog 找不到 → 404 / model_not_found
+//   - 主账号没订阅 → 403 / model_not_subscribed
+func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
+	cfg := &modelServiceConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	if cfg.catalog == nil {
+		panic("middleware.ModelService: WithModelCatalog required")
+	}
+	if cfg.subscriptions == nil {
+		panic("middleware.ModelService: WithSubscriptionChecker required")
+	}
+
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
 		ctx, end := startSpan(rc.Ctx, "llm-gateway.model_service")
@@ -56,10 +70,8 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 			return
 		}
 
-		// Step 1: catalog lookup
-		ms, err := deps.Catalog.GetByModel(rc.Ctx, rc.Envelope.Model)
+		ms, err := cfg.catalog.GetByModel(rc.Ctx, rc.Envelope.Model)
 		if err != nil {
-			// docs/01 §7：SQL 错按依赖故障 fail-closed → 503，不能伪装成 404
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
 				"model catalog: "+err.Error())
 			return
@@ -70,8 +82,7 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 			return
 		}
 
-		// Step 2: subscription
-		subscribed, err := deps.Subscriptions.HasModel(rc.Ctx, rc.Identity.AccountID, ms.ID)
+		subscribed, err := cfg.subscriptions.HasModel(rc.Ctx, rc.Identity.AccountID, ms.ID)
 		if err != nil {
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
 				"subscription lookup: "+err.Error())
@@ -89,12 +100,10 @@ func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 }
 
 // =============================================================================
-// repo adapter: 把现有 repo Provider 适配到 middleware-owned 接口
+// repo adapter
 // =============================================================================
 
 // AdaptRepoCatalog 把 repo.ModelServiceReader 适配为 ModelCatalog。
-// 当 repo.GetByModel 返回 (nil, err) 时按"not found"语义：err 类型由 repo 决定，
-// 网关层统一用 SQL err = 依赖故障，"无数据"由 repo 转 nil 返回。
 func AdaptRepoCatalog(p repo.ModelServiceReader) ModelCatalog {
 	return repoCatalogAdapter{p: p}
 }

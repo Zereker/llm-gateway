@@ -46,7 +46,7 @@ func attachM6Inputs(model string, accountPolicy, apikeyPolicy *int64) gin.Handle
 
 func TestLimit_500_M3orM5Missing(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(),
-		Limit(LimitDeps{Store: newStubStoreAllowAll(), Policies: ratelimit.NewPolicyCache(&stubQPProvider{}, time.Minute)}),
+		Limit(WithLimitStore(newStubStoreAllowAll()), WithLimitPolicies(ratelimit.NewPolicyCache(&stubQPProvider{}, time.Minute))),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -62,7 +62,7 @@ func TestLimit_NoPolicy_PassThrough(t *testing.T) {
 	pc := ratelimit.NewPolicyCache(&stubQPProvider{}, time.Minute)
 	r := newGinTest(TraceContext(), Recover(),
 		attachM6Inputs("gpt-4o", nil, nil),
-		Limit(LimitDeps{Store: store, Policies: pc}),
+		Limit(WithLimitStore(store), WithLimitPolicies(pc)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -86,7 +86,7 @@ func TestLimit_RPMOnly_Reserves(t *testing.T) {
 
 	r := newGinTest(TraceContext(), Recover(),
 		attachM6Inputs("gpt-4o", i64(1), nil),
-		Limit(LimitDeps{Store: store, Policies: pc}),
+		Limit(WithLimitStore(store), WithLimitPolicies(pc)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -115,7 +115,7 @@ func TestLimit_TPM_NotInReserve(t *testing.T) {
 
 	r := newGinTest(TraceContext(), Recover(),
 		attachM6Inputs("gpt-4o", i64(1), nil),
-		Limit(LimitDeps{Store: store, Policies: pc}),
+		Limit(WithLimitStore(store), WithLimitPolicies(pc)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -142,7 +142,7 @@ func TestLimit_TwoLayer_Additive(t *testing.T) {
 
 	r := newGinTest(TraceContext(), Recover(),
 		attachM6Inputs("gpt-4o", i64(1), i64(2)),
-		Limit(LimitDeps{Store: store, Policies: pc}),
+		Limit(WithLimitStore(store), WithLimitPolicies(pc)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -174,7 +174,7 @@ func TestLimit_Violated_429_WithRetryAfterAndDetails(t *testing.T) {
 
 	r := newGinTest(TraceContext(), Recover(),
 		attachM6Inputs("gpt-4o", i64(1), nil),
-		Limit(LimitDeps{Store: store, Policies: pc}),
+		Limit(WithLimitStore(store), WithLimitPolicies(pc)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -206,7 +206,7 @@ func TestLimit_StoreError_503(t *testing.T) {
 	store := &stubStore{reserveErr: errStub("redis down")}
 	r := newGinTest(TraceContext(), Recover(),
 		attachM6Inputs("gpt-4o", i64(1), nil),
-		Limit(LimitDeps{Store: store, Policies: pc}),
+		Limit(WithLimitStore(store), WithLimitPolicies(pc)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -229,7 +229,7 @@ func TestLimit_PostCharge_TPM_UsesUsageTotal(t *testing.T) {
 
 	r := newGinTest(TraceContext(), Recover(),
 		attachM6Inputs("gpt-4o", i64(1), nil),
-		Limit(LimitDeps{Store: store, Policies: pc}),
+		Limit(WithLimitStore(store), WithLimitPolicies(pc)),
 	)
 	r.POST("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -262,7 +262,7 @@ func TestLimit_PostCharge_NoUsage_Skip(t *testing.T) {
 
 	r := newGinTest(TraceContext(), Recover(),
 		attachM6Inputs("gpt-4o", i64(1), nil),
-		Limit(LimitDeps{Store: store, Policies: pc}),
+		Limit(WithLimitStore(store), WithLimitPolicies(pc)),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) }) // no Usage
 

@@ -32,23 +32,59 @@ type EndpointReader interface {
 	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
 }
 
-// ScheduleDeps M7 Schedule middleware 的依赖。
+// ScheduleOption 配置 Schedule middleware。
+type ScheduleOption func(*scheduleConfig)
+
+type scheduleConfig struct {
+	endpoints     EndpointReader
+	catalog       ModelCatalog
+	subscriptions SubscriptionChecker
+	scheduler     schedule.Scheduler
+	sender        *upstream.Sender
+	rateStore     ratelimit.Store // 可空：跳过 endpoint quota
+	maxAttempts   int
+}
+
+// WithEndpointReader 注入 EndpointReader。必填。
+func WithEndpointReader(r EndpointReader) ScheduleOption {
+	return func(c *scheduleConfig) { c.endpoints = r }
+}
+
+// WithFallbackCatalog 注入 ModelCatalog 用于 fallback model 重校验（docs/03 §1）。必填。
 //
-// 按 docs/03 §1 + docs/04 §10 重构后：
-//   - EndpointReader：M7 自己拉候选（per-model）
-//   - Catalog / Subscriptions：fallback model 重新做 M5 校验
-//   - Scheduler：无状态 Pick + Report
-//   - Sender：单次上游调用
-//   - RateStore：endpoint 维度限流（选中后 ReserveBatch；成功后 ChargeBatch TPM）
-//   - MaxAttempts：全局尝试上限（cfg 默认；header 可往更小覆盖）
-type ScheduleDeps struct {
-	Endpoints     EndpointReader
-	Catalog       ModelCatalog
-	Subscriptions SubscriptionChecker
-	Scheduler     schedule.Scheduler
-	Sender        *upstream.Sender
-	RateStore     ratelimit.Store // endpoint RPM/RPS reserve + TPM charge（docs/04 §10）；nil 时跳过 endpoint quota
-	MaxAttempts   int             // 0 = 默认 3
+// 注意：这跟 M5 的 ModelCatalog 是同一接口，但需要单独注入到 M7（每个 fallback model
+// 都要重新走 catalog + subscription 校验，不能复用 M5 的结果）。
+func WithFallbackCatalog(c ModelCatalog) ScheduleOption {
+	return func(cfg *scheduleConfig) { cfg.catalog = c }
+}
+
+// WithFallbackSubscriptionChecker 注入 SubscriptionChecker 用于 fallback model 校验。必填。
+func WithFallbackSubscriptionChecker(s SubscriptionChecker) ScheduleOption {
+	return func(cfg *scheduleConfig) { cfg.subscriptions = s }
+}
+
+// WithScheduler 注入 schedule.Scheduler。必填。
+func WithScheduler(s schedule.Scheduler) ScheduleOption {
+	return func(c *scheduleConfig) { c.scheduler = s }
+}
+
+// WithSender 注入 *upstream.Sender。必填。
+func WithSender(s *upstream.Sender) ScheduleOption {
+	return func(c *scheduleConfig) { c.sender = s }
+}
+
+// WithEndpointRateStore 注入 endpoint 维度的 ratelimit.Store（选中后 reserve + TPM charge）。
+//
+// 不传 = 跳过 endpoint quota（适合 dev / 不配 endpoint quota 的部署）。
+func WithEndpointRateStore(s ratelimit.Store) ScheduleOption {
+	return func(c *scheduleConfig) { c.rateStore = s }
+}
+
+// WithMaxAttempts 设置全局尝试上限；0 = 默认 3。
+//
+// header X-Gateway-Max-Attempts 可往**更小**方向覆盖；不能比这个值更大。
+func WithMaxAttempts(n int) ScheduleOption {
+	return func(c *scheduleConfig) { c.maxAttempts = n }
 }
 
 // Schedule 是 M7：
@@ -68,8 +104,27 @@ type ScheduleDeps struct {
 //	abort 503
 //
 // 详见 docs/architecture/03-endpoint-scheduling.md §1。
-func Schedule(deps ScheduleDeps) gin.HandlerFunc {
-	maxAttempts := deps.MaxAttempts
+func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
+	cfg := &scheduleConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	if cfg.endpoints == nil {
+		panic("middleware.Schedule: WithEndpointReader required")
+	}
+	if cfg.catalog == nil {
+		panic("middleware.Schedule: WithFallbackCatalog required")
+	}
+	if cfg.subscriptions == nil {
+		panic("middleware.Schedule: WithFallbackSubscriptionChecker required")
+	}
+	if cfg.scheduler == nil {
+		panic("middleware.Schedule: WithScheduler required")
+	}
+	if cfg.sender == nil {
+		panic("middleware.Schedule: WithSender required")
+	}
+	maxAttempts := cfg.maxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
@@ -146,7 +201,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 			}
 
 			// 每个 fallback model 重新做 M5（docs/03 §1：不能复用原 M5 结果）
-			ms, ok, err := resolveModel(ctx, deps, rc.Identity.AccountID, model, msCache, subCache)
+			ms, ok, err := resolveModel(ctx, cfg.catalog, cfg.subscriptions, rc.Identity.AccountID, model, msCache, subCache)
 			if err != nil {
 				// 依赖故障，整请求中止
 				if !responseStarted {
@@ -160,7 +215,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 			}
 
 			// 拉候选 + eligibility 过滤
-			rawCands, err := deps.Endpoints.ListForModel(ctx, model, rc.Identity.Group)
+			rawCands, err := cfg.endpoints.ListForModel(ctx, model, rc.Identity.Group)
 			if err != nil {
 				if !responseStarted {
 					abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
@@ -191,7 +246,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 
 			// 单 model 内 attempt loop
 			for totalAttempts < attemptsCap {
-				ep, err := deps.Scheduler.Pick(ctx, &schedule.Request{
+				ep, err := cfg.scheduler.Pick(ctx, &schedule.Request{
 					Model:      model,
 					Group:      rc.Identity.Group,
 					TPMCost:    tpmCost,
@@ -213,17 +268,17 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 
 				// 选中 endpoint 后做 RPM/RPS reserve（docs/04 §10）。
 				// 超限 → 反馈 capacity + 排除 ep + 继续 Pick 下一个
-				if deps.RateStore != nil {
+				if cfg.rateStore != nil {
 					if epBuckets := schedule.EndpointReserveBuckets(ep); len(epBuckets) > 0 {
-						allowed, violated, rerr := deps.RateStore.ReserveBatch(ctx, epBuckets)
+						allowed, violated, rerr := cfg.rateStore.ReserveBatch(ctx, epBuckets)
 						if rerr != nil {
 							// fail-open：把 ep 当不可用，try 下一个（不阻塞整请求）
-							deps.Scheduler.Report(ctx, ep, schedule.Result{Class: schedule.ClassCapacity, Reason: "endpoint reserve: " + rerr.Error()})
+							cfg.scheduler.Report(ctx, ep, schedule.Result{Class: schedule.ClassCapacity, Reason: "endpoint reserve: " + rerr.Error()})
 							excluded[ep.ID] = struct{}{}
 							continue
 						}
 						if !allowed {
-							deps.Scheduler.Report(ctx, ep, schedule.Result{Class: schedule.ClassCapacity, Reason: "endpoint quota exhausted: " + violated.Key})
+							cfg.scheduler.Report(ctx, ep, schedule.Result{Class: schedule.ClassCapacity, Reason: "endpoint quota exhausted: " + violated.Key})
 							excluded[ep.ID] = struct{}{}
 							metric.Inc(metric.RateLimitDecisionsTotal, "scope", "endpoint", "dimension", dimensionFromKey(violated.Key), "result", "violated")
 							continue
@@ -231,8 +286,8 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 					}
 				}
 
-				outcome, callErr := deps.Sender.Send(ctx, ep, rc.Envelope, rc.Envelope.RawBytes)
-				deps.Scheduler.Report(ctx, ep, outcome.ToScheduleResult())
+				outcome, callErr := cfg.sender.Send(ctx, ep, rc.Envelope, rc.Envelope.RawBytes)
+				cfg.scheduler.Report(ctx, ep, outcome.ToScheduleResult())
 
 				// 记录 attempt
 				decisions = append(decisions, domain.Attempt{
@@ -271,7 +326,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 					responseStarted = true
 					// 注入 rc.StartTime 让 Forward 计算 TTFT（docs/05 §4）
 					fwdCtx := upstream.WithRequestStartTime(ctx, rc.StartTime)
-					fwd := deps.Sender.Forward(fwdCtx, c.Writer, ep, outcome.Response, handler)
+					fwd := cfg.sender.Forward(fwdCtx, c.Writer, ep, outcome.Response, handler)
 					rc.Usage = fwd.Usage
 					if rc.Usage != nil && fwd.TTFTMs > 0 {
 						rc.Usage.Meta.TTFTMs = fwd.TTFTMs
@@ -284,7 +339,7 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 						}
 					}
 					// endpoint TPM 后扣（docs/04 §10）
-					chargeEndpointTPM(ctx, deps.RateStore, ep, rc.Usage)
+					chargeEndpointTPM(ctx, cfg.rateStore, ep, rc.Usage)
 					return
 				}
 
@@ -323,7 +378,8 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 // (nil, false, err) 表示依赖故障，调用方应整个 abort。
 func resolveModel(
 	ctx context.Context,
-	deps ScheduleDeps,
+	catalog ModelCatalog,
+	subs SubscriptionChecker,
 	accountID, model string,
 	msCache map[string]*domain.ModelService,
 	subCache map[string]bool,
@@ -331,7 +387,7 @@ func resolveModel(
 	ms, cached := msCache[model]
 	if !cached {
 		var err error
-		ms, err = deps.Catalog.GetByModel(ctx, model)
+		ms, err = catalog.GetByModel(ctx, model)
 		if err != nil {
 			return nil, false, err
 		}
@@ -346,7 +402,7 @@ func resolveModel(
 		}
 		return ms, true, nil
 	}
-	subscribed, err := deps.Subscriptions.HasModel(ctx, accountID, ms.ID)
+	subscribed, err := subs.HasModel(ctx, accountID, ms.ID)
 	if err != nil {
 		return nil, false, err
 	}

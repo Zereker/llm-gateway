@@ -136,59 +136,57 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	}
 	sender := upstream.New(senderOpts...)
 
+	catalog := middleware.AdaptRepoCatalog(repo.NewSQLModelServiceReader(sqldb))
+	subs := middleware.AdaptRepoSubscriptions(repo.NewSQLSubscriptionProvider(sqldb))
+	rateStore := ratelimit.NewRedisStore(rdb)
+	cooldown := schedule.NewRedisCooldownManager(rdb, schedule.CooldownDurations{
+		Transient: cfg.Scheduler.Cooldown.Transient,
+		Capacity:  cfg.Scheduler.Cooldown.Capacity,
+		Permanent: cfg.Scheduler.Cooldown.Permanent,
+		Invalid:   cfg.Scheduler.Cooldown.Invalid,
+		Unknown:   cfg.Scheduler.Cooldown.Unknown,
+	})
+	sched := schedule.New(schedule.Config{
+		Filters:  buildSchedulerFilters(cfg.Scheduler.Filters, rateStore, cooldown),
+		Selector: schedule.NewWeightedRandomSelector(),
+		Cooldown: cooldown,
+		Scorer:   scorer,
+		Stats:    stats,
+	})
+
 	engine = router.NewEngine(router.Deps{
 		BodyLimit: cfg.Middleware.BodyLimitBytes,
 		Timeout:   cfg.Middleware.Timeout,
 
-		Auth: middleware.AuthDeps{Provider: apikeyProvider},
-		// M4 Budget：driver 决定实现。alwayspass = 永远放行；inmemory = 进程内余额跟踪
-		Budget: middleware.BudgetDeps{Gate: buildBudgetGate(cfg.Budget)},
-		// M8 Moderation：driver 决定实现。none = pass-through；openai = 调 OpenAI moderation API
-		Moderation: middleware.ModerationDeps{Moderator: buildModerator(cfg.Moderation)},
-		// M5：catalog + subscription（pricing 不在请求路径，docs/01 §7 + docs/05 §6）
-		ModelService: middleware.ModelServiceDeps{
-			Catalog:       middleware.AdaptRepoCatalog(repo.NewSQLModelServiceReader(sqldb)),
-			Subscriptions: middleware.AdaptRepoSubscriptions(repo.NewSQLSubscriptionProvider(sqldb)),
+		Auth: []middleware.AuthOption{
+			middleware.WithIdentityProvider(apikeyProvider),
 		},
-		// M6 RateLimit：Redis 唯一实现 + PolicyCache 包一层 LRU+TTL（30s 默认）
-		Limit: middleware.LimitDeps{
-			Store:    ratelimit.NewRedisStore(rdb),
-			Policies: ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0),
+		Budget: []middleware.BudgetOption{
+			middleware.WithBudgetGate(buildBudgetGate(cfg.Budget)),
 		},
-		Schedule: middleware.ScheduleDeps{
-			Endpoints:     middleware.AdaptRepoEndpoints(repo.NewSQLEndpointReader(sqldb)),
-			Catalog:       middleware.AdaptRepoCatalog(repo.NewSQLModelServiceReader(sqldb)),
-			Subscriptions: middleware.AdaptRepoSubscriptions(repo.NewSQLSubscriptionProvider(sqldb)),
-			Scheduler: schedule.New(schedule.Config{
-				Filters: buildSchedulerFilters(
-					cfg.Scheduler.Filters,
-					ratelimit.NewRedisStore(rdb),
-					schedule.NewRedisCooldownManager(rdb, schedule.CooldownDurations{
-						Transient: cfg.Scheduler.Cooldown.Transient,
-						Capacity:  cfg.Scheduler.Cooldown.Capacity,
-						Permanent: cfg.Scheduler.Cooldown.Permanent,
-						Invalid:   cfg.Scheduler.Cooldown.Invalid,
-						Unknown:   cfg.Scheduler.Cooldown.Unknown,
-					}),
-				),
-				Selector: schedule.NewWeightedRandomSelector(),
-				Cooldown: schedule.NewRedisCooldownManager(rdb, schedule.CooldownDurations{
-					Transient: cfg.Scheduler.Cooldown.Transient,
-					Capacity:  cfg.Scheduler.Cooldown.Capacity,
-					Permanent: cfg.Scheduler.Cooldown.Permanent,
-					Invalid:   cfg.Scheduler.Cooldown.Invalid,
-					Unknown:   cfg.Scheduler.Cooldown.Unknown,
-				}),
-				Scorer: scorer,
-				Stats:  stats,
-			}),
-			Sender:      sender,
-			RateStore:   ratelimit.NewRedisStore(rdb),
-			MaxAttempts: cfg.Scheduler.MaxAttempts,
+		Moderation: []middleware.ModerationOption{
+			middleware.WithModerator(buildModerator(cfg.Moderation)),
 		},
-		Tracing: middleware.TracingDeps{
-			Outbox: outbox,
-			Tracer: buildTracer(srv, cfg.Trace),
+		ModelService: []middleware.ModelServiceOption{
+			middleware.WithModelCatalog(catalog),
+			middleware.WithSubscriptionChecker(subs),
+		},
+		Limit: []middleware.LimitOption{
+			middleware.WithLimitStore(rateStore),
+			middleware.WithLimitPolicies(ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0)),
+		},
+		Schedule: []middleware.ScheduleOption{
+			middleware.WithEndpointReader(middleware.AdaptRepoEndpoints(repo.NewSQLEndpointReader(sqldb))),
+			middleware.WithFallbackCatalog(catalog),
+			middleware.WithFallbackSubscriptionChecker(subs),
+			middleware.WithScheduler(sched),
+			middleware.WithSender(sender),
+			middleware.WithEndpointRateStore(rateStore),
+			middleware.WithMaxAttempts(cfg.Scheduler.MaxAttempts),
+		},
+		Tracing: []middleware.TracingOption{
+			middleware.WithUsageOutbox(outbox),
+			middleware.WithTracer(buildTracer(srv, cfg.Trace)),
 		},
 	})
 

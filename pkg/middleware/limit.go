@@ -14,15 +14,22 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// LimitDeps M6 RateLimit middleware 的依赖。
-//
-// 按 docs/04 §2 §5 §7：
-//   - 前扣：RPM / RPS 用 ReserveBatch；TPM **不预估、不预扣**
-//   - 后扣：TPM 用 ChargeBatch（cost = rc.Usage.Total）
-//   - 不返回 X-RateLimit-* headers（docs/04 §9）
-type LimitDeps struct {
-	Store    ratelimit.Store
-	Policies *ratelimit.PolicyCache
+// LimitOption 配置 Limit middleware。
+type LimitOption func(*limitConfig)
+
+type limitConfig struct {
+	store    ratelimit.Store
+	policies *ratelimit.PolicyCache
+}
+
+// WithLimitStore 注入 ratelimit.Store 实现。必填。
+func WithLimitStore(s ratelimit.Store) LimitOption {
+	return func(c *limitConfig) { c.store = s }
+}
+
+// WithLimitPolicies 注入 PolicyCache。必填。
+func WithLimitPolicies(p *ratelimit.PolicyCache) LimitOption {
+	return func(c *limitConfig) { c.policies = p }
 }
 
 // Limit 是 M6：用户侧两层（account + apikey）+ additive RPM/RPS 前扣 + TPM 后扣。
@@ -41,7 +48,16 @@ type LimitDeps struct {
 // **TPM 后扣失败语义**（docs/04 §7）：
 //   - rc.Usage == nil → 不扣 TPM（usage extractor 覆盖率问题）
 //   - Charge 写入超限 → 不改本次响应；记 llm_gateway_tpm_overflow_total
-func Limit(deps LimitDeps) gin.HandlerFunc {
+func Limit(opts ...LimitOption) gin.HandlerFunc {
+	cfg := &limitConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	// 没有 Store 或 Policies → no-op pass-through（适合 dev / 无限流部署）
+	if cfg.store == nil || cfg.policies == nil {
+		return func(c *gin.Context) { c.Next() }
+	}
+
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
 		ctx, end := startSpan(rc.Ctx, "llm-gateway.limit")
@@ -55,7 +71,7 @@ func Limit(deps LimitDeps) gin.HandlerFunc {
 		}
 
 		// 展开两层 policy → (reserve buckets = RPM/RPS, charge buckets = TPM)
-		reserveBuckets, tpmBuckets, err := buildUserBuckets(ctx, deps, &rc.Identity, rc.ModelService.Model)
+		reserveBuckets, tpmBuckets, err := buildUserBuckets(ctx, cfg.policies, &rc.Identity, rc.ModelService.Model)
 		if err != nil {
 			metric.Inc(metric.PolicyCacheTotal, "layer", "any", "result", "error")
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
@@ -71,7 +87,7 @@ func Limit(deps LimitDeps) gin.HandlerFunc {
 
 		// RPM/RPS 前扣（docs/04 §5）
 		if len(reserveBuckets) > 0 {
-			allowed, violated, rerr := deps.Store.ReserveBatch(ctx, reserveBuckets)
+			allowed, violated, rerr := cfg.store.ReserveBatch(ctx, reserveBuckets)
 			if rerr != nil {
 				// fail-closed（docs/04 §8）
 				metric.Inc(metric.RateLimitDecisionsTotal, "scope", "user", "dimension", "any", "result", "error")
@@ -109,7 +125,7 @@ func Limit(deps LimitDeps) gin.HandlerFunc {
 
 		// 执行下游 + post-side TPM charge
 		c.Next()
-		chargeTPM(rc, deps.Store, tpmBuckets)
+		chargeTPM(rc, cfg.store, tpmBuckets)
 	}
 }
 
@@ -160,13 +176,13 @@ func chargeTPM(rc *domain.RequestContext, store ratelimit.Store, tpmBuckets []ra
 // 命名（docs/04 §6）：rl:quota:<layer>:<subject>:<scope>:<dim>
 func buildUserBuckets(
 	ctx context.Context,
-	deps LimitDeps,
+	policies *ratelimit.PolicyCache,
 	id *repo.UserIdentity,
 	model string,
 ) (reserveBuckets, tpmBuckets []ratelimit.Bucket, err error) {
 	// 第 1 层：主账号
 	if id.AccountQuotaPolicyID != nil {
-		rule, err := deps.Policies.Get(ctx, *id.AccountQuotaPolicyID)
+		rule, err := policies.Get(ctx, *id.AccountQuotaPolicyID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("account policy: %w", err)
 		}
@@ -174,7 +190,7 @@ func buildUserBuckets(
 	}
 	// 第 2 层：apikey
 	if id.APIKeyQuotaPolicyID != nil {
-		rule, err := deps.Policies.Get(ctx, *id.APIKeyQuotaPolicyID)
+		rule, err := policies.Get(ctx, *id.APIKeyQuotaPolicyID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("apikey policy: %w", err)
 		}

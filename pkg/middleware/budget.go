@@ -11,34 +11,42 @@ import (
 
 // BudgetGate M4 Budget middleware 的依赖接口。
 //
-// 内置默认实现 alwayspass（永远放行，适合无付费体系场景）；
-// 接入外部计费系统时实现自定义 BudgetGate。
+// 默认实现 AlwaysPassGate（永远放行）；接入外部计费系统时实现自定义 BudgetGate。
 //
-// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
+// Implementations MUST be safe for concurrent use。
 type BudgetGate interface {
 	Check(c context.Context, subAccountID string) (domain.BudgetStatus, error)
 }
 
-// BudgetDeps M4 Budget middleware 的依赖。
+// BudgetOption 配置 Budget middleware。
+type BudgetOption func(*budgetConfig)
+
+type budgetConfig struct {
+	gate BudgetGate
+}
+
+// WithBudgetGate 注入 BudgetGate 实现。
 //
-// Gate 为 nil 时 handler 静默 pass-through——开发期或不需付费体系的部署可省略；
-// 生产部署接入计费系统时显式注入实现。
-type BudgetDeps struct {
-	Gate BudgetGate
+// 不传 = M4 静默 pass-through（适合开发 / 无付费体系部署）。
+func WithBudgetGate(g BudgetGate) BudgetOption {
+	return func(c *budgetConfig) { c.gate = g }
 }
 
 // Budget 是 M4：调 BudgetGate 判断当前 subAccountID 是否仍可消费。
 //
 // 失败行为：
-//   - Gate 报错 → 502 / ErrUnknown / "budget check error: <err>"（计费系统挂；不应放过）
+//   - Gate 报错 → 502 / ErrUnknown / "budget check error: <err>"
 //   - 状态非 Active → 402 / ErrPermanent / "budget inactive"
 //
-// 成功后直接 c.Next()——"通过"是隐含条件，下游不需要 BudgetStatus 字段。
-//
-// Gate 为 nil 时直接 c.Next()（视同 alwayspass）。
-func Budget(deps BudgetDeps) gin.HandlerFunc {
+// 未注入 Gate 时直接 c.Next()（视同 alwayspass）。
+func Budget(opts ...BudgetOption) gin.HandlerFunc {
+	cfg := &budgetConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	return func(c *gin.Context) {
-		if deps.Gate == nil {
+		if cfg.gate == nil {
 			c.Next()
 			return
 		}
@@ -48,16 +56,18 @@ func Budget(deps BudgetDeps) gin.HandlerFunc {
 		defer end()
 		rc.Ctx = ctx
 
-		status, err := deps.Gate.Check(rc.Ctx, rc.Identity.SubAccountID)
+		status, err := cfg.gate.Check(rc.Ctx, rc.Identity.SubAccountID)
 		if err != nil {
 			metric.Inc(metric.BudgetCheckTotal, "result", "error")
-			abort(c, 502, domain.ErrUnknown, "budget check error: "+err.Error())
+			abortWithCode(c, 502, domain.ErrUnknown, domain.ErrCodeUpstreamError,
+				"budget check error: "+err.Error())
 			return
 		}
 
 		if status != domain.BudgetActive {
 			metric.Inc(metric.BudgetCheckTotal, "result", "inactive")
-			abort(c, 402, domain.ErrPermanent, "budget inactive: "+status.String())
+			abortWithCode(c, 402, domain.ErrPermanent, domain.ErrCodeBudgetInactive,
+				"budget inactive: "+status.String())
 			return
 		}
 

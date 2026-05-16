@@ -99,14 +99,14 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 	}
 }
 
-func defaultScheduleDeps(scheduler schedule.Scheduler, eps map[string][]*domain.Endpoint) ScheduleDeps {
-	return ScheduleDeps{
-		Endpoints: stubEndpointReader{eps: eps},
-		Catalog: stubCatalog{ms: &repo.ModelService{ID: 1, Model: "gpt-4o"}},
-		Subscriptions: stubSubs{has: true},
-		Scheduler:     scheduler,
-		Sender:        upstream.New(),
-		MaxAttempts:   3,
+func defaultScheduleOpts(scheduler schedule.Scheduler, eps map[string][]*domain.Endpoint) []ScheduleOption {
+	return []ScheduleOption{
+		WithEndpointReader(stubEndpointReader{eps: eps}),
+		WithFallbackCatalog(stubCatalog{ms: &repo.ModelService{ID: 1, Model: "gpt-4o"}}),
+		WithFallbackSubscriptionChecker(stubSubs{has: true}),
+		WithScheduler(scheduler),
+		WithSender(upstream.New()),
+		WithMaxAttempts(3),
 	}
 }
 
@@ -115,14 +115,13 @@ func defaultScheduleDeps(scheduler schedule.Scheduler, eps map[string][]*domain.
 // =============================================================================
 
 func TestSchedule_500_M3orM5Missing(t *testing.T) {
-	deps := ScheduleDeps{
-		Endpoints:     stubEndpointReader{},
-		Catalog:       stubCatalog{},
-		Subscriptions: stubSubs{has: true},
-		Scheduler:     &stubScheduler{},
-		Sender:        upstream.New(),
-	}
-	r := newGinTest(TraceContext(), Recover(), Schedule(deps))
+	r := newGinTest(TraceContext(), Recover(), Schedule(
+		WithEndpointReader(stubEndpointReader{}),
+		WithFallbackCatalog(stubCatalog{}),
+		WithFallbackSubscriptionChecker(stubSubs{has: true}),
+		WithScheduler(&stubScheduler{}),
+		WithSender(upstream.New()),
+	))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -140,15 +139,14 @@ func TestSchedule_500_M3orM5Missing(t *testing.T) {
 // =============================================================================
 
 func TestSchedule_ListError_503(t *testing.T) {
-	deps := ScheduleDeps{
-		Endpoints:     stubEndpointReader{err: errors.New("db down")},
-		Catalog:       stubCatalog{ms: &repo.ModelService{ID: 1}},
-		Subscriptions: stubSubs{has: true},
-		Scheduler:     &stubScheduler{},
-		Sender:        upstream.New(),
-		MaxAttempts:   3,
-	}
-	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(deps))
+	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(
+		WithEndpointReader(stubEndpointReader{err: errors.New("db down")}),
+		WithFallbackCatalog(stubCatalog{ms: &repo.ModelService{ID: 1}}),
+		WithFallbackSubscriptionChecker(stubSubs{has: true}),
+		WithScheduler(&stubScheduler{}),
+		WithSender(upstream.New()),
+		WithMaxAttempts(3),
+	))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -162,8 +160,8 @@ func TestSchedule_ListError_503(t *testing.T) {
 }
 
 func TestSchedule_NoEndpointAtAll_503(t *testing.T) {
-	deps := defaultScheduleDeps(&stubScheduler{}, map[string][]*domain.Endpoint{})
-	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(deps))
+	opts := defaultScheduleOpts(&stubScheduler{}, map[string][]*domain.Endpoint{})
+	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(opts...))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()

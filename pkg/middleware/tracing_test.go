@@ -30,7 +30,7 @@ func TestTracing_PublishesUsageWhenSet(t *testing.T) {
 
 	r := newGinTest(
 		TraceContext(),
-		Tracing(TracingDeps{Outbox: out}),
+		Tracing(WithUsageOutbox(out)),
 	)
 	r.GET("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -66,7 +66,7 @@ func TestTracing_NoUsageNoPublish(t *testing.T) {
 	out := &stubOutbox{}
 	r := newGinTest(
 		TraceContext(),
-		Tracing(TracingDeps{Outbox: out}),
+		Tracing(WithUsageOutbox(out)),
 	)
 	r.GET("/x", func(c *gin.Context) {
 		// no Usage set
@@ -87,7 +87,7 @@ func TestTracing_OutboxNilTolerated(t *testing.T) {
 	// nil outbox should just skip publish without panic
 	r := newGinTest(
 		TraceContext(),
-		Tracing(TracingDeps{Outbox: nil}),
+		Tracing(),
 	)
 	r.GET("/x", func(c *gin.Context) {
 		GetRequestContext(c).Usage = &domain.Usage{Total: 10}
