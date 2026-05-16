@@ -14,6 +14,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/contentlog"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
+	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/repo"
 	"github.com/zereker/llm-gateway/pkg/schedule"
 	"github.com/zereker/llm-gateway/pkg/schedule/eligibility"
@@ -33,11 +34,12 @@ type EndpointReader interface {
 
 // ScheduleDeps M7 Schedule middleware 的依赖。
 //
-// 按 docs/03 §1 重构后：
+// 按 docs/03 §1 + docs/04 §10 重构后：
 //   - EndpointReader：M7 自己拉候选（per-model）
 //   - Catalog / Subscriptions：fallback model 重新做 M5 校验
 //   - Scheduler：无状态 Pick + Report
 //   - Sender：单次上游调用
+//   - RateStore：endpoint 维度限流（选中后 ReserveBatch；成功后 ChargeBatch TPM）
 //   - MaxAttempts：全局尝试上限（cfg 默认；header 可往更小覆盖）
 type ScheduleDeps struct {
 	Endpoints     EndpointReader
@@ -45,7 +47,8 @@ type ScheduleDeps struct {
 	Subscriptions SubscriptionChecker
 	Scheduler     schedule.Scheduler
 	Sender        *upstream.Sender
-	MaxAttempts   int // 0 = 默认 3
+	RateStore     ratelimit.Store // endpoint RPM/RPS reserve + TPM charge（docs/04 §10）；nil 时跳过 endpoint quota
+	MaxAttempts   int             // 0 = 默认 3
 }
 
 // Schedule 是 M7：
@@ -208,10 +211,24 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 				rc.Endpoint = ep
 				totalAttempts++
 
-				// 选完 ep 后追加该 ep 的 TPM bucket key（M6 后扣调账用）
-				if rc.RateLimit != nil {
-					rc.RateLimit.TPMBucketKeys = append(rc.RateLimit.TPMBucketKeys,
-						schedule.EndpointTPMBucketKeys(ep)...)
+				// 选中 endpoint 后做 RPM/RPS reserve（docs/04 §10）。
+				// 超限 → 反馈 capacity + 排除 ep + 继续 Pick 下一个
+				if deps.RateStore != nil {
+					if epBuckets := schedule.EndpointReserveBuckets(ep); len(epBuckets) > 0 {
+						allowed, violated, rerr := deps.RateStore.ReserveBatch(ctx, epBuckets)
+						if rerr != nil {
+							// fail-open：把 ep 当不可用，try 下一个（不阻塞整请求）
+							deps.Scheduler.Report(ctx, ep, schedule.Result{Class: schedule.ClassCapacity, Reason: "endpoint reserve: " + rerr.Error()})
+							excluded[ep.ID] = struct{}{}
+							continue
+						}
+						if !allowed {
+							deps.Scheduler.Report(ctx, ep, schedule.Result{Class: schedule.ClassCapacity, Reason: "endpoint quota exhausted: " + violated.Key})
+							excluded[ep.ID] = struct{}{}
+							metric.Inc(metric.RateLimitDecisionsTotal, "scope", "endpoint", "dimension", dimensionFromKey(violated.Key), "result", "violated")
+							continue
+						}
+					}
 				}
 
 				outcome, callErr := deps.Sender.Send(ctx, ep, rc.Envelope, rc.Envelope.RawBytes)
@@ -266,6 +283,8 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 							Message: "stream: " + fwd.FeedErr.Error(),
 						}
 					}
+					// endpoint TPM 后扣（docs/04 §10）
+					chargeEndpointTPM(ctx, deps.RateStore, ep, rc.Usage)
 					return
 				}
 
@@ -376,6 +395,33 @@ func parseFallbackModels(c *gin.Context) []string {
 		out = append(out, m)
 	}
 	return out
+}
+
+// chargeEndpointTPM 选中 endpoint 响应成功后，把真实 usage.Total 写到 endpoint TPM bucket
+//（docs/04 §10）。超限只记 metric；不阻塞响应。
+func chargeEndpointTPM(ctx context.Context, store ratelimit.Store, ep *domain.Endpoint, usage *domain.Usage) {
+	if store == nil || ep == nil || usage == nil || usage.Total <= 0 {
+		return
+	}
+	b := schedule.EndpointTPMChargeBucket(ep, uint32(usage.Total))
+	if b == nil {
+		return
+	}
+	// 用 background ctx（响应已完成，客户端 ctx 可能 cancel）
+	bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	results, err := store.ChargeBatch(bgCtx, []ratelimit.Bucket{*b})
+	if err != nil {
+		metric.Inc(metric.RateLimitChargeTotal, "dimension", "tpm", "result", "error")
+		return
+	}
+	metric.Inc(metric.RateLimitChargeTotal, "dimension", "tpm", "result", "ok")
+	for _, r := range results {
+		if r.Overflow {
+			metric.Inc(metric.TPMOverflowTotal, "layer", "endpoint", "dimension", "tpm")
+		}
+	}
+	_ = ctx
 }
 
 func routedModelOf(rc *domain.RequestContext) string {
