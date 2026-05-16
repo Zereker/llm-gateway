@@ -34,8 +34,10 @@ func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*
 		 WHERE model = ? AND deleted_at IS NULL`),
 		model)
 	if err != nil {
+		// 找不到不是 SQL 错误：返 (nil, nil) 让 middleware 区分 "model 不存在" 与 "DB 故障"
+		// （docs/01 §7：DB error fail-closed 503；not found 走 M5 自己的 404 路径）
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("model_service: not found: model=%s", model)
+			return nil, nil
 		}
 		return nil, fmt.Errorf("model_service: get by model: %w", err)
 	}
