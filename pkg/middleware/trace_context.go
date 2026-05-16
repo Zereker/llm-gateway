@@ -37,7 +37,7 @@ import (
 //   - 把 SpanContext{trace_id, span_id} 注入 c.Request.Context() 作为 rc.Ctx；
 //     下游 OtelTracer.StartSpan 自动续 parent（无需手工传 ID）
 //   - request_id 注入 OTel baggage；trace.CtxHandler 自动从 ctx 把 trace_id /
-//     span_id / baggage 全字段（user_id 由 M2 Auth 后写入）加到所有 log record
+//     span_id / baggage 全字段（sub_account_id 由 M2 Auth 后写入）加到所有 log record
 //   - 用 slog.InfoContext(rc.Ctx, ...) 输出日志即可，不用手工传 trace_id 字段
 //
 // **trace_id / span_id 不存 RC 字段**——单源真相是 ctx 里的 SpanContext；要 string

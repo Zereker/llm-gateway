@@ -12,13 +12,13 @@ import (
 // registerAPIKeyRoutes 注册 /admin/v1/apikeys CRUD。
 //
 //	POST   /apikeys                        创建（响应一次返明文 api_key）
-//	GET    /apikeys                        列表（?tenant_id=&user_id=&enabled= 过滤）
+//	GET    /apikeys                        列表（?account_id=&sub_account_id=&enabled= 过滤）
 //	GET    /apikeys/:api_key_id            详情（不返明文，返 prefix）
 //	PUT    /apikeys/:api_key_id            更新 enabled / expires_at / group / external_user / name
 //	POST   /apikeys/:api_key_id/revoke     主动吊销（set revoked_at）
 //	DELETE /apikeys/:api_key_id            软删
 //
-// v0.1 单租户：所有请求未指定 tenant_id 时按 "default" 处理。
+// v0.1 单主账号：所有请求未指定 account_id 时按 "default" 处理。
 func registerAPIKeyRoutes(api *gin.RouterGroup, s *APIKeyStore) {
 	api.GET("/apikeys", listAPIKeys(s))
 	api.POST("/apikeys", createAPIKey(s))
@@ -30,8 +30,8 @@ func registerAPIKeyRoutes(api *gin.RouterGroup, s *APIKeyStore) {
 
 func listAPIKeys(s *APIKeyStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
-		userIDFilter := c.Query("user_id")
+		accountID := accountOrDefault(c.Query("account_id"))
+		subAccountIDFilter := c.Query("sub_account_id")
 		var enabledFilter *bool
 		if v := c.Query("enabled"); v != "" {
 			b, err := strconv.ParseBool(v)
@@ -42,7 +42,7 @@ func listAPIKeys(s *APIKeyStore) gin.HandlerFunc {
 			enabledFilter = &b
 		}
 
-		all, err := s.List(c.Request.Context(), tenantID, userIDFilter, enabledFilter)
+		all, err := s.List(c.Request.Context(), accountID, subAccountIDFilter, enabledFilter)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -57,8 +57,8 @@ func listAPIKeys(s *APIKeyStore) gin.HandlerFunc {
 
 func getAPIKey(s *APIKeyStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
-		k, err := s.GetByAPIKeyID(c.Request.Context(), tenantID, c.Param("api_key_id"))
+		accountID := accountOrDefault(c.Query("account_id"))
+		k, err := s.GetByAPIKeyID(c.Request.Context(), accountID, c.Param("api_key_id"))
 		if err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
@@ -74,14 +74,14 @@ func createAPIKey(s *APIKeyStore) gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		if req.UserID == "" {
-			c.JSON(400, gin.H{"error": "user_id required"})
+		if req.SubAccountID == "" {
+			c.JSON(400, gin.H{"error": "sub_account_id required"})
 			return
 		}
 		k := &repo.APIKey{
-			TenantID:      tenantOrDefault(req.TenantID),
+			AccountID:     accountOrDefault(req.AccountID),
 			Name:          req.Name,
-			UserID:        req.UserID,
+			SubAccountID:  req.SubAccountID,
 			Group:         defaultIfEmpty(req.Group, "default"),
 			ExternalUser:  req.ExternalUser,
 			ExpiresAt:     req.ExpiresAt,
@@ -117,12 +117,12 @@ func updateAPIKey(s *APIKeyStore) gin.HandlerFunc {
 			QuotaPolicyID:    req.QuotaPolicyID,
 			ClearQuotaPolicy: req.ClearQuotaPolicy,
 		}
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
-		if err := s.Update(c.Request.Context(), tenantID, c.Param("api_key_id"), updates); err != nil {
+		accountID := accountOrDefault(c.Query("account_id"))
+		if err := s.Update(c.Request.Context(), accountID, c.Param("api_key_id"), updates); err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}
-		k, err := s.GetByAPIKeyID(c.Request.Context(), tenantID, c.Param("api_key_id"))
+		k, err := s.GetByAPIKeyID(c.Request.Context(), accountID, c.Param("api_key_id"))
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -133,12 +133,12 @@ func updateAPIKey(s *APIKeyStore) gin.HandlerFunc {
 
 func revokeAPIKey(s *APIKeyStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
-		if err := s.Revoke(c.Request.Context(), tenantID, c.Param("api_key_id")); err != nil {
+		accountID := accountOrDefault(c.Query("account_id"))
+		if err := s.Revoke(c.Request.Context(), accountID, c.Param("api_key_id")); err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}
-		k, err := s.GetByAPIKeyID(c.Request.Context(), tenantID, c.Param("api_key_id"))
+		k, err := s.GetByAPIKeyID(c.Request.Context(), accountID, c.Param("api_key_id"))
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -149,8 +149,8 @@ func revokeAPIKey(s *APIKeyStore) gin.HandlerFunc {
 
 func deleteAPIKey(s *APIKeyStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := tenantOrDefault(c.Query("tenant_id"))
-		if err := s.Delete(c.Request.Context(), tenantID, c.Param("api_key_id")); err != nil {
+		accountID := accountOrDefault(c.Query("account_id"))
+		if err := s.Delete(c.Request.Context(), accountID, c.Param("api_key_id")); err != nil {
 			c.JSON(404, gin.H{"error": err.Error()})
 			return
 		}
@@ -158,7 +158,7 @@ func deleteAPIKey(s *APIKeyStore) gin.HandlerFunc {
 	}
 }
 
-func tenantOrDefault(t string) string {
+func accountOrDefault(t string) string {
 	if t == "" {
 		return "default"
 	}
@@ -174,12 +174,12 @@ func defaultIfEmpty(s, fallback string) string {
 
 // apiKeyCreateRequest POST /apikeys 请求体。
 type apiKeyCreateRequest struct {
-	TenantID      string     `json:"tenant_id,omitempty"` // 不传则 "default"
-	UserID        string     `json:"user_id"`
-	Name          string     `json:"name,omitempty"`         // 用户友好标签：prod/dev/ci-bot
-	Group         string     `json:"group,omitempty"`        // 不传则 "default"
+	AccountID     string     `json:"account_id,omitempty"` // 不传则 "default"
+	SubAccountID  string     `json:"sub_account_id"`
+	Name          string     `json:"name,omitempty"`  // 用户友好标签：prod/dev/ci-bot
+	Group         string     `json:"group,omitempty"` // 不传则 "default"
 	ExternalUser  bool       `json:"external_user,omitempty"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"` // 不传则永不过期
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`      // 不传则永不过期
 	QuotaPolicyID *int64     `json:"quota_policy_id,omitempty"` // 可选；不传 = key 维度不限
 }
 

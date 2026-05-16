@@ -4,7 +4,7 @@ package domain
 type BudgetStatus int
 
 const (
-	BudgetUnknown  BudgetStatus = iota
+	BudgetUnknown BudgetStatus = iota
 	BudgetActive
 	BudgetInactive // 欠费 / 订阅过期 / 配额耗尽
 )

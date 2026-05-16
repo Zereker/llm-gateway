@@ -24,30 +24,30 @@ import (
 //   - 软删后同 UNIQUE 键不能直接复用，需 hard-delete
 
 // =============================================================================
-// Tenant：业务线 / pin 元信息
+// Account：主账号 pin / 计费主体元信息
 // =============================================================================
 
-// Tenant 对应表 tenants。
+// Account 对应表 accounts，业务语义是主账号 / 计费主体。
 //
-// **pin 直接做主键**：业务键 = 身份键，不引入 BIGINT 中转。其它表的 tenant_id
-// VARCHAR(64) 列就是这个 pin，FK → tenants.pin。
+// **pin 直接做主键**：业务键 = 身份键，不引入 BIGINT 中转。其它表的 account_id
+// VARCHAR(64) 列就是这个 pin，FK → accounts.pin。
 //
-// QuotaPolicyID NULL = pin 维度不限流（M6 跳过 pin 层检查）。
-type Tenant struct {
-	Pin             string  `db:"pin"               gorm:"column:pin;size:64;primaryKey"`
-	Name            string  `db:"name"              gorm:"column:name;size:128;not null"`
-	Enabled         bool    `db:"enabled"           gorm:"column:enabled;not null;default:true"`
-	QuotaPolicyID   *int64  `db:"quota_policy_id"   gorm:"column:quota_policy_id"`
+// QuotaPolicyID NULL = 主账号层不限流（M6 跳过主账号层检查）。
+type Account struct {
+	Pin           string `db:"pin"               gorm:"column:pin;size:64;primaryKey"`
+	Name          string `db:"name"              gorm:"column:name;size:128;not null"`
+	Enabled       bool   `db:"enabled"           gorm:"column:enabled;not null;default:true"`
+	QuotaPolicyID *int64 `db:"quota_policy_id"   gorm:"column:quota_policy_id"`
 
 	CreatedAt time.Time  `db:"created_at" gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP(6)"`
 	UpdatedAt time.Time  `db:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP(6)"`
 	DeletedAt *time.Time `db:"deleted_at" gorm:"column:deleted_at"`
 }
 
-func (Tenant) TableName() string { return "tenants" }
+func (Account) TableName() string { return "accounts" }
 
 // =============================================================================
-// QuotaPolicy：限流策略库（被 tenants / api_keys 引用，N:M 共享）
+// QuotaPolicy：限流策略库（被主账号 / api_keys 引用，N:M 共享）
 // =============================================================================
 
 // QuotaPolicy 对应表 quota_policies。
@@ -83,12 +83,12 @@ func (QuotaPolicy) TableName() string { return "quota_policies" }
 
 // ModelService 对应表 model_services。
 //
-// **v0.3 改动**：删 tenant_id（改为全局 catalog）/ group_name / spec_detail。
-// 模型可见性走 tenant_model_subscriptions；group 是 endpoint 维度。
+// **v0.3 改动**：删 account_id（改为全局 catalog）/ group_name / spec_detail。
+// 模型可见性走 account_model_subscriptions；group 是 endpoint 维度。
 type ModelService struct {
-	ID         int64  `db:"id"          gorm:"column:id;primaryKey;autoIncrement"`
-	ServiceID  string `db:"service_id"  gorm:"column:service_id;size:191;not null;uniqueIndex:uk_service_id"`
-	Model      string `db:"model"       gorm:"column:model;size:191;not null;uniqueIndex:uk_model"`
+	ID        int64  `db:"id"          gorm:"column:id;primaryKey;autoIncrement"`
+	ServiceID string `db:"service_id"  gorm:"column:service_id;size:191;not null;uniqueIndex:uk_service_id"`
+	Model     string `db:"model"       gorm:"column:model;size:191;not null;uniqueIndex:uk_model"`
 
 	CreatedAt time.Time  `db:"created_at" gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP(6)"`
 	UpdatedAt time.Time  `db:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP(6)"`
@@ -98,25 +98,25 @@ type ModelService struct {
 func (ModelService) TableName() string { return "model_services" }
 
 // =============================================================================
-// TenantModelSubscription：tenant × model 的可见性 N:M
+// AccountModelSubscription：主账号 × model 的可见性 N:M
 // =============================================================================
 
-// TenantModelSubscription 对应表 tenant_model_subscriptions。
+// AccountModelSubscription 对应表 account_model_subscriptions。
 //
-// M5 在确认 model 在 catalog 后，按 (tenant, model_service_id) 查这张表；
+// M5 在确认 model 在 catalog 后，按 (主账号 pin, model_service_id) 查这张表；
 // 没找到 → 403 "model not subscribed"。
-type TenantModelSubscription struct {
-	ID               int64  `db:"id"                gorm:"column:id;primaryKey;autoIncrement"`
-	TenantID         string `db:"tenant_id"         gorm:"column:tenant_id;size:64;not null;uniqueIndex:uk_tenant_model;index:idx_tenant"`
-	ModelServiceID   int64  `db:"model_service_id"  gorm:"column:model_service_id;not null;uniqueIndex:uk_tenant_model"`
-	Enabled          bool   `db:"enabled"           gorm:"column:enabled;not null;default:true"`
+type AccountModelSubscription struct {
+	ID             int64  `db:"id"                gorm:"column:id;primaryKey;autoIncrement"`
+	AccountID      string `db:"account_id"         gorm:"column:account_id;size:64;not null;uniqueIndex:uk_account_model;index:idx_account"`
+	ModelServiceID int64  `db:"model_service_id"  gorm:"column:model_service_id;not null;uniqueIndex:uk_account_model"`
+	Enabled        bool   `db:"enabled"           gorm:"column:enabled;not null;default:true"`
 
 	CreatedAt time.Time  `db:"created_at" gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP(6)"`
 	UpdatedAt time.Time  `db:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP(6)"`
 	DeletedAt *time.Time `db:"deleted_at" gorm:"column:deleted_at"`
 }
 
-func (TenantModelSubscription) TableName() string { return "tenant_model_subscriptions" }
+func (AccountModelSubscription) TableName() string { return "account_model_subscriptions" }
 
 // =============================================================================
 // Endpoint：全局上游接入点
@@ -124,17 +124,17 @@ func (TenantModelSubscription) TableName() string { return "tenant_model_subscri
 
 // Endpoint 对应表 endpoints。
 //
-// **v0.3 改动**：删 tenant_id（改为全局；BYOK 等真要做时加 nullable tenant_id）。
+// **v0.3 改动**：删 account_id（改为全局；BYOK 等真要做时加 nullable account_id）。
 //
 // 核心列只放调度选路 hot path 用得到的；vendor-specific 全进 typed JSON。
 type Endpoint struct {
-	ID         int64  `db:"id"         gorm:"column:id;primaryKey;autoIncrement"`
-	Name       string `db:"name"       gorm:"column:name;size:128;not null;uniqueIndex:uk_name"`
-	Vendor     string `db:"vendor"     gorm:"column:vendor;size:32;not null"`
-	Model      string `db:"model"      gorm:"column:model;size:191;not null;index:idx_model_group,priority:1"`
-	Group      string `db:"group_name" gorm:"column:group_name;size:64;not null;default:default;index:idx_model_group,priority:2"`
-	Weight     uint32 `db:"weight"     gorm:"column:weight;not null;default:100"`
-	Enabled    bool   `db:"enabled"    gorm:"column:enabled;not null;default:true"`
+	ID      int64  `db:"id"         gorm:"column:id;primaryKey;autoIncrement"`
+	Name    string `db:"name"       gorm:"column:name;size:128;not null;uniqueIndex:uk_name"`
+	Vendor  string `db:"vendor"     gorm:"column:vendor;size:32;not null"`
+	Model   string `db:"model"      gorm:"column:model;size:191;not null;index:idx_model_group,priority:1"`
+	Group   string `db:"group_name" gorm:"column:group_name;size:64;not null;default:default;index:idx_model_group,priority:2"`
+	Weight  uint32 `db:"weight"     gorm:"column:weight;not null;default:100"`
+	Enabled bool   `db:"enabled"    gorm:"column:enabled;not null;default:true"`
 
 	// typed JSON 三段；Scanner/Valuer 在各自的文件里
 	Auth         AuthConfig           `db:"auth"         gorm:"column:auth;type:varchar(2048);not null"`
@@ -189,24 +189,24 @@ func (c EndpointCapabilities) Value() (driver.Value, error) {
 
 // APIKey 对应表 api_keys。
 //
-// **v0.3 改动**：加 quota_policy_id 列（key 维度限流；与 tenant.quota 叠加）。
+// **v0.3 改动**：加 quota_policy_id 列（API key 级限流；与主账号级 quota 叠加）。
 //
 // DB 不存明文：服务端生成 sk-XXX → SHA-256 → api_key_hash 入库。
 type APIKey struct {
-	ID              int64      `db:"id"               gorm:"column:id;primaryKey;autoIncrement"`
-	TenantID        string     `db:"tenant_id"        gorm:"column:tenant_id;size:64;not null;default:default;uniqueIndex:uk_tenant_api_key_id;index:idx_tenant_user_id,priority:1"`
-	APIKeyHash      string     `db:"api_key_hash"     gorm:"column:api_key_hash;size:64;not null;uniqueIndex:uk_api_key_hash"`
-	APIKeyPrefix    string     `db:"api_key_prefix"   gorm:"column:api_key_prefix;size:16;not null"`
-	APIKeyID        string     `db:"api_key_id"       gorm:"column:api_key_id;size:64;not null;uniqueIndex:uk_tenant_api_key_id"`
-	Name            string     `db:"name"             gorm:"column:name;size:64;not null;default:''"`
-	UserID          string     `db:"user_id"          gorm:"column:user_id;size:64;not null;index:idx_tenant_user_id,priority:2"`
-	Group           string     `db:"group_name"       gorm:"column:group_name;size:64;not null;default:default"`
-	ExternalUser    bool       `db:"external_user"    gorm:"column:external_user;not null;default:false"`
-	Enabled         bool       `db:"enabled"          gorm:"column:enabled;not null;default:true"`
-	ExpiresAt       *time.Time `db:"expires_at"       gorm:"column:expires_at;index:idx_expires_at"`
-	LastUsedAt      *time.Time `db:"last_used_at"     gorm:"column:last_used_at"`
-	RevokedAt       *time.Time `db:"revoked_at"       gorm:"column:revoked_at"`
-	QuotaPolicyID   *int64     `db:"quota_policy_id"  gorm:"column:quota_policy_id"`
+	ID            int64      `db:"id"               gorm:"column:id;primaryKey;autoIncrement"`
+	AccountID     string     `db:"account_id"        gorm:"column:account_id;size:64;not null;default:default;uniqueIndex:uk_account_api_key_id;index:idx_account_sub_account_id,priority:1"` // 主账号 pin / 计费主体
+	APIKeyHash    string     `db:"api_key_hash"     gorm:"column:api_key_hash;size:64;not null;uniqueIndex:uk_api_key_hash"`
+	APIKeyPrefix  string     `db:"api_key_prefix"   gorm:"column:api_key_prefix;size:16;not null"`
+	APIKeyID      string     `db:"api_key_id"       gorm:"column:api_key_id;size:64;not null;uniqueIndex:uk_account_api_key_id"`
+	Name          string     `db:"name"             gorm:"column:name;size:64;not null;default:''"`
+	SubAccountID  string     `db:"sub_account_id"   gorm:"column:sub_account_id;size:64;not null;index:idx_account_sub_account_id,priority:2"` // 子账户 / 操作者
+	Group         string     `db:"group_name"       gorm:"column:group_name;size:64;not null;default:default"`
+	ExternalUser  bool       `db:"external_user"    gorm:"column:external_user;not null;default:false"`
+	Enabled       bool       `db:"enabled"          gorm:"column:enabled;not null;default:true"`
+	ExpiresAt     *time.Time `db:"expires_at"       gorm:"column:expires_at;index:idx_expires_at"`
+	LastUsedAt    *time.Time `db:"last_used_at"     gorm:"column:last_used_at"`
+	RevokedAt     *time.Time `db:"revoked_at"       gorm:"column:revoked_at"`
+	QuotaPolicyID *int64     `db:"quota_policy_id"  gorm:"column:quota_policy_id"`
 
 	CreatedAt time.Time  `db:"created_at" gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP(6)"`
 	UpdatedAt time.Time  `db:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP(6)"`
@@ -217,13 +217,13 @@ func (APIKey) TableName() string { return "api_keys" }
 
 // ToUserIdentity 把 DB 行映射成 M2 Auth 给后续 middleware 用的 UserIdentity。
 //
-// **不含 TenantQuotaPolicyID**：那个字段只能从 JOIN tenants 拿，APIKey 单行没有。
-// SQLAPIKeyProvider.Resolve 直接构造完整 UserIdentity（带 TenantQuotaPolicyID），
+// **不含 AccountQuotaPolicyID**：那个字段只能从 JOIN accounts 拿，APIKey 单行没有。
+// SQLAPIKeyProvider.Resolve 直接构造完整 UserIdentity（带 AccountQuotaPolicyID），
 // 不走这个方法。
 func (a APIKey) ToUserIdentity() UserIdentity {
 	return UserIdentity{
-		TenantID:            a.TenantID,
-		UserID:              a.UserID,
+		AccountID:           a.AccountID,
+		SubAccountID:        a.SubAccountID,
 		APIKeyID:            a.APIKeyID,
 		Group:               a.Group,
 		ExternalUser:        a.ExternalUser,
@@ -239,14 +239,14 @@ func (a APIKey) ToUserIdentity() UserIdentity {
 //
 // **append-only**：rule_json 一旦发布永不 UPDATE；改价 = 一次事务里
 //
-//	1) 给当前 active 行 UPDATE effective_to = NOW()
-//	2) INSERT 新行 effective_from = NOW(), effective_to = NULL
+//  1. 给当前 active 行 UPDATE effective_to = NOW()
+//  2. INSERT 新行 effective_from = NOW(), effective_to = NULL
 //
 // gateway 只读：M5 GetActive 拿当前版本，rc.Pricing 快照引用 ID。
 // gateway 不 unmarshal rule_json，billing engine 自己定义 schema。
 type PricingVersion struct {
 	ID             int64          `db:"id"               gorm:"column:id;primaryKey;autoIncrement"`
-	TenantID       string         `db:"tenant_id"        gorm:"column:tenant_id;size:64;not null;default:default;index:idx_active_lookup,priority:1"`
+	AccountID      string         `db:"account_id"        gorm:"column:account_id;size:64;not null;default:default;index:idx_active_lookup,priority:1"`
 	ModelServiceID int64          `db:"model_service_id" gorm:"column:model_service_id;not null;index:idx_active_lookup,priority:2"`
 	RuleClass      string         `db:"rule_class"       gorm:"column:rule_class;size:64;not null;default:standard;index:idx_active_lookup,priority:3"`
 	EffectiveFrom  time.Time      `db:"effective_from"   gorm:"column:effective_from;not null;index:idx_active_lookup,priority:4"`
@@ -267,7 +267,7 @@ func (PricingVersion) TableName() string { return "pricing_versions" }
 type EndpointForm int
 
 const (
-	FormVendor     EndpointForm = iota
+	FormVendor EndpointForm = iota
 	FormSelfHosted
 )
 

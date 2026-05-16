@@ -21,7 +21,7 @@ import (
 //   - rate_limit_error       → 429
 //   - api_error              → 5xx 上游内部错
 //   - overloaded_error       → 529 / 5xx 容量错（应当走 ErrRateLimit/capacity，不该按
-//                               transient 短 cooldown，否则会 hammer）
+//     transient 短 cooldown，否则会 hammer）
 //
 // **细分规则**（HTTP-status 之外的判断）：
 //   - error.type=overloaded_error  → ErrRateLimit（容量类，cooldown 应较长）

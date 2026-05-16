@@ -64,7 +64,6 @@ gateway:
     scheduler:
       filters: [cooldown, limit_read, weighted_random]
       max_attempts: 3
-      max_per_endpoint: 2
       cooldown:
         transient: 30s
         capacity:  60s

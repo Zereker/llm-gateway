@@ -26,7 +26,7 @@ func jsonEqual(t *testing.T, got, want []byte) bool {
 
 // seedModelService 把测试数据写进 db（bypass admin 写路径）。
 //
-// **v0.3 改动**：model_services 删 tenant_id/group_name/spec_detail。
+// **v0.3 改动**：model_services 删 account_id/group_name/spec_detail。
 func seedModelService(t *testing.T, db *sqlx.DB, ms *ModelService) {
 	t.Helper()
 	res, err := db.NamedExec(

@@ -14,7 +14,7 @@ import (
 // ModelServiceStore 用 gorm 写 model_services 表。
 //
 // **v0.3 改动**：
-//   - 全局 catalog（无 tenant_id）；模型可见性由 SubscriptionStore 管
+//   - 全局 catalog（无 account_id）；模型可见性由 SubscriptionStore 管
 //   - 删 tpm/rpm/group_name/spec_detail 字段
 //   - 唯一键改 (service_id) + (model)
 type ModelServiceStore struct {

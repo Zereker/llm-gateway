@@ -6,9 +6,8 @@ one OpenAI-compatible interface.
 
 ## Status
 
-**v0.1 MVP.** Interfaces are settling but not yet API-stable. See
-[`docs/architecture/07-roadmap.md`](docs/architecture/07-roadmap.md) for the
-roadmap to v1.0.
+**v0.1 MVP.** Interfaces are settling but not yet API-stable. Architecture
+targets are tracked in [`docs/architecture`](docs/architecture/).
 
 ## Layout
 
@@ -34,7 +33,7 @@ llm-gateway/
 │   ├── usage/           Usage extraction + outbox (file | kafka) + pricing
 │   ├── trace/           Tracer abstraction + SlogTracer default
 │   └── metric/          Prometheus metric name constants
-├── docs/architecture/   design docs (00-overview through 07-roadmap)
+├── docs/architecture/   design docs (00-overview through 06-pluggable-infra)
 └── configs/            per-environment configurations (local / prod / ...)
 ```
 
@@ -118,15 +117,12 @@ Per-environment configs live under [`configs/`](configs/) (see
 recommendations).
 
 A single environment directory contains:
-- `gateway.yaml` — server / middleware / paths / database / outbox
+- `gateway.yaml` — server / middleware / database / redis / outbox
 - `admin.yaml` — admin server config (separate binary, port :8081)
-- `apikeys.json` — `{apiKeyString: UserIdentity}` map (still file-based)
 
-`model_services` and `endpoints` live in MySQL — `cmd/admin` owns the schema
+`accounts`, `api_keys`, `model_services`, `subscriptions`, `endpoints`, and
+`quota_policies` live in MySQL — `cmd/admin` owns the schema
 (runs `infra.Migrate` on boot) and exposes CRUD over `/admin/v1/...`.
-
-`paths.apikeys` and sqlite `database.dsn` are resolved relative to the yaml
-file's location, so the directory is portable.
 
 Reload requires restart in v0.1; hot-reload (gateway polling DB / pg LISTEN)
 is in v0.5+.

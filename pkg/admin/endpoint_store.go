@@ -13,7 +13,7 @@ import (
 
 // EndpointStore 用 gorm 写 endpoints 表。
 //
-// **v0.3 改动**：去 tenant_id（全局上游池；BYOK 等真要做时再加 nullable tenant_id 列）。
+// **v0.3 改动**：去 account_id（全局上游池；BYOK 等真要做时再加 nullable account_id 列）。
 type EndpointStore struct {
 	db *gorm.DB
 }

@@ -2,7 +2,7 @@
 #
 # 路由：/admin/v1/quota-policies*
 #
-# 设计：N:M 共享。一个 policy 被多个 tenant / api_key 通过 quota_policy_id 引用。
+# 设计：N:M 共享。一个 policy 被多个 account / api_key 通过 quota_policy_id 引用。
 # 改 policy → 所有引用方立即生效。
 #
 # rule_json shape（M6 RateLimit 是唯一消费者；admin/gateway 都不解析）：
@@ -59,7 +59,7 @@ Content-Type: application/json
 
 > {% client.global.set("policy_tier1_id", response.body.id); %}
 
-### Create: enterprise contract (单租户专属)
+### Create: enterprise contract (单主账号专属)
 POST {{admin_url}}/admin/v1/quota-policies
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
@@ -104,7 +104,7 @@ X-Admin-Token: {{admin_token}}
 
 # =====================================================================
 # 429 verify flow（端到端验证 RPM 触发限流）
-# 顺序：建超严格 policy（RPM=2） → 绑给 default tenant → 发 3 次 chat
+# 顺序：建超严格 policy（RPM=2） → 绑给 default account → 发 3 次 chat
 # 第 3 次应 429 + Retry-After header
 # =====================================================================
 
@@ -123,8 +123,8 @@ Content-Type: application/json
 
 > {% client.global.set("throttle_policy_id", response.body.id); %}
 
-### Bind policy to default tenant
-PUT {{admin_url}}/admin/v1/tenants/default
+### Bind policy to default account
+PUT {{admin_url}}/admin/v1/accounts/default
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
@@ -171,7 +171,7 @@ client.test("Retry-After header present", () => client.assert(response.headers.v
 %}
 
 ### Cleanup: 解绑 policy（不然后面用例都被限流）
-PUT {{admin_url}}/admin/v1/tenants/default
+PUT {{admin_url}}/admin/v1/accounts/default
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
@@ -200,8 +200,8 @@ Content-Type: application/json
 
 > {% client.global.set("additive_policy_id", response.body.id); %}
 
-### Bind to default tenant
-PUT {{admin_url}}/admin/v1/tenants/default
+### Bind to default account
+PUT {{admin_url}}/admin/v1/accounts/default
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
@@ -250,7 +250,7 @@ client.test("error message scope=model", () => {
 %}
 
 ### Cleanup
-PUT {{admin_url}}/admin/v1/tenants/default
+PUT {{admin_url}}/admin/v1/accounts/default
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 

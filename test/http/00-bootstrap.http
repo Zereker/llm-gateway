@@ -10,9 +10,9 @@
 #   依次点每个请求左侧的 ▶；client.global 会保存 api_key / created_id 等供后续请求引用
 #
 # **v0.3 完整链路**（开放平台 SaaS 拓扑）：
-#   1) 确认 tenant default 存在            （schema.sql Migrate 自动 seed）
+#   1) 确认 account default 存在            （schema.sql Migrate 自动 seed）
 #   2) 创建 ModelService                  全局 catalog
-#   3) tenant default 订阅该 model        ← M5 没订阅 → 403
+#   3) account default 订阅该 model        ← M5 没订阅 → 403
 #   4) 发布 Pricing                       ← M5 没价 → 503
 #   5) 创建 APIKey                        客户端拿明文 sk-XXX 一次性
 #   6) 用 APIKey 打 chat                  全套 10 middleware → ARK → 真返回
@@ -20,16 +20,16 @@
 # 验证矩阵（在 step 6 前打 chat 应分别拿到 401/403/503，链路条件满足后 200）：
 #   - 没 apikey                  → 401
 #   - apikey 错                  → 401
-#   - tenant 没订阅 model        → 403
-#   - tenant 订阅了但没 active price → 503
+#   - account 没订阅 model        → 403
+#   - account 订阅了但没 active price → 503
 #   - 都满足                      → 200
 
-### Step 0: 验证 default tenant 已存在（Migrate 自动 seed）
-GET {{admin_url}}/admin/v1/tenants/default
+### Step 0: 验证 default account 已存在（Migrate 自动 seed）
+GET {{admin_url}}/admin/v1/accounts/default
 X-Admin-Token: {{admin_token}}
 
 > {%
-client.test("default tenant seeded", () => client.assert(response.status === 200));
+client.test("default account seeded", () => client.assert(response.status === 200));
 %}
 
 ### Step 1: 创建 ModelService（全局 catalog）
@@ -76,8 +76,8 @@ client.test("auth payload masked in response", () => {
 });
 %}
 
-### Step 3: tenant 订阅该 model（不订阅的话 chat → 403）
-POST {{admin_url}}/admin/v1/tenants/default/subscriptions
+### Step 3: account 订阅该 model（不订阅的话 chat → 403）
+POST {{admin_url}}/admin/v1/accounts/default/subscriptions
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
@@ -120,8 +120,8 @@ X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
 {
-  "tenant_id": "default",
-  "user_id": "alice",
+  "account_id": "default",
+  "sub_account_id": "alice",
   "name": "bootstrap-test",
   "group": "default"
 }

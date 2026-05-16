@@ -103,11 +103,11 @@ type AttemptCompleteObserver interface {
 
 // hookSet Sender 启动期分桶后的回调集合；运行期零 type-assert。
 type hookSet struct {
-	clientReq    []ClientRequestObserver
-	upstreamReq  []UpstreamRequestObserver
-	upstreamChk  []UpstreamChunkObserver
-	clientChk    []ClientChunkObserver
-	complete     []AttemptCompleteObserver
+	clientReq   []ClientRequestObserver
+	upstreamReq []UpstreamRequestObserver
+	upstreamChk []UpstreamChunkObserver
+	clientChk   []ClientChunkObserver
+	complete    []AttemptCompleteObserver
 }
 
 // classifyHooks 把 Hook 按实现的子接口分桶；同一个 hook 可同时进多个桶。

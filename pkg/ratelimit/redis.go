@@ -17,7 +17,7 @@ import (
 //   - snapshotLua：读单 bucket 当前 effective count
 //
 // 所有 Lua 都用 Cluster-friendly 写法（KEYS[*] 显式声明，避免 redis cluster 跨 slot
-// 报错；同租户的多 bucket 应该 hashtag 化保证落同一 slot——见 keyHashTag）。
+// 报错；同主账号的多 bucket 应该 hashtag 化保证落同一 slot——见 keyHashTag）。
 type RedisStore struct {
 	rdb           *redis.Client
 	scriptReserve *redis.Script

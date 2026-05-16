@@ -48,7 +48,7 @@ outbox:
 budget:
   # M4 Budget Gate driver：
   #   alwayspass — 默认；永远放行（开发 / 无付费体系）
-  #   inmemory   — 进程内余额跟踪（demo / 单租户；丢内存重启清零）
+  #   inmemory   — 进程内余额跟踪（demo / 单主账号；丢内存重启清零）
   driver: alwayspass
   # inmemory 时新 user 首次出现给的初始余额（USD）。0 = safe-by-default 拒绝
   default_balance: 0
@@ -75,10 +75,5 @@ scheduler:
     invalid:   0s      # 客户端 400-class，不该冷却 endpoint
     unknown:   10s     # 分类不出来时
 
-  # 全局尝试上限（含 L1 同 ep 内部重试）；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
+  # 全局尝试上限；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
   max_attempts: 3
-
-  # 同 endpoint 最大尝试次数（含首次）；
-  #   1 = 无 L1 retry（失败立刻换 ep；默认）
-  #   2-3 = 上游网络偶发抖动场景，同 ep 内部先重试再换。同 ep 重试期间不进 cooldown。
-  max_per_endpoint: 1

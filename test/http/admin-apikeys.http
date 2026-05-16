@@ -4,16 +4,16 @@
 # DB 不存明文：服务端生成 sk-XXX → SHA-256 hash 入库。
 # **明文只在 POST 响应里返一次**，后续 GET 只见 prefix（"sk-abc1de2f..."）。
 
-### List（?user_id=&enabled= 可过滤）
-GET {{admin_url}}/admin/v1/apikeys?tenant_id={{tenant_id}}
+### List（?sub_account_id=&enabled= 可过滤）
+GET {{admin_url}}/admin/v1/apikeys?account_id={{account_id}}
 X-Admin-Token: {{admin_token}}
 
 ### List by user
-GET {{admin_url}}/admin/v1/apikeys?tenant_id={{tenant_id}}&user_id=alice
+GET {{admin_url}}/admin/v1/apikeys?account_id={{account_id}}&sub_account_id=alice
 X-Admin-Token: {{admin_token}}
 
 ### List enabled only
-GET {{admin_url}}/admin/v1/apikeys?tenant_id={{tenant_id}}&enabled=true
+GET {{admin_url}}/admin/v1/apikeys?account_id={{account_id}}&enabled=true
 X-Admin-Token: {{admin_token}}
 
 ### Create（响应里 api_key 是明文 sk-...，prefix 是 sk-前 9 hex）
@@ -22,8 +22,8 @@ X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
 {
-  "tenant_id": "{{tenant_id}}",
-  "user_id": "alice",
+  "account_id": "{{account_id}}",
+  "sub_account_id": "alice",
   "name": "prod",
   "group": "default",
   "external_user": false,
@@ -42,17 +42,17 @@ X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
 {
-  "user_id": "bob",
+  "sub_account_id": "bob",
   "name": "ci-bot",
   "expires_at": "2026-12-31T23:59:59Z"
 }
 
 ### Get by api_key_id（不返明文，只返 prefix）
-GET {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?tenant_id={{tenant_id}}
+GET {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?account_id={{account_id}}
 X-Admin-Token: {{admin_token}}
 
 ### Update: disable
-PUT {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?tenant_id={{tenant_id}}
+PUT {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?account_id={{account_id}}
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
@@ -61,7 +61,7 @@ Content-Type: application/json
 }
 
 ### Update: 改 name + clear expires_at
-PUT {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?tenant_id={{tenant_id}}
+PUT {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?account_id={{account_id}}
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
@@ -70,8 +70,8 @@ Content-Type: application/json
   "clear_expires_at": true
 }
 
-### Update: 挂 apikey 维度限流 policy（与 tenant.quota_policy 叠加）
-PUT {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?tenant_id={{tenant_id}}
+### Update: 挂 apikey 维度限流 policy（与 account.quota_policy 叠加）
+PUT {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?account_id={{account_id}}
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
@@ -79,8 +79,8 @@ Content-Type: application/json
   "quota_policy_id": 1
 }
 
-### Update: 取消 apikey 维度限流（key 维度变成不限；只受 tenant 维度约束）
-PUT {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?tenant_id={{tenant_id}}
+### Update: 取消 apikey 维度限流（key 维度变成不限；只受 account 维度约束）
+PUT {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?account_id={{account_id}}
 X-Admin-Token: {{admin_token}}
 Content-Type: application/json
 
@@ -89,7 +89,7 @@ Content-Type: application/json
 }
 
 ### Revoke (set revoked_at; gateway 立即拒绝)
-POST {{admin_url}}/admin/v1/apikeys/{{api_key_id}}/revoke?tenant_id={{tenant_id}}
+POST {{admin_url}}/admin/v1/apikeys/{{api_key_id}}/revoke?account_id={{account_id}}
 X-Admin-Token: {{admin_token}}
 
 ### Verify revoke 生效（gateway 该 key 应 401）
@@ -103,5 +103,5 @@ Content-Type: application/json
 }
 
 ### Delete (软删 set deleted_at)
-DELETE {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?tenant_id={{tenant_id}}
+DELETE {{admin_url}}/admin/v1/apikeys/{{api_key_id}}?account_id={{account_id}}
 X-Admin-Token: {{admin_token}}

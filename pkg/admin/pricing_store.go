@@ -31,7 +31,7 @@ func NewPricingStore(db *gorm.DB) *PricingStore {
 //
 // 事务里：
 //  1. UPDATE pricing_versions SET effective_to = NOW(6)
-//     WHERE tenant_id=? AND model_service_id=? AND rule_class=? AND effective_to IS NULL
+//     WHERE account_id=? AND model_service_id=? AND rule_class=? AND effective_to IS NULL
 //  2. INSERT 新行 effective_from = NOW(6), effective_to = NULL
 //
 // 如果当前没 active（首次发布），步骤 1 影响 0 行也 OK；步骤 2 仍执行。
@@ -39,14 +39,14 @@ func NewPricingStore(db *gorm.DB) *PricingStore {
 // 调用方拿到回填了 ID + EffectiveFrom 的新版本。
 func (s *PricingStore) RotatePrice(
 	ctx context.Context,
-	tenantID string,
+	accountID string,
 	modelServiceID int64,
 	ruleClass string,
 	ruleJSON datatypes.JSON,
 	createdBy, notes string,
 ) (*repo.PricingVersion, error) {
-	if tenantID == "" {
-		tenantID = "default"
+	if accountID == "" {
+		accountID = "default"
 	}
 	if modelServiceID == 0 {
 		return nil, errors.New("pricing: model_service_id required")
@@ -60,7 +60,7 @@ func (s *PricingStore) RotatePrice(
 
 	now := time.Now().UTC()
 	newRow := &repo.PricingVersion{
-		TenantID:       tenantID,
+		AccountID:      accountID,
 		ModelServiceID: modelServiceID,
 		RuleClass:      ruleClass,
 		EffectiveFrom:  now,
@@ -75,8 +75,8 @@ func (s *PricingStore) RotatePrice(
 		// step 1: 封盘当前 active（可能 0 行：首次发布）
 		if err := tx.
 			Model(&repo.PricingVersion{}).
-			Where("tenant_id = ? AND model_service_id = ? AND rule_class = ? AND effective_to IS NULL",
-				tenantID, modelServiceID, ruleClass).
+			Where("account_id = ? AND model_service_id = ? AND rule_class = ? AND effective_to IS NULL",
+				accountID, modelServiceID, ruleClass).
 			Update("effective_to", now).Error; err != nil {
 			return fmt.Errorf("seal current: %w", err)
 		}
@@ -92,12 +92,12 @@ func (s *PricingStore) RotatePrice(
 	return newRow, nil
 }
 
-// ListHistory 列某 (tenant, model_service, rule_class) 的全部版本，最新在前。
+// ListHistory 列某 (account, model_service, rule_class) 的全部版本，最新在前。
 func (s *PricingStore) ListHistory(
-	ctx context.Context, tenantID string, modelServiceID int64, ruleClass string,
+	ctx context.Context, accountID string, modelServiceID int64, ruleClass string,
 ) ([]repo.PricingVersion, error) {
-	if tenantID == "" {
-		tenantID = "default"
+	if accountID == "" {
+		accountID = "default"
 	}
 	if modelServiceID == 0 {
 		return nil, errors.New("pricing: model_service_id required")
@@ -107,8 +107,8 @@ func (s *PricingStore) ListHistory(
 	}
 	var out []repo.PricingVersion
 	if err := s.db.WithContext(ctx).
-		Where("tenant_id = ? AND model_service_id = ? AND rule_class = ?",
-			tenantID, modelServiceID, ruleClass).
+		Where("account_id = ? AND model_service_id = ? AND rule_class = ?",
+			accountID, modelServiceID, ruleClass).
 		Order("effective_from DESC").
 		Find(&out).Error; err != nil {
 		return nil, fmt.Errorf("pricing: list history: %w", err)
@@ -118,10 +118,10 @@ func (s *PricingStore) ListHistory(
 
 // GetActive 当前 active 版本（admin UI 显示"当前价"）。
 func (s *PricingStore) GetActive(
-	ctx context.Context, tenantID string, modelServiceID int64, ruleClass string,
+	ctx context.Context, accountID string, modelServiceID int64, ruleClass string,
 ) (*repo.PricingVersion, error) {
-	if tenantID == "" {
-		tenantID = "default"
+	if accountID == "" {
+		accountID = "default"
 	}
 	if modelServiceID == 0 {
 		return nil, errors.New("pricing: model_service_id required")
@@ -132,15 +132,15 @@ func (s *PricingStore) GetActive(
 	var pv repo.PricingVersion
 	now := time.Now().UTC()
 	err := s.db.WithContext(ctx).
-		Where("tenant_id = ? AND model_service_id = ? AND rule_class = ? "+
+		Where("account_id = ? AND model_service_id = ? AND rule_class = ? "+
 			"AND effective_from <= ? AND (effective_to IS NULL OR effective_to > ?)",
-			tenantID, modelServiceID, ruleClass, now, now).
+			accountID, modelServiceID, ruleClass, now, now).
 		Order("effective_from DESC").
 		First(&pv).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("pricing: no active version: tenant=%s model_service_id=%d class=%s",
-				tenantID, modelServiceID, ruleClass)
+			return nil, fmt.Errorf("pricing: no active version: account=%s model_service_id=%d class=%s",
+				accountID, modelServiceID, ruleClass)
 		}
 		return nil, fmt.Errorf("pricing: get active: %w", err)
 	}

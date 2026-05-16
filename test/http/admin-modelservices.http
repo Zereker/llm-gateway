@@ -1,8 +1,8 @@
 # admin-modelservices.http —— ModelService CRUD（全局模型 catalog）。
 #
 # 路由：/admin/v1/modelservices*
-# **v0.3 改动**：删 tenant_id（catalog 全平台一份）；删 group / spec_detail。
-# 模型可见性走 admin-subscriptions.http（tenant 订阅决定看不看见）。
+# **v0.3 改动**：删 account_id（catalog 全平台一份）；删 group / spec_detail。
+# 模型可见性走 admin-subscriptions.http（ account 订阅决定看不看见）。
 
 ### List
 GET {{admin_url}}/admin/v1/modelservices

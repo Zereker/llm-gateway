@@ -64,7 +64,7 @@ type RequestContext struct {
 	// 只构 HTTP request，不写 response。
 	//
 	// 没有 *slog.Logger——日志走 slog.InfoContext / ErrorContext 等带 ctx 的 API；
-	// trace.CtxHandler 自动从 ctx 抽 trace_id / span_id / baggage 字段（user_id 等）
+	// trace.CtxHandler 自动从 ctx 抽 trace_id / span_id / baggage 字段（sub_account_id 等）
 	// 加到 record。详见 pkg/trace/sloghandler.go。
 	Ctx context.Context // 业务 context（带 OTel SpanContext + Baggage）；timeout / cancel / log 都走它
 

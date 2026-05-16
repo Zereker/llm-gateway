@@ -96,11 +96,11 @@ func TestMigrate_TableShape(t *testing.T) {
 	}
 	for _, table := range []string{
 		"pricing_versions",
-		"tenant_model_subscriptions",
+		"account_model_subscriptions",
 		"endpoints",
 		"model_services",
 		"api_keys",
-		"tenants",
+		"accounts",
 		"quota_policies",
 	} {
 		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
@@ -110,12 +110,12 @@ func TestMigrate_TableShape(t *testing.T) {
 	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 1`); err != nil {
 		t.Fatalf("re-enable FK checks: %v", err)
 	}
-	// seed default tenant 让后续 FK insert 通过
-	if _, err := db.Exec(`INSERT INTO tenants (pin, name) VALUES ('default', 'Default')`); err != nil {
-		t.Fatalf("seed tenant: %v", err)
+	// seed default account 让后续 FK insert 通过
+	if _, err := db.Exec(`INSERT INTO accounts (pin, name) VALUES ('default', 'Default')`); err != nil {
+		t.Fatalf("seed account: %v", err)
 	}
 
-	// model_services：精简列（v0.3 删 tenant_id/group_name/spec_detail）
+	// model_services：精简列（v0.3 删 account_id/group_name/spec_detail）
 	_, err = db.Exec(
 		`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
 		"openai/gpt-4o", "gpt-4o",
@@ -139,7 +139,7 @@ func TestMigrate_TableShape(t *testing.T) {
 	// api_keys：hash + prefix 形态
 	_, err = db.Exec(
 		`INSERT INTO api_keys
-		 (tenant_id, api_key_hash, api_key_prefix, api_key_id, user_id, group_name, external_user, enabled)
+		 (account_id, api_key_hash, api_key_prefix, api_key_id, sub_account_id, group_name, external_user, enabled)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"default", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"sk-abcdef123", "ak_alice_test", "alice", "default", false, true,

@@ -6,25 +6,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// registerSubscriptionRoutes 注册订阅 CRUD（挂在 tenants 子路径下）：
+// registerSubscriptionRoutes 注册订阅 CRUD（挂在 accounts 子路径下）：
 //
-//	GET    /tenants/:pin/subscriptions               列 tenant 已订阅模型
-//	POST   /tenants/:pin/subscriptions               订阅一个模型 {"model_service_id": 1}
-//	PUT    /tenants/:pin/subscriptions/:msid         切 enabled {"enabled":false}
-//	DELETE /tenants/:pin/subscriptions/:msid         软删订阅
+//	GET    /accounts/:pin/subscriptions               列 account 已订阅模型
+//	POST   /accounts/:pin/subscriptions               订阅一个模型 {"model_service_id": 1}
+//	PUT    /accounts/:pin/subscriptions/:msid         切 enabled {"enabled":false}
+//	DELETE /accounts/:pin/subscriptions/:msid         软删订阅
 //
-// 不暴露 subscription 自己的 BIGINT id；admin 都按 (tenant_pin, model_service_id) 复合操作。
+// 不暴露 subscription 自己的 BIGINT id；admin 都按 (account_pin, model_service_id) 复合操作。
 func registerSubscriptionRoutes(api *gin.RouterGroup, s *SubscriptionStore) {
-	api.GET("/tenants/:pin/subscriptions", listSubscriptions(s))
-	api.POST("/tenants/:pin/subscriptions", subscribe(s))
-	api.PUT("/tenants/:pin/subscriptions/:msid", setSubscriptionEnabled(s))
-	api.DELETE("/tenants/:pin/subscriptions/:msid", unsubscribe(s))
+	api.GET("/accounts/:pin/subscriptions", listSubscriptions(s))
+	api.POST("/accounts/:pin/subscriptions", subscribe(s))
+	api.PUT("/accounts/:pin/subscriptions/:msid", setSubscriptionEnabled(s))
+	api.DELETE("/accounts/:pin/subscriptions/:msid", unsubscribe(s))
 }
 
 func listSubscriptions(s *SubscriptionStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		pin := c.Param("pin")
-		all, err := s.ListByTenant(c.Request.Context(), pin)
+		all, err := s.ListByAccount(c.Request.Context(), pin)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return

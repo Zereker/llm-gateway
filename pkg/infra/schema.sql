@@ -2,22 +2,23 @@
 -- 全部 DDL 用 IF NOT EXISTS 保证 Migrate 幂等，反复 Run 不报错。
 -- charset / collation 统一 utf8mb4 / utf8mb4_unicode_ci。
 --
--- **架构定位**：开放平台 SaaS。几十个上游模型，几百几千 tenant（业务线 / pin）按权限订阅。
+-- **架构定位**：开放平台 SaaS。几十个上游模型，几百几千主账号（pin / 计费主体）按权限订阅。
 --
 -- **核心关系**：
---   tenants (pin)              ── 业务线主体；挂 quota_policy
+--  accounts (pin)              ── 主账号 / 计费主体；挂 quota_policy
 --      ↓ 1:N
 --   api_keys                   ── 凭证；可独立挂 quota_policy
---   tenant_model_subscriptions ── tenant × model_services；决定可见性
---   pricing_versions           ── tenant × model_services × rule_class × time；决定单价
+--  account_model_subscriptions ── 主账号 × model_services；决定可见性
+--   pricing_versions           ── 主账号 × model_services × rule_class × time；决定单价
 --
---   model_services             ── 全局模型 catalog（无 tenant_id）
---   endpoints                  ── 全局上游连接点（无 tenant_id；BYOK 是未来 v0.x+）
---   quota_policies             ── 限流策略（被 tenants 和 api_keys 引用，N:M 共享）
+--   model_services             ── 全局模型 catalog（无 account_id）
+--   endpoints                  ── 全局上游连接点（无 account_id；BYOK 是未来 v0.x+）
+--   quota_policies             ── 限流策略（被 accounts 和 api_keys 引用，N:M 共享）
 --
 -- **设计要点**：
 --   - id 一律 BIGINT UNSIGNED AUTO_INCREMENT；唯一业务键复合 UNIQUE
---   - tenants 用 pin (VARCHAR PK) 作为业务键；其它表 tenant_id 字段 FK → tenants(pin)
+--   - accounts 表存主账号 pin / 计费主体元信息
+--   - accounts 用 pin (VARCHAR PK) 作为业务键；其它表 account_id 字段 FK → accounts(pin)
 --   - 字符串字段 VARCHAR + 明确长度（不用 TEXT，方便走索引）
 --   - JSON blob 列用 MySQL 8.0 原生 JSON 类型
 --   - 时间戳全部 TIMESTAMP(6) 微秒精度，跟 Go time.Time 对齐
@@ -27,12 +28,12 @@
 -- （需 hard-delete）。v0.x 接受此限制。
 --
 -- **schema 加载顺序敏感**：FK 依赖决定 CREATE 顺序：
---   quota_policies → tenants → model_services → endpoints
---                  → tenant_model_subscriptions → api_keys → pricing_versions
+--   quota_policies → accounts → model_services → endpoints
+--                  → account_model_subscriptions → api_keys → pricing_versions
 -- DROP 时反向（DROP 父表前 child 必须先走）。
 
 -- =====================================================================
--- quota_policies：限流策略库（N:M 被 tenants / api_keys 引用）
+-- quota_policies：限流策略库（N:M 被主账号 / api_keys 引用）
 --
 -- rule_json shape（M6 RateLimit 解释；gateway/admin 不解析）：
 --   {
@@ -57,37 +58,38 @@ CREATE TABLE IF NOT EXISTS quota_policies (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
--- tenants：业务线 / pin 元信息（首屏挂 quota_policy 引用）
+-- accounts：主账号 pin / 计费主体元信息（首屏挂 quota_policy 引用）
 --
--- pin 直接 PK：业务键就是身份键，不引入 BIGINT 中转层。其它表的 tenant_id
--- VARCHAR(64) 列就是这个 pin（FK → tenants.pin）。
+-- 这里的 account 不是子账户，而是主账号 / 计费主体。
+-- pin 直接 PK：业务键就是身份键，不引入 BIGINT 中转层。其它表的 account_id
+-- VARCHAR(64) 列就是这个 pin（FK → accounts.pin）。
 --
--- quota_policy_id NULL = pin 维度不限（M6 跳过 pin 层检查）。
+-- quota_policy_id NULL = 主账号层不限（M6 跳过主账号层检查）。
 -- =====================================================================
-CREATE TABLE IF NOT EXISTS tenants (
+CREATE TABLE IF NOT EXISTS accounts (
     pin             VARCHAR(64)  NOT NULL PRIMARY KEY,
-    name            VARCHAR(128) NOT NULL,                -- 显示名（"广告业务线" / "搜索业务线"）
+    name            VARCHAR(128) NOT NULL,                -- 显示名（"广告业务线" / "搜索业务线" / "默认主账号"）
     enabled         TINYINT(1)   NOT NULL DEFAULT 1,
-    quota_policy_id BIGINT UNSIGNED NULL,                 -- NULL = pin 维度不限
+    quota_policy_id BIGINT UNSIGNED NULL,                 -- NULL = 主账号层不限
     created_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     deleted_at      TIMESTAMP(6) NULL DEFAULT NULL,
     INDEX idx_quota_policy (quota_policy_id),
     INDEX idx_deleted_at (deleted_at),
-    CONSTRAINT fk_tenant_quota FOREIGN KEY (quota_policy_id) REFERENCES quota_policies(id)
+    CONSTRAINT fk_account_quota FOREIGN KEY (quota_policy_id) REFERENCES quota_policies(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- seed default tenant（gateway 启动时如果有 default tenant 用）
-INSERT IGNORE INTO tenants (pin, name) VALUES ('default', 'Default Tenant');
+-- seed default account（gateway 启动时如果有 default account 用）
+INSERT IGNORE INTO accounts (pin, name) VALUES ('default', 'Default Account');
 
 -- =====================================================================
 -- model_services：M5 ModelService middleware 查询的"全局模型 catalog"
 --
 -- **v0.3 改动**：
---   - 删 tenant_id（catalog 全局共享，可见性由 tenant_model_subscriptions 决定）
+--   - 删 account_id（catalog 全局共享，可见性由 account_model_subscriptions 决定）
 --   - 删 group_name（M5 不查 group；group 是 endpoint 维度概念）
 --   - 删 spec_detail（无消费者；将来真要按 model 配 spec 再走 typed struct）
---   - UNIQUE 改 (service_id), (model)（无租户分区）
+--   - UNIQUE 改 (service_id), (model)（无主账号分区）
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS model_services (
     id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -104,13 +106,13 @@ CREATE TABLE IF NOT EXISTS model_services (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
--- tenant_model_subscriptions：tenant × model_services 的可见性 N:M 表
+-- account_model_subscriptions：主账号 × model_services 的可见性 N:M 表
 --
--- 没订阅的 tenant 请求该 model → M5 返回 403 "model not subscribed"。
+-- 没订阅的主账号请求该 model → M5 返回 403 "model not subscribed"。
 -- =====================================================================
-CREATE TABLE IF NOT EXISTS tenant_model_subscriptions (
+CREATE TABLE IF NOT EXISTS account_model_subscriptions (
     id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    tenant_id         VARCHAR(64)  NOT NULL,              -- → tenants.pin
+   account_id         VARCHAR(64)  NOT NULL,              -- 主账号 pin → accounts.pin
     model_service_id  BIGINT UNSIGNED NOT NULL,           -- → model_services.id
     enabled           TINYINT(1)   NOT NULL DEFAULT 1,    -- 软禁用（保留订阅记录但禁用）
 
@@ -118,18 +120,18 @@ CREATE TABLE IF NOT EXISTS tenant_model_subscriptions (
     updated_at        TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     deleted_at        TIMESTAMP(6) NULL DEFAULT NULL,
 
-    UNIQUE KEY uk_tenant_model (tenant_id, model_service_id),
-    INDEX idx_tenant (tenant_id),
+    UNIQUE KEY uk_account_model (account_id, model_service_id),
+    INDEX idx_account (account_id),
     INDEX idx_deleted_at (deleted_at),
-    CONSTRAINT fk_subscription_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(pin),
+    CONSTRAINT fk_subscription_account FOREIGN KEY (account_id) REFERENCES accounts(pin),
     CONSTRAINT fk_subscription_model FOREIGN KEY (model_service_id) REFERENCES model_services(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
 -- endpoints：M7 Schedule middleware 选路的"全局上游接入点"
 --
--- **v0.3 改动**：删 tenant_id（平台运营者统一管理上游；BYOK 等真要做时
--- 加 nullable tenant_id 列）。UNIQUE 改 (name) 全局唯一。
+-- **v0.3 改动**：删 account_id（平台运营者统一管理上游；BYOK 等真要做时
+-- 加 nullable account_id 列）。UNIQUE 改 (name) 全局唯一。
 --
 -- 核心列只放调度选路 hot path 用得到的；vendor-specific 全进 typed JSON。
 -- =====================================================================
@@ -163,36 +165,36 @@ CREATE TABLE IF NOT EXISTS endpoints (
 -- =====================================================================
 -- api_keys：M2 Auth middleware 凭证查表
 --
--- **v0.3 改动**：加 quota_policy_id 列（apikey 维度限流；与 tenants.quota_policy
--- 叠加）。tenant_id FK → tenants.pin。
+-- **v0.3 改动**：加 quota_policy_id 列（API key 级限流；与主账号级 accounts.quota_policy
+-- 叠加）。account_id FK → accounts.pin。
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS api_keys (
     id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    tenant_id       VARCHAR(64)  NOT NULL DEFAULT 'default',
+   account_id       VARCHAR(64)  NOT NULL DEFAULT 'default', -- 主账号 pin / 计费主体
     api_key_hash    CHAR(64)     NOT NULL,                 -- SHA-256(sk-XXX) 的 hex
     api_key_prefix  VARCHAR(16)  NOT NULL,                 -- "sk-abc1de2f" 显示用
     api_key_id      VARCHAR(64)  NOT NULL,                 -- 审计稳定 ID（如 ak_alice_xxxxx）
-    name            VARCHAR(64)  NOT NULL DEFAULT '',      -- 用户可读标签：prod/dev/ci-bot
-    user_id         VARCHAR(64)  NOT NULL,
+    name            VARCHAR(64)  NOT NULL DEFAULT '',      -- key 可读标签：prod/dev/ci-bot
+    sub_account_id         VARCHAR(64)  NOT NULL,                 -- 子账户 / 操作者
     group_name      VARCHAR(64)  NOT NULL DEFAULT 'default',
     external_user   TINYINT(1)   NOT NULL DEFAULT 0,
     enabled         TINYINT(1)   NOT NULL DEFAULT 1,
     expires_at      TIMESTAMP(6) NULL DEFAULT NULL,
     last_used_at    TIMESTAMP(6) NULL DEFAULT NULL,
     revoked_at      TIMESTAMP(6) NULL DEFAULT NULL,
-    quota_policy_id BIGINT UNSIGNED NULL,                  -- NULL = key 维度不限；非 NULL 与 tenant.quota 叠加
+    quota_policy_id BIGINT UNSIGNED NULL,                  -- NULL = key 层不限；非 NULL 与主账号 quota 叠加
 
     created_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     deleted_at      TIMESTAMP(6) NULL DEFAULT NULL,
 
     UNIQUE KEY uk_api_key_hash (api_key_hash),
-    UNIQUE KEY uk_tenant_api_key_id (tenant_id, api_key_id),
-    INDEX idx_tenant_user_id (tenant_id, user_id),
+    UNIQUE KEY uk_account_api_key_id (account_id, api_key_id),
+    INDEX idx_account_sub_account_id (account_id, sub_account_id),
     INDEX idx_expires_at (expires_at),
     INDEX idx_quota_policy (quota_policy_id),
     INDEX idx_deleted_at (deleted_at),
-    CONSTRAINT fk_apikey_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(pin),
+    CONSTRAINT fk_apikey_account FOREIGN KEY (account_id) REFERENCES accounts(pin),
     CONSTRAINT fk_apikey_quota FOREIGN KEY (quota_policy_id) REFERENCES quota_policies(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -200,11 +202,11 @@ CREATE TABLE IF NOT EXISTS api_keys (
 -- pricing_versions：M5 ModelService middleware 在请求路径上做"价格快照"
 --
 -- **append-only**：rule_json 一旦发布 NEVER UPDATE。改价 = 一次事务封盘旧 + insert 新。
--- 详见前一版 docstring；这版只加了 FK → tenants.pin。
+-- 详见前一版 docstring；这版只加了 FK → accounts.pin。
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS pricing_versions (
     id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    tenant_id        VARCHAR(64)  NOT NULL DEFAULT 'default',
+   account_id        VARCHAR(64)  NOT NULL DEFAULT 'default',
     model_service_id BIGINT UNSIGNED NOT NULL,
     rule_class       VARCHAR(64)  NOT NULL DEFAULT 'standard',
 
@@ -217,8 +219,8 @@ CREATE TABLE IF NOT EXISTS pricing_versions (
     created_by       VARCHAR(128) NOT NULL DEFAULT '',
     notes            VARCHAR(512) NOT NULL DEFAULT '',
 
-    INDEX idx_active_lookup (tenant_id, model_service_id, rule_class, effective_from),
+    INDEX idx_active_lookup (account_id, model_service_id, rule_class, effective_from),
     INDEX idx_effective_to (effective_to),
-    CONSTRAINT fk_pricing_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(pin),
+    CONSTRAINT fk_pricing_account FOREIGN KEY (account_id) REFERENCES accounts(pin),
     CONSTRAINT fk_pricing_model_service FOREIGN KEY (model_service_id) REFERENCES model_services(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -180,11 +180,11 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	}
 	for _, table := range []string{
 		"pricing_versions",
-		"tenant_model_subscriptions",
+		"account_model_subscriptions",
 		"api_keys",
 		"endpoints",
 		"model_services",
-		"tenants",
+		"accounts",
 		"quota_policies",
 	} {
 		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
@@ -195,15 +195,15 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("re-enable FK checks: %v", err)
 	}
 
-	// 必须先有 tenants("default")（FK 锚点；schema.sql seed 已 INSERT IGNORE 但 TRUNCATE 清掉了）
+	// 必须先有 accounts("default")（FK 锚点；schema.sql seed 已 INSERT IGNORE 但 TRUNCATE 清掉了）
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO tenants (pin, name) VALUES (?, ?)`,
-		"default", "Default Tenant",
+		`INSERT INTO accounts (pin, name) VALUES (?, ?)`,
+		"default", "Default Account",
 	); err != nil {
-		t.Fatalf("seed tenant: %v", err)
+		t.Fatalf("seed account: %v", err)
 	}
 
-	// model_services 全局 catalog（无 tenant_id / group_name / spec_detail）
+	// model_services 全局 catalog（无 account_id / group_name / spec_detail）
 	res, err := db.ExecContext(ctx,
 		`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
 		"openai/gpt-4o", "gpt-4o",
@@ -213,9 +213,9 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	}
 	msID, _ := res.LastInsertId()
 
-	// tenant 必须订阅 model 才能用（不然 M5 → 403）
+	// account 必须订阅 model 才能用（不然 M5 → 403）
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO tenant_model_subscriptions (tenant_id, model_service_id, enabled) VALUES (?, ?, 1)`,
+		`INSERT INTO account_model_subscriptions (account_id, model_service_id, enabled) VALUES (?, ?, 1)`,
 		"default", msID,
 	); err != nil {
 		t.Fatalf("seed subscription: %v", err)
@@ -224,7 +224,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	// M5 强制要求 active price，否则 503；e2e 必须 seed 价格
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO pricing_versions
-		 (tenant_id, model_service_id, rule_class, effective_from, effective_to, rule_json, created_by, notes)
+		 (account_id, model_service_id, rule_class, effective_from, effective_to, rule_json, created_by, notes)
 		 VALUES (?, ?, ?, NOW(6), NULL, ?, ?, ?)`,
 		"default", msID, "standard",
 		`{"unit":"tokens_per_1m","currency":"USD","rates":{"input":5.0,"output":15.0}}`,
@@ -259,7 +259,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	const aliceKey = "sk-test-alice"
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO api_keys
-		 (tenant_id, api_key_hash, api_key_prefix, api_key_id, user_id, group_name, external_user, enabled)
+		 (account_id, api_key_hash, api_key_prefix, api_key_id, sub_account_id, group_name, external_user, enabled)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"default", repo.HashAPIKey(aliceKey), aliceKey[:12],
 		"ak_alice_test", "alice", "default", false, true,

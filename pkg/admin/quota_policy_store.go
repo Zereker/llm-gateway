@@ -135,7 +135,7 @@ type QuotaPolicyUpdates struct {
 
 // Delete 软删 set deleted_at = NOW()。
 //
-// **注意**：被 tenants/api_keys 引用的 policy 软删后引用方仍指向同一 id；
+// **注意**：被 accounts/api_keys 引用的 policy 软删后引用方仍指向同一 id；
 // 此时 M6 应按"该层不限"处理（视 policy.deleted_at 为不存在）。
 func (s *QuotaPolicyStore) Delete(ctx context.Context, id int64) error {
 	if id == 0 {

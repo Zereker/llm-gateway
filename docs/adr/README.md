@@ -8,7 +8,7 @@
 
 | 目录 | 性质 | 何时写 |
 |---|---|---|
-| `docs/architecture/00-07*.md` | 当前**有效**的设计规范（接口契约、组件职责） | 实现就要符合；改了文档同步改代码 |
+| `docs/architecture/*.md` | 当前**有效**的设计规范（接口契约、组件职责） | 实现就要符合；改了文档同步改代码 |
 | `docs/adr/####-*.md` | **历史决策**的记录（含被拒方案 + 取舍）| 提议变更时写；被采纳后归档 |
 
 `architecture/` 是"现在长什么样"，`adr/` 是"为什么长这样、曾考虑过怎样的样"。
@@ -86,9 +86,4 @@
 
 ## 当前 ADR 索引
 
-| # | 标题 | 状态 | 摘要 |
-|---|---|---|---|
-| [0001](0001-domain-repo-layering.md) | `pkg/domain` 与 `pkg/repo` 分层 | Proposed | 修复 domain 反向 import repo 的分层颠倒 |
-| [0002](0002-canonical-schema.md) | Canonical request schema 决策 | Proposed | Canonical 已被删，需明确"复活"还是"承认 N×M 成本" |
-| [0003](0003-schedule-ctx-as-parameter.md) | `Selection` 不持有 ctx | Proposed | 把 ctx 从 Selection 字段改为 Pick/Report 参数 |
-| [0004](0004-schedule-load-fallback.md) | `LoadFallback` 装配位置 | Proposed | 从 per-Request 字段移到 Scheduler-level Config |
+当前没有独立 ADR。已采纳的设计内容以 `docs/architecture/` 为准。

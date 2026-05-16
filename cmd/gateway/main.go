@@ -52,7 +52,7 @@ func main() {
 
 	// slog default：用 trace.CtxHandler 包 JSON handler，让所有 *Context 系列调用
 	// （slog.InfoContext / ErrorContext 等）自动从 ctx 抽 trace_id / span_id /
-	// baggage（user_id / request_id 等）加进 record。
+	// baggage（sub_account_id / request_id 等）加进 record。
 	slog.SetDefault(slog.New(trace.NewCtxHandler(slog.NewJSONHandler(os.Stderr, nil))))
 
 	if err := run(*configPath); err != nil {
@@ -227,7 +227,7 @@ func buildTracer(srv *server.Server, cfg config.TraceConfig) trace.Tracer {
 // buildBudgetGate 按 cfg.Driver 构造 BudgetGate。
 //
 //   - alwayspass: 永远放行（默认；开发 / 无付费体系）
-//   - inmemory:   进程内余额跟踪（demo / 单租户；丢内存重启清零）
+//   - inmemory:   进程内余额跟踪（demo / 单主账号；丢内存重启清零）
 //
 // 找不到的 driver 直接 panic（启动期暴露配置错）。
 func buildBudgetGate(cfg config.BudgetConfig) middleware.BudgetGate {

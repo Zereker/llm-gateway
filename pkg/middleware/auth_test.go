@@ -58,7 +58,7 @@ func TestAuth_RejectsInvalidCreds(t *testing.T) {
 }
 
 func TestAuth_AcceptsValidBearer(t *testing.T) {
-	want := domain.UserIdentity{UserID: "alice", Group: "default"}
+	want := domain.UserIdentity{SubAccountID: "alice", Group: "default"}
 	r := newGinTest(TraceContext(), Recover(), Auth(AuthDeps{
 		Provider: stubProvider{user: &want},
 	}))
@@ -76,13 +76,13 @@ func TestAuth_AcceptsValidBearer(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	if got.UserID != "alice" {
-		t.Errorf("Identity.UserID = %q, want alice", got.UserID)
+	if got.SubAccountID != "alice" {
+		t.Errorf("Identity.SubAccountID = %q, want alice", got.SubAccountID)
 	}
 }
 
-func TestAuth_LoggerGetsUserID(t *testing.T) {
-	want := domain.UserIdentity{UserID: "carol"}
+func TestAuth_LoggerGetsSubAccountID(t *testing.T) {
+	want := domain.UserIdentity{SubAccountID: "carol"}
 	r := newGinTest(TraceContext(), Recover(), Auth(AuthDeps{
 		Provider: stubProvider{user: &want},
 	}))
@@ -103,11 +103,11 @@ func TestAuth_LoggerGetsUserID(t *testing.T) {
 
 func TestExtractCredentials(t *testing.T) {
 	cases := []struct {
-		name        string
-		headers     map[string]string
-		wantNil     bool
-		wantAPIKey  string
-		wantBearer  string
+		name       string
+		headers    map[string]string
+		wantNil    bool
+		wantAPIKey string
+		wantBearer string
 	}{
 		{"no headers", nil, true, "", ""},
 		{"X-API-Key only", map[string]string{"X-API-Key": "ak1"}, false, "ak1", ""},

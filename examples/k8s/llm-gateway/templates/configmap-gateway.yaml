@@ -33,7 +33,6 @@ data:
     scheduler:
       filters: {{ $cfg.scheduler.filters | toJson }}
       max_attempts: {{ $cfg.scheduler.max_attempts }}
-      max_per_endpoint: {{ $cfg.scheduler.max_per_endpoint }}
       cooldown:
         transient: {{ $cfg.scheduler.cooldown.transient }}
         capacity: {{ $cfg.scheduler.cooldown.capacity }}

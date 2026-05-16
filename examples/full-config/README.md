@@ -9,7 +9,7 @@ Kafka outbox + 多 model + 多 endpoint + 多 quota_policy + pricing_version。
 |---|---|
 | `gateway.yaml` | 数据面（接 LLM 客户端请求）配置 |
 | `admin.yaml`   | 控制面（admin REST API）配置 |
-| `seed.sql`     | DB 示例数据（quota / tenant / model / pricing） |
+| `seed.sql`     | DB 示例数据（quota / account / model / pricing） |
 
 ## 启动顺序
 
@@ -20,7 +20,7 @@ docker compose up -d
 # 2) 建表
 docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < pkg/infra/schema.sql
 
-# 3) seed 示例数据（**仅 quota_policies / tenants / model_services / subscriptions / pricing**；
+# 3) seed 示例数据（**仅 quota_policies / accounts / model_services / subscriptions / pricing**；
 #    endpoints + api_keys 必须走 admin POST 走加密路径，见下文）
 docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < examples/full-config/seed.sql
 
@@ -45,7 +45,7 @@ curl -X POST http://localhost:8081/admin/v1/endpoints \
 curl -X POST http://localhost:8081/admin/v1/apikeys \
   -H "X-Admin-Token: CHANGEME-admin-token" \
   -H "Content-Type: application/json" \
-  -d '{"tenant_id": "demo-acme", "user_id": "alice@demo-acme", "name": "alice-prod"}'
+  -d '{"account_id": "demo-acme", "sub_account_id": "alice@demo-acme", "name": "alice-prod"}'
 # 响应里会含明文 api_key（仅 Create 响应出现一次）；保存好它
 
 # 7) 起 gateway
@@ -64,8 +64,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 |---|---|---|
 | outbox | file（JSONL 追加） | kafka |
 | middleware.timeout | 60s | 120s |
-| scheduler.max_per_endpoint | 1（无 L1 retry） | 2（L1 retry 一次） |
-| seed 数据 | 无 | 多 tenant/model/pricing |
+| scheduler.max_attempts | 3 | 3 |
+| seed 数据 | 无 | 多 account/model/pricing |
 | MySQL host | localhost | mysql.internal（生产 hostname） |
 
 ## 排错
@@ -73,4 +73,4 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 - **gateway 启动报 "schema check failed"**：先跑 `pkg/infra/schema.sql`
 - **请求 401**：检查 api_key hash 是否入库（admin POST 路径）
 - **请求 503 "no endpoint succeeded"**：检查 endpoint 的 auth/routing 是否配对
-- **没看到 cost 事件**：检查 Kafka topic 是否存在 + `/tmp/llm-gateway-usage.log` 没在用 file 兜底
+- **没看到 usage event**：检查 Kafka topic 是否存在，或确认是否切回了 file outbox

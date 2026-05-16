@@ -1,686 +1,396 @@
 # 06 — Pluggable Infrastructure
 
-本文定义网关与外部基础设施的所有交互接口：身份系统、预算 / 配额、配置中心、共享缓存 / 限流存储、计量事件总线、内容审核、可观测性。
+本文记录基础设施可插拔边界，以及 domain / middleware / repo 的依赖方向。本文是目标边界，不描述兼容旧实现；代码落地时应按本文档收敛。
 
-每个接口都有：
-- **`interface` 签名**（生产代码契约）
-- **默认实现**（零外部依赖，适合本地开发 / 单机部署）
-- **可选实现**（生产场景可挂的常见基础设施）
-- **注入点**（在哪个 middleware / 组件 Deps 中使用）
+核心原则：
 
-> **阅读前**：[01](01-request-pipeline.md) 的 middleware Deps；[03](03-endpoint-scheduling.md) 的 CooldownManager Store；[04](04-rate-limiting.md) 的 Lua 脚本调用；[05](05-metering-billing.md) 的 EventBus。
+1. `pkg/domain` 定义网关业务模型，不引用 `pkg/repo`，不能使用 repo 结构别名。
+2. `pkg/middleware` 定义自己需要的最小依赖接口。
+3. `pkg/repo` 是 SQL 实现层，可以实现 middleware 定义的接口。
+4. repo 接口和实现返回 `domain` 结构，而不是把 repo model 泄漏给上层。
+5. middleware 构建使用 option pattern，便于单测注入 stub / fake。
 
-## 1. 设计原则
+`pkg/domain` 的存在不应只是 import 路径包装。如果 domain 通过 type alias 指向 repo，业务层看似依赖 domain，实际仍把 SQL schema、ORM tag、Scanner / Valuer 带进 schedule、translator、upstream 等包。后续替换存储实现、做单元测试或调整表结构时，都会被 repo 类型反向牵住。
 
-| # | 原则 | 含义 |
-|---|------|------|
-| I1 | **零外部依赖即可启动** | 所有接口都有内置默认实现（in-memory / file），单机运行不需要 Redis / Kafka / etcd / 任何 SaaS |
-| I2 | **生产可挂常见组件** | 同一接口，开发用本地实现、生产挂 Redis / etcd / Kafka，无需改业务代码 |
-| I3 | **Deps 显式注入** | Middleware / 组件通过构造函数或 `Deps` struct 接收接口实例；杜绝全局单例 |
-| I4 | **NoOp 实现** | 可选功能（审核 / Tracer 等）允许 nil 或 NoOp，不影响主链路 |
-| I5 | **无锁逃生** | 失败必须有兜底策略（默认放行 / 本地缓存 / 旁路告警），不能因一个外部依赖挂掉拖垮全量请求 |
+## 1. 依赖方向
 
-## 2. 包结构
+目标依赖方向：
 
-```
-pkg/
-├── auth/
-│   ├── provider.go             # IdentityProvider 接口
-│   ├── apikey/                 # 默认：基于配置文件 / DB 的 API Key 鉴权
-│   └── jwt/                    # 可选：JWT (HS256 / RS256) 鉴权
-│
-├── budget/
-│   ├── checker.go              # Checker 接口
-│   ├── alwayspass/             # 默认：永远通过
-│   └── inmemory/               # 可选：内存配额
-│
-├── config/
-│   ├── store.go                # Store 接口
-│   ├── file/                   # 默认：本地 YAML / TOML 文件 + fsnotify 热加载
-│   ├── etcd/                   # 可选：etcd v3 + Watch
-│   └── sqlite/                 # 可选：SQLite + 轮询
-│
-├── cache/
-│   ├── store.go                # Store 接口（KV + 原子操作 + Lua）
-│   ├── memory/                 # 默认：sync.Map + 周期清理
-│   └── redis/                  # 可选：go-redis
-│
-├── eventbus/                   # usage.OutboxPublisher 实现
-│   ├── file/                   # 默认：本地 JSONL append
-│   ├── memory/                 # 仅测试
-│   └── kafka/                  # 可选：sarama / kgo
-│
-├── moderation/
-│   ├── moderator.go            # Moderator 接口
-│   ├── noop/                   # 默认：什么都不做
-│   └── openai/                 # 可选：调 OpenAI moderation API
-│
-└── tracing/
-    ├── tracer.go               # Tracer 接口
-    ├── slog/                   # 默认：stdlib slog 输出
-    └── otel/                   # 可选：OpenTelemetry
+```text
+pkg/domain                         纯业务结构，无 repo import
+      ▲
+      ├── pkg/middleware           定义 middleware 最小接口，调用 schedule / upstream
+      │       └── pkg/schedule     调度纯逻辑和 eligibility，不持有 repo
+      │
+      └── pkg/repo                 SQL schema model + SQL 实现，适配并返回 domain 类型
+
+cmd/gateway                         装配 repo、middleware、schedule 和 infra driver
 ```
 
-## 3. middleware.IdentityProvider
+禁止方向：
 
-M2 Auth middleware 的依赖（详见 [01] 第 5 节）。
+```text
+domain -> repo
+middleware -> repo concrete model
+repo interface -> middleware-only contract 泄漏
+```
+
+这样做的目的：
+
+- domain 不被 SQL tag / gorm tag / Scanner / Valuer 污染。
+- middleware 单测不需要构造 repo model 或 SQL 结构。
+- repo 可以自由调整存储结构，只要适配成 domain 输出。
+- 替换 SQL 实现时，只要实现 middleware 的小接口即可。
+
+## 2. 启动依赖
+
+`cmd/gateway` 目标启动依赖：
+
+| 依赖 | 用途 | 是否必需 |
+|------|------|----------|
+| YAML config | server、database、redis、middleware、scheduler、outbox、trace 等配置 | 必需 |
+| SQL DB | 主账号、API key、model service、subscription、endpoint、quota policy | 必需 |
+| Redis | M6 rate limit、scheduler cooldown | 必需 |
+| file 或 Kafka outbox | usage 事件输出 | 必需选择一种 |
+| OTel collector | trace driver 为 `otel` 时使用 | 可选 |
+| OpenAI moderation API | moderation driver 为 `openai` 时使用 | 可选 |
+
+DB schema 真相在 `pkg/infra/schema.sql`。gateway 只 `repo.CheckSchema`，不 AutoMigrate，不创建表。
+
+Pricing 不在 gateway 热路径做 active price 查询；价格匹配和金额计算由下游计费平台按请求发生时间完成。
+
+## 3. Domain 模型
+
+`pkg/domain` 应只包含网关业务层需要的结构，例如：
+
+- `UserIdentity`
+- `Credentials`
+- `ModelService`
+- `Endpoint`
+- `QuotaPolicy` / `QuotaRule`
+- `RequestEnvelope`
+- `Usage`
+- `SchedulingDecision`
+
+domain 结构要求：
+
+- 不包含 `db` / `gorm` tag。
+- 不实现 SQL `Scanner` / `Valuer`。
+- 不 import `pkg/repo`。
+- 字段表达业务语义，而不是表结构。
+
+反例：
 
 ```go
-// pkg/middleware/provider.go
-package middleware
-
-import "context"
-
-type Credentials struct {
-    APIKey       string // "Authorization: Bearer xxx" 或 "X-API-Key: xxx" 提取
-    BearerToken  string // JWT 形态时使用
-    Headers      map[string]string // 完整透传，自定义实现可用
-}
-
-type Identity struct {
-    UserID    string
-    APIKeyID  string
-    Group     string // "default" / "reserved" / 任意自定义
-    External  bool   // true = 外部用户走预算检查；false = 内部 / 免费
-}
-
-type IdentityProvider interface {
-    Resolve(ctx context.Context, creds *Credentials) (*Identity, error)
-}
+type Endpoint = repo.Endpoint
 ```
 
-### 3.1 默认：APIKey 文件 / 内存
+目标：
 
 ```go
-// pkg/middleware/apikey/provider.go
-package apikey
+package domain
 
-type Provider struct {
-    Keys map[string]domain.UserIdentity // key=APIKey 字符串
-}
+type Endpoint struct {
+    ID           int64
+    Name         string
+    Vendor       string
+    Model        string
+    Group        string
+    Weight       uint32
+    Enabled      bool
+    NativeProtocol Protocol
+    Modalities    []Modality
 
-func NewFromFile(path string) (*Provider, error) {
-    // 解析 YAML：
-    // - api_key: "sk-xxx"
-    //   user_id: "alice"
-    //   group: "default"
-    //   external: true
-}
-
-func (p *Provider) Resolve(ctx context.Context, c *middleware.Credentials) (*domain.UserIdentity, error) {
-    id, ok := p.Keys[c.APIKey]
-    if !ok {
-        return nil, errors.New("unknown api key")
-    }
-    return &id, nil
+    Auth         EndpointAuth
+    Routing      EndpointRouting
+    Quota        EndpointQuota
+    Capabilities EndpointCapabilities
 }
 ```
 
-### 3.2 可选：JWT
+repo 内部可以有 `repo.EndpointRow` / `repo.EndpointRecord` 表结构，再转换成 `domain.Endpoint`。
+
+复杂 JSON 列也遵循同一规则：业务含义放在 domain 类型里；SQL 编解码、`Scanner` / `Valuer`、数据库默认值适配放在 repo row 类型或 repo 内部 helper 中。不要为了复用 `Scan` / `Value` 方法把 repo 类型重新暴露给 domain。
+
+## 4. Middleware-owned Interfaces
+
+每个 middleware 定义自己需要的最小接口。接口放在 `pkg/middleware` 或该 middleware 的近邻文件中，返回 `domain` 类型。
+
+示例：
 
 ```go
-// pkg/middleware/jwt/provider.go
-package jwt
-
-type Provider struct {
-    Issuer    string
-    JWKSURL   string // 远端公钥
-    Algorithm string // "HS256" / "RS256"
-    Secret    []byte // HS256 用
+// M2 Auth
+type IdentityResolver interface {
+    Resolve(ctx context.Context, creds *domain.Credentials) (*domain.UserIdentity, error)
 }
 
-// Resolve 校验 JWT 签名 + 过期；从 claims 中提取 user_id / group / external
+// M5 ModelService
+type ModelCatalog interface {
+    GetByModel(ctx context.Context, model string) (*domain.ModelService, error)
+}
+
+type SubscriptionChecker interface {
+    HasModel(ctx context.Context, accountID string, modelServiceID int64) (bool, error)
+}
+
+// M6 RateLimit
+type QuotaPolicyReader interface {
+    GetQuotaPolicy(ctx context.Context, id int64) (*domain.QuotaPolicy, error)
+}
+
+// M7 Schedule
+type EndpointReader interface {
+    ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
+}
 ```
 
-## 4. middleware.BudgetGate
+这些接口不应该放在 `pkg/repo` 作为上层契约。`pkg/repo` 只提供实现。
 
-M4 Budget middleware 的依赖。
+## 5. Repo 作为实现层
+
+`pkg/repo` 可以包含两类结构：
+
+1. SQL row / record：带 `db` / `gorm` tag、Scanner / Valuer，贴近 schema。
+2. SQL reader/provider 实现：查询数据库，把 row 转成 `domain`。
+
+推荐迁移形态：
+
+```text
+pkg/domain/endpoint.go      真实 domain.Endpoint，无 db/gorm tag
+pkg/repo/endpoint_row.go    endpointRow / EndpointRow，承载 SQL tag 与列编解码
+pkg/repo/endpoint_reader.go SQL 查询 row，并返回 domain.Endpoint
+```
+
+repo 可以用嵌入减少重复字段，但不要让嵌入反过来污染 domain：
 
 ```go
-// pkg/middleware/checker.go
-package middleware
+type endpointRow struct {
+    domain.Endpoint
 
-import (
-    "context"
-
-    "github.com/zereker/llm-gateway/pkg/domain"
-)
-
-type Checker interface {
-    Check(ctx context.Context, userID string) (domain.BudgetStatus, error)
+    Capabilities endpointCapabilitiesJSON `db:"capabilities"`
+    AuthConfig    endpointAuthJSON         `db:"auth_config"`
 }
 ```
 
-### 4.1 默认：AlwaysPass
+如果嵌入导致 tag、零值或 JSON 列行为不清晰，就使用显式 `ToDomain()` mapper。优先保证边界清楚，而不是追求最少代码。
+
+示例：
 
 ```go
-// pkg/middleware/alwayspass/checker.go
-package alwayspass
-
-type Checker struct{}
-
-func (Checker) Check(_ context.Context, _ string) (domain.BudgetStatus, error) {
-    return domain.BudgetActive, nil
-}
-```
-
-> 适用场景：单机 / 内部部署；无付费体系；零依赖启动。
-
-### 4.2 可选：内存配额
-
-```go
-// pkg/middleware/inmemory/checker.go
-package inmemory
-
-type Checker struct {
-    store map[string]domain.BudgetStatus // 由外部管理（Admin API 写）
-    mu    sync.RWMutex
-}
-
-func (c *Checker) Set(userID string, status domain.BudgetStatus) { /* mu Lock + write */ }
-func (c *Checker) Check(_ context.Context, userID string) (domain.BudgetStatus, error) {
-    c.mu.RLock(); defer c.mu.RUnlock()
-    if s, ok := c.store[userID]; ok { return s, nil }
-    return domain.BudgetActive, nil // 默认放行
-}
-```
-
-### 4.3 自定义实现
-
-接入外部计费系统（如自家订阅、Stripe、AWS Marketplace）时，实现 `Checker`：
-
-```go
-type StripeChecker struct {
-    Client *stripe.Client
-    Cache  cache.Store // 三级缓存兜底
-}
-
-func (c *StripeChecker) Check(ctx, userID string) (domain.BudgetStatus, error) {
-    // 1. L1 本地内存
-    // 2. L2 Cache (Redis)
-    // 3. L3 Stripe API
-    // 失败默认 Active + 告警
-}
-```
-
-## 5. store.KV
-
-`modelservice.Loader` / `ratelimit.ConfigStore` / `schedule.Profile` 等都依赖此接口下发配置。
-
-```go
-// pkg/store/store.go
-package config
-
-import (
-    "context"
-    "encoding/json"
-)
-
-type Store interface {
-    // Get 读单个 key
-    Get(ctx context.Context, key string) (json.RawMessage, error)
-
-    // List 读 prefix 下所有 (key, value)
-    List(ctx context.Context, prefix string) (map[string]json.RawMessage, error)
-
-    // Watch 订阅 prefix 下的变更事件（增 / 改 / 删）
-    Watch(ctx context.Context, prefix string) (<-chan Event, error)
-
-    // Put 写入；Admin API 用
-    Put(ctx context.Context, key string, value json.RawMessage) error
-
-    // Delete 删除；Admin API 用
-    Delete(ctx context.Context, key string) error
-}
-
-type Event struct {
-    Type  EventType
-    Key   string
-    Value json.RawMessage
-}
-
-type EventType int
-
-const (
-    EventPut EventType = iota
-    EventDelete
-)
-```
-
-### 5.1 默认：文件 + fsnotify
-
-```go
-// pkg/store/file/store.go
-package file
-
-type Store struct {
-    Root string // 文件根目录；每个 key 对应一个 .json 文件
-    // 用 fsnotify 监听文件变更，触发 Watch event
-}
-```
-
-> 配置文件结构示例：
-> ```
-> /etc/llm-gateway/
-> ├── modelservice/svc_gpt4o.json
-> ├── ratelimit/apikey/ak_xxx/svc_gpt4o.json
-> └── scheduling/profile/svc_gpt4o.json
-> ```
-
-### 5.2 可选：etcd v3
-
-```go
-// pkg/store/etcd/store.go
-package etcd
-
-type Store struct {
-    Client *clientv3.Client
-    Prefix string // "/llm-gateway/"
-}
-```
-
-支持原生 Watch，事件实时推送；强一致；多实例共享。
-
-### 5.3 可选：SQLite + 轮询
-
-```go
-// pkg/store/sqlite/store.go
-package sqlite
-
-type Store struct {
-    DB *sql.DB
-    PollInterval time.Duration // Watch 通过周期 SELECT 模拟
-}
-```
-
-适合单机 + 持久化场景；Watch 延迟取决于轮询周期。
-
-### 5.4 Key 分层约定
-
-```
-/llm-gateway/
-├── modelservice/{service_id}              → domain.ModelServiceSnapshot
-├── ratelimit/
-│   ├── apikey/{api_key_id}/{service_id}   → domain.LayerSpec
-│   ├── user/{user_id}/{service_id}        → domain.LayerSpec
-│   └── service/{service_id}               → ratelimit.ServiceLimits
-├── scheduling/
-│   ├── profile/{service_id}               → schedule.Profile
-│   └── endpoint/{endpoint_id}             → domain.Endpoint
-├── identity/{user_id}                     → domain.UserIdentity (可选；APIKey 实现可不用)
-└── budget/{user_id}                       → domain.BudgetStatus (可选)
-```
-
-## 6. cache.Store
-
-限流 Lua 脚本 / Cooldown Manager / 配置二级缓存的存储后端。
-
-```go
-// pkg/cache.go (deleted; semantics moved into ratelimit Checker impl)
-package cache
-
-import (
-    "context"
-    "time"
-)
-
-type Store interface {
-    // 基础 KV
-    Get(ctx context.Context, key string) ([]byte, error) // 不存在返回 nil, nil
-    Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
-    Del(ctx context.Context, key string) error
-    Exists(ctx context.Context, key string) (bool, error)
-
-    // 原子计数
-    Incr(ctx context.Context, key string, ttl time.Duration) (int64, error)
-    IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error)
-
-    // 限流脚本（Lua / lua-style）
-    EvalLimit(ctx context.Context, key string, cap, incr int64, ttlSec int64) (current int64, blocked bool, err error)
-}
-```
-
-### 6.1 默认：内存
-
-```go
-// pkg/cache.go (deleted)
-package memory
-
-type Store struct {
-    items map[string]item
-    mu    sync.RWMutex
-    // 周期 GC：扫过期 key 删除
-}
-
-type item struct {
-    value     []byte
-    expiresAt time.Time
-}
-```
-
-> 单实例使用；进程重启丢失；测试 / 单机部署足够。
-
-### 6.2 可选：Redis
-
-```go
-// pkg/cache.go (deleted)
-package redis
-
-type Store struct {
-    Client redis.UniversalClient
-    Prefix string // "llm-gateway:"
-}
-
-// EvalLimit 用 Lua 脚本（详见 [04] 第 5.1 节）
-```
-
-支持集群 / 哨兵 / 主从；多实例共享；生产推荐。
-
-## 7. usage.OutboxPublisher
-
-[05] 计量事件的传输通道。
-
-```go
-// pkg/usage/outbox.go（接口定义见 [05] 第 6.4 节）
-```
-
-### 7.1 默认：本地文件 JSONL
-
-```go
-// pkg/usage/file_outbox.go (内置默认实现)
-package file
-
-type Bus struct {
-    Writer *zap.Logger // 配 lumberjack
-}
-
-func (b *Bus) Publish(ctx context.Context, evt *usage.OutboxEvent) error {
-    b.Writer.Info("usage_event", zap.ByteString("payload", evt.Payload))
-    return nil // zap 同步 writer 失败抛错
-}
-```
-
-> 适合本地开发；生产用 Filebeat 等收集到 ELK / S3。
-
-### 7.2 可选：Kafka
-
-```go
-// pkg/usage/kafka/bus.go
-package kafka
-
-type Bus struct {
-    Producer sarama.SyncProducer
-    Topic    string
-}
-
-func (b *Bus) Publish(ctx context.Context, evt *usage.OutboxEvent) error {
-    msg := &sarama.ProducerMessage{
-        Topic: b.Topic,
-        Key:   sarama.StringEncoder(evt.Key),
-        Value: sarama.ByteEncoder(evt.Payload),
-    }
-    _, _, err := b.Producer.SendMessage(msg)
-    return err
-}
-```
-
-> 配 `acks=1` + `lz4` 压缩 + `linger.ms=10` 平衡延迟 / 吞吐。详见 [05] 第 6 节。
-
-### 7.3 可选：内存（仅测试）
-
-```go
-// pkg/usage/memory/bus.go
-package memory
-
-type Bus struct {
-    Channel chan *usage.OutboxEvent
-}
-```
-
-## 8. middleware.Moderator
-
-M8 Content Moderation middleware 的依赖（可选，允许 nil）。
-
-```go
-// pkg/middleware/moderator.go
-package middleware
-
-import (
-    "context"
-
-    "github.com/zereker/llm-gateway/pkg/domain"
-)
-
-type Moderator interface {
-    CheckInput(ctx context.Context, env *domain.RequestEnvelope) error  // 违规返回 error
-    CheckOutput(ctx context.Context, chunk []byte) error            // 流式审核（Session 集成）
-}
-```
-
-### 8.1 默认：NoOp
-
-无审核需求时直接传 `nil`；M8 检测到 nil 即跳过。
-
-### 8.2 可选：调 OpenAI moderation API
-
-```go
-// pkg/middleware/openai/moderator.go
-package openai
-
-type Moderator struct {
-    Client *openai.Client
-    Categories []string // ["hate", "sexual", "violence", ...]
-}
-```
-
-### 8.3 可选：本地分类器
-
-```go
-// pkg/middleware/local/moderator.go
-package local
-
-type Moderator struct {
-    Model *llama.Model // ggml/llama.cpp 加载本地模型分类
-}
-```
-
-## 9. trace.Tracer
-
-M10 Tracing middleware 的依赖。
-
-```go
-// pkg/trace/tracer.go
-package trace
-
-import "context"
-
-type Tracer interface {
-    // Log 写一条结构化日志（带 trace_id 等上下文）
-    Log(ctx context.Context, name string, payload any)
-
-    // Span 开启一个 span（可选 OTel 集成）
-    StartSpan(ctx context.Context, name string) (context.Context, Span)
-}
-
-type Span interface {
-    SetAttribute(key string, value any)
-    End()
-}
-```
-
-### 9.1 默认：stdlib slog
-
-```go
-// pkg/trace/slog/tracer.go
-package slog
-
-type Tracer struct {
-    Logger *slog.Logger
-}
-
-func (t *Tracer) Log(ctx context.Context, name string, payload any) {
-    t.Logger.InfoContext(ctx, name, slog.Any("payload", payload))
-}
-// StartSpan 返回 NoOp Span
-```
-
-### 9.2 可选：OpenTelemetry
-
-```go
-// pkg/trace/otel/tracer.go
-package otel
-
-type Tracer struct {
-    Tracer otel.Tracer
-}
-
-// 完整接入 OTLP exporter（Jaeger / Zipkin / Tempo / vendors）
-```
-
-## 10. modelservice.Loader
-
-M5 ModelService middleware 的依赖；底层走 `store.KV` + LRU 缓存。
-
-```go
-// pkg/domain/loader.go
-package modelservice
-
-import "context"
-
-type Loader interface {
-    GetByModel(ctx context.Context, model string) (*Snapshot, error)
-    List(ctx context.Context) ([]*Snapshot, error)
-}
-```
-
-### 10.1 默认实现：从 store.KV 加载
-
-```go
-// pkg/domain/loader/loader.go
-package loader
-
-type Loader struct {
-    Store store.KV
-    Cache *lru.Cache[string, *domain.ModelServiceSnapshot] // model name → snapshot
-    // Watch /modelservice/* 自动 invalidate
-}
-
-func New(s store.KV, cacheSize int) *Loader {
-    l := &Loader{Store: s, Cache: lru.New(cacheSize)}
-    go l.watch() // Watch + invalidate
-    return l
-}
-```
-
-## 11. middleware.Detector / middleware.Parser
-
-M3 Envelope middleware 的依赖（详见 [02] 第 3.4 节）。
-
-```go
-// pkg/domain/default/detector.go (默认实现示例)
-package default
-
-type Detector struct {
-    PathRules map[string]domain.Protocol // "/v1/chat/completions" → ProtoOpenAI
-}
-```
-
-默认实现按 URL 路径前缀匹配；body 特征做兜底。可由用户替换为自定义识别（如基于 `User-Agent`）。
-
-## 12. 注入示例（cmd/gateway/main.go 骨架）
-
-```go
-package main
-
-import (
-    "log"
-    "os"
-
-    "github.com/gin-gonic/gin"
-
-    "github.com/zereker/llm-gateway/pkg/middleware/apikey"
-    "github.com/zereker/llm-gateway/pkg/middleware/alwayspass"
-    "github.com/zereker/llm-gateway/pkg/cache/memory"
-    "github.com/zereker/llm-gateway/pkg/store/file"
-    "github.com/zereker/llm-gateway/pkg/usage/file"
-    "github.com/zereker/llm-gateway/pkg/middleware"
-    "github.com/zereker/llm-gateway/pkg/trace/slog"
-    "github.com/zereker/llm-gateway/pkg/middleware"
-
-    // 注册 Adapter
-    _ "github.com/zereker/llm-gateway/pkg/adapter/openai"
-    _ "github.com/zereker/llm-gateway/pkg/adapter/anthropic"
+package repo
+
+type EndpointRow struct {
+    ID      int64  `db:"id"`
+    Vendor  string `db:"vendor"`
+    Routing JSONRouting `db:"routing"`
     // ...
+}
 
-    // 注册 TokenExtractor
-    _ "github.com/zereker/llm-gateway/pkg/usage/extractor/openai_compat"
-    _ "github.com/zereker/llm-gateway/pkg/usage/extractor/anthropic"
-)
-
-func main() {
-    cfgStore, _ := file.New("/etc/llm-gateway")
-    cacheStore := memory.New()
-    bus, _ := file.NewEventBus("/var/log/llm-gateway/usage.log")
-    tracer := slog.New(slog.Default())
-
-    deps := middleware.Deps{
-        Auth:         middleware.AuthDeps{Provider: apikey.MustNewFromFile("/etc/llm-gateway/apikeys.yaml")},
-        Envelope:     middleware.EnvelopeDeps{Detector: defaultDetector(), Parser: defaultParser()},
-        Budget:       middleware.BudgetDeps{Checker: alwayspass.Checker{}},
-        ModelService: middleware.ModelServiceDeps{Loader: loader.New(cfgStore, 1000)},
-        Limit:        middleware.LimitDeps{Checker: limit.NewDefaultChecker(cacheStore, cfgStore)},
-        Schedule: middleware.ScheduleDeps{
-            Scheduler: scheduling.NewDefaultScheduler(cfgStore),
-            Executor:  scheduling.NewExecutor(...),
-        },
-        Moderation: middleware.ModerationDeps{Moderator: nil}, // NoOp
-        Tracing:    middleware.TracingDeps{UsageBus: bus, Tracer: tracer},
-    }
-
-    if err := deps.Validate(); err != nil {
-        log.Fatal(err)
-    }
-
-    r := gin.New()
-    middleware.Register(r, deps)
-    r.POST("/v1/chat/completions", handler)
-    r.POST("/v1/messages", handler)
-    // ...
-
-    if err := r.Run(":8080"); err != nil {
-        log.Fatal(err)
+func (r *EndpointRow) ToDomain() *domain.Endpoint {
+    return &domain.Endpoint{
+        ID:     r.ID,
+        Vendor: r.Vendor,
+        // ...
     }
 }
 
-// handler 极简：所有工作 middleware 已完成
-func handler(c *gin.Context) {
-    // 响应已由 M7 Schedule 写出；这里不做任何事
+type SQLEndpointReader struct {
+    db *sqlx.DB
+}
+
+func (r *SQLEndpointReader) ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error) {
+    // query rows
+    // map rows -> domain.Endpoint
 }
 ```
 
-> **生产部署**只需替换默认实现：
-> ```go
-> cfgStore, _ := etcd.New(etcdClient, "/llm-gateway/")
-> cacheStore := redis.New(redisClient, "llm-gateway:")
-> bus, _ := kafka.NewEventBus(kafkaProducer, "usage-events")
-> ```
-> 业务代码 0 改动。
+编译期断言可以在 repo 包里声明：
 
-## 13. 生产部署对照表
+```go
+var _ middleware.EndpointReader = (*SQLEndpointReader)(nil)
+```
 
-| 接口 | 本地 / 单机 | 生产推荐 | 说明 |
-|------|-----------|---------|------|
-| `middleware.IdentityProvider` | `apikey` (file) | `apikey` (DB) / `jwt` (JWKS) | 自定义实现接入企业 SSO / IAM |
-| `middleware.BudgetGate` | `alwayspass` | 自定义对接计费系统 | 若有付费体系 |
-| `store.KV` | `file` | `etcd` | 多实例需要强一致 + Watch |
-| `cache.Store` | `memory` | `redis` | 多实例共享限流桶 / cooldown |
-| `usage.OutboxPublisher` | `file` | `kafka` | 离线计价聚合需要 |
-| `middleware.Moderator` | `nil` (NoOp) | `openai` / 自建 | 合规要求时启用 |
-| `trace.Tracer` | `slog` | `otel` | OTLP exporter 接 Jaeger / Tempo / vendor |
+这表示 repo 适配 middleware，而不是 middleware 依赖 repo。
+
+实现时可以按实体逐步迁移。建议先选 `Endpoint`，因为它同时覆盖路由、协议能力、认证配置、quota 和 JSON 列；这个实体跑通后，再复制到 `UserIdentity`、`Credentials`、`ModelService`、`Secret`、`QuotaPolicy` 等结构。
+
+每个实体迁移的验收点：
+
+- `pkg/domain` 中没有 `type X = repo.X`。
+- `pkg/domain` 不 import `pkg/repo`。
+- repo reader/provider 的 public 返回值使用 `domain` 类型。
+- middleware / schedule / translator / upstream 不接收 repo row 类型。
+- `go test ./...` 通过。
+
+依赖闭包也应纳入检查：
+
+```bash
+go list -deps ./pkg/domain | rg '/pkg/repo$'
+go list -deps ./pkg/schedule | rg '/pkg/repo$'
+go list -deps ./pkg/translator | rg '/pkg/repo$'
+go list -deps ./pkg/upstream | rg '/pkg/repo$'
+```
+
+这些命令目标是无输出。`pkg/repo` 自己依赖 `pkg/domain` 是允许的。
+
+## 6. Middleware Options
+
+middleware 构建应使用 option pattern，替代越来越大的 `Deps` struct。这样单测可以只替换关心的依赖。
+
+目标形态：
+
+```go
+type AuthOption func(*authConfig)
+
+type authConfig struct {
+    identity IdentityResolver
+}
+
+func WithIdentityResolver(r IdentityResolver) AuthOption {
+    return func(c *authConfig) { c.identity = r }
+}
+
+func Auth(opts ...AuthOption) gin.HandlerFunc {
+    cfg := authConfig{}
+    for _, opt := range opts {
+        opt(&cfg)
+    }
+    if cfg.identity == nil {
+        panic("middleware.Auth: IdentityResolver required")
+    }
+    // return handler
+}
+```
+
+M7 也应类似：
+
+```go
+type ScheduleOption func(*scheduleConfig)
+
+func WithEndpointReader(r EndpointReader) ScheduleOption
+func WithScheduler(s schedule.Scheduler) ScheduleOption
+func WithSender(s *upstream.Sender) ScheduleOption
+```
+
+单测可以这样写：
+
+```go
+r.Use(middleware.Auth(
+    middleware.WithIdentityResolver(fakeIdentity{}),
+))
+```
+
+Option pattern 规则：
+
+- 必需依赖缺失时 fail fast。
+- 可选依赖给明确默认值，例如 moderator nil = pass-through。
+- option 只做装配，不做 IO。
+- 构造函数不要打开 DB / Redis；资源由 `cmd/gateway` 或 `pkg/server` 管理。
+
+## 7. Redis
+
+Redis 承担两类共享状态：
+
+1. **Rate limit buckets**：`ratelimit.RedisStore` 实现用户侧 RPM/RPS 前扣、TPM 后扣，以及 endpoint 选中后的 quota reserve / charge。
+2. **Cooldown**：`schedule.NewRedisCooldownManager` 记录失败 endpoint 的短期隔离状态。
+
+没有内存 Store 作为 gateway 生产兜底。多副本下限流和 cooldown 必须共享。
+
+单测可以使用 fake store，但 fake store 只在测试包内使用，不作为生产 driver。
+
+## 8. BudgetGate
+
+M4 Budget 可替换：
+
+- `alwayspass`：默认，永远通过。
+- `inmemory`：进程内余额跟踪，适合 demo/单实例。
+
+新增外部账务系统时，实现 middleware 侧的 `BudgetGate` 接口，并在 `cmd/gateway` 中用 option 注入。
+
+## 9. Moderation
+
+M8 Moderation 可替换：
+
+- `none`：默认，跳过审核。
+- `openai`：调用 OpenAI moderation API，需要 `moderation.api_key`。
+
+返回 nil moderator 时 M8 pass-through。
+
+## 10. Recording / Outbox
+
+Usage outbox 由 `outbox.driver` 选择，三个互斥 driver：
+
+- `file`：本地 JSONL append；仅适合本地开发或临时排障。
+- `kafka`：同步 Kafka producer；发布完成才返回，延迟较高，无内存 buffer。
+- `async_kafka`：异步 buffer + 重试 + backoff + DLQ topic；生产推荐。
+
+完整配置 schema 见 [07-configuration §2 `outbox`](./07-configuration.md#2-gatewayyaml)，故障语义见 [05-metering-billing §5](./05-metering-billing.md#5-usage-outbox)。
+
+Content Log 是独立通道，不复用 Usage Event schema。内容记录器可通过 `upstream.WithHooks(...)` 装配。
+
+`async_kafka` 的 buffer、max retries、backoff、DLQ topic 在 `outbox.kafka.*` 配置块声明。producer 关闭由 `pkg/server` 统一管理（见 §12 graceful shutdown 顺序）。
+
+## 11. Tracing
+
+trace driver：
+
+- `slog`：默认，结构化日志。
+- `otel`：初始化 OTLP provider，退出时通过 server closer 调用 `Shutdown`。
+
+`trace.CtxHandler` 包装 slog JSON handler，让 `slog.InfoContext` / `ErrorContext` 自动带上 trace_id、span_id 和 baggage。
+
+请求路径禁止直接调用 `slog.Info` / `slog.Error` / `slog.Warn` 等不带 context 的方法。实现时应增加 lint 或测试扫描，确保日志入口都使用 `slog.*Context`。
+
+OTel attribute 命名优先采用 OpenTelemetry `gen_ai.*` 语义约定；缺少标准字段时使用 `llm_gateway.*` 前缀。完整 attribute 清单与建议 span 结构由 [08-observability §4 Tracing](./08-observability.md#4-tracing) 维护，本文不再重复；指标命名与维度见 [08-observability §3 Metrics](./08-observability.md#3-metrics)。
+
+## 12. Server 生命周期
+
+`pkg/server.Server` 负责：
+
+- 打开 DB / Redis / Kafka producer。
+- 注册 closer。
+- Serve。
+- 捕获 SIGTERM/SIGINT。
+- graceful shutdown。
+- 倒序 close 资源。
+
+`cmd/gateway` 的 `buildEngine` 如果中途失败，会 defer `srv.Close()` 清理已打开资源。
+
+Liveness / readiness：
+
+- `/healthz` 是 liveness，只表示进程事件循环仍可响应，不依赖 SQL / Redis / Kafka。
+- `/readyz` 是 readiness，检查 SQL 和 Redis 可达；不检查 Kafka / outbox，因为 usage 发布失败不应导致网关被摘流量。
+- readiness 持续失败超过配置阈值后，可以让 liveness 返回失败，避免 pod 长期 not-ready 卡死。
+
+Graceful shutdown 顺序：
+
+1. 收到 SIGTERM/SIGINT 后，HTTP server 停止接受新请求。
+2. 等待 in-flight 请求完成，受 `server.shutdown_timeout` 控制，默认 30s。
+3. flush 并关闭 `async_kafka` producer / outbox。
+4. 关闭 Redis client。
+5. 关闭 DB pool。
+
+超过 shutdown timeout 的 in-flight 请求会被中断，并记录 `llm_gateway_request_aborted_by_shutdown_total`。关闭顺序不能先关 Kafka/Redis/DB 再等待请求，否则 M6 post-side、M10 outbox 和 tracing 收尾会失去依赖。
+
+## 13. Admin 边界
+
+gateway 不拥有 schema 和配置写入。以下资源由 admin 管理：
+
+- accounts
+- api_keys
+- quota_policies
+- model_services
+- account_model_subscriptions
+- endpoints
+- pricing_versions
+
+gateway 对这些表只读，除了 API key last used 等审计类字段如有实现可单独说明。
 
 ## 14. 演进规则
 
-- **新增接口**：在 `pkg/<area>/` 加包；至少提供一个默认实现（最好两个：NoOp + minimal）；本文档第 2 节同步包结构
-- **修改接口签名**：评估对所有现有实现的影响；考虑向后兼容（新方法可选 / 提供 default 实现）
-- **新增默认实现**：在对应包下加子包；本文档第 13 节对照表同步
-- **示例 main.go**：保持本文档第 12 节示例与 `cmd/gateway/main.go` 对齐
+- 禁止在 `pkg/domain` 新增对 `pkg/repo` 的 import 或 type alias。
+- 新 middleware 先在 middleware 包定义最小接口，再让 repo 实现。
+- repo 返回 domain 结构，不能把 repo row 类型泄漏给 middleware。
+- 新增 infra driver 时，在 config、cmd build 函数、示例配置和本文档同步登记。
+- 启动必需依赖变化时，必须更新 [00-overview](00-overview.md) 的启动流程。
+- 不要在文档中宣称“零外部依赖启动”，除非代码重新提供可运行的 DB/Redis 替代实现。

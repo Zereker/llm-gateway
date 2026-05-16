@@ -15,5 +15,5 @@ type PricingSnapshot struct {
 	ModelServiceID       int64     // 用于 model 维度聚合统计
 	PricingVersionID     int64     // → pricing_versions.id；billing engine 据此查 rule_json
 	PricingEffectiveFrom time.Time // 该价格版本生效起点；调试用
-	RuleClass            string    // standard | enterprise_xxx | promo_xxx；同租户内多曲线区分
+	RuleClass            string    // standard | enterprise_xxx | promo_xxx；同主账号内多曲线区分
 }

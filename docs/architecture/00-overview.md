@@ -2,149 +2,125 @@
 
 ## 1. 项目目标
 
-llm-gateway 是一个统一的 LLM 推理请求入口，对上承接客户端流量（兼容多种主流协议），对下路由到多种推理后端：
+`llm-gateway` 是 LLM 请求网关，提供统一客户端入口，按主账号、模型、分组和 endpoint 配置把请求转发到上游厂商或自部署模型服务。
 
-- **闭源 SaaS**：OpenAI、Anthropic、Google Vertex、AWS Bedrock、Azure OpenAI、Mistral、DeepSeek …
-- **开源自部署**：vLLM、Ollama、Text Generation Inference、SGLang …
+目标架构重点解决：
 
-核心要解决的问题：
-
-1. **协议碎片化**：客户端可能用 OpenAI / Anthropic / 自定义协议；后端可能是任意厂商。需要一层透明转换。
-2. **endpoint 多样性 + 不可靠**：同一模型在多个厂商或多个区域有部署，单 endpoint 失败需自动重试或换线路。
-3. **多租户公平性**：不同用户、不同模型、不同上游需要独立限流与隔离。
-4. **可计量性**：每个请求的 token 用量、成本、延迟、错误必须被准确记录，支持后续计费、成本归因和容量规划。
-5. **可观测性**：单请求可追踪、聚合指标可告警、异常可还原。
+1. **多协议入口与上游协议转换**：OpenAI Chat / Responses、Anthropic Messages 等入口统一进入路由链路，再由 translator 转成上游原生协议。
+2. **主账号控制**：API key 解析出主账号 pin、子账户/操作者、group 和 quota policy，模型可见性由订阅表控制。
+3. **endpoint 选择与重试**：按 model + group 拉候选，先做协议/模态资格过滤，再在同 model 内换 endpoint；跨 model fallback 只按 header 显式声明执行。
+4. **Redis 限流**：主账号 + API key 双层 quota policy，RPM/RPS 请求前 reserve，TPM 按真实 usage 后扣；endpoint quota 只对最终选中的 endpoint 扣减。
+5. **记录与计量输出**：内容记录、Usage Event、Metrics / Trace 三条通道独立；网关只产生事实数据，计价由下游完成。
+6. **可观测性**：slog trace 字段、Prometheus metrics、可选 OpenTelemetry tracer。
 
 ## 2. 非目标
 
-明确**不做**的事，避免设计膨胀：
+- 不实现模型推理服务本身。
+- 不实现 RAG、prompt 编排、agent 或业务 BFF 逻辑。
+- 不做管理 UI；管理面是 `cmd/admin` REST API。
+- 不在 gateway 进程内做账单聚合；gateway 只产出 usage 事件，计价聚合由下游任务完成。
 
-- ❌ 不做 prompt 工程框架（不是 LangChain）
-- ❌ 不做模型服务本身（不是 vLLM、TGI）
-- ❌ 不做 RAG / 向量检索（不是 LlamaIndex）
-- ❌ 不做应用层业务逻辑（不是 BFF）
-- ❌ 不做多模型 ensemble / chain（每请求只路由到一个 endpoint）
+## 3. 运行进程
 
-## 3. 设计原则
+| 进程 | 入口 | 职责 |
+|------|------|------|
+| gateway | `cmd/gateway` | 数据面：鉴权、解析、限流、调度、上游转发、usage outbox |
+| admin | `cmd/admin` | 管理面：维护主账号、API key、model service、endpoint、quota policy、pricing_versions |
 
-| # | 原则 | 含义 |
-|---|------|------|
-| P1 | **Middleware-first** | 横切关注点（鉴权、限流、调度、错误处理、计量）全部以 middleware 组合实现，不放在业务 handler 里。Handler 极简化（< 30 行）。 |
-| P2 | **typed RequestContext + gin.Context 存取** | 跨 middleware 的请求级状态用一个 typed `*domain.RequestContext` struct 承载（保证类型安全），通过 `gin.Context.Set/Get` 传递（保证与 gin 生态兼容、不污染函数签名）。**杜绝**散落的 `c.Set("foo", ...)` `c.Set("bar", ...)`。 |
-| P3 | **Adapter per provider** | 每个上游厂商一个 `Adapter` 实现，封装协议、签名、URL、流式解析、Usage 提取等所有差异。新增厂商不改主链路，只加 Adapter。 |
-| P4 | **Canonical request schema** | 内部用一套规范化请求结构（`CanonicalRequest`，OpenAI 兼容形态）作为通用语言；客户端协议 → Canonical 由 `Envelope` 完成；Canonical → 上游协议由 `Adapter.TransformRequest` 完成。 |
-| P5 | **Pluggable infrastructure** | 所有外部依赖（配置中心、身份系统、预算检查、计量事件总线）都通过接口抽象。默认实现走本地文件 / SQLite / 内存，**零外部依赖即可启动**；生产可挂 etcd / Kafka / Postgres。 |
-| P6 | **预检与扣减分离** | 限流的预检（read-only）在请求前做，真实扣减（用真实 Usage）在响应后做。两阶段分离避免"预扣失败回滚"的复杂性。 |
-| P7 | **失败可降级，错误必分类** | 上游失败按错误类（`ErrTransient` / `ErrRateLimit` / `ErrPermanent` / `ErrInvalid` / `ErrUnknown`）分类，重试策略和 Cooldown 时长按类决定。错误不分类等于不可重试。 |
-| P8 | **可观测性内置** | 每个 middleware 自带 metric（duration / count / error）；trace 字段（如 `scheduling_decision`）落到结构化日志；Prometheus + OpenTelemetry 一等公民。 |
+gateway 启动流程：
 
-## 4. 系统全景
+1. 加载 `configs/*/gateway.yaml`。
+2. 初始化 endpoint auth 加密 data key。
+3. 打开 **SQL DB（必需）**，执行 `repo.CheckSchema`；缺表直接退出。
+4. 打开 **Redis（必需）**；M6 限流和 scheduler cooldown 都依赖 Redis。
+5. 装配 SQL reader/provider、Redis rate limit store、scheduler、outbox、tracer。
+6. 扫描 enabled endpoints，校验 vendor adapter 存在、`native_protocol` 合法、必要 translator 已注册；缺失只记 warn 和 metric，不阻塞启动。
+7. 调用 `router.NewEngine` 注册路由和 middleware。
+8. 交给 `pkg/server` 处理 listen、signal、graceful shutdown 和资源倒序关闭。
 
-### 4.1 单请求生命周期
+部署顺序：
 
-```
+1. admin 启动期执行 `infra.Migrate`，负责 schema migration。
+2. admin 写入/维护账号、API key、model service、subscription、endpoint、quota policy 等配置数据。
+3. gateway 启动时只执行 `repo.CheckSchema` 和只读查询；schema 缺失直接失败，不自动建表或迁移。
+
+admin 与 gateway 可以独立部署，但 schema 变更必须保持向后兼容：先部署兼容旧 gateway 的 schema，再滚动 gateway；删除字段或破坏性 schema 变更必须等所有 gateway 升级完成后再执行。
+
+## 4. 请求生命周期
+
+```text
 HTTP request
-   │
-   ▼
-┌────────────────────────────────────────────────────────────────┐
-│  M1  TraceContext        生成 trace_id / request_id，初始化 logger │
-│        │                                                            │
-│  M9  Recover(defer)      panic 防护（注册早，覆盖整条链）            │
-│        │                                                            │
-│  M2  Auth                身份识别 → rc.Identity（UserID / Group） │
-│        │                                                            │
-│  M3  Envelope            读 body、识别协议与 modality、解析 Canonical │
-│        │                                                            │
-│  M4  Budget              预算 / 配额检查（IdentityProvider 接口）    │
-│        │                                                            │
-│  M5  ModelService        模型路由配置加载 → rc.ModelService + Pricing │
-│        │                                                            │
-│  M6  Limit               三层限流预检（read-only）                   │
-│        │                                                            │
-│  M8  ContentModeration   请求内容审核（可选）                        │
-│        │                                                            │
-│  M7  Schedule            选 endpoint → Adapter → 流式响应            │
-│        │  ↳ RetryExecutor: L1 同 endpoint 重试 / L2 换 endpoint     │
-│        │                  /  L3 换模型（可选） + Cooldown 反馈       │
-│        ▼                                                            │
-│  ResponseWriter          流式或非流式回写客户端                       │
-│                                                                      │
-│  M10 Tracing(defer)      聚合 metric、发送 Usage 事件、写 trace      │
-└────────────────────────────────────────────────────────────────┘
-   │
-   ▼
-HTTP response（流式 SSE 或一次性 JSON）
+  |
+  | pre: BodyLimit / Timeout
+  v
+M1 TraceContext      生成 RequestID，注入 OTel SpanContext/Baggage，创建 RequestContext
+M9 Recover           defer 兜底 panic 和统一错误响应
+M2 Auth              API key/JWT 解析为 domain.UserIdentity
+M3 Envelope          读取原始 body，提取 model，记录 source protocol + modality
+M4 Budget            alwayspass 或 inmemory gate；失败直接 abort
+M5 ModelService      查全局 model catalog、主账号订阅
+M8 Moderation        可选内容审核；默认 none
+M6 Limit             用户侧 RPM/RPS 前扣，响应后按 usage 后扣 TPM
+M7 Schedule          拉 endpoint 候选，调度、重试、上游转发，写 Usage/Decision/Error
+M10 Tracing          metric、usage meta、outbox、scheduling trace
+  |
+  v
+HTTP response
 ```
 
-### 4.2 组件分层
+注意：M6 使用 gin 洋葱模型，在 `c.Next()` 后执行用户侧 TPM `ChargeBatch`；这件事不在 M10 里做。
 
+## 5. 组件分层
+
+```text
+cmd/gateway
+  -> config.Load
+  -> server.OpenDB/OpenRedis/NewKafkaProducer
+  -> repo SQL readers/providers
+  -> router.NewEngine
+
+pkg/router
+  -> 按模态注册完整 /v1/... 路由
+  -> 组合 middleware 链
+
+pkg/middleware
+  -> 请求生命周期、RequestContext 读写、错误 abort
+
+pkg/schedule
+  -> 对一批候选 endpoint 做 filter / pick / report；不持有 repo，不切 fallback model
+
+pkg/upstream
+  -> adapter lookup、translator lookup、HTTP Do、响应 forward
+
+pkg/adapter
+  -> 厂商 HTTP 层：URL、认证 header、request 构造
+
+pkg/translator
+  -> 客户端协议与上游协议的请求/响应转换，usage 提取
+
+pkg/repo + pkg/infra
+  -> SQL schema、CRUD/readers、Redis、Kafka
 ```
-┌────────────────────────────────────────────────────────┐
-│  HTTP layer (gin)                                       │
-├────────────────────────────────────────────────────────┤
-│  Middleware chain (M1-M10)                              │
-├────────────────────────────────────────────────────────┤
-│  Domain services                                        │
-│  ├─ Adapter Registry        → 协议转换层（02）          │
-│  ├─ Scheduler + Filters     → 端点选择层（03）          │
-│  ├─ LimitChecker            → 限流层（04）              │
-│  ├─ TokenExtractor          → 计量提取层（05）          │
-│  └─ Pricing Engine          → 计价层（05）              │
-├────────────────────────────────────────────────────────┤
-│  Infrastructure abstractions（06）                      │
-│  ├─ ConfigStore             → etcd / file / SQLite     │
-│  ├─ IdentityProvider        → APIKey / JWT / 自定义    │
-│  ├─ BudgetChecker           → 内存 / 远程 SDK         │
-│  ├─ UsageEventBus           → Kafka / 文件 / 内存     │
-│  └─ Cache (Redis / 本地)    → 限流 / 配置缓存         │
-└────────────────────────────────────────────────────────┘
-```
 
-## 5. 关键术语
+## 6. 关键术语
 
-| 术语 | 定义 |
-|------|------|
-| **RequestContext** | 一次 HTTP 请求的全链路可变状态，typed struct，存放在 `gin.Context` 中。详见 [01](01-request-pipeline.md)。 |
-| **Envelope** | 解析后的请求信封，包含原始字节、Canonical 解析结果、源协议、modality 等。 |
-| **CanonicalRequest** | 网关内部统一的请求形态（OpenAI 兼容 schema）；所有 Adapter 输入都是它。 |
-| **Adapter** | 对接单个上游厂商的实现，封装 URL / Header / Body 转换、流式解析、Usage 提取。一厂商一 Adapter（可跨多 modality）。 |
-| **Translator** | 双向协议翻译模块（如 Anthropic ↔ OpenAI），独立于 Adapter。 |
-| **Scheduler** | 端点选择器，按 Filter 链 + 打分机制从候选 endpoint 池中选出一个。 |
-| **RetryExecutor** | 包装 Adapter 调用的重试与降级控制器。 |
-| **Endpoint** | 一个具体的上游接入点（厂商 + 区域 + 凭证 + URL）。同一模型可有多个 endpoint。 |
-| **ModelService** | 一个对外暴露的模型名（如 `gpt-4o`），背后绑定一组 endpoint 与限流 / 计价配置。 |
-| **Modality** | 请求模态：`chat` / `message` / `embedding` / `image` / `audio` / `task` 等。 |
-| **LimitSpec** | 单次请求的三层限流阈值（用户层 / 模型层 / endpoint 层）。 |
-| **Usage** | 一次请求的资源消耗：input/output/total tokens、reasoning tokens、模态相关字段（图片张数、音频秒数等）。 |
-| **PricingSpec** | 模型的价格规格（每 1k input/output token 的单价、最低消费等），版本化存储。 |
-| **Provider** | 厂商概念，与 Adapter 一一对应（`openai` / `anthropic` / `vllm` / ...）。 |
+| 术语 | 目标含义 |
+|------|----------|
+| pin | account 的稳定外部标识符，作为计费主体 ID；不同于数据库自增主键，admin 创建 account 时分配，创建后不可变 |
+| Group | 主账号下的请求分组维度，影响 endpoint 候选过滤；默认 `default`，可用于 `reserved` / `experimental` 等隔离场景 |
+| `RequestContext` | 一次请求的状态对象，挂在 `c.Request.Context()`，通过 middleware helper 获取 |
+| `RequestEnvelope` | M3 产物：raw body、model、source protocol、modality；不再包含 canonical request |
+| `UserIdentity` | M2 产物，包含主账号 pin、子账户/操作者、API key、group、quota policy IDs |
+| `ModelService` | 全局模型 catalog 记录；主账号是否可用由 subscription 表决定 |
+| `Endpoint` | 全局上游接入点，按 model + group 匹配；包含 vendor、weight、auth、routing、quota、capabilities |
+| `Adapter` | 厂商 HTTP 层 factory/session；不负责协议转换和 usage 聚合 |
+| `Translator` | 协议转换层；负责 request body 转换、response handler、usage 提取 |
+| `Scheduler` | M7 的批内 endpoint 选择器，暴露 Pick/Report，不负责跨 model fallback |
+| `RateLimitState` | M6/M7 写入的限流状态，供 TPM 后扣和排障使用；不作为客户端 header 契约 |
+| `Usage` | 单次请求资源消耗和 meta，M10 发布到 outbox |
 
-## 6. 阅读路径
-
-### 实现者视角
-
-按编号顺序读 01 → 07，能从 RequestContext 数据结构、middleware 契约一路读到部署清单。
-
-### 接入者视角（想加新 Provider）
-
-只读 02（Adapter 接口）+ 06（IdentityProvider / ConfigStore 注入）即可。
-
-### 运维视角
-
-读 06（基础设施抽象）+ 07（部署 / 监控 / 告警）。
-
-### 评审者视角
-
-读 00（本文档）→ 06（架构边界）→ 07（路线图），即可对整体设计形成判断。
-
-## 7. 开源声明
-
-- **License**：Apache-2.0
-- **零云依赖启动**：所有组件均有本地 / 内存默认实现，单二进制可跑通端到端流程
-- **无内部代码遗留**：所有抽象接口与默认实现均为通用术语，不绑定任何特定云厂商或内部系统
-
-## 8. 文档版本
+## 7. 文档版本
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
-| v0.1-draft | 2026-05-02 | 初版（基于内部成熟设计的开源化适配） |
+| v0.3-target | 2026-05-16 | 对齐目标边界：协议能力下沉 endpoint、简化 scheduler、RPM/RPS 前扣、TPM 后扣、下游计费 |

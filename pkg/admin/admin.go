@@ -20,26 +20,26 @@ import (
 
 // Deps 是 NewEngine 的依赖集合。
 //
-// **v0.3 新增**：TenantStore / QuotaPolicyStore / SubscriptionStore
+// **v0.3 新增**：AccountStore / QuotaPolicyStore / SubscriptionStore
 //
 // 不抽 interface（无第二实现 + admin tests 直接用真 MySQL）。
 type Deps struct {
-	Token              string
-	TenantStore        *TenantStore
-	QuotaPolicyStore   *QuotaPolicyStore
-	ModelServiceStore  *ModelServiceStore
-	SubscriptionStore  *SubscriptionStore
-	EndpointStore      *EndpointStore
-	APIKeyStore        *APIKeyStore
-	PricingStore       *PricingStore
+	Token             string
+	AccountStore      *AccountStore
+	QuotaPolicyStore  *QuotaPolicyStore
+	ModelServiceStore *ModelServiceStore
+	SubscriptionStore *SubscriptionStore
+	EndpointStore     *EndpointStore
+	APIKeyStore       *APIKeyStore
+	PricingStore      *PricingStore
 }
 
 // NewEngine 构造 admin gin.Engine 并完成全部装配。
 //
 // 路由：
 //   - GET /healthz, /readyz                 ops 探活，不走 admin token
-//   - /admin/v1/tenants*                    Tenant CRUD（要 token）
-//   - /admin/v1/tenants/:pin/subscriptions* tenant 订阅模型 CRUD
+//   - /admin/v1/accounts*                    Account CRUD（要 token）
+//   - /admin/v1/accounts/:pin/subscriptions* account 订阅模型 CRUD
 //   - /admin/v1/quota-policies*             QuotaPolicy CRUD
 //   - /admin/v1/modelservices*              ModelService CRUD（全局 catalog）
 //   - /admin/v1/endpoints*                  Endpoint CRUD（全局上游池）
@@ -55,7 +55,7 @@ func NewEngine(deps Deps) *gin.Engine {
 	registerOpsRoutes(engine)
 
 	api := engine.Group("/admin/v1", authMW(deps.Token))
-	registerTenantRoutes(api, deps.TenantStore)
+	registerAccountRoutes(api, deps.AccountStore)
 	registerSubscriptionRoutes(api, deps.SubscriptionStore)
 	registerQuotaPolicyRoutes(api, deps.QuotaPolicyStore)
 	registerModelServiceRoutes(api, deps.ModelServiceStore)

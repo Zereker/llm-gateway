@@ -15,11 +15,11 @@ import (
 //
 // **细分规则**（HTTP-status 之外的判断）：
 //   - 429 + code="insufficient_quota"  → ErrPermanent（账户额度耗尽，长 cooldown；不该按
-//                                        瞬时 rate-limit 几秒后重试）
+//     瞬时 rate-limit 几秒后重试）
 //   - 429 + code="rate_limit_exceeded" → ErrRateLimit（默认行为，但显式标）
 //   - 400 + code="context_length_exceeded" → ErrInvalid（客户端请求过长，换 ep 也没用）
 //   - 401 + type="invalid_api_key"     → ErrPermanent（默认 401 已经是 Permanent，但
-//                                        把 UpstreamMessage 填准）
+//     把 UpstreamMessage 填准）
 //   - 其他：走 DefaultClassifier 的 status-only 分类
 //
 // **body 解析失败时**（不合法 JSON / 截断）：fallback 到 DefaultClassifier，不报错。

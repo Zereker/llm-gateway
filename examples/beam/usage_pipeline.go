@@ -9,7 +9,7 @@
 //	   → Dedup by request_id (windowed)
 //	   → Enrich (join pricing snapshot from PG)
 //	   → Window (1-min tumbling)
-//	   → Aggregate (sum cost by tenant × model)
+//	   → Aggregate (sum cost by account × model)
 //	   → Sink (PG / BigQuery / 任选)
 //
 // **本文件是参考骨架**，跑起来还需：
@@ -42,23 +42,23 @@ import (
 // UsageEvent 是 llm-gateway outbox 写出的 JSON 结构（pkg/usage/outbox.go 定义；这里
 // 只取后续聚合用得到的字段，松散反序列化）。
 type UsageEvent struct {
-	RequestID  string  `json:"request_id"`
-	TenantID   string  `json:"tenant_id"`
-	UserID     string  `json:"user_id"`
-	Vendor     string  `json:"vendor"`
-	Model      string  `json:"model"`
-	EndpointID string  `json:"endpoint_id"`
-	Input      int64   `json:"input"`
-	Output     int64   `json:"output"`
-	Total      int64   `json:"total"`
-	Cost       float64 `json:"cost"`
-	StartTime  int64   `json:"start_time_unix_ms"`
+	RequestID    string  `json:"request_id"`
+	AccountID    string  `json:"account_id"`
+	SubAccountID string  `json:"sub_account_id"`
+	Vendor       string  `json:"vendor"`
+	Model        string  `json:"model"`
+	EndpointID   string  `json:"endpoint_id"`
+	Input        int64   `json:"input"`
+	Output       int64   `json:"output"`
+	Total        int64   `json:"total"`
+	Cost         float64 `json:"cost"`
+	StartTime    int64   `json:"start_time_unix_ms"`
 }
 
-// CostKey 聚合 key：tenant × model；分钟级 window 自然分组。
+// CostKey 聚合 key： account × model；分钟级 window 自然分组。
 type CostKey struct {
-	Tenant string
-	Model  string
+	Account string
+	Model   string
 }
 
 func init() {
@@ -103,11 +103,11 @@ func main() {
 	// 4) Enrich pricing — 占位（生产里 SideInput join PG 当前价格快照）
 	enriched := deduped // TODO: replace with enrichWithPricing(s, deduped)
 
-	// 5) Key by (tenant, model) and sum cost
+	// 5) Key by (account, model) and sum cost
 	keyed := beam.ParDo(s, extractKey, enriched)
 	summed := stats.SumPerKey(s, keyed)
 
-	// 6) Format and sink — text per line "tenant\tmodel\tcost"
+	// 6) Format and sink — text per line "account\tmodel\tcost"
 	formatted := beam.ParDo(s, formatAggregate, summed)
 	textio.Write(s, *output, formatted)
 
@@ -141,10 +141,10 @@ func dedupFn() func(UsageEvent, func(UsageEvent)) {
 
 // extractKey UsageEvent → KV<CostKey, float64>。
 func extractKey(ev UsageEvent) (CostKey, float64) {
-	return CostKey{Tenant: ev.TenantID, Model: ev.Model}, ev.Cost
+	return CostKey{Account: ev.AccountID, Model: ev.Model}, ev.Cost
 }
 
-// formatAggregate KV<CostKey, float64> → "tenant\tmodel\tcost\n"。
+// formatAggregate KV<CostKey, float64> → "account\tmodel\tcost\n"。
 func formatAggregate(k CostKey, v float64) string {
-	return fmt.Sprintf("%s\t%s\t%.6f", k.Tenant, k.Model, v)
+	return fmt.Sprintf("%s\t%s\t%.6f", k.Account, k.Model, v)
 }

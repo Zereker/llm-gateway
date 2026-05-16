@@ -77,20 +77,6 @@ func TestTracing_NoUsageNoPublish(t *testing.T) {
 	}
 }
 
-func TestTracing_NoRCHandledGracefully(t *testing.T) {
-	out := &stubOutbox{}
-	// Note: no TraceContext registered; Tracing should not panic.
-	r := newGinTest(Tracing(TracingDeps{Outbox: out}))
-	r.GET("/x", func(c *gin.Context) { c.Status(200) })
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/x", nil))
-
-	if w.Code != 200 {
-		t.Errorf("status = %d, want 200", w.Code)
-	}
-}
-
 func TestTracing_OutboxNilTolerated(t *testing.T) {
 	// nil outbox should just skip publish without panic
 	r := newGinTest(

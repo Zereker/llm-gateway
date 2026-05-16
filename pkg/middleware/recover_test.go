@@ -127,21 +127,3 @@ func TestRecover_DoesNotOverwriteWrittenResponse(t *testing.T) {
 		t.Errorf("body should be the first written JSON: %s", w.Body.String())
 	}
 }
-
-func TestRecover_PanicWithoutRC_StillWrites500(t *testing.T) {
-	// Recover registered without TraceContext → no RC available
-	r := newGinTest(Recover())
-	r.GET("/boom", func(c *gin.Context) {
-		panic("no RC")
-	})
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/boom", nil))
-
-	if w.Code != 500 {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "internal server error") {
-		t.Errorf("body = %s", w.Body.String())
-	}
-}

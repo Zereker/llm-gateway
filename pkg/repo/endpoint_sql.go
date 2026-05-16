@@ -11,7 +11,7 @@ import (
 
 // SQLEndpointReader 是 EndpointReader 的 sqlx 实现。
 //
-// **v0.3 改动**：去 tenant_id（endpoints 是全局上游池；BYOK 等真要做时加 nullable tenant_id）。
+// **v0.3 改动**：去 account_id（endpoints 是全局上游池；BYOK 等真要做时加 nullable account_id）。
 type SQLEndpointReader struct {
 	db *sqlx.DB
 }

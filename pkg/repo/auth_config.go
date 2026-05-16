@@ -80,7 +80,7 @@ type OAuth2SAAuth struct {
 //   - dev 用 `gcloud auth application-default login` 后本地测试 Vertex
 //   - GCE / GKE 上 workload identity / metadata server 注入
 //
-// 不适合：多租户 BYOC（每个租户带自己的 SA JSON）—— 那种走 OAuth2SAAuth。
+// 不适合：多主账号 BYOC（每个主账号带自己的 SA JSON）—— 那种走 OAuth2SAAuth。
 //
 // payload 当前为空 struct（占位，未来可加 Scopes / QuotaProject 等覆写字段）。
 type VertexADCAuth struct {

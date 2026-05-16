@@ -35,4 +35,4 @@ func (t *SlogTracer) StartSpan(c context.Context, name string) (context.Context,
 type noopSpan struct{}
 
 func (noopSpan) SetAttribute(key string, value any) {}
-func (noopSpan) End()                                {}
+func (noopSpan) End()                               {}

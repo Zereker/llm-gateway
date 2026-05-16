@@ -19,8 +19,8 @@ Sink (text / PG / BigQuery)
 ```json
 {
   "request_id": "req_abc123",
-  "tenant_id":  "demo-acme",
-  "user_id":    "alice",
+  "account_id":  "demo-acme",
+  "sub_account_id":    "alice",
   "vendor":     "openai",
   "model":      "gpt-4o",
   "endpoint_id":"openai-prod-1",
@@ -39,7 +39,7 @@ Sink (text / PG / BigQuery)
 3. **Dedup** — by request_id（防 retry 双发）— 示例占位
 4. **Enrich** — join pricing snapshot — 示例占位
 5. **Window** — 1-min tumbling
-6. **Aggregate** — sum cost by (tenant, model)
+6. **Aggregate** — sum cost by (account, model)
 7. **Sink** — text file（生产改 PG / BigQuery / Postgres）
 
 ## 依赖
@@ -80,7 +80,7 @@ go run ./usage_pipeline.go \
 | 项 | 示例里 | 生产应做 |
 |---|---|---|
 | Dedup | passthrough | stateful DoFn + 窗口内 set 去重 |
-| Enrich pricing | passthrough | SideInput 加载 PG `pricing_versions` 表，按 (tenant, model, time) 查当时单价 |
+| Enrich pricing | passthrough | SideInput 加载 PG `pricing_versions` 表，按 (account, model, time) 查当时单价 |
 | Window | 隐式（SumPerKey 全量） | `beam.WindowInto(window.NewFixedWindows(1 * time.Minute))` |
 | Sink | textio | jdbcio (PG) / bigqueryio (BQ) |
 | DLQ | silent drop | Tag.Output 写错误事件到 DLQ topic |
