@@ -41,6 +41,9 @@ type Config struct {
 	Budget     BudgetConfig      `yaml:"budget"`     // M4 Budget driver
 	Moderation ModerationConfig  `yaml:"moderation"` // M8 内容审核 driver
 	Trace      TraceConfig       `yaml:"trace"`      // M10 Tracer driver（slog / otel）
+	ContentLog ContentLogConfig  `yaml:"content_log"` // 内容记录通道（docs/05 §2 + docs/08 §6）
+	Health     HealthConfig      `yaml:"health"`      // Health Probing（docs/03 §10）
+	Scoring    ScoringConfig     `yaml:"scoring"`     // Runtime Scoring（docs/03 §8）
 
 	// DataKey 是 AES-256-GCM 的 KEK（hex-encoded 32 字节 = 64 字符）。
 	// gateway 启动期调 repo.SetDataKey 装载；用于解密 endpoints.auth 列。
@@ -87,6 +90,55 @@ type ModerationConfig struct {
 	Driver  string `yaml:"driver"`
 	APIKey  string `yaml:"api_key"`
 	BaseURL string `yaml:"base_url"`
+}
+
+// ContentLogConfig 内容记录配置（docs/architecture/05-metering-billing.md §2、docs/08 §6）。
+//
+//	driver:
+//	  none — 默认；完全关闭，零开销
+//	  file — JSONL append 写本地文件（适合 dev / 排障）
+//	  kafka — async publish 到 Kafka topic（生产）
+//
+// sample_rate:        [0,1]，1.0=全采，0=全丢
+// backpressure:       drop_oldest（默认） / drop_newest / block；block 必须配 block_timeout
+// max_body_bytes:     >0 时截断 body
+// buffer_size:        异步队列容量；默认 1024
+// directions:         记录哪些方向（client_request / upstream_request / upstream_chunk / client_chunk）
+type ContentLogConfig struct {
+	Driver        string        `yaml:"driver"`
+	SampleRate    float64       `yaml:"sample_rate"`
+	Backpressure  string        `yaml:"backpressure"`
+	BlockTimeout  time.Duration `yaml:"block_timeout"`
+	MaxBodyBytes  int           `yaml:"max_body_bytes"`
+	BufferSize    int           `yaml:"buffer_size"`
+	File          FileOutboxSection `yaml:"file"`
+	Kafka         KafkaOutboxSection `yaml:"kafka"`
+}
+
+// HealthConfig 主动健康探测配置（docs/architecture/03-endpoint-scheduling.md §10）。
+//
+//	enabled:     默认 false；true 启动周期 prober
+//	interval:    探测周期（默认 30s）
+//	timeout:     单次 probe 超时（默认 5s）
+//	concurrent:  并发上限（默认 8）
+type HealthConfig struct {
+	Enabled    bool          `yaml:"enabled"`
+	Interval   time.Duration `yaml:"interval"`
+	Timeout    time.Duration `yaml:"timeout"`
+	Concurrent int           `yaml:"concurrent"`
+}
+
+// ScoringConfig Runtime Scoring 配置（docs/architecture/03-endpoint-scheduling.md §8）。
+//
+//	enabled:           默认 false；true 时 Scorer 调权
+//	min_samples:       样本数 < min_samples 给中性 factor=1（默认 5）
+//	latency_baseline:  归一 latency 用的 baseline（默认 200ms）
+//	ema_decay:         EMA 衰减（0..1，默认 0.2）
+type ScoringConfig struct {
+	Enabled         bool          `yaml:"enabled"`
+	MinSamples      uint32        `yaml:"min_samples"`
+	LatencyBaseline time.Duration `yaml:"latency_baseline"`
+	EMADecay        float64       `yaml:"ema_decay"`
 }
 
 // ServerConfig HTTP 服务器层配置。

@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/contentlog"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/repo"
@@ -80,6 +81,19 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 				"internal: M3/M5 did not run before M7")
 			return
 		}
+
+		// 注入 content log enrichment（Logger 通过 ctx 拿请求元信息；docs/05 §2）
+		ctx = contentlog.EnrichCtx(ctx, contentlog.RequestEnrich{
+			RequestID:    rc.RequestID,
+			TraceID:      TraceIDFromCtx(ctx),
+			AccountID:    rc.Identity.AccountID,
+			APIKeyID:     rc.Identity.APIKeyID,
+			SubAccountID: rc.Identity.SubAccountID,
+			Model:        rc.ModelService.Model,
+			Protocol:     rc.Envelope.SourceProtocol.String(),
+			Modality:     rc.Envelope.Modality.String(),
+		})
+		rc.Ctx = ctx
 
 		// 本请求实际允许的 attempts（header override 仅允许更紧）
 		attemptsCap := maxAttempts
@@ -234,13 +248,17 @@ func Schedule(deps ScheduleDeps) gin.HandlerFunc {
 				}
 
 				if outcome.Success() {
-					// 路由成功：写 RoutedModelService
 					rc.RoutedModelService = ms
 					decisions[len(decisions)-1].Outcome = domain.AttemptSuccess
 					handler := wrapWithModerator(outcome.Translator.NewResponseHandler(), rc.Ctx)
 					responseStarted = true
-					fwd := deps.Sender.Forward(ctx, c.Writer, ep, outcome.Response, handler)
+					// 注入 rc.StartTime 让 Forward 计算 TTFT（docs/05 §4）
+					fwdCtx := upstream.WithRequestStartTime(ctx, rc.StartTime)
+					fwd := deps.Sender.Forward(fwdCtx, c.Writer, ep, outcome.Response, handler)
 					rc.Usage = fwd.Usage
+					if rc.Usage != nil && fwd.TTFTMs > 0 {
+						rc.Usage.Meta.TTFTMs = fwd.TTFTMs
+					}
 					if fwd.FeedErr != nil {
 						rc.Error = &domain.AdapterError{
 							Class:   domain.ErrTransient,
