@@ -115,21 +115,22 @@ func (s stubSubs) HasModel(_ context.Context, _ string, _ int64) (bool, error) {
 // Stub: ratelimit.Store
 // =============================================================================
 
-// stubStore 可配置 ReserveBatch 返回值；AdjustBatch / Snapshot 也都可配。
+// stubStore 可配置 ReserveBatch / ChargeBatch / SnapshotBatch 返回值。
 //
-// 默认行为：ReserveBatch 永远 allowed=true；AdjustBatch 无错；Snapshot 返回零值 BucketState。
+// 默认行为：ReserveBatch allowed=true；ChargeBatch 无错；SnapshotBatch 返回零值。
 type stubStore struct {
 	reserveAllowed bool
 	reserveViol    *ratelimit.BucketViolation
 	reserveErr     error
 
-	adjustErr      error
-	adjustCalls    atomic.Int32
-	adjustCaptured [][]ratelimit.BucketAdjust
-	adjustMu       sync.Mutex
+	chargeResults []ratelimit.BucketChargeResult
+	chargeErr     error
+	chargeCalls   atomic.Int32
+	chargeCaptured [][]ratelimit.Bucket
+	chargeMu      sync.Mutex
 
-	snapshot    ratelimit.BucketState
-	snapshotErr error
+	snapshotResults []ratelimit.BucketState
+	snapshotErr     error
 
 	reserveCalls    atomic.Int32
 	reserveCaptured [][]ratelimit.Bucket
@@ -150,18 +151,33 @@ func (s *stubStore) ReserveBatch(_ context.Context, buckets []ratelimit.Bucket) 
 	return s.reserveAllowed, s.reserveViol, s.reserveErr
 }
 
-func (s *stubStore) AdjustBatch(_ context.Context, adjustments []ratelimit.BucketAdjust) error {
-	s.adjustCalls.Add(1)
-	s.adjustMu.Lock()
-	cp := make([]ratelimit.BucketAdjust, len(adjustments))
-	copy(cp, adjustments)
-	s.adjustCaptured = append(s.adjustCaptured, cp)
-	s.adjustMu.Unlock()
-	return s.adjustErr
+func (s *stubStore) ChargeBatch(_ context.Context, buckets []ratelimit.Bucket) ([]ratelimit.BucketChargeResult, error) {
+	s.chargeCalls.Add(1)
+	s.chargeMu.Lock()
+	cp := make([]ratelimit.Bucket, len(buckets))
+	copy(cp, buckets)
+	s.chargeCaptured = append(s.chargeCaptured, cp)
+	s.chargeMu.Unlock()
+	if s.chargeResults != nil {
+		return s.chargeResults, s.chargeErr
+	}
+	// 默认每个 bucket 返一条 ok 结果（Overflow=false）
+	out := make([]ratelimit.BucketChargeResult, len(buckets))
+	for i, b := range buckets {
+		out[i] = ratelimit.BucketChargeResult{Key: b.Key, Used: b.Cost, Limit: b.Limit}
+	}
+	return out, s.chargeErr
 }
 
-func (s *stubStore) Snapshot(_ context.Context, _ ratelimit.Bucket) (ratelimit.BucketState, error) {
-	return s.snapshot, s.snapshotErr
+func (s *stubStore) SnapshotBatch(_ context.Context, buckets []ratelimit.Bucket) ([]ratelimit.BucketState, error) {
+	if s.snapshotResults != nil {
+		return s.snapshotResults, s.snapshotErr
+	}
+	out := make([]ratelimit.BucketState, len(buckets))
+	for i, b := range buckets {
+		out[i] = ratelimit.BucketState{Key: b.Key, Limit: b.Limit}
+	}
+	return out, s.snapshotErr
 }
 
 // =============================================================================

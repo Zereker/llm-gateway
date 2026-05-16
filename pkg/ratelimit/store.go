@@ -1,22 +1,21 @@
-// Package ratelimit 实现 M6 RateLimit middleware 的 Redis 限流后端。
+// Package ratelimit 实现 M6 / M7 的限流后端。
 //
-// **算法**：sliding window counter（前+当前窗口加权）——消除 fixed window 边界
-// 2× burst 问题；Cloudflare / Kong 业界标准。
+// **接口**（docs/architecture/04-rate-limiting.md §5）：
 //
-// **多 key 原子**：ReserveBatch 在一次 Redis Lua call 里检查 + 消耗 N 个 bucket，
-// all-or-nothing。主账号 + apikey + per-model + default 多个桶可一起原子检查，
-// 避免"主账号层通了但 apikey 失败时主账号层已扣"的不一致。
+//	ReserveBatch  : 前扣，多 key 原子 all-or-nothing；RPM/RPS 使用
+//	ChargeBatch   : 后扣，按真实 usage 写入；TPM 使用；即使超上限也不拒绝（写入成功 + over-limit 标记）
+//	SnapshotBatch : 只读，批量读多个 bucket 状态；endpoint quota read-only filter + 观测使用
 //
-// **TPM 两阶段**（Reserve → Adjust）：
-//   - M6 ReserveBatch 时 cost = estimated_input + estimated_output（粗估）
-//   - M10 真实 usage 出来后 AdjustBatch(delta)：delta>0 补扣，delta<0 退款
+// **算法**：sliding window counter（前 + 当前窗口加权）；Cloudflare / Kong 业界标准。
 //
-// **Headers**：Snapshot 读 bucket 当前状态，M6 / M10 写 X-RateLimit-* 响应头。
+// **TPM 后扣语义**（docs/04 §7）：
+//   - 不预估、不读 max_tokens、不预扣
+//   - M6 post-side 用 ChargeBatch 写真实 usage
+//   - 即使写入后超过上限，本次响应已完成不再拒；记 tpm_overflow_total metric
 //
-// 唯一实现是 Redis（pkg/ratelimit/redis.go）；删了 MemoryStore——多实例 gateway
-// 必须 Redis 共享计数器，本地内存兜底等于失去限流意义。
+// **不返回 X-RateLimit headers**（docs/04 §9）：多桶叠加 + TPM 后扣无法准确给出 remaining。
 //
-// 详见 docs/architecture/04-rate-limiting.md。
+// **Redis 唯一实现**：删了 MemoryStore——多实例 gateway 必须共享计数器。
 package ratelimit
 
 import (
@@ -28,43 +27,25 @@ import (
 //
 // **Cost 语义**：
 //   - RPM/RPS：固定 1（每请求 +1）
-//   - TPM：估算 token 数（M6 reserve）或差值（M10 adjust）
+//   - TPM：ChargeBatch 时为真实 token 数；ReserveBatch 时不应使用
 //
-// **Key 命名约定**：`rl:quota:<scope>:<subject>:<model_or_*>:<dim>`
-//   - scope:    user | endpoint | model | global
-//   - subject:  主账号 pin / api_key_id / endpoint_id
-//   - model:    实际 model 名 或 "*"（default 跨模型桶）
-//   - dim:      rpm | tpm | rps
-//
-// 例：
-//   - rl:quota:account:default:gpt-4o:rpm   主账号 default 在 gpt-4o 上的 RPM 桶
-//   - rl:quota:account:default:*:rpm        主账号 default 跨模型 default RPM 桶
-//   - rl:quota:apikey:ak_alice_xxx:*:tpm    apikey 跨模型 default TPM 桶
-//   - rl:endpoint:42:rpm                  endpoint id=42 的 RPM 桶
+// **Key 命名约定**（docs/04 §6）：
+//   - 用户侧 ：rl:quota:<layer>:<subject>:<scope>:<dim>
+//   - endpoint：rl:endpoint:<endpoint_id>:<dim>
 type Bucket struct {
-	Key    string        // 见上方命名约定
-	Limit  uint32        // 窗口配额上限
-	Cost   uint32        // 本次扣 N
-	Window time.Duration // 窗口大小（RPM=1min, RPS=1s, TPM=1min）
+	Key    string
+	Limit  uint32
+	Cost   uint32
+	Window time.Duration
 }
 
-// BucketState 单 bucket 当前状态，用于 X-RateLimit-* response headers。
+// BucketState 单 bucket 当前状态（SnapshotBatch / observability 用）。
 type BucketState struct {
+	Key       string
 	Used      uint32
 	Limit     uint32
 	Remaining uint32 // = Limit - Used (clamped at 0)
 	ResetAt   time.Time
-}
-
-// BucketAdjust AdjustBatch 入参：单 bucket 的调账。
-//
-// **Delta**：可正可负（int32，避免 uint 减法负值溢出问题）。
-//   - delta>0  补扣（M10 实际 token 比 reserve 多）
-//   - delta<0  退款（M10 实际 token 比 reserve 少；底层 floor at 0）
-type BucketAdjust struct {
-	Key    string
-	Delta  int32
-	Window time.Duration
 }
 
 // BucketViolation ReserveBatch 拒绝时返回的违规明细。
@@ -75,23 +56,36 @@ type BucketViolation struct {
 	RetryAfter time.Duration
 }
 
+// BucketChargeResult ChargeBatch 单条结果。
+//
+// **Overflow=true** 表示写入后超过 Limit（容量超载），调用方据此记
+// `llm_gateway_tpm_overflow_total` metric 用于观测；不影响本次响应。
+type BucketChargeResult struct {
+	Key      string
+	Used     uint32 // 写入后的累计
+	Limit    uint32
+	Overflow bool // Used > Limit
+}
+
 // Store 限流后端。所有方法线程安全。
 //
 // **协议**：
-//   - ReserveBatch 是原子的：要么所有 bucket 都过 + 扣，要么全不动
-//   - AdjustBatch 是 best-effort：调账失败也不影响请求（M10 调用，请求已完成）
-//   - Snapshot 是 read-only，可并发任意调
+//   - ReserveBatch  原子 all-or-nothing；任一 bucket 超限则全不动
+//   - ChargeBatch   best-effort 写入；总会成功（除非 Redis 故障），超限只标 Overflow
+//   - SnapshotBatch 只读，无副作用
 type Store interface {
-	// ReserveBatch 多 key 原子检查 + 消耗。
+	// ReserveBatch 多 key 原子 check + 扣减。
 	//
-	// 返回 (true, nil, nil)：全部 bucket 都有余量，已 +Cost
-	// 返回 (false, *BucketViolation, nil)：某个 bucket 超限，未动任何 bucket
+	// 返回 (true, nil, nil)：全过且已 +Cost
+	// 返回 (false, *BucketViolation, nil)：某 bucket 超限，未动任何 bucket
 	// 返回 (_, _, err)：Redis 错误
 	ReserveBatch(ctx context.Context, buckets []Bucket) (allowed bool, violated *BucketViolation, err error)
 
-	// AdjustBatch 调账（M10 commit TPM 真实值用）。可正可负。
-	AdjustBatch(ctx context.Context, adjustments []BucketAdjust) error
+	// ChargeBatch 后扣：写真实用量；超限不拒，标 Overflow 给调用方上报 metric。
+	//
+	// 返回的 []BucketChargeResult 索引对齐入参 buckets。
+	ChargeBatch(ctx context.Context, buckets []Bucket) ([]BucketChargeResult, error)
 
-	// Snapshot 读单 bucket 当前状态。给 X-RateLimit-* headers 用。
-	Snapshot(ctx context.Context, b Bucket) (BucketState, error)
+	// SnapshotBatch 批量读多 bucket 当前状态；不修改任何 bucket。
+	SnapshotBatch(ctx context.Context, buckets []Bucket) ([]BucketState, error)
 }
