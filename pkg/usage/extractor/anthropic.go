@@ -60,10 +60,17 @@ func (s *anthropicSession) Final() *domain.Usage {
 	if s.inputTokens == 0 && s.outputTokens == 0 {
 		return nil
 	}
+	raw, _ := json.Marshal(map[string]any{
+		"input_tokens":  s.inputTokens,
+		"output_tokens": s.outputTokens,
+	})
 	return &domain.Usage{
-		Input:  s.inputTokens,
-		Output: s.outputTokens,
-		Total:  s.inputTokens + s.outputTokens,
+		Input:      s.inputTokens,
+		Output:     s.outputTokens,
+		Total:      s.inputTokens + s.outputTokens,
+		Raw:        raw,
+		Source:     domain.UsageSourceUpstream,
+		Confidence: domain.UsageConfidenceExact,
 	}
 }
 

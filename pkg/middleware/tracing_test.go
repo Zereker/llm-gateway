@@ -34,6 +34,7 @@ func TestTracing_PublishesUsageWhenSet(t *testing.T) {
 	)
 	r.GET("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
+		rc.Identity.AccountID = "acc42"
 		rc.Endpoint = &domain.Endpoint{ID: 42, Name: "ep1"}
 		rc.Usage = &domain.Usage{Input: 100, Output: 50, Total: 150}
 		c.Status(200)
@@ -47,11 +48,16 @@ func TestTracing_PublishesUsageWhenSet(t *testing.T) {
 	if len(out.events) != 1 {
 		t.Fatalf("got %d events, want 1", len(out.events))
 	}
-	if out.events[0].Key != "42" {
-		t.Errorf("event key = %q, want 42", out.events[0].Key)
+	// 新 schema：partition key = AccountID（docs/05 §5）
+	if out.events[0].Key != "acc42" {
+		t.Errorf("event key = %q, want acc42 (AccountID)", out.events[0].Key)
 	}
+	// 新 schema：payload 是 UsageEvent envelope，包 schema_version + usage
 	body := string(out.events[0].Payload)
-	if body == "" || !contains(body, `"Total":150`) {
+	if !contains(body, `"schema_version":"usage.v1"`) {
+		t.Errorf("payload missing schema_version: %s", body)
+	}
+	if !contains(body, `"Total":150`) {
 		t.Errorf("payload missing Total: %s", body)
 	}
 }

@@ -1,7 +1,8 @@
 package middleware
 
 import (
-	"time"
+	"context"
+	"errors"
 
 	"github.com/gin-gonic/gin"
 
@@ -11,76 +12,106 @@ import (
 
 // ModelServiceDeps M5 ModelService middleware 的依赖。
 //
-// **v0.3 改动**：加 Subscriptions 依赖。M5 三步走：
-//  1. 模型在全局 catalog？
-//  2. 当前 account 订阅了？
-//  3. account 维度有 active price？
+// 按 docs/01 §7 + docs/03 §1：M5 只做 catalog + subscription 校验；
+// **不**查 active pricing（pricing 匹配下放给计费平台）。
 type ModelServiceDeps struct {
-	Provider      repo.ModelServiceReader
-	Subscriptions repo.SubscriptionProvider
-	Pricing       repo.PricingProvider
+	Catalog       ModelCatalog
+	Subscriptions SubscriptionChecker
 }
 
-// ModelService 是 M5：根据 rc.Envelope.Model 定位 ModelService → 验订阅 → 拍价格快照。
+// ModelCatalog M5 用：按 model 字符串查全局 catalog。
+//
+// 该接口是 middleware 自有契约，repo 实现层把 SQL 行映射为 domain.ModelService。
+type ModelCatalog interface {
+	GetByModel(c context.Context, model string) (*domain.ModelService, error)
+}
+
+// SubscriptionChecker M5 用：判定主账号是否订阅了某 model_service。
+type SubscriptionChecker interface {
+	HasModel(c context.Context, accountID string, modelServiceID int64) (bool, error)
+}
+
+// ErrModelNotFound catalog 查不到模型。
+var ErrModelNotFound = errors.New("model not found")
+
+// ModelService 是 M5：rc.Envelope.Model → catalog → 验订阅 → rc.ModelService。
 //
 // 失败行为：
-//   - rc.Envelope 为 nil（M3 顺序错） → 500（应该早期 panic / fail-fast）
-//   - 模型未注册（catalog 没这个 model） → 404 / ErrInvalid / "model not found"
-//   - 模型存在但 account 没订阅 → 403 / ErrPermanent / "model not subscribed"
-//   - 订阅了但 account 维度没 active price → 503 / ErrTransient / "no active version..."
+//   - rc.Envelope nil（M3 没跑）→ 500 / ErrUnknown
+//   - catalog 找不到 → 404 / ErrInvalid / "model not found"
+//   - 主账号没订阅 → 403 / ErrPermanent / "model not subscribed"
+//   - SQL 错误 → 503 / ErrTransient（依赖故障 fail-closed，docs/01 §7）
 //
-// 成功后：
-//   - rc.ModelService 字段就绪
-//   - rc.Pricing 填入 (ModelServiceID, PricingVersionID, PricingEffectiveFrom, RuleClass) 指纹
-//
-// **rule_class 选择**：v0.3 全局硬编码 "standard"。后续 api_keys 加 pricing_class 列后，
-// 在这里改成 `class := rc.Identity.PricingClass; if class == "" { class = "standard" }`。
-const defaultRuleClass = "standard"
-
+// 成功后：rc.ModelService 字段就绪。
 func ModelService(deps ModelServiceDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
 		ctx, end := startSpan(rc.Ctx, "llm-gateway.model_service")
 		defer end()
 		rc.Ctx = ctx
+
 		if rc.Envelope == nil {
-			abort(c, 500, domain.ErrUnknown, "internal: M3 Envelope did not run before M5")
+			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
+				"internal: M3 Envelope did not run before M5")
 			return
 		}
 
-		// Step 1: 全局 catalog 查 model
-		ms, err := deps.Provider.GetByModel(rc.Ctx, rc.Envelope.Model)
+		// Step 1: catalog lookup
+		ms, err := deps.Catalog.GetByModel(rc.Ctx, rc.Envelope.Model)
 		if err != nil {
-			abort(c, 404, domain.ErrInvalid, "model not found: "+rc.Envelope.Model)
+			// docs/01 §7：SQL 错按依赖故障 fail-closed → 503，不能伪装成 404
+			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
+				"model catalog: "+err.Error())
+			return
+		}
+		if ms == nil {
+			abortWithCode(c, 404, domain.ErrInvalid, domain.ErrCodeModelNotFound,
+				"model not found: "+rc.Envelope.Model)
 			return
 		}
 
-		// Step 2: 订阅 ACL
-		subscribed, err := deps.Subscriptions.Has(rc.Ctx, rc.Identity.AccountID, ms.ID)
+		// Step 2: subscription
+		subscribed, err := deps.Subscriptions.HasModel(rc.Ctx, rc.Identity.AccountID, ms.ID)
 		if err != nil {
-			abort(c, 500, domain.ErrUnknown, "subscription lookup: "+err.Error())
+			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
+				"subscription lookup: "+err.Error())
 			return
 		}
-
 		if !subscribed {
-			abort(c, 403, domain.ErrPermanent, "model not subscribed: "+rc.Envelope.Model)
-			return
-		}
-
-		// Step 3: 价格快照
-		pv, err := deps.Pricing.GetActive(rc.Ctx, rc.Identity.AccountID, ms.ID, defaultRuleClass, time.Now().UTC())
-		if err != nil {
-			abort(c, 503, domain.ErrTransient, err.Error())
+			abortWithCode(c, 403, domain.ErrPermanent, domain.ErrCodeModelNotSubscribed,
+				"model not subscribed: "+rc.Envelope.Model)
 			return
 		}
 
 		rc.ModelService = ms
-		rc.Pricing = domain.PricingSnapshot{
-			ModelServiceID:       ms.ID,
-			PricingVersionID:     pv.ID,
-			PricingEffectiveFrom: pv.EffectiveFrom,
-			RuleClass:            defaultRuleClass,
-		}
 		c.Next()
 	}
+}
+
+// =============================================================================
+// repo adapter: 把现有 repo Provider 适配到 middleware-owned 接口
+// =============================================================================
+
+// AdaptRepoCatalog 把 repo.ModelServiceReader 适配为 ModelCatalog。
+// 当 repo.GetByModel 返回 (nil, err) 时按"not found"语义：err 类型由 repo 决定，
+// 网关层统一用 SQL err = 依赖故障，"无数据"由 repo 转 nil 返回。
+func AdaptRepoCatalog(p repo.ModelServiceReader) ModelCatalog {
+	return repoCatalogAdapter{p: p}
+}
+
+type repoCatalogAdapter struct{ p repo.ModelServiceReader }
+
+func (a repoCatalogAdapter) GetByModel(ctx context.Context, model string) (*domain.ModelService, error) {
+	return a.p.GetByModel(ctx, model)
+}
+
+// AdaptRepoSubscriptions 把 repo.SubscriptionProvider 适配为 SubscriptionChecker。
+func AdaptRepoSubscriptions(p repo.SubscriptionProvider) SubscriptionChecker {
+	return repoSubsAdapter{p: p}
+}
+
+type repoSubsAdapter struct{ p repo.SubscriptionProvider }
+
+func (a repoSubsAdapter) HasModel(ctx context.Context, accountID string, modelServiceID int64) (bool, error) {
+	return a.p.Has(ctx, accountID, modelServiceID)
 }

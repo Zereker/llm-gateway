@@ -101,28 +101,27 @@ func (s *openaiSession) tryExtract(payload []byte) {
 	}
 
 	if ev.Usage != nil {
-		u := &domain.Usage{
-			Input:  ev.Usage.PromptTokens,
-			Output: ev.Usage.CompletionTokens,
-			Total:  ev.Usage.TotalTokens,
+		// 上游精确返回 usage：source=upstream, confidence=exact
+		// 完整 Raw（含 prompt_tokens_details / cached_tokens 等扩展字段）原样存到 Raw，
+		// 交给下游计费按 vendor / model 规则解析（docs/05 §3）。
+		raw, _ := json.Marshal(ev.Usage)
+		s.usage = &domain.Usage{
+			Input:      ev.Usage.PromptTokens,
+			Output:     ev.Usage.CompletionTokens,
+			Total:      ev.Usage.TotalTokens,
+			Raw:        raw,
+			Source:     domain.UsageSourceUpstream,
+			Confidence: domain.UsageConfidenceExact,
 		}
-		if ev.Usage.PromptTokensDetails != nil {
-			if v := ev.Usage.PromptTokensDetails.CachedTokens; v > 0 {
-				u.Details = map[domain.MetricKey]int64{
-					domain.CachedInputTokens: v,
-				}
-			}
-		}
-		s.usage = u
 		return
 	}
 
-	// 没 usage 字段：可能是 image API（无 token 概念），按 data 数组长度报 image_output_count
+	// 没 usage 字段：可能是 image API；只能把整段 Raw 存下让下游计费解析。
 	if len(ev.Data) > 0 {
 		s.usage = &domain.Usage{
-			Details: map[domain.MetricKey]int64{
-				domain.ImageOutputCount: int64(len(ev.Data)),
-			},
+			Raw:        payload,
+			Source:     domain.UsageSourceExtracted,
+			Confidence: domain.UsageConfidenceDerived,
 		}
 	}
 }

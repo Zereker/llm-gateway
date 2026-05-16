@@ -14,6 +14,9 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
+// 防 unused import 警告（time 在 stubBudgetGate 等地方间接被用到）
+var _ = time.Now
+
 // testutil_test.go 提供本包所有 _test.go 共享的 stub 与构造 helper。
 //
 // 风格约定（对齐 auth_test.go / tracing_test.go）：
@@ -87,19 +90,16 @@ func (g *stubBudgetGate) Check(_ context.Context, subAccountID string) (domain.B
 }
 
 // =============================================================================
-// Stub: ModelServiceReader / SubscriptionProvider / PricingProvider
+// Stub: ModelCatalog / SubscriptionChecker（M5 用，middleware-owned 接口）
 // =============================================================================
 
-type stubMSReader struct {
-	ms  *repo.ModelService
+type stubCatalog struct {
+	ms  *domain.ModelService
 	err error
 }
 
-func (s stubMSReader) GetByModel(_ context.Context, _ string) (*repo.ModelService, error) {
+func (s stubCatalog) GetByModel(_ context.Context, _ string) (*domain.ModelService, error) {
 	return s.ms, s.err
-}
-func (s stubMSReader) List(_ context.Context) ([]*repo.ModelService, error) {
-	return nil, nil
 }
 
 type stubSubs struct {
@@ -107,20 +107,8 @@ type stubSubs struct {
 	err error
 }
 
-func (s stubSubs) Has(_ context.Context, _ string, _ int64) (bool, error) {
+func (s stubSubs) HasModel(_ context.Context, _ string, _ int64) (bool, error) {
 	return s.has, s.err
-}
-
-type stubPricing struct {
-	pv  *repo.PricingVersion
-	err error
-}
-
-func (s stubPricing) GetActive(_ context.Context, _ string, _ int64, _ string, _ time.Time) (*repo.PricingVersion, error) {
-	return s.pv, s.err
-}
-func (s stubPricing) ListHistory(_ context.Context, _ string, _ int64, _ string) ([]*repo.PricingVersion, error) {
-	return nil, nil
 }
 
 // =============================================================================

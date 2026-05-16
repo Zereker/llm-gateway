@@ -14,17 +14,13 @@ import (
 //
 // 必须紧随 M1 注册（在 c.Next() 之前），这样 defer 才能覆盖整条链。
 //
-// 处理两类终态：
-//  1. defer recover()：M2-M8 中任何 panic 都被捕获，写出 500
-//  2. c.Next() 之后：若 rc.Error != nil 且响应未写出（如 M7 RetryExecutor 失败），
-//     按 errs.Class 推默认 HTTP 状态写出
+// 响应 body 统一用 docs/01 §8 + docs/08 §7 的 ErrorResponse{Code,Message,Class,
+// Details,RequestID,TraceID}。
 func Recover() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
 				metric.Inc(metric.PanicTotal, "component", "middleware")
-				// 用带 ctx 的 log API：trace.CtxHandler 自动从 ctx 抽 trace_id /
-				// span_id / request_id / sub_account_id 加进 record。
 				ctx := GetRequestContext(c).Ctx
 				slog.ErrorContext(ctx, "panic recovered",
 					"recover", r,
@@ -32,6 +28,7 @@ func Recover() gin.HandlerFunc {
 				)
 				writeError(c, &domain.AdapterError{
 					Class:      domain.ErrUnknown,
+					Code:       domain.ErrCodeInternalError,
 					HTTPStatus: 500,
 					Message:    "internal server error",
 				})
@@ -46,10 +43,7 @@ func Recover() gin.HandlerFunc {
 	}
 }
 
-// writeError 按 AdapterError 写 JSON 响应。
-//
-// 若 e.HTTPStatus 为 0，按 e.Class 取默认状态码。
-// request_id / trace_id 在 RequestContext 已就绪时一并放进响应体，便于客户端反馈定位。
+// writeError 按 ErrorResponse schema 写 JSON 响应。
 func writeError(c *gin.Context, e *domain.AdapterError) {
 	if e == nil {
 		return
@@ -58,12 +52,21 @@ func writeError(c *gin.Context, e *domain.AdapterError) {
 	if status == 0 {
 		status = domain.DefaultHTTPStatus(e.Class)
 	}
-	errBody := gin.H{
-		"code":    e.Class.String(),
-		"message": e.Message,
+	code := e.Code
+	if code == "" {
+		code = domain.DefaultCode(e.Class)
 	}
+
 	rc := GetRequestContext(c)
-	errBody["request_id"] = rc.RequestID
-	errBody["trace_id"] = TraceIDFromCtx(rc.Ctx)
-	c.AbortWithStatusJSON(status, gin.H{"error": errBody})
+	body := domain.ErrorResponse{
+		Error: domain.ErrorBody{
+			Code:      code,
+			Message:   e.Message,
+			Class:     e.Class.String(),
+			Details:   e.Details,
+			RequestID: rc.RequestID,
+			TraceID:   TraceIDFromCtx(rc.Ctx),
+		},
+	}
+	c.AbortWithStatusJSON(status, body)
 }

@@ -80,8 +80,9 @@ func TestRecover_WritesRCErrorWhenSet(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if body["error"]["code"] != "transient" {
-		t.Errorf("code = %q, want transient", body["error"]["code"])
+	// 新 schema：code=稳定机器码（upstream_error），class=行为分类（transient）
+	if body["error"]["class"] != "transient" {
+		t.Errorf("class = %q, want transient", body["error"]["class"])
 	}
 	if body["error"]["message"] != "upstream 502" {
 		t.Errorf("message = %q", body["error"]["message"])

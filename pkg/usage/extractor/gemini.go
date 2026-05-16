@@ -54,10 +54,14 @@ func (s *geminiSession) Final() *domain.Usage {
 	if resp.UsageMetadata == nil {
 		return nil
 	}
+	raw, _ := json.Marshal(resp.UsageMetadata)
 	s.usage = &domain.Usage{
-		Input:  resp.UsageMetadata.PromptTokenCount,
-		Output: resp.UsageMetadata.CandidatesTokenCount,
-		Total:  resp.UsageMetadata.TotalTokenCount,
+		Input:      resp.UsageMetadata.PromptTokenCount,
+		Output:     resp.UsageMetadata.CandidatesTokenCount,
+		Total:      resp.UsageMetadata.TotalTokenCount,
+		Raw:        raw,
+		Source:     domain.UsageSourceUpstream,
+		Confidence: domain.UsageConfidenceExact,
 	}
 	return s.usage
 }
