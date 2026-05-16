@@ -65,18 +65,20 @@ func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 
 func minDeps() Deps {
 	return Deps{
-		Auth: middleware.AuthDeps{Provider: stubIdentity{}},
-		ModelService: middleware.ModelServiceDeps{
-			Catalog:       stubMSProvider{},
-			Subscriptions: stubSubscriptions{},
+		Auth: []middleware.AuthOption{
+			middleware.WithIdentityProvider(stubIdentity{}),
 		},
-		Schedule: middleware.ScheduleDeps{
-			Endpoints:     middleware.AdaptRepoEndpoints(stubEPProvider{}),
-			Catalog:       stubMSProvider{},
-			Subscriptions: stubSubscriptions{},
-			Scheduler:     schedule.New(schedule.Config{}),
-			Sender:        upstream.New(),
-			MaxAttempts:   3,
+		ModelService: []middleware.ModelServiceOption{
+			middleware.WithModelCatalog(stubMSProvider{}),
+			middleware.WithSubscriptionChecker(stubSubscriptions{}),
+		},
+		Schedule: []middleware.ScheduleOption{
+			middleware.WithEndpointReader(middleware.AdaptRepoEndpoints(stubEPProvider{})),
+			middleware.WithFallbackCatalog(stubMSProvider{}),
+			middleware.WithFallbackSubscriptionChecker(stubSubscriptions{}),
+			middleware.WithScheduler(schedule.New(schedule.Config{})),
+			middleware.WithSender(upstream.New()),
+			middleware.WithMaxAttempts(3),
 		},
 	}
 }

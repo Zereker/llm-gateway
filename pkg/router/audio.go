@@ -23,7 +23,7 @@ func registerAudioRoutes(engine *gin.Engine, deps Deps) {
 		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
 		middleware.Recover(),
-		middleware.Auth(deps.Auth),
+		middleware.Auth(deps.Auth...),
 	)
 
 	routes := []struct {
@@ -38,12 +38,12 @@ func registerAudioRoutes(engine *gin.Engine, deps Deps) {
 		pre.POST(r.path,
 			middleware.WithSourceProtocol(domain.ProtoOpenAI, r.mod),
 			middleware.Envelope(),
-			middleware.Budget(deps.Budget),
-			middleware.ModelService(deps.ModelService),
-			middleware.Moderation(deps.Moderation),
-			middleware.Limit(deps.Limit),
-			middleware.Schedule(deps.Schedule),
-			middleware.Tracing(deps.Tracing),
+			middleware.Budget(deps.Budget...),
+			middleware.ModelService(deps.ModelService...),
+			middleware.Moderation(deps.Moderation...),
+			middleware.Limit(deps.Limit...),
+			middleware.Schedule(deps.Schedule...),
+			middleware.Tracing(deps.Tracing...),
 			noopHandler,
 		)
 	}

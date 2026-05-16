@@ -24,18 +24,18 @@ func registerImageRoutes(engine *gin.Engine, deps Deps) {
 		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
 		middleware.Recover(),
-		middleware.Auth(deps.Auth),
+		middleware.Auth(deps.Auth...),
 	)
 	for _, p := range []string{"/v1/images/generations", "/v1/images/edits", "/v1/images/variations"} {
 		pre.POST(p,
 			middleware.WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityImage),
 			middleware.Envelope(),
-			middleware.Budget(deps.Budget),
-			middleware.ModelService(deps.ModelService),
-			middleware.Moderation(deps.Moderation),
-			middleware.Limit(deps.Limit),
-			middleware.Schedule(deps.Schedule),
-			middleware.Tracing(deps.Tracing),
+			middleware.Budget(deps.Budget...),
+			middleware.ModelService(deps.ModelService...),
+			middleware.Moderation(deps.Moderation...),
+			middleware.Limit(deps.Limit...),
+			middleware.Schedule(deps.Schedule...),
+			middleware.Tracing(deps.Tracing...),
 			noopHandler,
 		)
 	}
