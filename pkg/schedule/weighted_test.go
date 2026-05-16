@@ -3,74 +3,84 @@ package schedule
 import (
 	"context"
 	"testing"
-
-	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 func TestWeightedRandom_Empty_ReturnsNil(t *testing.T) {
 	s := NewWeightedRandomSelector()
-	got := s.Apply(context.Background(), nil, nil)
-	if got != nil {
+	if got := s.Select(context.Background(), nil); got != nil {
 		t.Errorf("got=%+v, want nil", got)
 	}
 }
 
 func TestWeightedRandom_AllZeroWeight_ReturnsNil(t *testing.T) {
 	s := NewWeightedRandomSelector()
-	cands := []*domain.Endpoint{ep(1, 0), ep(2, 0)}
-	got := s.Apply(context.Background(), cands, nil)
+	got := s.Select(context.Background(), []Candidate{
+		{Endpoint: ep(1, 0), EffectiveWeight: 0},
+		{Endpoint: ep(2, 0), EffectiveWeight: 0},
+	})
 	if got != nil {
-		t.Errorf("got=%+v, want nil (all zero-weight)", got)
+		t.Errorf("got=%+v, want nil", got)
 	}
 }
 
 func TestWeightedRandom_SingleEp_AlwaysPicks(t *testing.T) {
 	s := NewWeightedRandomSelector()
-	cands := []*domain.Endpoint{ep(1, 100)}
+	cands := candidates(ep(1, 100))
 	for i := 0; i < 10; i++ {
-		got := s.Apply(context.Background(), cands, nil)
-		if len(got) != 1 || got[0].ID != 1 {
-			t.Errorf("iter=%d: got=%+v, want [ep1]", i, got)
+		got := s.Select(context.Background(), cands)
+		if got == nil || got.Endpoint.ID != 1 {
+			t.Errorf("iter=%d: got=%+v, want ep1", i, got)
 		}
 	}
 }
 
 func TestWeightedRandom_DistributionRoughlyMatchesWeights(t *testing.T) {
 	s := NewWeightedRandomSelector()
-	// weight 90:10 → ep1 应远多于 ep2
-	cands := []*domain.Endpoint{ep(1, 90), ep(2, 10)}
+	cands := candidates(ep(1, 90), ep(2, 10))
 	const N = 1000
 	count := map[int64]int{}
 	for i := 0; i < N; i++ {
-		got := s.Apply(context.Background(), cands, nil)
-		if len(got) != 1 {
-			t.Fatalf("got %d, want 1", len(got))
+		got := s.Select(context.Background(), cands)
+		if got == nil {
+			t.Fatal("nil pick")
 		}
-		count[got[0].ID]++
+		count[got.Endpoint.ID]++
 	}
-	// 宽松断言：ep1 至少占 70%，ep2 至少出现过几次
 	if count[1] < 700 {
-		t.Errorf("ep1 picked %d times in %d, expected >=700 (weight=90/100)", count[1], N)
+		t.Errorf("ep1 picked %d times in %d, expected >=700", count[1], N)
 	}
 	if count[2] < 30 {
-		t.Errorf("ep2 picked %d times in %d, expected >=30 (weight=10/100)", count[2], N)
+		t.Errorf("ep2 picked %d times in %d, expected >=30", count[2], N)
 	}
 }
 
 func TestWeightedRandom_ZeroWeightExcluded(t *testing.T) {
 	s := NewWeightedRandomSelector()
-	cands := []*domain.Endpoint{ep(1, 0), ep(2, 100)}
+	cands := []Candidate{
+		{Endpoint: ep(1, 0), EffectiveWeight: 0},
+		{Endpoint: ep(2, 100), EffectiveWeight: 100},
+	}
 	for i := 0; i < 20; i++ {
-		got := s.Apply(context.Background(), cands, nil)
-		if len(got) != 1 || got[0].ID != 2 {
-			t.Errorf("iter=%d got=%+v, want [ep2] (ep1 weight=0 excluded)", i, got)
+		got := s.Select(context.Background(), cands)
+		if got == nil || got.Endpoint.ID != 2 {
+			t.Errorf("got=%+v, want ep2", got)
 		}
 	}
 }
 
-func TestWeightedRandom_Name(t *testing.T) {
+func TestWeightedRandom_UsesEffectiveWeight_NotStaticWeight(t *testing.T) {
+	// 关键测试：docs/03 §4 — WeightedRandom 必须基于 EffectiveWeight
+	// ep1 static weight=100, EffectiveWeight=0 → 应被排除
+	// ep2 static weight=10, EffectiveWeight=100 → 应被选中
 	s := NewWeightedRandomSelector()
-	if s.Name() != "weighted_random" {
-		t.Errorf("name=%q", s.Name())
+	cands := []Candidate{
+		{Endpoint: ep(1, 100), EffectiveWeight: 0},
+		{Endpoint: ep(2, 10), EffectiveWeight: 100},
+	}
+	for i := 0; i < 20; i++ {
+		got := s.Select(context.Background(), cands)
+		if got == nil || got.Endpoint.ID != 2 {
+			t.Errorf("got=%+v, want ep2 (EffectiveWeight 优先于 static)", got)
+		}
 	}
 }

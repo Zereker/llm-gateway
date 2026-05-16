@@ -3,21 +3,24 @@ package schedule
 import (
 	"context"
 	"math/rand"
-
-	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// WeightedRandomSelector Filter 链最后的选 1 步：按 endpoint.weight 概率分布选 1 个。
+// Selector Filter / Scorer 之后的最终选择步骤：按 EffectiveWeight 选 1 个候选。
 //
-// **weight=0 → 排除**（管理上的"软下线"语义）。
-// **全 0 → 排除**（返回空切片，触发 M7 abort 503）。
-// **正常 case**：按 weights 比例分布概率选；高 weight 的更可能被选中。
+// 设计精神（docs/03 §4 §8）：
+//   - WeightedRandom 必须基于 Candidate.EffectiveWeight 而非 Endpoint.Weight
+//   - 候选只剩 1 时 trivially 返回该候选
+//   - 全部 EffectiveWeight=0 或空 → 返回 nil（M7 abort 503）
 //
-// 不并发——每次 Apply 用本地 rand source；但 math/rand 全局 source 是 thread-safe，
-// 单 goroutine 调用没问题。
+// 实现 MUST be safe for concurrent use。
+type Selector interface {
+	Select(ctx context.Context, candidates []Candidate) *Candidate
+}
+
+// WeightedRandomSelector 按 EffectiveWeight 概率分布选 1。
 //
-// **必须放 Filter 链最后一个**——前面的 filter 只缩减候选；本 selector 把多个
-// 缩到 1 个。如果链里再有别的 filter 在它后面，会拿单元素切片继续筛，可能再变 0。
+// weight=0 → 排除（管理上的"软下线"语义）。
+// 全 0 → 返回 nil。
 type WeightedRandomSelector struct {
 	rng *rand.Rand // nil = 用 math/rand 全局
 }
@@ -29,45 +32,41 @@ func NewWeightedRandomSelector() *WeightedRandomSelector {
 	return &WeightedRandomSelector{}
 }
 
-func (s *WeightedRandomSelector) Name() string { return "weighted_random" }
-
-func (s *WeightedRandomSelector) Apply(_ context.Context, candidates []*domain.Endpoint, _ *Request) []*domain.Endpoint {
+// Select 按 EffectiveWeight 加权随机选 1。
+func (s *WeightedRandomSelector) Select(_ context.Context, candidates []Candidate) *Candidate {
 	if len(candidates) == 0 {
 		return nil
 	}
-	// 计算 weight 总和；同时排除 weight=0 的
-	var total uint32
-	live := make([]*domain.Endpoint, 0, len(candidates))
-	for _, ep := range candidates {
-		if ep.Weight == 0 {
+	var total float64
+	live := make([]Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		if c.EffectiveWeight <= 0 {
 			continue
 		}
-		total += ep.Weight
-		live = append(live, ep)
+		total += c.EffectiveWeight
+		live = append(live, c)
 	}
 	if len(live) == 0 || total == 0 {
 		return nil
 	}
-
-	// 在 [0, total) 之间取一个随机点；按 prefix sum 找到对应 endpoint
-	target := uint32(s.randInt63() % int64(total))
-	var acc uint32
-	for _, ep := range live {
-		acc += ep.Weight
+	if len(live) == 1 {
+		return &live[0]
+	}
+	target := s.randFloat() * total
+	var acc float64
+	for i := range live {
+		acc += live[i].EffectiveWeight
 		if target < acc {
-			return []*domain.Endpoint{ep}
+			return &live[i]
 		}
 	}
-	// 不会到这（数学保证），fallback
-	return []*domain.Endpoint{live[len(live)-1]}
+	// 数学保证不会到这里，fallback
+	return &live[len(live)-1]
 }
 
-func (s *WeightedRandomSelector) randInt63() int64 {
+func (s *WeightedRandomSelector) randFloat() float64 {
 	if s.rng != nil {
-		return s.rng.Int63()
+		return s.rng.Float64()
 	}
-	return rand.Int63()
+	return rand.Float64()
 }
-
-// 编译期断言。
-var _ Filter = (*WeightedRandomSelector)(nil)

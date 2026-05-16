@@ -1,27 +1,18 @@
-// Package schedule M7 端点选路完整版：Filter 链 + Cooldown + 跨 EP 重试 + WeightedRandom。
+// Package schedule M7 端点选路。
 //
-// **架构**：
+// **设计精神**（docs/architecture/03-endpoint-scheduling.md §4）：
+//
+//   - Scheduler 是**无状态**的批内选择器：Pick + Report 两个方法
+//   - 不持有 repo / per-request 状态机；M7 维护 attempts / ExcludeIDs / decisions
+//   - 跨 model fallback 由 M7 外层循环负责，scheduler 不知道 fallback
+//
+// **依赖**：
 //
 //	pkg/middleware/schedule.go (M7)
 //	    │
-//	    └──→ schedule.Scheduler
-//	             ├── BeginSelection() → Selection
-//	             │       ├── Pick() 跑 Filter 链选下一个候选
-//	             │       └── Report(ep, result) 标 cooldown / 记 attempt
-//	             └── 内部组件
-//	                  ├── Filter 链（cooldown / limit_read / weighted_random ...）
-//	                  └── CooldownManager（Redis 共享）
-//
-// **重试模型**：M7 用 driver loop 编排——`for { ep := sel.Pick(); call(ep); sel.Report(...) }`。
-// Selection 内部维护 epAttempts 计数 + pendingRetryEp 状态：
-//   - **L1 同 ep 重试**：Transient（5xx / 网络抖动）且未到 max_per_endpoint → 下次 Pick 直接返回同 ep（不进 cooldown，避免误伤其它请求）
-//   - **L2 跨 ep 重试**：L1 配额耗尽或非 Transient 失败 → cooldown + 跑 filter chain 选下一个
-//   - max_attempts 是全局尝试上限；max_per_endpoint 是单 ep 上限（默认 1 = 无 L1）
-//
-// **不在 v0.5 范围**：
-//   - HealthFilter（独立 health subsystem 自己一轮）
-//   - PrefixCacheFilter / BusyFilter（self-hosted only，无 dev 测试场景）
-//   - L3 跨 model fallback（pricing/usage 跨 model 语义复杂）
+//	    ├─→ schedule.Scheduler.Pick(ctx, req) → *Endpoint
+//	    ├─→ Sender.Send(ctx, ep, env, body) → Outcome
+//	    └─→ schedule.Scheduler.Report(ctx, ep, result)
 //
 // 详见 docs/architecture/03-endpoint-scheduling.md。
 package schedule
@@ -33,46 +24,30 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Request M7 选路所需的请求元信息。
+// Candidate 单个 endpoint 候选 + 有效权重。
 //
-// **候选 endpoint 由调用方提供**（v0.5+ 重构）：caller（middleware）拉好
-// 主 model 的候选传 `Candidates`；L3 跨 model fallback 走 `LoadFallback` 回调。
-// schedule 不再持有 `repo.EndpointReader` 依赖。
-type Request struct {
-	Model               string // canonical model name（M5 ms.Model）
-	Group               string // 路由分组（rc.Identity.Group）
-	TPMCost             uint32 // M6 估算的 token cost；LimitReadFilter 用作 endpoint TPM bucket cost
-	MaxAttemptsOverride int    // 0 = 用 cfg.scheduler.max_attempts；非 0 = 客户端 header 覆盖
-
-	// Candidates 主 Model 对应的候选 endpoint 列表（必填，由 caller 拉好）。
-	// 空 = BeginSelection 直接报错（caller 在 M7 abort 503）。
-	Candidates []*domain.Endpoint
-
-	// LoadFallback L3 跨 model fallback 时回调拉新 model 的候选。
-	// nil 等价于关闭 L3（即便 FallbackModels 非空，也不会切换）。
-	// 实现通常 = repo.EndpointReader.ListForModel 的 method value。
-	LoadFallback func(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
-
-	// FallbackModels L3 跨模型降级序列。当前 Model 的 candidates 全部跑完都失败时，
-	// scheduler 按本数组顺序换 model（用 LoadFallback 拉新 candidates）再 try
-	// （attempts 计数继续累加，不重置；max_attempts 仍然是全局上限）。
-	//
-	// 留空或 LoadFallback==nil = L3 关闭。
-	//
-	// 来源：M7 从 X-Gateway-Fallback-Models header（逗号分隔）读。
-	// 跨模型 fallback 改变模型语义，必须由调用方显式声明；网关不从 admin 默认链路
-	// 隐式替换模型。
-	FallbackModels []string
-
-	// PrefixKey 用于 PrefixCacheFilter 的一致性哈希 key；同 prefix 的请求路同 ep
-	// 让 self-hosted 模型 KV-cache 命中。
-	//
-	// 来源：M7 从 rc.Envelope.RawBytes 取前 N bytes（避免大 body 影响哈希成本）。
-	// 留空 = PrefixCacheFilter 退化成 noop（透传所有 candidates）。
-	PrefixKey []byte
+// EffectiveWeight 是 Runtime Scoring（docs/03 §8）调整后的权重——
+// 未启用 scoring 时由 M7 简单填 = Endpoint.Weight。
+type Candidate struct {
+	Endpoint        *domain.Endpoint
+	EffectiveWeight float64
 }
 
-// ErrorClass 把上游 / 网络 / 协议错误归类成几个粗粒度桶；
+// Request 单次 Pick 调用的入参。
+//
+// 按 docs/03 §4：Request 只承载一批候选，**不**包含 LoadFallback /
+// FallbackModels / attempts 状态。
+type Request struct {
+	Model      string                  // 当前 model（未路由前 = 请求 model；路由 fallback 时 = fallback model）
+	Group      string                  // 路由分组（rc.Identity.Group）
+	TPMCost    uint32                  // M6 估算的 token cost；LimitReadFilter 用作 endpoint TPM bucket cost
+	Candidates []Candidate             // 资格过滤后的候选（含 EffectiveWeight）
+	ExcludeIDs map[int64]struct{}      // 本次请求里已经尝试过的 endpoint
+	PrefixKey  []byte                  // PrefixCacheFilter 用的一致性哈希 key
+}
+
+// ErrorClass 把上游 / 网络 / 协议错误归类成几个粗粒度桶。
+//
 // CooldownManager 据此决定该 endpoint 该不该冷却 + 冷却多久。
 type ErrorClass int
 
@@ -115,7 +90,7 @@ func (c ErrorClass) IsRetryable() bool {
 	}
 }
 
-// Result 一次调用的结果，由 M7 调用方传给 Selection.Report。
+// Result 一次调用的结果，由 M7 调用方传给 Scheduler.Report。
 type Result struct {
 	Class    ErrorClass
 	HTTPCode int           // 上游 status；0 = 没拿到 response（网络错 / timeout）
@@ -123,54 +98,14 @@ type Result struct {
 	Latency  time.Duration // 本次调用耗时（含上游 + 流式）
 }
 
-// Decision 一次尝试的完整记录；写到 rc.SchedulingDecision 给 M10 trace。
-type Decision struct {
-	AttemptNum int // 1-indexed
-	EndpointID int64
-	Vendor     string
-	Result     Result
-}
-
-// Scheduler M7 调用入口。
+// Scheduler M7 调用入口。无状态（docs/03 §4）。
 type Scheduler interface {
-	// BeginSelection 用 caller 提供的候选构造 per-request Selection 状态机。
-	// req.Candidates 为空 → 返回 err（M7 abort 503）。
-	BeginSelection(ctx context.Context, req *Request) (Selection, error)
-}
+	// Pick 输入当前 model 的候选 + 排除集，输出一个 endpoint。
+	//
+	// 返回 nil 表示候选全部过滤掉了（M7 自己决定 abort 503 还是切下一个 model）。
+	Pick(ctx context.Context, req *Request) (*domain.Endpoint, error)
 
-// Selection 单次请求的选路状态机。
-//
-// **使用模式**（M7 driver loop）：
-//
-//	sel, err := scheduler.BeginSelection(ctx, req)
-//	if err != nil { abort 503 }
-//	defer sel.Done()
-//
-//	for {
-//	    ep := sel.Pick()
-//	    if ep == nil { break }
-//
-//	    result := callUpstream(ep)  // 拿 *http.Response 或 err，分类成 Result
-//	    sel.Report(ep, result)
-//
-//	    if !result.Class.IsRetryable() {
-//	        break  // success / invalid 立即结束
-//	    }
-//	    // transient / capacity / permanent / unknown → 试下一个
-//	}
-//
-// **不并发**：Selection 在单 gin handler goroutine 内顺序使用。
-type Selection interface {
-	// Pick 下一个候选；nil = 用尽（max_attempts 到 / 候选耗尽）。
-	Pick() *domain.Endpoint
-
-	// Report 给本次 Pick 拿到的 ep 报告调用结果。
-	// 失败 class 会触发 CooldownManager 标 cooldown。
-	Report(ep *domain.Endpoint, result Result)
-
-	// Decisions 返回截至当前的全部尝试链；M10 写 rc.SchedulingDecision。
-	Decisions() []Decision
-
-	// Done 释放资源（当前实现 no-op；保留扩展位）。
-	Done()
+	// Report 把本次 Send 结果反馈给 cooldown / metric / stats store。
+	// 不决定下一步控制流——M7 自己看 result.Class 决定继续 / 停止。
+	Report(ctx context.Context, ep *domain.Endpoint, result Result)
 }

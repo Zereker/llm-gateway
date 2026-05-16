@@ -8,19 +8,15 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// =============================================================================
-// runChain
-// =============================================================================
-
 func TestRunChain_EmptyCandidates_ReturnsNil(t *testing.T) {
-	got := runChain(context.Background(), []Filter{pickFirstSelector{}}, nil, &Request{})
+	got := runChain(context.Background(), []Filter{&stubFilter{name: "f"}}, nil, &Request{})
 	if got != nil {
-		t.Errorf("got=%+v, want nil", got)
+		t.Errorf("got=%+v", got)
 	}
 }
 
 func TestRunChain_FilterReturnsEmpty_EarlyExit(t *testing.T) {
-	f1 := &stubFilter{name: "f1", excludeIDs: map[int64]bool{}}
+	f1 := &stubFilter{name: "f1"}
 	f2 := &stubFilter{name: "f2", excludeIDs: map[int64]bool{1: true, 2: true}}
 	f3 := &stubFilter{name: "f3"}
 
@@ -28,10 +24,10 @@ func TestRunChain_FilterReturnsEmpty_EarlyExit(t *testing.T) {
 	got := runChain(context.Background(), []Filter{f1, f2, f3}, cands, &Request{})
 
 	if got != nil {
-		t.Errorf("got=%+v, want nil (f2 filters everything)", got)
+		t.Errorf("got=%+v, want nil", got)
 	}
 	if f3.calls != 0 {
-		t.Errorf("f3 should not be called after f2 returns empty")
+		t.Errorf("f3 should not run after f2 returns empty")
 	}
 }
 
@@ -52,10 +48,8 @@ func TestRunChain_SequentialReduction(t *testing.T) {
 // =============================================================================
 
 func TestCooldownFilter_EmptyCandidates_Passthrough(t *testing.T) {
-	f := NewCooldownFilter(&stubCooldown{})
-	got := f.Apply(context.Background(), nil, &Request{})
-	if got != nil {
-		t.Errorf("got=%+v, want nil", got)
+	if got := NewCooldownFilter(&stubCooldown{}).Apply(context.Background(), nil, &Request{}); got != nil {
+		t.Errorf("got=%+v", got)
 	}
 }
 
@@ -64,7 +58,7 @@ func TestCooldownFilter_NilManager_Passthrough(t *testing.T) {
 	cands := []*domain.Endpoint{ep(1, 100)}
 	got := f.Apply(context.Background(), cands, &Request{})
 	if len(got) != 1 {
-		t.Errorf("got=%+v, want [ep1] (nil mgr passthrough)", got)
+		t.Errorf("got=%+v", got)
 	}
 }
 
@@ -79,7 +73,7 @@ func TestCooldownFilter_RemovesCooledEndpoints(t *testing.T) {
 	}
 	for _, e := range got {
 		if e.ID == 2 {
-			t.Errorf("ep2 should be filtered (in cooldown)")
+			t.Errorf("ep2 should be filtered")
 		}
 	}
 }
@@ -91,16 +85,14 @@ func TestCooldownFilter_FailOpen_OnRedisErr(t *testing.T) {
 	f := NewCooldownFilter(cd)
 	cands := []*domain.Endpoint{ep(1, 100), ep(2, 100)}
 	got := f.Apply(context.Background(), cands, &Request{})
-
 	if len(got) != 2 {
-		t.Errorf("fail-open should preserve all candidates, got %d", len(got))
+		t.Errorf("fail-open expected, got %d", len(got))
 	}
 }
 
 func TestCooldownFilter_Name(t *testing.T) {
-	f := NewCooldownFilter(nil)
-	if f.Name() != "cooldown" {
-		t.Errorf("name=%q", f.Name())
+	if NewCooldownFilter(nil).Name() != "cooldown" {
+		t.Error("name")
 	}
 }
 
@@ -109,29 +101,23 @@ func TestCooldownFilter_Name(t *testing.T) {
 // =============================================================================
 
 func TestCooldownDurations_Get(t *testing.T) {
-	d := CooldownDurations{
-		Transient: 5,
-		Capacity:  10,
-		Permanent: 60,
-		Invalid:   0,
-		Unknown:   2,
-	}
+	d := CooldownDurations{Transient: 5, Capacity: 10, Permanent: 60, Invalid: 0, Unknown: 2}
 	if d.Get(ClassTransient) != 5 {
-		t.Error("ClassTransient")
+		t.Error("Transient")
 	}
 	if d.Get(ClassCapacity) != 10 {
-		t.Error("ClassCapacity")
+		t.Error("Capacity")
 	}
 	if d.Get(ClassPermanent) != 60 {
-		t.Error("ClassPermanent")
+		t.Error("Permanent")
 	}
 	if d.Get(ClassInvalid) != 0 {
-		t.Error("ClassInvalid")
+		t.Error("Invalid")
 	}
 	if d.Get(ClassUnknown) != 2 {
-		t.Error("ClassUnknown")
+		t.Error("Unknown")
 	}
 	if d.Get(ClassSuccess) != 0 {
-		t.Error("ClassSuccess should be 0 (not configured)")
+		t.Error("Success")
 	}
 }

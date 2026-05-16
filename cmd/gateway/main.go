@@ -137,7 +137,9 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 			Policies: ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0),
 		},
 		Schedule: middleware.ScheduleDeps{
-			Endpoints: repo.NewSQLEndpointReader(sqldb),
+			Endpoints:     middleware.AdaptRepoEndpoints(repo.NewSQLEndpointReader(sqldb)),
+			Catalog:       middleware.AdaptRepoCatalog(repo.NewSQLModelServiceReader(sqldb)),
+			Subscriptions: middleware.AdaptRepoSubscriptions(repo.NewSQLSubscriptionProvider(sqldb)),
 			Scheduler: schedule.New(schedule.Config{
 				Filters: buildSchedulerFilters(
 					cfg.Scheduler.Filters,
@@ -150,6 +152,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 						Unknown:   cfg.Scheduler.Cooldown.Unknown,
 					}),
 				),
+				Selector: schedule.NewWeightedRandomSelector(),
 				Cooldown: schedule.NewRedisCooldownManager(rdb, schedule.CooldownDurations{
 					Transient: cfg.Scheduler.Cooldown.Transient,
 					Capacity:  cfg.Scheduler.Cooldown.Capacity,
@@ -157,12 +160,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 					Invalid:   cfg.Scheduler.Cooldown.Invalid,
 					Unknown:   cfg.Scheduler.Cooldown.Unknown,
 				}),
-				MaxAttempts:    cfg.Scheduler.MaxAttempts,
-				MaxPerEndpoint: cfg.Scheduler.MaxPerEndpoint,
 			}),
-			// Sender 默认走 adapter 全局 registry + http.DefaultClient；
-			// 后续要换 client（自签名 CA / proxy / mTLS）在此 New(WithHTTPClient(...))
-			Sender: upstream.New(),
+			// Sender 默认走 adapter 全局 registry + http.DefaultClient
+			Sender:      upstream.New(),
+			MaxAttempts: cfg.Scheduler.MaxAttempts,
 		},
 		Tracing: middleware.TracingDeps{
 			Outbox: outbox,
@@ -188,7 +189,9 @@ func buildSchedulerFilters(names []string, store ratelimit.Store, cd schedule.Co
 		case "limit_read":
 			out = append(out, schedule.NewLimitReadFilter(store))
 		case "weighted_random":
-			out = append(out, schedule.NewWeightedRandomSelector())
+			// weighted_random 是 Selector 而非 Filter；它在 cfg.Selector 单独配，
+			// 这里忽略（仅为了向后兼容旧 yaml 列表）。
+			continue
 		case "prefix_cache":
 			out = append(out, schedule.NewPrefixCacheFilter(0)) // 0 = 默认 vnodes=64
 		case "busy":
