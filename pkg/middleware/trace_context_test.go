@@ -39,25 +39,6 @@ func TestTraceContext_GeneratesIDs(t *testing.T) {
 	}
 }
 
-func TestTraceContext_HonorsXTraceIdHeader(t *testing.T) {
-	r := newGinTest(TraceContext())
-	var got string
-	r.GET("/x", func(c *gin.Context) {
-		got = TraceIDFromCtx(GetRequestContext(c).Ctx)
-		c.Status(200)
-	})
-
-	const externalTraceID = "0102030405060708090a0b0c0d0e0f10"
-	req := httptest.NewRequest("GET", "/x", nil)
-	req.Header.Set("X-Trace-Id", externalTraceID)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if got != externalTraceID {
-		t.Errorf("got %q, want %q", got, externalTraceID)
-	}
-}
-
 func TestTraceContext_FillsAllRCFields(t *testing.T) {
 	r := newGinTest(TraceContext())
 	r.GET("/x", func(c *gin.Context) {

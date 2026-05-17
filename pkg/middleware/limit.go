@@ -307,11 +307,3 @@ func dimensionFromKey(key string) string {
 	}
 	return "unknown"
 }
-
-// EnsureTPMEstimate 已废弃（docs/04 §7：TPM 不预估）。
-// 保留为 no-op 兼容旧 caller；返回 0。
-//
-// **将来删除**：所有调用方应该已经移除 max_tokens 预估逻辑。
-func EnsureTPMEstimate(_ *domain.RequestContext, _ []byte) uint32 {
-	return 0
-}

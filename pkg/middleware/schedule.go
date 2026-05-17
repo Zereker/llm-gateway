@@ -283,14 +283,11 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 				}
 			}
 
-			tpmCost := EnsureTPMEstimate(rc, rc.Envelope.RawBytes)
-
 			// 单 model 内 attempt loop
 			for totalAttempts < attemptsCap {
 				ep, err := cfg.scheduler.Pick(ctx, &schedule.Request{
 					Model:      model,
 					Group:      rc.Identity.Group,
-					TPMCost:    tpmCost,
 					Candidates: candidates,
 					ExcludeIDs: excluded,
 				})

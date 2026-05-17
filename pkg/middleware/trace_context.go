@@ -106,13 +106,12 @@ func WithSpanNameFormatter(f SpanNameFormatter) TraceContextOption {
 // **职责**（按时序）：
 //
 //  1. 用 cfg.propagators 从 request headers 提取上游 traceparent → ctx 里若有 valid SpanContext 续传
-//  2. 没 traceparent 但有 X-Trace-Id（v0.x legacy 客户端）→ 自己构造 parent SpanContext
-//  3. 都没有 → 让 tracer.Start 自动生成新 trace_id（OTel SDK 默认行为）
-//  4. request_id 注入 OTel baggage（trace.CtxHandler 自动加到所有 log record，跨 service 透传）
-//  5. tracer.Start("{METHOD} {route}", SpanKindServer, 初始 attrs) → root span
-//  6. 构造 *domain.RequestContext，挂到 c.Request.Context() 和 *gin.Context
-//  7. c.Next() 跑业务链
-//  8. End 时：写 http.status_code / gen_ai.* / llm_gateway.* attrs；SetStatus；记 request.end 日志
+//  2. 没 traceparent → 自己构造 parent SpanContext，兜底生成 trace_id
+//  3. request_id 注入 OTel baggage（trace.CtxHandler 自动加到所有 log record，跨 service 透传）
+//  4. tracer.Start("{METHOD} {route}", SpanKindServer, 初始 attrs) → root span
+//  5. 构造 *domain.RequestContext，挂到 c.Request.Context() 和 *gin.Context
+//  6. c.Next() 跑业务链
+//  7. End 时：写 http.status_code / gen_ai.* / llm_gateway.* attrs；SetStatus；记 request.end 日志
 //
 // **trace_id / span_id 不存 RC 字段**——单源真相是 ctx 里的 SpanContext；
 // string 形态 trace_id 用 middleware.TraceIDFromCtx 提取。
@@ -141,25 +140,14 @@ func TraceContext(opts ...TraceContextOption) gin.HandlerFunc {
 		// 1. 提取上游 traceparent（W3C）
 		ctx := cfg.propagators.Extract(savedCtx, propagation.HeaderCarrier(c.Request.Header))
 
-		// 2. legacy X-Trace-Id fallback + 兜底生成 trace_id。
+		// 2. 兜底生成 trace_id。
 		//    必须保证调 tracer.Start 之前 ctx 里有 valid SpanContext，原因有二：
 		//      (a) driver=slog 时 tracer 是 noop，自己不会生成 trace_id；
 		//      (b) 不论 driver 如何，trace_id 是日志关联 / outbox event 的强依赖。
 		//    实 OTel SDK 时 tracer.Start 会以这个 parent 为基准生成新 span_id（trace_id 续传）。
 		if !oteltrace.SpanContextFromContext(ctx).IsValid() {
-			var tid oteltrace.TraceID
-			if hdr := c.GetHeader(HeaderTraceID); hdr != "" {
-				if parsed, err := oteltrace.TraceIDFromHex(hdr); err == nil {
-					tid = parsed
-				} else {
-					slog.Default().Warn("M1: ignored non-W3C X-Trace-Id", "x_trace_id", hdr)
-					tid = newRandTraceID()
-				}
-			} else {
-				tid = newRandTraceID()
-			}
 			parentSC := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
-				TraceID:    tid,
+				TraceID:    newRandTraceID(),
 				SpanID:     newRandSpanID(),
 				TraceFlags: oteltrace.FlagsSampled,
 				Remote:     false,

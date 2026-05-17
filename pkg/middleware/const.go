@@ -14,7 +14,6 @@ package middleware
 // 命名约定：所有 gateway 自定义 header 都用 X-Gateway-* 前缀，跟 vendor / 客户端 header 区分。
 const (
 	HeaderGatewayTimeout        = "X-Gateway-Timeout"
-	HeaderTraceID               = "X-Trace-Id"
 	HeaderGatewayMaxAttempts    = "X-Gateway-Max-Attempts"
 	HeaderGatewayFallbackModels = "X-Gateway-Fallback-Models"
 )
