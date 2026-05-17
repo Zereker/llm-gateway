@@ -142,7 +142,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 
 	// 三层缓存的 ModelCatalog：L1 进程内 LRU + L3 MySQL fallback。
 	// L2 由 Debezium → Redis Streams 推送驱动 invalidation（不主动 SET Redis cache key）。
-	rawCatalog := middleware.AdaptRepoCatalog(repo.NewSQLModelServiceReader(sqldb))
+	rawCatalog := adaptCatalog(repo.NewSQLModelServiceReader(sqldb))
 	msCache := cdc.NewTieredCache[*domain.ModelService](
 		cdc.TieredConfig{Table: "model_services"},
 		cdc.NewLRU[*domain.ModelService](1024),
@@ -160,7 +160,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	// 启动 Redis Stream consumer：监听 Debezium 推送的 model_services 表变更
 	startCDCConsumer(srv, rdb, msCache)
 
-	subs := middleware.AdaptRepoSubscriptions(repo.NewSQLSubscriptionProvider(sqldb))
+	subs := adaptSubscriptions(repo.NewSQLSubscriptionProvider(sqldb))
 	rateStore := ratelimit.NewRedisStore(rdb)
 	cooldown := schedule.NewRedisCooldownManager(rdb, schedule.CooldownDurations{
 		Transient: cfg.Scheduler.Cooldown.Transient,
@@ -181,36 +181,34 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		BodyLimit: cfg.Request.BodyLimitBytes,
 		Timeout:   cfg.Request.Timeout,
 
-		Auth: []middleware.AuthOption{
-			middleware.WithIdentityProvider(apikeyProvider),
-		},
-		Budget: []middleware.BudgetOption{
-			middleware.WithBudgetGate(buildBudgetGate(cfg.Budget)),
-		},
-		Moderation: []middleware.ModerationOption{
-			middleware.WithModerator(buildModerator(cfg.Moderation)),
-		},
-		ModelService: []middleware.ModelServiceOption{
-			middleware.WithModelCatalog(catalog),
-			middleware.WithSubscriptionChecker(subs),
-		},
-		Limit: []middleware.LimitOption{
-			middleware.WithLimitStore(rateStore),
-			middleware.WithLimitPolicies(ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0)),
-		},
-		Schedule: []middleware.ScheduleOption{
-			middleware.WithEndpointReader(middleware.AdaptRepoEndpoints(repo.NewSQLEndpointReader(sqldb))),
-			middleware.WithFallbackCatalog(catalog),
-			middleware.WithFallbackSubscriptionChecker(subs),
-			middleware.WithScheduler(sched),
-			middleware.WithSender(sender),
-			middleware.WithEndpointRateStore(rateStore),
-			middleware.WithMaxAttempts(cfg.Scheduler.MaxAttempts),
-		},
-		Tracing: []middleware.TracingOption{
-			middleware.WithUsageOutbox(outbox),
-			middleware.WithTracer(buildTracer(srv, cfg.Trace)),
-		},
+		// M2 Auth
+		IdentityProvider: apikeyProvider,
+
+		// M4 Budget
+		BudgetGate: buildBudgetGate(cfg.Budget),
+
+		// M5 ModelService
+		ModelCatalog:        catalog,
+		SubscriptionChecker: subs,
+
+		// M6 Limit
+		RateLimitStore: rateStore,
+		QuotaPolicies:  ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0),
+
+		// M7 Schedule
+		EndpointReader:              adaptEndpoints(repo.NewSQLEndpointReader(sqldb)),
+		FallbackCatalog:             catalog,
+		FallbackSubscriptionChecker: subs,
+		Scheduler:                   sched,
+		Sender:                      sender,
+		MaxAttempts:                 cfg.Scheduler.MaxAttempts,
+
+		// M8 Moderation
+		Moderator: buildModerator(cfg.Moderation),
+
+		// M10 Tracing
+		UsageOutbox: outbox,
+		AuditTracer: buildTracer(srv, cfg.Trace),
 	})
 
 	return engine, srv, nil

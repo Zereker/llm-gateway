@@ -7,17 +7,16 @@ import (
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/middleware"
-	"github.com/zereker/llm-gateway/pkg/repo"
 	"github.com/zereker/llm-gateway/pkg/schedule"
 	"github.com/zereker/llm-gateway/pkg/upstream"
 )
 
 // stubIdentity 永远拒（router 这层只关心路由 + middleware 链是否注册，
-// auth 失败 401 已经能证明 middleware 跑了）。
+// auth 失败 401 已经能证明 middleware 跑了）。直接 satisfy middleware.IdentityProvider
+// 的窄接口，无需 wrap option。
 type stubIdentity struct{}
 
-func (stubIdentity) Resolve(_ context.Context, _ *repo.Credentials) (*repo.UserIdentity, error) {
+func (stubIdentity) Resolve(_ context.Context, _ *domain.Credentials) (*domain.UserIdentity, error) {
 	return nil, errStubAuth
 }
 
@@ -65,21 +64,19 @@ func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
 
 func minDeps() Deps {
 	return Deps{
-		Auth: []middleware.AuthOption{
-			middleware.WithIdentityProvider(stubIdentity{}),
-		},
-		ModelService: []middleware.ModelServiceOption{
-			middleware.WithModelCatalog(stubMSProvider{}),
-			middleware.WithSubscriptionChecker(stubSubscriptions{}),
-		},
-		Schedule: []middleware.ScheduleOption{
-			middleware.WithEndpointReader(stubEPProvider{}),
-			middleware.WithFallbackCatalog(stubMSProvider{}),
-			middleware.WithFallbackSubscriptionChecker(stubSubscriptions{}),
-			middleware.WithScheduler(schedule.New(schedule.Config{})),
-			middleware.WithSender(upstream.New()),
-			middleware.WithMaxAttempts(3),
-		},
+		// M2
+		IdentityProvider: stubIdentity{},
+		// M5
+		ModelCatalog:        stubMSProvider{},
+		SubscriptionChecker: stubSubscriptions{},
+		// M7
+		EndpointReader:              stubEPProvider{},
+		FallbackCatalog:             stubMSProvider{},
+		FallbackSubscriptionChecker: stubSubscriptions{},
+		Scheduler:                   schedule.New(schedule.Config{}),
+		Sender:                      upstream.New(),
+		MaxAttempts:                 3,
+		// M4 / M6 / M8 / M10 留空：各 middleware 在 nil/empty 时走 no-op pass-through
 	}
 }
 

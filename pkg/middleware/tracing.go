@@ -12,9 +12,25 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/trace"
 	"github.com/zereker/llm-gateway/pkg/usage"
 )
+
+// UsageOutbox M10 计量事件发布的 port——middleware-owned。
+//
+// 实现者（pkg/usage.FileOutbox / KafkaOutbox / AsyncKafkaOutbox / DualWriteOutbox）
+// 按自己的领域写代码、顺便满足这个 port。usage.OutboxEvent 是 value type，留在 usage 包。
+type UsageOutbox interface {
+	Publish(ctx context.Context, evt *usage.OutboxEvent) error
+}
+
+// AuditTracer M10 内部审计 trace 的 port——middleware-owned。窄到只有 Log 一个方法
+// （ISP）；pkg/trace.Tracer 实际还有 StartSpan，但 middleware 当前只用 Log。
+//
+// 不要混淆 OTel TracerProvider：那是分布式 trace；这是把 SchedulingDecision
+// 写到日志 / 异步事件的内部审计通道（pkg/trace.SlogTracer / OtelTracer 实现）。
+type AuditTracer interface {
+	Log(ctx context.Context, name string, payload any)
+}
 
 // TracingOption 配置 Tracing middleware（otelgin v0.68.0 同款 interface-Option）。
 type TracingOption interface {
@@ -26,23 +42,23 @@ type tracingOptionFunc func(*tracingConfig)
 func (f tracingOptionFunc) apply(c *tracingConfig) { f(c) }
 
 type tracingConfig struct {
-	outbox         usage.OutboxPublisher
-	tracer         trace.Tracer // 业务 trace.Tracer（写 scheduling_decision），≠ OTel tracer
+	outbox         UsageOutbox
+	tracer         AuditTracer // 业务审计 trace（写 scheduling_decision），≠ OTel tracer
 	tracerProvider oteltrace.TracerProvider
 }
 
 // WithUsageOutbox 注入 Usage Event outbox publisher。
 //
 // 不传 = M10 不发 usage event（仅记 metric / trace）。
-func WithUsageOutbox(o usage.OutboxPublisher) TracingOption {
+func WithUsageOutbox(o UsageOutbox) TracingOption {
 	return tracingOptionFunc(func(c *tracingConfig) { c.outbox = o })
 }
 
-// WithTracer 注入 业务 trace.Tracer（写 scheduling_decision 日志）；不传 = 跳过。
+// WithTracer 注入审计 AuditTracer（写 scheduling_decision 日志）；不传 = 跳过。
 //
-// 注意：跟 OTel TracerProvider 是两回事——这里的 trace.Tracer 是网关内部审计 trace
-// （pkg/trace），用于把 SchedulingDecision 写到日志 / outbox。
-func WithTracer(t trace.Tracer) TracingOption {
+// 注意：跟 OTel TracerProvider 是两回事——这里是网关内部审计通道
+// （pkg/trace.SlogTracer / OtelTracer 实现），用于把 SchedulingDecision 写到日志 / outbox。
+func WithTracer(t AuditTracer) TracingOption {
 	return tracingOptionFunc(func(c *tracingConfig) { c.tracer = t })
 }
 

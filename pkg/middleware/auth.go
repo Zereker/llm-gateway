@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -10,8 +11,18 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
+
+// IdentityProvider M2 Auth 依赖的凭证 → 身份解析 port。
+//
+// 接口是 middleware-owned；实现者（pkg/repo.SQLAPIKeyProvider 等）按自己的领域
+// 写代码、顺便满足这个 port。SQL 装配的小适配层放在 cmd/gateway/middleware_adapters.go
+// （避免 middleware → ratelimit → repo → middleware 的 import cycle）。
+//
+// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调）。
+type IdentityProvider interface {
+	Resolve(ctx context.Context, creds *domain.Credentials) (*domain.UserIdentity, error)
+}
 
 // AuthOption 配置 Auth middleware。
 //
@@ -27,12 +38,12 @@ func (f authOptionFunc) apply(c *authConfig) { f(c) }
 
 // authConfig Auth middleware 私有配置。
 type authConfig struct {
-	provider       repo.IdentityProvider
+	provider       IdentityProvider
 	tracerProvider trace.TracerProvider
 }
 
 // WithIdentityProvider 注入 IdentityProvider 实现。必填；缺则 Auth() 构造期 panic。
-func WithIdentityProvider(p repo.IdentityProvider) AuthOption {
+func WithIdentityProvider(p IdentityProvider) AuthOption {
 	return authOptionFunc(func(c *authConfig) { c.provider = p })
 }
 
@@ -108,7 +119,7 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 //
 // 没有任何凭证时返回 nil。
 func extractCredentials(c *gin.Context) *domain.Credentials {
-	creds := &repo.Credentials{Headers: make(map[string]string, len(c.Request.Header))}
+	creds := &domain.Credentials{Headers: make(map[string]string, len(c.Request.Header))}
 	for k, v := range c.Request.Header {
 		if len(v) > 0 {
 			creds.Headers[k] = v[0]

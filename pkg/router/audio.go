@@ -23,7 +23,7 @@ func registerAudioRoutes(engine *gin.Engine, deps Deps) {
 		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
 		middleware.Recover(),
-		middleware.Auth(deps.Auth...),
+		middleware.Auth(middleware.WithIdentityProvider(deps.IdentityProvider)),
 	)
 
 	routes := []struct {
@@ -38,12 +38,29 @@ func registerAudioRoutes(engine *gin.Engine, deps Deps) {
 		pre.POST(r.path,
 			middleware.WithSourceProtocol(domain.ProtoOpenAI, r.mod),
 			middleware.Envelope(),
-			middleware.Budget(deps.Budget...),
-			middleware.ModelService(deps.ModelService...),
-			middleware.Moderation(deps.Moderation...),
-			middleware.Limit(deps.Limit...),
-			middleware.Schedule(deps.Schedule...),
-			middleware.Tracing(deps.Tracing...),
+			middleware.Budget(middleware.WithBudgetGate(deps.BudgetGate)),
+			middleware.ModelService(
+				middleware.WithModelCatalog(deps.ModelCatalog),
+				middleware.WithSubscriptionChecker(deps.SubscriptionChecker),
+			),
+			middleware.Moderation(middleware.WithModerator(deps.Moderator)),
+			middleware.Limit(
+				middleware.WithLimitStore(deps.RateLimitStore),
+				middleware.WithLimitPolicies(deps.QuotaPolicies),
+			),
+			middleware.Schedule(
+				middleware.WithEndpointReader(deps.EndpointReader),
+				middleware.WithFallbackCatalog(deps.FallbackCatalog),
+				middleware.WithFallbackSubscriptionChecker(deps.FallbackSubscriptionChecker),
+				middleware.WithScheduler(deps.Scheduler),
+				middleware.WithSender(deps.Sender),
+				middleware.WithEndpointRateStore(deps.RateLimitStore),
+				middleware.WithMaxAttempts(deps.MaxAttempts),
+			),
+			middleware.Tracing(
+				middleware.WithUsageOutbox(deps.UsageOutbox),
+				middleware.WithTracer(deps.AuditTracer),
+			),
 			noopHandler,
 		)
 	}
