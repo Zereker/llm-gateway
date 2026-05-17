@@ -9,7 +9,7 @@ import (
 // SchemaVersionV1 当前 Usage Event schema 版本（docs/05 §5 + docs/08 §5）。
 const SchemaVersionV1 = "usage.v1"
 
-// UsageEvent Kafka topic `llm-gateway.usage` 的 envelope。
+// UsageEvent Kafka topic `billing.usage.recorded.v1` 的 envelope（命名按领域.实体.事件.版本，跟生产者解耦；详见 docs/05 §5）。
 //
 // JSON 形态参见 docs/08 §5；partition key 由调用方决定（推荐 account_id）。
 //

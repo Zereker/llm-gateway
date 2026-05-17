@@ -34,7 +34,7 @@ func (s *stubWriter) Close() error {
 
 func TestKafkaOutbox_PublishForwardsTopicKeyAndPayload(t *testing.T) {
 	sw := &stubWriter{}
-	o := NewKafkaOutbox(sw, "llm-gateway.usage")
+	o := NewKafkaOutbox(sw, "billing.usage.recorded.v1")
 
 	err := o.Publish(context.Background(), &OutboxEvent{
 		Key:     "ep_openai_main",
@@ -47,7 +47,7 @@ func TestKafkaOutbox_PublishForwardsTopicKeyAndPayload(t *testing.T) {
 		t.Fatalf("len writes = %d, want 1", len(sw.writes))
 	}
 	got := sw.writes[0]
-	if got.Topic != "llm-gateway.usage" {
+	if got.Topic != "billing.usage.recorded.v1" {
 		t.Errorf("topic = %q", got.Topic)
 	}
 	if got.Key != "ep_openai_main" {

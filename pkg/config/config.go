@@ -32,11 +32,11 @@ import (
 // 缺省字段会被 ApplyDefaults 填上合理默认值；用户的 YAML 可只声明需要 override 的字段。
 type Config struct {
 	Server     ServerConfig      `yaml:"server"`
-	Middleware MiddlewareConfig  `yaml:"middleware"`
+	Request    RequestConfig     `yaml:"request"`
 	Paths      PathsConfig       `yaml:"paths"`
 	Database   infra.DBConfig    `yaml:"database"` // schema 在 pkg/infra
 	Redis      infra.RedisConfig `yaml:"redis"`    // M6 RateLimit + 未来 cache layer 共享
-	Outbox     OutboxConfig      `yaml:"outbox"`
+	UsageEvents UsageEventsConfig `yaml:"usage_events"`
 	Scheduler  SchedulerConfig   `yaml:"scheduler"`  // M7 端点调度 + cooldown 配置
 	Budget     BudgetConfig      `yaml:"budget"`     // M4 Budget driver
 	Moderation ModerationConfig  `yaml:"moderation"` // M8 内容审核 driver
@@ -96,23 +96,28 @@ type ModerationConfig struct {
 //
 //	driver:
 //	  none — 默认；完全关闭，零开销
-//	  file — JSONL append 写本地文件（适合 dev / 排障）
-//	  kafka — async publish 到 Kafka topic（生产）
+//	  file — JSONL append 写本地文件，由 fluent-bit / vector 投递到下游各 sink
+//	         （归档 / 检索 / 内容安全后审 / 训练数据回流）
+//
+// gateway 故意**不**内嵌 Kafka producer。Content Log 在性质上是日志/审计而非业务事件，
+// 下游往往是多 sink（Loki + S3 + Kafka + ES），让 gateway 同时承担投递分流会把
+// 多个下游的可用性耦合到主链路。把文件作为唯一出口，fluent-bit 这一层负责扇出 +
+// 重试，gateway 主进程只关心"写不影响响应"。文件本身的轮转 / 压缩 / 清理由外部
+// logrotate 或日志收集器（fluent-bit tail 输入支持 inode 跟随）负责。
 //
 // sample_rate:        [0,1]，1.0=全采，0=全丢
 // backpressure:       drop_oldest（默认） / drop_newest / block；block 必须配 block_timeout
 // max_body_bytes:     >0 时截断 body
 // buffer_size:        异步队列容量；默认 1024
-// directions:         记录哪些方向（client_request / upstream_request / upstream_chunk / client_chunk）
+// file.path:          driver=file 时 JSONL 追加路径；约定绝对路径
 type ContentLogConfig struct {
-	Driver        string        `yaml:"driver"`
-	SampleRate    float64       `yaml:"sample_rate"`
-	Backpressure  string        `yaml:"backpressure"`
-	BlockTimeout  time.Duration `yaml:"block_timeout"`
-	MaxBodyBytes  int           `yaml:"max_body_bytes"`
-	BufferSize    int           `yaml:"buffer_size"`
-	File          FileOutboxSection `yaml:"file"`
-	Kafka         KafkaOutboxSection `yaml:"kafka"`
+	Driver       string            `yaml:"driver"`
+	SampleRate   float64           `yaml:"sample_rate"`
+	Backpressure string            `yaml:"backpressure"`
+	BlockTimeout time.Duration     `yaml:"block_timeout"`
+	MaxBodyBytes int               `yaml:"max_body_bytes"`
+	BufferSize   int               `yaml:"buffer_size"`
+	File         FileOutboxSection `yaml:"file"`
 }
 
 // HealthConfig 主动健康探测配置（docs/architecture/03-endpoint-scheduling.md §10）。
@@ -148,8 +153,15 @@ type ServerConfig struct {
 	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
 }
 
-// MiddlewareConfig 主 middleware 链上的全局参数。
-type MiddlewareConfig struct {
+// RequestConfig 每条入站 HTTP 请求的全局默认限制。
+//
+// 这两个字段历史上叫 `middleware:` 是误导：
+//   - `body_limit_bytes` 在 M1 之前就要在 router / server 层拒掉超大 body；
+//   - `timeout` 用 gin TimeoutMiddleware 包整条 M1-M10 链，不是任一 M_n 自己的 timeout。
+//
+// 真正的 per-middleware 配置（M4 budget driver / M7 scheduler / M8 moderation /
+// M10 trace 等）已经各自分布在顶级段里；这一段只是 per-request 默认值，故名 request。
+type RequestConfig struct {
 	BodyLimitBytes int64         `yaml:"body_limit_bytes"`
 	Timeout        time.Duration `yaml:"timeout"`
 }
@@ -161,12 +173,28 @@ type MiddlewareConfig struct {
 // 的资源（例如 TLS 证书），加在这里。
 type PathsConfig struct{}
 
-// OutboxConfig M10 Tracing 输出 usage 事件的下游通道选择。
+// UsageEventsConfig M10 Tracing 输出 usage 事件的下游通道选择。
 //
-//	driver: file | kafka
-//	driver=file 时取 file.path；driver=kafka 时取 kafka.{brokers, topic}；
-//	另一分支字段被忽略。
-type OutboxConfig struct {
+// yaml 段名 `usage_events:`——按"用途"命名跟 `content_log:` / `trace:` 一致；
+// 实现层用的是 Outbox Pattern（pkg/usage.OutboxPublisher 接口），但这是内部模式名，
+// 不暴露到 yaml 操作面。
+//
+//	driver:
+//	  file            — 仅写本地 JSONL，无下游广播（dev / 兜底）
+//	  kafka           — 仅写 Kafka，无本地副本（不推荐：broker 挂 = 数据丢）
+//	  async_kafka     — Kafka + 内存 buffer + retry + DLQ（broker 短抖动可救，长时挂仍丢）
+//	  file_and_kafka  — **生产推荐**：file 是 source of truth（sync commit），
+//	                    Kafka 是 best-effort 异步广播；broker 挂不丢数据，
+//	                    由外部 replay 工具读 file 补发到 Kafka
+//
+// 字段使用：
+//
+//	driver=file               → 取 file.path
+//	driver=kafka|async_kafka  → 取 kafka.{brokers, topic, ...}
+//	driver=file_and_kafka     → 同时取 file.path 和 kafka.{brokers, topic, ...}
+//
+// 其余分支字段被忽略。
+type UsageEventsConfig struct {
 	Driver string             `yaml:"driver"`
 	File   FileOutboxSection  `yaml:"file"`
 	Kafka  KafkaOutboxSection `yaml:"kafka"`
@@ -180,16 +208,16 @@ type FileOutboxSection struct {
 // KafkaOutboxSection driver=kafka 时的字段：嵌入 infra.KafkaConfig（brokers
 // 等连接字段）+ Topic（业务侧关切，不属于 infra）+ 异步 / DLQ 选项。
 //
-// yaml `,inline` 让嵌入字段直接出现在 outbox.kafka 这一级，不嵌套：
+// yaml `,inline` 让嵌入字段直接出现在 usage_events.kafka 这一级，不嵌套：
 //
-//	outbox:
+//	usage_events:
 //	  kafka:
 //	    brokers: [...]   # 来自 infra.KafkaConfig
 //	    topic: ...       # 本类型独有
 //	    async: true      # 用 AsyncKafkaOutbox（生产推荐）
 //	    buffer_size: 1024
 //	    max_retries: 3
-//	    dlq_topic: llm-gateway.usage.dlq
+//	    dlq_topic: billing.usage.recorded.v1.dlq
 type KafkaOutboxSection struct {
 	infra.KafkaConfig `yaml:",inline"`
 	Topic             string        `yaml:"topic"`
@@ -257,8 +285,8 @@ func Load(path string) (*Config, error) {
 //   - database.dsn 非空
 //   - data_key 是 hex 64 字符（32 字节）
 //   - scheduler.cooldown 覆盖全 5 个 ErrorClass
-//   - outbox.driver=kafka 时 brokers 非空
-//   - content_log.driver=kafka 时 brokers 非空
+//   - usage_events.driver=kafka 时 brokers 非空
+//   - content_log.driver=file 时 file.path 非空
 //   - content_log.backpressure=block 时必须配 block_timeout
 //
 // 启动期失败即 panic，不让配置错走到运行期。
@@ -274,21 +302,40 @@ func (c *Config) Validate() error {
 	if cd.Transient == 0 && cd.Capacity == 0 && cd.Permanent == 0 && cd.Invalid == 0 && cd.Unknown == 0 {
 		return errors.New("scheduler.cooldown all-zero; configure at least transient/capacity/permanent")
 	}
-	if c.Outbox.Driver == "kafka" || c.Outbox.Driver == "async_kafka" {
-		if len(c.Outbox.Kafka.Brokers) == 0 {
-			return errors.New("outbox.driver=" + c.Outbox.Driver + " requires kafka.brokers non-empty")
+	switch c.UsageEvents.Driver {
+	case "", "file":
+		// file driver 不需要 kafka 段；file.path 由 ApplyDefaults 兜底
+	case "kafka", "async_kafka":
+		if len(c.UsageEvents.Kafka.Brokers) == 0 {
+			return errors.New("usage_events.driver=" + c.UsageEvents.Driver + " requires kafka.brokers non-empty")
 		}
-		if c.Outbox.Kafka.Topic == "" {
-			return errors.New("outbox.driver=" + c.Outbox.Driver + " requires kafka.topic")
+		if c.UsageEvents.Kafka.Topic == "" {
+			return errors.New("usage_events.driver=" + c.UsageEvents.Driver + " requires kafka.topic")
 		}
+	case "file_and_kafka":
+		// dual-write：同时需要 file 和 kafka 配置
+		if c.UsageEvents.File.Path == "" {
+			return errors.New("usage_events.driver=file_and_kafka requires file.path non-empty (source of truth)")
+		}
+		if len(c.UsageEvents.Kafka.Brokers) == 0 {
+			return errors.New("usage_events.driver=file_and_kafka requires kafka.brokers non-empty")
+		}
+		if c.UsageEvents.Kafka.Topic == "" {
+			return errors.New("usage_events.driver=file_and_kafka requires kafka.topic")
+		}
+	default:
+		return fmt.Errorf("usage_events.driver=%q not supported (use file|kafka|async_kafka|file_and_kafka)", c.UsageEvents.Driver)
 	}
-	if c.ContentLog.Driver == "kafka" {
-		if len(c.ContentLog.Kafka.Brokers) == 0 {
-			return errors.New("content_log.driver=kafka requires kafka.brokers non-empty")
-		}
-		if c.ContentLog.Kafka.Topic == "" {
-			return errors.New("content_log.driver=kafka requires kafka.topic")
-		}
+	switch c.ContentLog.Driver {
+	case "", "none", "file":
+		// ok
+	default:
+		// kafka 故意不再支持：Content Log 是日志/审计通道，gateway 只写本地 JSONL，
+		// 下游分流交给 fluent-bit / vector（见 docs/05 §2 + docs/07 §2）。
+		return fmt.Errorf("content_log.driver=%q not supported (use none|file; kafka 已下沉到 fluent-bit/vector)", c.ContentLog.Driver)
+	}
+	if c.ContentLog.Driver == "file" && c.ContentLog.File.Path == "" {
+		return errors.New("content_log.driver=file requires file.path non-empty")
 	}
 	if c.ContentLog.Backpressure == "block" && c.ContentLog.BlockTimeout <= 0 {
 		return errors.New("content_log.backpressure=block requires block_timeout > 0")
@@ -309,11 +356,11 @@ func (c *Config) ApplyDefaults() {
 	if c.Server.ShutdownTimeout == 0 {
 		c.Server.ShutdownTimeout = 30 * time.Second
 	}
-	if c.Middleware.BodyLimitBytes == 0 {
-		c.Middleware.BodyLimitBytes = 10 << 20 // 10 MiB
+	if c.Request.BodyLimitBytes == 0 {
+		c.Request.BodyLimitBytes = 10 << 20 // 10 MiB
 	}
-	if c.Middleware.Timeout == 0 {
-		c.Middleware.Timeout = 60 * time.Second
+	if c.Request.Timeout == 0 {
+		c.Request.Timeout = 60 * time.Second
 	}
 	if c.Database.Driver == "" {
 		c.Database.Driver = infra.DriverMySQL
@@ -324,13 +371,13 @@ func (c *Config) ApplyDefaults() {
 	if c.Redis.Addr == "" {
 		c.Redis.Addr = "localhost:6379"
 	}
-	if c.Outbox.Driver == "" {
-		c.Outbox.Driver = "file"
+	if c.UsageEvents.Driver == "" {
+		c.UsageEvents.Driver = "file"
 	}
-	if c.Outbox.File.Path == "" {
-		c.Outbox.File.Path = "/tmp/llm-gateway-usage.log"
+	if c.UsageEvents.File.Path == "" {
+		c.UsageEvents.File.Path = "/tmp/llm-gateway-usage.log"
 	}
-	// Outbox.Kafka 不给默认（driver=kafka 时必须显式配置）
+	// UsageEvents.Kafka 不给默认（driver=kafka 时必须显式配置）
 
 	// Scheduler defaults
 	if len(c.Scheduler.Filters) == 0 {

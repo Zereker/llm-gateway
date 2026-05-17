@@ -4,7 +4,7 @@
 //
 // **DAG**：
 //
-//	Kafka(llm-gateway.usage)
+//	Kafka(billing.usage.recorded.v1)
 //	   → JSON parse → UsageEvent
 //	   → Dedup by request_id (windowed)
 //	   → Enrich (join pricing snapshot from PG)
@@ -21,7 +21,7 @@
 //
 //	go run ./examples/beam/usage_pipeline.go \
 //	  --runner=direct --kafka.brokers=localhost:9092 \
-//	  --kafka.topic=llm-gateway.usage --output=./out
+//	  --kafka.topic=billing.usage.recorded.v1 --output=./out
 package main
 
 import (
@@ -72,7 +72,7 @@ func init() {
 var (
 	runner       = flag.String("runner", "direct", "Beam runner")
 	kafkaBrokers = flag.String("kafka.brokers", "localhost:9092", "Kafka brokers (csv)")
-	kafkaTopic   = flag.String("kafka.topic", "llm-gateway.usage", "Kafka topic")
+	kafkaTopic   = flag.String("kafka.topic", "billing.usage.recorded.v1", "Kafka topic")
 	output       = flag.String("output", "/tmp/llm-gateway-cost", "output prefix (textio sink)")
 )
 

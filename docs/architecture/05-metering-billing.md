@@ -76,6 +76,34 @@ type ContentRecord struct {
 - 必须支持 max body size；超出后截断或写 object storage pointer。
 - 需要合规时先脱敏再落盘；脱敏失败按配置选择 drop 或写摘要。
 
+输出后端（driver）只支持 `none` / `file`：
+
+- `none`：完全关闭，零开销。
+- `file`：JSONL append 写本地文件。
+
+故意**不**在 gateway 进程里内嵌 Kafka / S3 / Loki / ES 等 producer。Content Log 在性质上是日志/审计通道，不是业务事件（区别于 §3 的 Usage Event）；典型部署里它有多个下游消费者——归档（S3 / OSS）、检索（Loki / ES）、内容安全后审（Kafka）、训练数据回流。让 gateway 同时承担多 sink 投递会把所有下游的可用性耦合到主链路。
+
+正确的形态是把 file 作为唯一出口，由 fluent-bit / vector 这类成熟日志收集器负责扇出 + 重试 + sink 适配：
+
+```text
+gateway ──→ content.jsonl ──→ fluent-bit / vector ──┬─→ S3 / OSS         (归档 + 训练数据)
+                                                    ├─→ Loki / ES        (排障检索 / 合规)
+                                                    ├─→ Kafka topic      (内容安全后审 pipeline)
+                                                    └─→ ...
+```
+
+文件本身的轮转 / 压缩 / 清理由外部 logrotate 或日志收集器（fluent-bit tail 输入支持 inode 跟随）负责，不在网关进程内做。需要新增/调整 sink 时改 fluent-bit 配置即可，gateway 不发版。
+
+跟 Usage Event 的对比：
+
+| 维度 | Usage Event（§3-5） | Content Log（本节） |
+|------|---------------------|---------------------|
+| 性质 | 业务事件，财务对账依赖 | 日志/审计 |
+| 后端 | `file` / `kafka` / `async_kafka` | `file`（gateway 唯一出口） |
+| 下游 | 计费平台（单一消费者） | 多 sink，由 fluent-bit 扇出 |
+| 丢失代价 | 严重（漏计费） | 可容忍采样 / 丢最老 |
+| schema 演进 | `schema_version` + 双写切 topic | 按 JSONL 字段演进，consumer 容忍未知字段 |
+
 ## 3. Usage Event
 
 Usage 是计费平台消费的资源消耗事件。来源是 translator / usage extractor：
@@ -199,17 +227,23 @@ type UsageEvent struct {
 }
 ```
 
-Kafka topic 建议默认 `llm-gateway.usage`。partition key 使用 `AccountID`，让同一计费主体的事件尽量保持顺序；没有 AccountID 时退化为 `RequestID`。顶层 `RequestID` / `TraceID` 是便利字段，必须与 `Usage.Meta` 内同名字段一致；如果消费端发现冲突，以 `Usage.Meta` 为准并记录坏事件。`CreatedAt` 表示 outbox 入队时间，不等同于请求完成时间；请求时序分析应使用 `Usage.Meta.StartTime` / `Usage.Meta.EndTime`。
+Kafka topic 建议默认 `billing.usage.recorded.v1`。topic 命名遵循**领域.实体.事件.版本**约定，跟生产者服务名解耦——topic 描述的是"这是什么业务事件"（计费用量已记录），而不是"谁发的"。这样下游计费/对账/配额服务按业务域订阅；以后若多个 service 都产生 usage 事件，仍是同一 topic，不会出现 `llm-gateway.usage` / `embedding-gateway.usage` / `image-gateway.usage` 之类碎片化。
 
-schema 演进通过 `schema_version` 做向后兼容分支，不在同一版本中删除字段。破坏性变更必须显式迁移：优先切新 topic（例如 `llm-gateway.usage.v2`）并经历双写期和 consumer 切换；若继续使用同一 topic，必须允许多 schema 共存，consumer 按 `schema_version` 路由解析。
+partition key 使用 `AccountID`，让同一计费主体的事件尽量保持顺序；没有 AccountID 时退化为 `RequestID`。顶层 `RequestID` / `TraceID` 是便利字段，必须与 `Usage.Meta` 内同名字段一致；如果消费端发现冲突，以 `Usage.Meta` 为准并记录坏事件。`CreatedAt` 表示 outbox 入队时间，不等同于请求完成时间；请求时序分析应使用 `Usage.Meta.StartTime` / `Usage.Meta.EndTime`。
+
+schema 演进通过 `schema_version` 做向后兼容分支，不在同一版本中删除字段。破坏性变更必须显式迁移：优先切新 topic（`billing.usage.recorded.v2`）并经历双写期和 consumer 切换；若继续使用同一 topic，必须允许多 schema 共存，consumer 按 `schema_version` 路由解析。topic 名里的 `.v1` 是 topic-level 物理隔离，跟 envelope `schema_version` 是两层独立机制：topic 升级换 broker 路由，schema 升级换字段解析。
 
 M10 使用 `context.Background()` 加超时发布，避免客户端断开导致 usage 不写出。发布失败不影响业务响应。
 
 实现：
 
-- `file`：JSONL append，适合本地/兜底。
-- `kafka`：同步 producer。
-- `async_kafka`：buffer、重试、backoff、DLQ topic。
+- `file`：JSONL append，仅适合本地开发 / 单机部署。
+- `kafka`：同步 producer，无本地副本（broker 挂直接丢；不推荐）。
+- `async_kafka`：buffer、重试、backoff、DLQ topic；broker 短抖动可救，长时挂仍丢。
+- `file_and_kafka`：**生产推荐**——Transactional Outbox Pattern。file 是 source of truth
+  （sync commit），Kafka 是异步广播（best-effort）。broker 故障域 ⊥ disk 故障域，不会
+  同时丢；broker 挂时 file 已经 commit，由外部 replay 工具读 file 把缺的事件补发到
+  Kafka（consumer 侧按 `event_id` 幂等去重）。
 
 故障语义：
 
@@ -219,12 +253,20 @@ M10 使用 `context.Background()` 加超时发布，避免客户端断开导致 
 | `kafka` | broker / leader / 网络不可用 | retry 到 publish timeout，失败后 drop event + error log | `llm_gateway_usage_publish_total{backend="kafka",result="error"}` |
 | `async_kafka` | buffer 满 | 默认 drop oldest；可配置 block，但必须有 timeout | `llm_gateway_outbox_dropped_total{driver="async_kafka"}` / buffer depth |
 | `async_kafka` | 重试耗尽 | 写 DLQ topic；DLQ 失败则 error log + metric | `llm_gateway_outbox_dlq_total` |
+| `file_and_kafka` | broker / 网络不可用 | file 已 commit；Kafka 异步重试耗尽后写 DLQ（如配）或仅 metric；**数据不丢** | `llm_gateway_outbox_kafka_publish_error_total` |
+| `file_and_kafka` | 磁盘满 / IO error | **严重**——file commit 失败；仍尝试 Kafka 但返回 error；M10 计 `usage.publish.error` | `llm_gateway_outbox_file_error_total` |
+| `file_and_kafka` | 双失败 | file 错误返回给 M10；Kafka 错误吞掉到 metric | 上面两个 metric 同时升 |
+
+为什么不复用 `async_kafka + DLQ` 而要 `file_and_kafka`：DLQ 跟主 topic 在**同一个 broker 集群**上，broker 整个挂了 DLQ 一样写不进去。`file_and_kafka` 让 file 跟 broker 在不同故障域，broker 故障不丢数据。DLQ 在 dual-write 下退化成"单消息级错误兜底"（msg too large、schema invalid、ACL 拒绝等 broker 在线、消息本身有问题的场景），可选不必需。
 
 可靠性要求：
 
 - Usage event 是计费输入，必须优先保证可补偿。
 - 网关不能因为 outbox 短暂失败阻塞用户响应。
-- `file` driver 仅适合本地开发或临时排障；生产必须使用 `async_kafka` + DLQ，并监控队列长度、失败率、DLQ 数量。
+- `file` driver 仅适合本地开发或临时排障。
+- 生产必须使用 `file_and_kafka`：file 提供持久性兜底，Kafka 提供低延迟广播；并监控
+  `outbox_file_error_total`（严重，磁盘问题）、`outbox_kafka_publish_error_total`（数据
+  安全但需要 replay）、Kafka consumer lag。
 
 ## 6. Pricing
 
@@ -329,7 +371,7 @@ Usage Event 通道与 admin → gateway 配置传播的 [CDC（06 §8）](./06-p
 |------|--------------------|-----|
 | 数据流向 | gateway → 下游计费 | admin → gateway |
 | 触发源 | 请求完成后 M10 主动 publish | admin 写 MySQL 后 Debezium 捕获 binlog |
-| 传输 | Kafka topic `llm-gateway.usage` | Redis Stream `llm_gateway.llm_gateway.<table>` |
+| 传输 | Kafka topic `billing.usage.recorded.v1` | Redis Stream `llm_gateway.llm_gateway.<table>` |
 | 可靠性 | DLQ + 重试，失败不阻塞响应 | 最终一致 + L3 SQL 兜底，consumer 退避重连 |
 | schema 演进 | `schema_version` + 切新 topic | Debezium 自然兼容 unknown field |
 

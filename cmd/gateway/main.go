@@ -119,7 +119,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 
 	apikeyProvider := repo.NewSQLAPIKeyProvider(sqldb)
 
-	outbox, err := buildOutbox(srv, cfg.Outbox)
+	outbox, err := buildOutbox(srv, cfg.UsageEvents)
 	if err != nil {
 		return nil, nil, fmt.Errorf("usage outbox: %w", err)
 	}
@@ -178,8 +178,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	})
 
 	engine = router.NewEngine(router.Deps{
-		BodyLimit: cfg.Middleware.BodyLimitBytes,
-		Timeout:   cfg.Middleware.Timeout,
+		BodyLimit: cfg.Request.BodyLimitBytes,
+		Timeout:   cfg.Request.Timeout,
 
 		Auth: []middleware.AuthOption{
 			middleware.WithIdentityProvider(apikeyProvider),
@@ -367,10 +367,11 @@ func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister healt
 // buildContentLogger 按 cfg.Driver 构造 ContentLogger（返回 nil = 不开启）。
 //
 //   - none/"":  返回 nil，零开销（不挂 hooks）
-//   - file:     JSONL append 到本地文件
-//   - kafka:    发到 Kafka topic（生产推荐；topic 默认 llm-gateway.content）
+//   - file:     JSONL append 到本地文件；下游分流（S3 / Loki / Kafka 内容安全 /
+//               训练数据回流）交给 fluent-bit / vector，gateway 不内嵌 Kafka producer。
+//               理由见 docs/architecture/05-metering-billing.md §2。
 //
-// 找不到的 driver 直接 panic。
+// 找不到的 driver 直接 panic（启动期暴露配置错）。
 func buildContentLogger(srv *server.Server, cfg config.ContentLogConfig) *contentlog.Logger {
 	var pub contentlog.Publisher
 	switch cfg.Driver {
@@ -383,16 +384,6 @@ func buildContentLogger(srv *server.Server, cfg config.ContentLogConfig) *conten
 		}
 		srv.AddCloser("content-log-file", fp.Close)
 		pub = fp
-	case "kafka":
-		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
-		if err != nil {
-			panic(fmt.Sprintf("content_log: kafka producer: %v", err))
-		}
-		topic := cfg.Kafka.Topic
-		if topic == "" {
-			topic = "llm-gateway.content"
-		}
-		pub = contentlog.NewKafkaPublisher(producer, topic)
 	default:
 		panic("unknown content_log driver: " + cfg.Driver)
 	}
@@ -461,7 +452,7 @@ func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 //   - file: file 句柄关闭
 //   - kafka: producer 关闭由 srv.NewKafkaProducer 自动注册；KafkaOutbox 自身共享
 //     producer 引用，不再额外 AddCloser（避免双关）。
-func buildOutbox(srv *server.Server, cfg config.OutboxConfig) (usage.OutboxPublisher, error) {
+func buildOutbox(srv *server.Server, cfg config.UsageEventsConfig) (usage.OutboxPublisher, error) {
 	switch cfg.Driver {
 	case "file":
 		ob, err := usage.NewFileOutbox(cfg.File.Path)
@@ -487,7 +478,30 @@ func buildOutbox(srv *server.Server, cfg config.OutboxConfig) (usage.OutboxPubli
 			return ob, nil
 		}
 		return usage.NewKafkaOutbox(producer, cfg.Kafka.Topic), nil
+	case "file_and_kafka":
+		// dual-write：file 是 source of truth（sync commit），Kafka 是 best-effort 异步广播。
+		// broker 挂了仍能 commit；外部 replay 工具读 file 补发（详见 docs/05 §5）。
+		fileSink, err := usage.NewFileOutbox(cfg.File.Path)
+		if err != nil {
+			return nil, fmt.Errorf("file_and_kafka: file sink: %w", err)
+		}
+		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
+		if err != nil {
+			return nil, fmt.Errorf("file_and_kafka: kafka producer: %w", err)
+		}
+		// kafka 段一律走 async：dual-write 模式下 Kafka 是 best-effort，不应阻塞 file commit
+		kafkaSink := usage.NewAsyncKafkaOutbox(producer, cfg.Kafka.Topic, usage.AsyncOptions{
+			BufferSize:  cfg.Kafka.BufferSize,
+			MaxRetries:  cfg.Kafka.MaxRetries,
+			BackoffBase: cfg.Kafka.BackoffBase,
+			DLQTopic:    cfg.Kafka.DLQTopic, // 可选；file 已是 truth，DLQ 仅做单消息级兜底
+			Logger:      slog.Default(),
+		})
+		srv.AddCloser("dual-kafka-async", kafkaSink.Close)
+		ob := usage.NewDualWriteOutbox(fileSink, kafkaSink, slog.Default())
+		srv.AddCloser("dual-file-outbox", ob.Close) // 只关 file；kafka 由上面那行管
+		return ob, nil
 	default:
-		return nil, fmt.Errorf("unknown outbox driver %q (want file|kafka)", cfg.Driver)
+		return nil, fmt.Errorf("unknown usage_events driver %q (want file|kafka|async_kafka|file_and_kafka)", cfg.Driver)
 	}
 }

@@ -13,7 +13,8 @@ server:
   read_header_timeout: 10s
   shutdown_timeout: 60s         # 生产留更长 drain 时间给长连接
 
-middleware:
+request:
+  # per-request HTTP 默认限制（M1 之前的 router 层 body 拒 + 包整条 M1-M10 链的全局 timeout）
   body_limit_bytes: 5242880     # 5 MiB（生产保守）
   timeout: 90s                  # 长 LLM 响应留余量
 
@@ -22,12 +23,19 @@ database:
   driver: mysql
   dsn: "llm_gateway:CHANGE_ME@tcp(db:3306)/llm_gateway?parseTime=true&charset=utf8mb4&tls=preferred"
 
-outbox:
-  # 生产建议 kafka：usage 事件流入下游计费 / 审计 / 监控管道。
-  driver: kafka
+usage_events:
+  # 生产推荐 dual-write（Transactional Outbox Pattern）：file 是 source of truth，
+  # Kafka 是异步广播。broker 故障域 ⊥ disk 故障域，不会同时丢；broker 挂了
+  # 由外部 replay 工具读 file 补发（详见 docs/05 §5）。
+  # topic 按"领域.实体.事件.版本"命名，跟生产者服务名解耦。
+  driver: file_and_kafka
+  file:
+    path: /var/log/llm-gateway/usage.jsonl   # 生产挂 PV / EBS；外部 logrotate 管轮转
   kafka:
     brokers: ["broker1:9092", "broker2:9092", "broker3:9092"]
-    topic: llm-gateway.usage
+    topic: billing.usage.recorded.v1
+    async: true
+    dlq_topic: billing.usage.recorded.v1.dlq
   # 想本地起步也可用 file：
   # driver: file
   # file:
