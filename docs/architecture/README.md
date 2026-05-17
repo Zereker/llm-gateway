@@ -15,6 +15,7 @@
 | 06 | [pluggable-infra](06-pluggable-infra.md) | DB、Redis、Kafka、OTel、预算和审核的注入点 |
 | 07 | [configuration](07-configuration.md) | gateway/admin 配置 schema、环境变量覆盖、校验规则 |
 | 08 | [observability](08-observability.md) | 日志、指标、trace、Usage Event、Content Log 观测契约 |
+| 09 | [billing-aggregation](09-billing-aggregation.md) | 下游 Flink job 消费 usage event、按 event-time tumbling window 聚合、按主账号分批的账单批次规范 |
 
 ## 目标实现重点
 

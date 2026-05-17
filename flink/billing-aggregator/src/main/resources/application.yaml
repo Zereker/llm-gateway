@@ -1,0 +1,63 @@
+# billing-aggregator runtime config — contract: docs/architecture/09-billing-aggregation.md §10
+#
+# v0.1 status: NOT yet loaded by Main.java (config is hard-coded in AppConfig.hardcoded()).
+# This file is the target schema for the YAML loader to be added in v0.2.
+#
+# Secrets MUST come from env vars; do not commit real credentials.
+
+job:
+  name: billing-aggregator
+  parallelism: 4
+  checkpoint:
+    interval: 60s
+    mode: EXACTLY_ONCE
+    timeout: 5m
+
+source:
+  type: kafka
+  bootstrap_servers: ["kafka-broker-0:9092", "kafka-broker-1:9092"]
+  topic: billing.usage.recorded.v1
+  group_id: billing-aggregator
+  start_offset: earliest
+  properties:
+    enable.auto.commit: false
+
+window:
+  size: 1h
+  allowed_lateness: 10m
+  out_of_orderness: 1m
+
+pricing:
+  jdbc:
+    url:      "jdbc:mysql://admin-db:3306/llm_gateway?useUnicode=true&characterEncoding=utf8mb4"
+    username: "${PRICING_DB_USER}"
+    password: "${PRICING_DB_PASSWORD}"
+    pool:
+      max_size: 16
+      connection_timeout: 5s
+  rule_class: standard
+  cache:
+    max_size: 50000
+    ttl: 1h
+  retry:
+    max_attempts: 3
+    backoff_initial: 100ms
+    backoff_max: 2s
+  db_semaphore_permits: 16
+
+sink:
+  driver: log              # log | kafka | http
+  log:
+    path: /var/log/billing-aggregator/batches.jsonl
+    rotate_size: 100MB
+    compress_rotated: true
+
+dlq:
+  driver: log
+  log:
+    path: /var/log/billing-aggregator/dlq.jsonl
+
+observability:
+  metrics:
+    reporter: prometheus
+    port: 9249
