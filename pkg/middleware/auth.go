@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/baggage"
-	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -28,7 +28,7 @@ func (f authOptionFunc) apply(c *authConfig) { f(c) }
 // authConfig Auth middleware 私有配置。
 type authConfig struct {
 	provider       repo.IdentityProvider
-	tracerProvider oteltrace.TracerProvider
+	tracerProvider trace.TracerProvider
 }
 
 // WithIdentityProvider 注入 IdentityProvider 实现。必填；缺则 Auth() 构造期 panic。
@@ -37,7 +37,7 @@ func WithIdentityProvider(p repo.IdentityProvider) AuthOption {
 }
 
 // WithAuthTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
-func WithAuthTracerProvider(tp oteltrace.TracerProvider) AuthOption {
+func WithAuthTracerProvider(tp trace.TracerProvider) AuthOption {
 	return authOptionFunc(func(c *authConfig) {
 		if tp != nil {
 			c.tracerProvider = tp
