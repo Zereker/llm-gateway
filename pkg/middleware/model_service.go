@@ -111,7 +111,11 @@ func AdaptRepoCatalog(p repo.ModelServiceReader) ModelCatalog {
 type repoCatalogAdapter struct{ p repo.ModelServiceReader }
 
 func (a repoCatalogAdapter) GetByModel(ctx context.Context, model string) (*domain.ModelService, error) {
-	return a.p.GetByModel(ctx, model)
+	ms, err := a.p.GetByModel(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+	return repo.ToDomainModelService(ms), nil
 }
 
 // AdaptRepoSubscriptions 把 repo.SubscriptionProvider 适配为 SubscriptionChecker。

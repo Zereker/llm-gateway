@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 func TestStaticAPIKey_AuthHeader(t *testing.T) {
@@ -22,7 +22,7 @@ func TestStaticAPIKey_AuthHeader(t *testing.T) {
 }
 
 func TestNewTokenProvider_GeminiKey_Happy(t *testing.T) {
-	auth, _ := repo.EncodePayload(repo.AuthTypeGeminiKey, repo.GeminiAuth{APIKey: "ai-key"})
+	auth, _ := domain.EncodePayload(domain.AuthTypeGeminiKey, domain.GeminiAuth{APIKey: "ai-key"})
 	tp, err := newTokenProvider(context.Background(), auth)
 	if err != nil {
 		t.Fatalf("err=%v", err)
@@ -37,35 +37,35 @@ func TestNewTokenProvider_GeminiKey_Happy(t *testing.T) {
 }
 
 func TestNewTokenProvider_GeminiKey_EmptyAPIKey_Error(t *testing.T) {
-	auth, _ := repo.EncodePayload(repo.AuthTypeGeminiKey, repo.GeminiAuth{APIKey: ""})
+	auth, _ := domain.EncodePayload(domain.AuthTypeGeminiKey, domain.GeminiAuth{APIKey: ""})
 	if _, err := newTokenProvider(context.Background(), auth); err == nil {
 		t.Fatal("expected err for empty api key")
 	}
 }
 
 func TestNewTokenProvider_GeminiKey_BadPayload_Error(t *testing.T) {
-	auth := repo.AuthConfig{Type: repo.AuthTypeGeminiKey, Payload: []byte(`not json`)}
+	auth := domain.AuthConfig{Type: domain.AuthTypeGeminiKey, Payload: []byte(`not json`)}
 	if _, err := newTokenProvider(context.Background(), auth); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }
 
 func TestNewTokenProvider_OAuth2SA_EmptySAJSON_Error(t *testing.T) {
-	auth, _ := repo.EncodePayload(repo.AuthTypeOAuth2SA, repo.OAuth2SAAuth{ServiceAccountJSON: ""})
+	auth, _ := domain.EncodePayload(domain.AuthTypeOAuth2SA, domain.OAuth2SAAuth{ServiceAccountJSON: ""})
 	if _, err := newTokenProvider(context.Background(), auth); err == nil {
 		t.Fatal("expected err for empty SA JSON")
 	}
 }
 
 func TestNewTokenProvider_OAuth2SA_BadPayload_Error(t *testing.T) {
-	auth := repo.AuthConfig{Type: repo.AuthTypeOAuth2SA, Payload: []byte(`bad`)}
+	auth := domain.AuthConfig{Type: domain.AuthTypeOAuth2SA, Payload: []byte(`bad`)}
 	if _, err := newTokenProvider(context.Background(), auth); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }
 
 func TestNewTokenProvider_UnsupportedType_Error(t *testing.T) {
-	auth := repo.AuthConfig{Type: "bearer"} // bearer 不在 gemini 支持列表里
+	auth := domain.AuthConfig{Type: "bearer"} // bearer 不在 gemini 支持列表里
 	if _, err := newTokenProvider(context.Background(), auth); err == nil {
 		t.Fatal("expected err for unsupported type")
 	}

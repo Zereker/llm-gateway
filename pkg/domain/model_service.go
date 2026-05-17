@@ -1,8 +1,14 @@
 package domain
 
-import "github.com/zereker/llm-gateway/pkg/repo"
+import "time"
 
-// ModelService 是 repo.ModelService 的别名（真实定义在 pkg/repo）。
-//
-// 老名 "Snapshot" 暗示"配置快照"语义；新代码可直接用 repo.ModelService。
-type ModelService = repo.ModelService
+// ModelService 全局模型 catalog 条目（docs/06 §3 业务结构）。
+type ModelService struct {
+	ID        int64
+	ServiceID string
+	Model     string
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt *time.Time
+}

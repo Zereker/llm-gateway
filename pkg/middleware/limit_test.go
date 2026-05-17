@@ -39,7 +39,7 @@ func attachM6Inputs(model string, accountPolicy, apikeyPolicy *int64) gin.Handle
 			Model:          model,
 			RawBytes:       []byte(`{"model":"` + model + `"}`),
 		}
-		rc.ModelService = &repo.ModelService{ID: 1, Model: model}
+		rc.ModelService = &domain.ModelService{ID: 1, Model: model}
 		c.Next()
 	}
 }

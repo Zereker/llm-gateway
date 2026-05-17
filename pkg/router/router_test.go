@@ -73,7 +73,7 @@ func minDeps() Deps {
 			middleware.WithSubscriptionChecker(stubSubscriptions{}),
 		},
 		Schedule: []middleware.ScheduleOption{
-			middleware.WithEndpointReader(middleware.AdaptRepoEndpoints(stubEPProvider{})),
+			middleware.WithEndpointReader(stubEPProvider{}),
 			middleware.WithFallbackCatalog(stubMSProvider{}),
 			middleware.WithFallbackSubscriptionChecker(stubSubscriptions{}),
 			middleware.WithScheduler(schedule.New(schedule.Config{})),
