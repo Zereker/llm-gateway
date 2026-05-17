@@ -54,7 +54,7 @@ func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 		}
 
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "llm-gateway.moderation")
+		ctx, end := startSpan(rc.Ctx, "moderation.check")
 		defer end()
 		rc.Ctx = ctx
 

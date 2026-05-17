@@ -130,7 +130,7 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 	}
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "llm-gateway.schedule")
+		ctx, end := startSpan(rc.Ctx, "schedule.pick")
 		defer end()
 		rc.Ctx = ctx
 

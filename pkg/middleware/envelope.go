@@ -55,7 +55,7 @@ func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerF
 func Envelope() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "llm-gateway.envelope")
+		ctx, end := startSpan(rc.Ctx, "envelope.parse")
 		defer end()
 		rc.Ctx = ctx
 

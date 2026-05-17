@@ -60,7 +60,7 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "llm-gateway.limit")
+		ctx, end := startSpan(rc.Ctx, "ratelimit.reserve")
 		defer end()
 		rc.Ctx = ctx
 

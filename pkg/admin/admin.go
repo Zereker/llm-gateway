@@ -16,6 +16,7 @@ package admin
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Deps 是 NewEngine 的依赖集合。
@@ -69,4 +70,6 @@ func NewEngine(deps Deps) *gin.Engine {
 func registerOpsRoutes(engine *gin.Engine) {
 	engine.GET("/healthz", func(c *gin.Context) { c.String(200, "ok") })
 	engine.GET("/readyz", func(c *gin.Context) { c.String(200, "ok") })
+	// docs/08 §3: Prometheus metrics 暴露给抓取
+	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 }

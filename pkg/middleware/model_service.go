@@ -60,7 +60,7 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "llm-gateway.model_service")
+		ctx, end := startSpan(rc.Ctx, "catalog.resolve")
 		defer end()
 		rc.Ctx = ctx
 

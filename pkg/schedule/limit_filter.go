@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
@@ -50,7 +51,8 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 
 	states, err := f.store.SnapshotBatch(ctx, allBuckets)
 	if err != nil {
-		// fail-open：Redis 错时保留所有候选
+		// fail-open：Redis 错时保留所有候选（docs/04 §8）
+		metric.Inc(metric.RateLimitFailOpenTotal, "scope", "endpoint", "dimension", "any")
 		return candidates
 	}
 

@@ -52,7 +52,7 @@ func Budget(opts ...BudgetOption) gin.HandlerFunc {
 		}
 
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "llm-gateway.budget")
+		ctx, end := startSpan(rc.Ctx, "budget.check")
 		defer end()
 		rc.Ctx = ctx
 
