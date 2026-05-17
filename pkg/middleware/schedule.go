@@ -532,5 +532,9 @@ func AdaptRepoEndpoints(p repo.EndpointReader) EndpointReader {
 type repoEndpointAdapter struct{ p repo.EndpointReader }
 
 func (a repoEndpointAdapter) ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error) {
-	return a.p.ListForModel(ctx, model, group)
+	rows, err := a.p.ListForModel(ctx, model, group)
+	if err != nil {
+		return nil, err
+	}
+	return repo.ToDomainEndpoints(rows), nil
 }

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // =============================================================================
@@ -83,7 +82,7 @@ func (s *stubCooldown) InCooldown(_ context.Context, ids []int64) (map[int64]boo
 }
 
 func ep(id int64, weight uint32) *domain.Endpoint {
-	return &repo.Endpoint{ID: id, Vendor: "openai", Model: "gpt-4o", Weight: weight}
+	return &domain.Endpoint{ID: id, Vendor: "openai", Model: "gpt-4o", Weight: weight}
 }
 
 func candidates(eps ...*domain.Endpoint) []Candidate {

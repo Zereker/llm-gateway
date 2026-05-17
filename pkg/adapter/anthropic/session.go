@@ -9,7 +9,6 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // **Anthropic API 必需的版本头**：admin 不需要配；adapter 自动加。
@@ -41,10 +40,10 @@ func (s *session) BuildRequest(body []byte) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("anthropic: ep.routing.url empty")
 	}
-	if s.ep.Auth.Type != repo.AuthTypeXAPIKey {
-		return nil, fmt.Errorf("anthropic: unsupported auth type %q (want %q)", s.ep.Auth.Type, repo.AuthTypeXAPIKey)
+	if s.ep.Auth.Type != domain.AuthTypeXAPIKey {
+		return nil, fmt.Errorf("anthropic: unsupported auth type %q (want %q)", s.ep.Auth.Type, domain.AuthTypeXAPIKey)
 	}
-	apikey, err := repo.DecodePayload[repo.XAPIKeyAuth](s.ep.Auth)
+	apikey, err := domain.DecodePayload[domain.XAPIKeyAuth](s.ep.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: decode x-api-key: %w", err)
 	}

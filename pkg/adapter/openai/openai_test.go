@@ -8,7 +8,6 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // **v0.5 slim 后**：openai adapter 只剩 BuildRequest + Close。
@@ -18,14 +17,14 @@ import (
 
 // bearerEP 构造一个带 Bearer 鉴权的 OpenAI Endpoint。
 func bearerEP(url, key string) *domain.Endpoint {
-	auth, err := repo.EncodePayload(repo.AuthTypeBearer, repo.BearerAuth{APIKey: key})
+	auth, err := domain.EncodePayload(domain.AuthTypeBearer, domain.BearerAuth{APIKey: key})
 	if err != nil {
 		panic(err)
 	}
 	return &domain.Endpoint{
 		Vendor:  "openai",
 		Auth:    auth,
-		Routing: repo.RoutingConfig{URL: url},
+		Routing: domain.RoutingConfig{URL: url},
 	}
 }
 
@@ -79,11 +78,11 @@ func TestSession_NoAPIKeyOmitsHeader(t *testing.T) {
 }
 
 func TestSession_RejectsNonBearerAuth(t *testing.T) {
-	auth, _ := repo.EncodePayload(repo.AuthTypeXAPIKey, repo.XAPIKeyAuth{APIKey: "k"})
+	auth, _ := domain.EncodePayload(domain.AuthTypeXAPIKey, domain.XAPIKeyAuth{APIKey: "k"})
 	ep := &domain.Endpoint{
 		Vendor:  "anthropic",
 		Auth:    auth,
-		Routing: repo.RoutingConfig{URL: "u"},
+		Routing: domain.RoutingConfig{URL: "u"},
 	}
 	s := newSession(context.Background(), ep, &domain.RequestEnvelope{})
 	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {

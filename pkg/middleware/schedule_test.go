@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/repo"
 	"github.com/zereker/llm-gateway/pkg/schedule"
 	"github.com/zereker/llm-gateway/pkg/upstream"
 )
@@ -93,7 +92,7 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 			Model:          model,
 			RawBytes:       []byte(`{"model":"` + model + `"}`),
 		}
-		rc.ModelService = &repo.ModelService{ID: 1, Model: model}
+		rc.ModelService = &domain.ModelService{ID: 1, Model: model}
 		rc.RateLimit = &domain.RateLimitState{}
 		c.Next()
 	}
@@ -102,7 +101,7 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 func defaultScheduleOpts(scheduler schedule.Scheduler, eps map[string][]*domain.Endpoint) []ScheduleOption {
 	return []ScheduleOption{
 		WithEndpointReader(stubEndpointReader{eps: eps}),
-		WithFallbackCatalog(stubCatalog{ms: &repo.ModelService{ID: 1, Model: "gpt-4o"}}),
+		WithFallbackCatalog(stubCatalog{ms: &domain.ModelService{ID: 1, Model: "gpt-4o"}}),
 		WithFallbackSubscriptionChecker(stubSubs{has: true}),
 		WithScheduler(scheduler),
 		WithSender(upstream.New()),
@@ -141,7 +140,7 @@ func TestSchedule_500_M3orM5Missing(t *testing.T) {
 func TestSchedule_ListError_503(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(
 		WithEndpointReader(stubEndpointReader{err: errors.New("db down")}),
-		WithFallbackCatalog(stubCatalog{ms: &repo.ModelService{ID: 1}}),
+		WithFallbackCatalog(stubCatalog{ms: &domain.ModelService{ID: 1}}),
 		WithFallbackSubscriptionChecker(stubSubs{has: true}),
 		WithScheduler(&stubScheduler{}),
 		WithSender(upstream.New()),
@@ -264,11 +263,11 @@ func TestRoutedModelOf(t *testing.T) {
 	if routedModelOf(rc) != "" {
 		t.Error("empty RC should return empty")
 	}
-	rc.ModelService = &repo.ModelService{Model: "primary"}
+	rc.ModelService = &domain.ModelService{Model: "primary"}
 	if routedModelOf(rc) != "primary" {
 		t.Error("falls back to ModelService")
 	}
-	rc.RoutedModelService = &repo.ModelService{Model: "routed"}
+	rc.RoutedModelService = &domain.ModelService{Model: "routed"}
 	if routedModelOf(rc) != "routed" {
 		t.Error("prefers RoutedModelService")
 	}

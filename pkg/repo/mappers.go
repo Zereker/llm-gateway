@@ -1,0 +1,98 @@
+package repo
+
+import (
+	"github.com/zereker/llm-gateway/pkg/domain"
+)
+
+// mappers.go: 把 SQL-layer struct（带 db/gorm tag + Scanner/Valuer）映射为 domain
+// 业务结构（docs/06 §3 — domain 不引用 repo，repo 在边界做转换）。
+//
+// 所有 repo 接口返回 *domain.X，consumer 不再看到 SQL tag / 加密细节。
+
+// ToDomainEndpoint 把 repo.Endpoint (SQL row) → *domain.Endpoint。
+func ToDomainEndpoint(e *Endpoint) *domain.Endpoint {
+	if e == nil {
+		return nil
+	}
+	return &domain.Endpoint{
+		ID:           e.ID,
+		Name:         e.Name,
+		Vendor:       e.Vendor,
+		Model:        e.Model,
+		Group:        e.Group,
+		Weight:       e.Weight,
+		Enabled:      e.Enabled,
+		Auth:         domain.AuthConfig{Type: e.Auth.Type, Payload: e.Auth.Payload},
+		Routing:      domain.RoutingConfig(e.Routing),
+		Quota:        domain.QuotaConfig(e.Quota),
+		Capabilities: domain.EndpointCapabilities(e.Capabilities),
+		Extra:        []byte(e.Extra),
+		CreatedAt:    e.CreatedAt,
+		UpdatedAt:    e.UpdatedAt,
+		DeletedAt:    e.DeletedAt,
+	}
+}
+
+// ToDomainEndpoints 批量映射。
+func ToDomainEndpoints(rows []*Endpoint) []*domain.Endpoint {
+	if rows == nil {
+		return nil
+	}
+	out := make([]*domain.Endpoint, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ToDomainEndpoint(r))
+	}
+	return out
+}
+
+// ToDomainModelService 把 SQL row → domain.ModelService。
+func ToDomainModelService(m *ModelService) *domain.ModelService {
+	if m == nil {
+		return nil
+	}
+	return &domain.ModelService{
+		ID:        m.ID,
+		ServiceID: m.ServiceID,
+		Model:     m.Model,
+		CreatedAt: m.CreatedAt,
+		UpdatedAt: m.UpdatedAt,
+		DeletedAt: m.DeletedAt,
+	}
+}
+
+// ToDomainModelServices 批量。
+func ToDomainModelServices(rows []*ModelService) []*domain.ModelService {
+	if rows == nil {
+		return nil
+	}
+	out := make([]*domain.ModelService, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ToDomainModelService(r))
+	}
+	return out
+}
+
+// =============================================================================
+// 反向映射：domain → repo（admin POST 把客户端 DTO 转 SQL row）
+// =============================================================================
+
+// FromDomainEndpoint domain.Endpoint → repo.Endpoint。
+func FromDomainEndpoint(e *domain.Endpoint) *Endpoint {
+	if e == nil {
+		return nil
+	}
+	return &Endpoint{
+		ID:           e.ID,
+		Name:         e.Name,
+		Vendor:       e.Vendor,
+		Model:        e.Model,
+		Group:        e.Group,
+		Weight:       e.Weight,
+		Enabled:      e.Enabled,
+		Auth:         AuthConfig{Type: e.Auth.Type, Payload: e.Auth.Payload},
+		Routing:      RoutingConfig(e.Routing),
+		Quota:        QuotaConfig(e.Quota),
+		Capabilities: EndpointCapabilities(e.Capabilities),
+		// Extra 走 datatypes.JSON；如果 caller 没填留空
+	}
+}

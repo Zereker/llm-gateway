@@ -26,6 +26,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/config"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
+	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/health"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
@@ -127,7 +128,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	stats, scorer := buildScoring(cfg.Scoring)
 
 	// Health Probing（docs/03 §10）：未启用时不启动 prober
-	startHealthProber(srv, cfg.Health, repo.NewSQLEndpointReader(sqldb), stats)
+	startHealthProber(srv, cfg.Health, healthListerAdapter{p: repo.NewSQLEndpointReader(sqldb)}, stats)
 
 	// Sender 装配：Content Logger 通过 hooks 接入字节流（可选）
 	senderOpts := []upstream.Option{}
@@ -264,6 +265,17 @@ func buildScoring(cfg config.ScoringConfig) (schedule.EndpointStatsStore, schedu
 	}
 	scorer := schedule.NewDefaultScorer(store, cfg.MinSamples, baselineMs)
 	return store, scorer
+}
+
+// healthListerAdapter 把 repo.EndpointReader → health.EndpointLister（List 返 domain.Endpoint）。
+type healthListerAdapter struct{ p repo.EndpointReader }
+
+func (a healthListerAdapter) List(ctx context.Context) ([]*domain.Endpoint, error) {
+	rows, err := a.p.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return repo.ToDomainEndpoints(rows), nil
 }
 
 // startHealthProber 按 cfg 启动 Health Prober（docs/03 §10）。

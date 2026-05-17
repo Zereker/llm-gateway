@@ -8,18 +8,17 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 func mkXAPIKeyEP(url, key string) *domain.Endpoint {
-	auth, err := repo.EncodePayload(repo.AuthTypeXAPIKey, repo.XAPIKeyAuth{APIKey: key})
+	auth, err := domain.EncodePayload(domain.AuthTypeXAPIKey, domain.XAPIKeyAuth{APIKey: key})
 	if err != nil {
 		panic(err)
 	}
 	return &domain.Endpoint{
 		Vendor:  "anthropic",
 		Auth:    auth,
-		Routing: repo.RoutingConfig{URL: url},
+		Routing: domain.RoutingConfig{URL: url},
 	}
 }
 
@@ -75,8 +74,8 @@ func TestSession_BuildRequest_EmptyURL_Error(t *testing.T) {
 }
 
 func TestSession_BuildRequest_WrongAuthType_Error(t *testing.T) {
-	auth, _ := repo.EncodePayload(repo.AuthTypeBearer, repo.BearerAuth{APIKey: "k"})
-	ep := &domain.Endpoint{Auth: auth, Routing: repo.RoutingConfig{URL: "u"}}
+	auth, _ := domain.EncodePayload(domain.AuthTypeBearer, domain.BearerAuth{APIKey: "k"})
+	ep := &domain.Endpoint{Auth: auth, Routing: domain.RoutingConfig{URL: "u"}}
 	s := newSession(context.Background(), ep)
 	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
 		t.Fatal("expected err for wrong auth type")
@@ -94,11 +93,11 @@ func TestSession_BuildRequest_EmptyAPIKey_Error(t *testing.T) {
 func TestSession_BuildRequest_BadPayload_Error(t *testing.T) {
 	// 故意构造一个 payload 不是 XAPIKeyAuth JSON
 	ep := &domain.Endpoint{
-		Auth: repo.AuthConfig{
-			Type:    repo.AuthTypeXAPIKey,
+		Auth: domain.AuthConfig{
+			Type:    domain.AuthTypeXAPIKey,
 			Payload: []byte(`not json`),
 		},
-		Routing: repo.RoutingConfig{URL: "u"},
+		Routing: domain.RoutingConfig{URL: "u"},
 	}
 	s := newSession(context.Background(), ep)
 	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {

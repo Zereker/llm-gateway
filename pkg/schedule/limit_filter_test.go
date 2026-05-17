@@ -9,7 +9,6 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // localStubStore SnapshotBatch-only stub；reserve / charge 全部不实现（不会被调）。
@@ -146,7 +145,7 @@ func TestEndpointReserveBuckets_NoTPMInReserve(t *testing.T) {
 func TestEndpointReserveBuckets_RPS(t *testing.T) {
 	e := ep(7, 100)
 	rps := uint32(10)
-	e.Quota = repo.QuotaConfig{RPS: &rps}
+	e.Quota = domain.QuotaConfig{RPS: &rps}
 	bs := EndpointReserveBuckets(e)
 	if len(bs) != 1 || !strings.HasSuffix(bs[0].Key, ":rps") {
 		t.Errorf("buckets=%+v", bs)

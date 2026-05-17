@@ -10,7 +10,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // tokenProvider Gemini 的认证抽象——三种凭证形态：
@@ -27,10 +27,10 @@ type tokenProvider interface {
 }
 
 // newTokenProvider 按 auth.type 构造合适的 provider。
-func newTokenProvider(ctx context.Context, auth repo.AuthConfig) (tokenProvider, error) {
+func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvider, error) {
 	switch auth.Type {
-	case repo.AuthTypeGeminiKey:
-		var p repo.GeminiAuth
+	case domain.AuthTypeGeminiKey:
+		var p domain.GeminiAuth
 		if err := json.Unmarshal(auth.Payload, &p); err != nil {
 			return nil, fmt.Errorf("gemini-key payload: %w", err)
 		}
@@ -39,9 +39,9 @@ func newTokenProvider(ctx context.Context, auth repo.AuthConfig) (tokenProvider,
 		}
 		return staticAPIKey{key: p.APIKey}, nil
 
-	case repo.AuthTypeVertexADC:
+	case domain.AuthTypeVertexADC:
 		// payload 可选 scopes；不填走 default
-		var p repo.VertexADCAuth
+		var p domain.VertexADCAuth
 		if len(auth.Payload) > 0 {
 			_ = json.Unmarshal(auth.Payload, &p) // 失败忽略，用 default scopes
 		}
@@ -55,8 +55,8 @@ func newTokenProvider(ctx context.Context, auth repo.AuthConfig) (tokenProvider,
 		}
 		return &oauthBearer{ts: creds.TokenSource}, nil
 
-	case repo.AuthTypeOAuth2SA:
-		var p repo.OAuth2SAAuth
+	case domain.AuthTypeOAuth2SA:
+		var p domain.OAuth2SAAuth
 		if err := json.Unmarshal(auth.Payload, &p); err != nil {
 			return nil, fmt.Errorf("oauth2-sa payload: %w", err)
 		}
@@ -74,7 +74,7 @@ func newTokenProvider(ctx context.Context, auth repo.AuthConfig) (tokenProvider,
 
 	default:
 		return nil, fmt.Errorf("gemini adapter: unsupported auth type %q (want %s|%s|%s)",
-			auth.Type, repo.AuthTypeGeminiKey, repo.AuthTypeVertexADC, repo.AuthTypeOAuth2SA)
+			auth.Type, domain.AuthTypeGeminiKey, domain.AuthTypeVertexADC, domain.AuthTypeOAuth2SA)
 	}
 }
 
