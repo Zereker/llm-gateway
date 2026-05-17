@@ -64,11 +64,17 @@ func TestSQLModelServiceReader_GetByModel(t *testing.T) {
 
 func TestSQLModelServiceReader_GetNotFound(t *testing.T) {
 	r := NewSQLModelServiceReader(newTestDB(t))
-	if _, err := r.GetByModel(context.Background(), "missing"); err == nil {
-		t.Fatal("want not-found error")
+	// docs/01 §7：not-found 返 (nil, nil) 让 M5 走自己的 404 路径，
+	// SQL 错才返 err（fail-closed 503）。
+	ms, err := r.GetByModel(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("not-found should not be an error: %v", err)
+	}
+	if ms != nil {
+		t.Fatalf("not-found should return nil ms, got %+v", ms)
 	}
 	if _, err := r.GetByModel(context.Background(), ""); err == nil {
-		t.Fatal("want error for empty model")
+		t.Fatal("want error for empty model name (input validation)")
 	}
 }
 
@@ -97,8 +103,13 @@ func TestSQLModelServiceReader_SkipsDeleted(t *testing.T) {
 	}
 
 	r := NewSQLModelServiceReader(db)
-	if _, err := r.GetByModel(context.Background(), "m"); err == nil {
-		t.Error("expected not-found for soft-deleted")
+	// 软删 = 找不到 = (nil, nil)
+	ms, err := r.GetByModel(context.Background(), "m")
+	if err != nil {
+		t.Errorf("soft-deleted lookup should not error: %v", err)
+	}
+	if ms != nil {
+		t.Errorf("expected nil for soft-deleted, got %+v", ms)
 	}
 	all, _ := r.List(context.Background())
 	if len(all) != 0 {
