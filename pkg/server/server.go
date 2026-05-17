@@ -35,6 +35,7 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/zereker/llm-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
 // Server 持有 closer 链 + 日志器；不强制单例，每个 binary 各自 New 一个。
@@ -164,7 +165,9 @@ func (s *Server) serveCtx(ctx context.Context, addr string, handler http.Handler
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
+		// docs/08 §3: shutdown 超时强切的请求计数（route 维度未知，统一 "*"）
 		s.log.Warn("http shutdown", "err", err)
+		metric.Inc(metric.RequestAbortedByShutdown, "route", "*")
 	}
 	s.Close()
 	return serveErr

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/schedule"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
@@ -43,6 +45,8 @@ func (s *Sender) Send(
 	// 设计一致，让 panic 走调用栈到 M9 兜底。
 	defer func() {
 		s.hooks.fireComplete(ctx, ep, out)
+		// docs/08 §3: upstream_requests_total / upstream_duration_seconds
+		emitUpstreamMetrics(ep, out)
 	}()
 
 	// ClientRequest fan-out：最早期，无论后续 factory / translator 走不走得通都触发。
@@ -154,6 +158,39 @@ func (s *Sender) Send(
 		Translator: trans,
 	}
 	return out, nil
+}
+
+// emitUpstreamMetrics 发 docs/08 §3 的 upstream_requests_total + upstream_duration_seconds。
+//
+// 调用时机：Send defer 收尾时（成功 / 失败都触发）；标签维度按 docs §3 配置。
+func emitUpstreamMetrics(ep *domain.Endpoint, out Outcome) {
+	if ep == nil {
+		return
+	}
+	vendor := ep.Vendor
+	endpointID := strconv.FormatInt(ep.ID, 10)
+	model := ep.Model
+	result := "ok"
+	errClass := ""
+	if out.Class != schedule.ClassSuccess {
+		result = "error"
+		errClass = out.Class.String()
+	}
+	metric.Inc(metric.UpstreamRequestsTotal,
+		"vendor", vendor,
+		"endpoint_id", endpointID,
+		"model", model,
+		"native_protocol", "", // 暂留空；adapter.Factory.Metadata().NativeProtocol 可填
+		"result", result,
+		"error_class", errClass,
+	)
+	metric.Observe(metric.UpstreamDurationSeconds, out.Latency.Seconds(),
+		"vendor", vendor,
+		"endpoint_id", endpointID,
+		"model", model,
+		"result", result,
+		"error_class", errClass,
+	)
 }
 
 // peekBodyForClassify 错误响应时小量读 body（≤4KiB）让 adapter Classifier 解析；

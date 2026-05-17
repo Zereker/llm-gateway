@@ -52,7 +52,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 
 		rc := GetRequestContext(c)
 
-		ctx, end := startSpan(rc.Ctx, "llm-gateway.tracing")
+		ctx, end := startSpan(rc.Ctx, "tracing.commit")
 		defer end()
 		rc.Ctx = ctx
 

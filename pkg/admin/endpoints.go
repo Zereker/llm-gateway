@@ -4,6 +4,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
 // registerEndpointRoutes 注册 /admin/v1/endpoints CRUD。
@@ -75,6 +77,7 @@ func createEndpoint(s *EndpointStore) gin.HandlerFunc {
 		dto.ID = 0 // server-assigned；忽略客户端传值
 		ep := dtoToEp(dto)
 		if err := s.Create(c.Request.Context(), ep); err != nil {
+			metric.Inc(metric.EndpointMisconfiguredTotal, "vendor", dto.Vendor, "reason", "create_rejected")
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}

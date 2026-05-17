@@ -247,7 +247,53 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
 	}
 	c.ApplyDefaults()
+	if err := c.Validate(); err != nil {
+		return nil, fmt.Errorf("config: validate %q: %w", path, err)
+	}
 	return &c, nil
+}
+
+// Validate fail-fast 校验（docs/07 §5）：
+//   - database.dsn 非空
+//   - data_key 是 hex 64 字符（32 字节）
+//   - scheduler.cooldown 覆盖全 5 个 ErrorClass
+//   - outbox.driver=kafka 时 brokers 非空
+//   - content_log.driver=kafka 时 brokers 非空
+//   - content_log.backpressure=block 时必须配 block_timeout
+//
+// 启动期失败即 panic，不让配置错走到运行期。
+func (c *Config) Validate() error {
+	if c.Database.DSN == "" {
+		return errors.New("database.dsn empty")
+	}
+	if c.DataKey != "" && len(c.DataKey) != 64 {
+		return fmt.Errorf("data_key must be 64 hex chars (32 bytes); got %d", len(c.DataKey))
+	}
+	// scheduler.cooldown 必须覆盖全 5 类（任一为 0 视作有意，但至少 cfg 段非 zero）
+	cd := c.Scheduler.Cooldown
+	if cd.Transient == 0 && cd.Capacity == 0 && cd.Permanent == 0 && cd.Invalid == 0 && cd.Unknown == 0 {
+		return errors.New("scheduler.cooldown all-zero; configure at least transient/capacity/permanent")
+	}
+	if c.Outbox.Driver == "kafka" || c.Outbox.Driver == "async_kafka" {
+		if len(c.Outbox.Kafka.Brokers) == 0 {
+			return errors.New("outbox.driver=" + c.Outbox.Driver + " requires kafka.brokers non-empty")
+		}
+		if c.Outbox.Kafka.Topic == "" {
+			return errors.New("outbox.driver=" + c.Outbox.Driver + " requires kafka.topic")
+		}
+	}
+	if c.ContentLog.Driver == "kafka" {
+		if len(c.ContentLog.Kafka.Brokers) == 0 {
+			return errors.New("content_log.driver=kafka requires kafka.brokers non-empty")
+		}
+		if c.ContentLog.Kafka.Topic == "" {
+			return errors.New("content_log.driver=kafka requires kafka.topic")
+		}
+	}
+	if c.ContentLog.Backpressure == "block" && c.ContentLog.BlockTimeout <= 0 {
+		return errors.New("content_log.backpressure=block requires block_timeout > 0")
+	}
+	return nil
 }
 
 // ApplyDefaults 给所有未设置的字段填默认值。
