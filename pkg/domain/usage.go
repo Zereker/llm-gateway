@@ -77,7 +77,16 @@ type UsageMeta struct {
 	EndpointID   string
 	SubAccountID string // 子账户 / 操作者
 	APIKeyID     string
-	ServiceID    string // model_services.service_id
+	ServiceID    string // model_services.service_id（字符串可重命名）
+
+	// ModelServiceID / ServiceUpdateTime —— pricing 查询指纹（docs/05 §4 + docs/09 §6）。
+	//
+	// 下游 billing aggregator 用 (account_id, model_service_id, service_update_time)
+	// 直接命中 pricing_versions 索引，无需经 service_id → id 二跳。
+	// 与 Model / ServiceID 一致取自 RoutedModelService（fallback 后实际计费的模型）。
+	ModelServiceID    int64
+	ServiceUpdateTime time.Time
+
 	RequestID    string
 	TraceID      string
 	StartTime    time.Time

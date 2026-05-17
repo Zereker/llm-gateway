@@ -169,19 +169,21 @@ M10 在 `c.Next()` 后补齐 meta 并发布 usage outbox。若发生跨 model fa
 
 ```go
 type UsageMeta struct {
-    AccountID    string
-    Model        string
-    Vendor       string
-    EndpointID   string
-    SubAccountID string
-    APIKeyID     string
-    ServiceID    string
-    RequestID    string
-    TraceID      string
-    StartTime    time.Time
-    EndTime      time.Time
-    TTFTMs       int64
-    TotalLatency int64
+    AccountID         string
+    Model             string
+    Vendor            string
+    EndpointID        string
+    SubAccountID      string
+    APIKeyID          string
+    ServiceID         string
+    ModelServiceID    int64       // pricing 查询指纹；与 ServiceID 同源 RoutedModelService
+    ServiceUpdateTime time.Time   // model_services.updated_at 快照
+    RequestID         string
+    TraceID           string
+    StartTime         time.Time
+    EndTime           time.Time
+    TTFTMs            int64
+    TotalLatency      int64
 }
 ```
 
@@ -192,12 +194,14 @@ type UsageMeta struct {
 | `RequestID` | M1 `rc.RequestID` |
 | `TraceID` | `TraceIDFromCtx(rc.Ctx)` |
 | `AccountID` / `SubAccountID` / `APIKeyID` | M2 `rc.Identity` |
-| `Model` / `ServiceID` | M7 `rc.RoutedModelService`，未 fallback 时等于 M5 `rc.ModelService` |
+| `Model` / `ServiceID` / `ModelServiceID` / `ServiceUpdateTime` | M7 `rc.RoutedModelService`，未 fallback 时等于 M5 `rc.ModelService` |
 | `Vendor` / `EndpointID` | M7 `rc.Endpoint` |
 | `StartTime` | M1 `rc.StartTime` |
 | `EndTime` / `TotalLatency` | M10 当前时间 |
 
 `TTFTMs` 当前暂未捕获。
+
+**关于 `ModelServiceID` / `ServiceUpdateTime`**：这是下游 billing aggregator 的 pricing 查询指纹（详见 [09 §6](./09-billing-aggregation.md#6-价格查询pricingresolver)）。M5 拿到 ModelService 后就已经在 `rc.ModelService` 上持有了 ID + UpdatedAt；M10 `fillUsageMeta` 与 `Model / ServiceID` 一道按"routed 优先"拷贝到 Meta，确保 fallback 后 4 个字段描述同一个被计费的模型。**网关侧仍然不查 active pricing**（§6 原则不变），仅透传两个 model_service 字段作为下游查价的稳定指针。
 
 ## 5. Usage Outbox
 
@@ -220,16 +224,14 @@ Usage Event payload 使用 JSON，建议 envelope 形态：
 type UsageEvent struct {
     SchemaVersion string    `json:"schema_version"` // "usage.v1"
     EventID       string    `json:"event_id"`
-    RequestID     string    `json:"request_id"`
-    TraceID       string    `json:"trace_id"`
-    Usage         Usage     `json:"usage"`
+    Usage         Usage     `json:"usage"`          // 含 Meta；request_id / trace_id 在 Meta 内
     CreatedAt     time.Time `json:"created_at"`
 }
 ```
 
 Kafka topic 建议默认 `billing.usage.recorded.v1`。topic 命名遵循**领域.实体.事件.版本**约定，跟生产者服务名解耦——topic 描述的是"这是什么业务事件"（计费用量已记录），而不是"谁发的"。这样下游计费/对账/配额服务按业务域订阅；以后若多个 service 都产生 usage 事件，仍是同一 topic，不会出现 `llm-gateway.usage` / `embedding-gateway.usage` / `image-gateway.usage` 之类碎片化。
 
-partition key 使用 `AccountID`，让同一计费主体的事件尽量保持顺序；没有 AccountID 时退化为 `RequestID`。顶层 `RequestID` / `TraceID` 是便利字段，必须与 `Usage.Meta` 内同名字段一致；如果消费端发现冲突，以 `Usage.Meta` 为准并记录坏事件。`CreatedAt` 表示 outbox 入队时间，不等同于请求完成时间；请求时序分析应使用 `Usage.Meta.StartTime` / `Usage.Meta.EndTime`。
+partition key 使用 `AccountID`，让同一计费主体的事件尽量保持顺序；没有 AccountID 时退化为 `Usage.Meta.RequestID`。`request_id` / `trace_id` 只放在 `Usage.Meta` 内——envelope 顶层不再重复，杜绝双写不一致的潜在 bug。`CreatedAt` 表示 outbox 入队时间，不等同于请求完成时间；请求时序分析应使用 `Usage.Meta.StartTime` / `Usage.Meta.EndTime`。
 
 schema 演进通过 `schema_version` 做向后兼容分支，不在同一版本中删除字段。破坏性变更必须显式迁移：优先切新 topic（`billing.usage.recorded.v2`）并经历双写期和 consumer 切换；若继续使用同一 topic，必须允许多 schema 共存，consumer 按 `schema_version` 路由解析。topic 名里的 `.v1` 是 topic-level 物理隔离，跟 envelope `schema_version` 是两层独立机制：topic 升级换 broker 路由，schema 升级换字段解析。
 
@@ -388,3 +390,12 @@ admin 配置变更走 usage outbox 也不对（计费 consumer 不应该看到 s
 - 指标标签不得包含 request / response body 或高基数字段。
 - 网关不得在请求路径上计算金额；价格匹配由下游按请求发生时间完成。
 - 不要把 Usage Event 与 CDC stream 互相复用（§10）。
+
+## 12. 下游消费侧落地参考
+
+§6 已声明网关不做"账单聚合 / 余额扣费 / 在线价格查询 / 金额生成"。这些下游职责的具体落地（按主账号分批的时间窗口聚合、含子账号 × 模型明细行的批次 schema、price 查询的 LRU + fail 语义、sink 抽象）见 [09 Billing Aggregation](./09-billing-aggregation.md)。
+
+本文档与 09 的边界：
+
+- **本文档（05）** 定义 usage event 是什么、网关怎么产出、Outbox driver 与可靠性语义、网关侧的 Pricing 边界（"网关不做"清单）。
+- **09** 定义下游 Flink job 如何按 event-time tumbling window 聚合并查价出账单批次。任何改动到 usage event schema 都要触发 09 同步评估。

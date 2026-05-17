@@ -196,6 +196,8 @@ func fillUsageMeta(rc *domain.RequestContext, endTime time.Time, totalLatencyMs 
 	if routed != nil {
 		m.Model = routed.Model
 		m.ServiceID = routed.ServiceID
+		m.ModelServiceID = routed.ID
+		m.ServiceUpdateTime = routed.UpdatedAt
 	}
 
 	if rc.Endpoint != nil {
@@ -205,12 +207,12 @@ func fillUsageMeta(rc *domain.RequestContext, endTime time.Time, totalLatencyMs 
 }
 
 // buildUsageEvent 按 docs/05 §5 + docs/08 §5 的 envelope 形态打包 Usage Event。
+//
+// request_id / trace_id 不在 envelope 顶层——权威值在 rc.Usage.Meta（由 fillUsageMeta 写入）。
 func buildUsageEvent(rc *domain.RequestContext) usage.UsageEvent {
 	return usage.UsageEvent{
 		SchemaVersion: usage.SchemaVersionV1,
 		EventID:       newEventID(),
-		RequestID:     rc.RequestID,
-		TraceID:       TraceIDFromCtx(rc.Ctx),
 		Usage:         *rc.Usage,
 		CreatedAt:     time.Now().UTC(),
 	}
