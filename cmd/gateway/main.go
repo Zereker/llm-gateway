@@ -48,6 +48,7 @@ import (
 	_ "github.com/zereker/llm-gateway/pkg/translator/identity"
 	_ "github.com/zereker/llm-gateway/pkg/translator/openai_anthropic"
 	_ "github.com/zereker/llm-gateway/pkg/translator/openai_gemini"
+	_ "github.com/zereker/llm-gateway/pkg/translator/responses_openai"
 )
 
 func main() {
