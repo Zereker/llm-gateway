@@ -320,7 +320,24 @@ RPM / RPS 在请求前 reserve；TPM 在 usage 产出后按 `Usage.Total` charge
 - 按最大 body 大小。
 - 按字段脱敏规则。
 
-## 10. 演进规则
+## 10. 与 CDC 的关系
+
+Usage Event 通道与 admin → gateway 配置传播的 [CDC（06 §8）](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)
+是**两条独立通道**，不要互相复用：
+
+| 维度 | Usage Event Outbox | CDC |
+|------|--------------------|-----|
+| 数据流向 | gateway → 下游计费 | admin → gateway |
+| 触发源 | 请求完成后 M10 主动 publish | admin 写 MySQL 后 Debezium 捕获 binlog |
+| 传输 | Kafka topic `llm-gateway.usage` | Redis Stream `llm_gateway.llm_gateway.<table>` |
+| 可靠性 | DLQ + 重试，失败不阻塞响应 | 最终一致 + L3 SQL 兜底，consumer 退避重连 |
+| schema 演进 | `schema_version` + 切新 topic | Debezium 自然兼容 unknown field |
+
+CDC 是**配置数据**的传播通道，不承载 usage / 内容。把 usage 写到 CDC stream
+不对（破坏 admin → gateway 的单向性 + Redis Stream 没有 DLQ 语义）；反过来把
+admin 配置变更走 usage outbox 也不对（计费 consumer 不应该看到 schema 类事件）。
+
+## 11. 演进规则
 
 - 修改 usage 原始字段传递策略时同步更新本文档、usage extractor / translator 和下游计费平台 schema。
 - 修改 usage meta 字段时同步更新下游 billing pipeline schema。
@@ -328,3 +345,4 @@ RPM / RPS 在请求前 reserve；TPM 在 usage 产出后按 `Usage.Total` charge
 - Content Log 不能复用 Usage Event schema；两者必须独立演进。
 - 指标标签不得包含 request / response body 或高基数字段。
 - 网关不得在请求路径上计算金额；价格匹配由下游按请求发生时间完成。
+- 不要把 Usage Event 与 CDC stream 互相复用（§10）。

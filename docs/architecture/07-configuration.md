@@ -13,6 +13,10 @@
 
 gateway 启动必需 SQL DB 和 Redis。Kafka 只有在 outbox driver 选择 `kafka` / `async_kafka` 时必需。gateway 启动只执行 `repo.CheckSchema`，不创建表、不迁移 schema。
 
+Debezium Server 是独立容器（不在 admin / gateway 进程内）：拉 MySQL binlog 推到
+Redis Stream，gateway 通过 Redis 连接消费，无需配置 Debezium 地址。Debezium 自身
+配置见 `configs/debezium/application.properties`；启动顺序见 [00 §3](./00-overview.md#3-运行进程)。
+
 ## 2. gateway.yaml
 
 完整结构：
@@ -83,6 +87,23 @@ ratelimit:
   policy_cache_ttl: 30s
   redis_prefix: llm-gateway:ratelimit
 
+cdc:
+  enabled: true
+  # Debezium 默认 stream key 命名：<db_server>.<schema>.<table>
+  stream_prefix: "llm_gateway.llm_gateway"
+  # 接入 CDC 失效的表清单；未列出的表走 SQL 直查 + TTL 缓存
+  tables:
+    - model_services
+    # - endpoints
+    # - account_model_subscriptions
+    # - api_keys
+    # - quota_policies
+    # - accounts
+  # L1 LRU 容量（每表独立 cache）
+  l1_capacity: 1024
+  # XREAD block 超时；超时后退避重连
+  read_block: 5s
+
 budget:
   driver: alwayspass # alwayspass | inmemory | external
   default_balance: 0
@@ -129,6 +150,11 @@ trace:
 | `scheduler.cooldown.*` | 是 | `ErrorClass` 到 cooldown TTL 的映射 |
 | `ratelimit.policy_cache_ttl` | 是 | quota policy 本地缓存 TTL |
 | `content_log.*` | 否 | request/response 内容记录通道；可关闭 |
+| `cdc.enabled` | 否 | 关闭后所有 catalog 走 SQL 直查 + TTL；本地开发可关 |
+| `cdc.stream_prefix` | 是（cdc.enabled=true 时）| Debezium 在 Redis Stream 上的 key 前缀；默认 `<db_server>.<schema>` |
+| `cdc.tables` | 是（cdc.enabled=true 时）| 接入 CDC 失效的表白名单；其余表走 TTL 兜底 |
+| `cdc.l1_capacity` | 否 | TieredCache 每表 L1 LRU 容量，默认 1024 |
+| `cdc.read_block` | 否 | `XREAD` block 超时，超时后退避重连；默认 5s |
 | `trace.*` | 是 | slog / OTel driver 和 trace 基础字段 |
 
 ## 3. admin.yaml
@@ -176,6 +202,8 @@ admin 启动期执行 `infra.Migrate`。生产多副本部署时必须通过 DB 
 | `outbox.kafka.brokers` | `LLM_GATEWAY_KAFKA_BROKERS` |
 | `moderation.api_key` | `LLM_GATEWAY_MODERATION_API_KEY` |
 | `trace.endpoint` | `LLM_GATEWAY_OTEL_ENDPOINT` |
+| `cdc.enabled` | `LLM_GATEWAY_CDC_ENABLED` |
+| `cdc.stream_prefix` | `LLM_GATEWAY_CDC_STREAM_PREFIX` |
 
 环境变量覆盖发生在读取 YAML 之后、执行默认值填充和校验之前。
 
@@ -193,6 +221,12 @@ admin 启动期执行 `infra.Migrate`。生产多副本部署时必须通过 DB 
 - `scheduler.filters` 必须包含一个最终 selector，目标第一版是 `weighted_random`。
 - `scheduler.cooldown` 必须覆盖全部 `ErrorClass`。
 - `content_log.backpressure=block` 时必须配置发布 timeout，避免无限阻塞响应流。
+- `cdc.enabled=true` 时必须有 `redis.addr`（CDC 走 Redis Stream），且
+  `cdc.tables` 不能为空；每个 table name 必须存在于 `infra/schema.sql` 中。
+- MySQL 服务端必须开 binlog `ROW` + GTID 才能跑 Debezium：`binlog_format=ROW`、
+  `binlog_row_image=FULL`、`gtid_mode=ON`、`enforce_gtid_consistency=ON`、
+  `server-id` 唯一。`configs/mysql-init/01-debezium-user.sql` 创建 Debezium 专用账号
+  并 grant `REPLICATION SLAVE / REPLICATION CLIENT`。
 
 ## 6. 演进规则
 

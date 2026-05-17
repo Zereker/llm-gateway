@@ -20,12 +20,17 @@
 
 - 数据面入口是 `cmd/gateway`，管理面入口是 `cmd/admin`。
 - catalog、endpoint、API key、订阅、quota policy 等由 SQL schema 管理；gateway 启动只校验 schema，不负责建表。
-- gateway 依赖 Redis 执行 M6 限流和 scheduler cooldown。
+- gateway 依赖 Redis 执行 M6 限流、scheduler cooldown，以及 [CDC stream 消费](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)。
+- admin → gateway 数据传播走 Debezium binlog CDC → Redis Stream → `pkg/cdc.TieredCache`
+  （L1 LRU + L3 SQL loader），不直连同库每请求查表。
 - 客户端入口覆盖 OpenAI Chat、Anthropic Messages、OpenAI Responses、Images、Audio、Embeddings 路由；Gemini 当前作为上游协议支持，不暴露 Gemini 客户端入口。
 - adapter 是 HTTP 层工厂；协议 shape 转换和 usage 提取在 `pkg/translator` / `pkg/usage`。
+- 所有 middleware 装配走 interface-Option pattern（对位 otelgin v0.68.0），详见
+  [06 §6](./06-pluggable-infra.md#6-middleware-options) 与 [01 §10](./01-request-pipeline.md#10-middleware-装配契约otelgin-v0680-对齐)。
 
 ## 维护约定
 
 - 修改 `pkg/domain.RequestContext`、middleware 顺序、adapter/translator 接口、schema 或配置项时，同步更新本目录。
 - 示例代码只说明关键契约，不要求逐字复制实现；字段名、组件边界、错误语义必须准确。
 - 不要把未实现的远期蓝图写成已实现能力；未来功能按本目录目标边界逐步实现。
+- 新接 CDC 表 / 新加 middleware Option / 新加 metric 时按 06 / 07 / 08 的对应小节同步登记。
