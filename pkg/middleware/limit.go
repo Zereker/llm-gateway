@@ -13,8 +13,24 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
+
+// RateLimitStore M6 用户侧 RPM/RPS 前扣 + TPM 后扣依赖的存储 port。
+//
+// 接口是 middleware-owned；实现者（pkg/ratelimit.RedisStore）按自己的领域写代码、
+// 顺便满足这个 port。ratelimit.Bucket 等 value type 仍由 ratelimit 包定义——
+// 中间件只反转抽象归属，不强迫 value type 搬家。
+type RateLimitStore interface {
+	ReserveBatch(ctx context.Context, buckets []ratelimit.Bucket) (allowed bool, violated *ratelimit.BucketViolation, err error)
+	ChargeBatch(ctx context.Context, buckets []ratelimit.Bucket) ([]ratelimit.BucketChargeResult, error)
+}
+
+// QuotaPolicies M6 拉取主账号 / api-key 两层 quota policy 的 port。
+//
+// 实现者（pkg/ratelimit.PolicyCache）按自己的领域实现 + 缓存。
+type QuotaPolicies interface {
+	Get(ctx context.Context, id int64) (*ratelimit.PolicyRule, error)
+}
 
 // LimitOption 配置 Limit middleware（otelgin v0.68.0 同款 interface-Option）。
 type LimitOption interface {
@@ -26,18 +42,18 @@ type limitOptionFunc func(*limitConfig)
 func (f limitOptionFunc) apply(c *limitConfig) { f(c) }
 
 type limitConfig struct {
-	store          ratelimit.Store
-	policies       *ratelimit.PolicyCache
+	store          RateLimitStore
+	policies       QuotaPolicies
 	tracerProvider oteltrace.TracerProvider
 }
 
-// WithLimitStore 注入 ratelimit.Store 实现。必填。
-func WithLimitStore(s ratelimit.Store) LimitOption {
+// WithLimitStore 注入 RateLimitStore 实现。必填。
+func WithLimitStore(s RateLimitStore) LimitOption {
 	return limitOptionFunc(func(c *limitConfig) { c.store = s })
 }
 
-// WithLimitPolicies 注入 PolicyCache。必填。
-func WithLimitPolicies(p *ratelimit.PolicyCache) LimitOption {
+// WithLimitPolicies 注入 QuotaPolicies 实现。必填。
+func WithLimitPolicies(p QuotaPolicies) LimitOption {
 	return limitOptionFunc(func(c *limitConfig) { c.policies = p })
 }
 
@@ -157,7 +173,7 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 //   - rc.Usage == nil → 不扣（usage extractor 没拿到）
 //   - Charge 失败 → 不改响应；记 metric
 //   - 写入后超限 → 记 tpm_overflow_total；不影响本次
-func chargeTPM(rc *domain.RequestContext, store ratelimit.Store, tpmBuckets []ratelimit.Bucket) {
+func chargeTPM(rc *domain.RequestContext, store RateLimitStore, tpmBuckets []ratelimit.Bucket) {
 	if rc.Usage == nil || rc.Usage.Total <= 0 || len(tpmBuckets) == 0 {
 		return
 	}
@@ -198,8 +214,8 @@ func chargeTPM(rc *domain.RequestContext, store ratelimit.Store, tpmBuckets []ra
 // 命名（docs/04 §6）：rl:quota:<layer>:<subject>:<scope>:<dim>
 func buildUserBuckets(
 	ctx context.Context,
-	policies *ratelimit.PolicyCache,
-	id *repo.UserIdentity,
+	policies QuotaPolicies,
+	id *domain.UserIdentity,
 	model string,
 ) (reserveBuckets, tpmBuckets []ratelimit.Bucket, err error) {
 	// 第 1 层：主账号

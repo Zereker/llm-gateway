@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
-	"github.com/zereker/llm-gateway/pkg/repo"
 	"github.com/zereker/llm-gateway/pkg/schedule"
 	"github.com/zereker/llm-gateway/pkg/schedule/eligibility"
 	"github.com/zereker/llm-gateway/pkg/translator"
@@ -29,9 +29,27 @@ const MaxFallbackModels = 3
 
 // EndpointReader M7 用：按 (model, group) 拉候选 endpoints。
 //
-// 接口是 middleware-owned；repo 提供实现（middleware.AdaptRepoEndpoints 适配）。
+// 接口是 middleware-owned；SQL 适配见 cmd/gateway/middleware_adapters.go 里的 adaptEndpoints。
 type EndpointReader interface {
 	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
+}
+
+// Scheduler M7 端点选路 port——middleware-owned，不依赖 pkg/schedule 自己的接口。
+//
+// 实现者（pkg/schedule.Scheduler 同名接口的实现）按自己的领域写代码、顺便满足这个 port。
+// schedule.Request / schedule.Result 是 value type，留在 schedule 包定义；这里只反转
+// 抽象归属。
+type Scheduler interface {
+	Pick(ctx context.Context, req *schedule.Request) (*domain.Endpoint, error)
+	Report(ctx context.Context, ep *domain.Endpoint, result schedule.Result)
+}
+
+// Sender M7 实际调上游 + 流式 forward 的 port——middleware-owned。
+//
+// 实现者（pkg/upstream.Sender concrete 类型）按自己的领域写代码、顺便满足这个 port。
+type Sender interface {
+	Send(ctx context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope, srcBody []byte) (upstream.Outcome, error)
+	Forward(ctx context.Context, w http.ResponseWriter, ep *domain.Endpoint, resp *http.Response, handler translator.ResponseHandler) upstream.ForwardResult
 }
 
 // ScheduleOption 配置 Schedule middleware（otelgin v0.68.0 同款 interface-Option）。
@@ -47,9 +65,9 @@ type scheduleConfig struct {
 	endpoints      EndpointReader
 	catalog        ModelCatalog
 	subscriptions  SubscriptionChecker
-	scheduler      schedule.Scheduler
-	sender         *upstream.Sender
-	rateStore      ratelimit.Store // 可空：跳过 endpoint quota
+	scheduler      Scheduler
+	sender         Sender
+	rateStore      RateLimitStore // 可空：跳过 endpoint quota
 	maxAttempts    int
 	tracerProvider oteltrace.TracerProvider
 }
@@ -72,20 +90,20 @@ func WithFallbackSubscriptionChecker(s SubscriptionChecker) ScheduleOption {
 	return scheduleOptionFunc(func(cfg *scheduleConfig) { cfg.subscriptions = s })
 }
 
-// WithScheduler 注入 schedule.Scheduler。必填。
-func WithScheduler(s schedule.Scheduler) ScheduleOption {
+// WithScheduler 注入 Scheduler 实现。必填。
+func WithScheduler(s Scheduler) ScheduleOption {
 	return scheduleOptionFunc(func(c *scheduleConfig) { c.scheduler = s })
 }
 
-// WithSender 注入 *upstream.Sender。必填。
-func WithSender(s *upstream.Sender) ScheduleOption {
+// WithSender 注入 Sender 实现。必填。
+func WithSender(s Sender) ScheduleOption {
 	return scheduleOptionFunc(func(c *scheduleConfig) { c.sender = s })
 }
 
-// WithEndpointRateStore 注入 endpoint 维度的 ratelimit.Store（选中后 reserve + TPM charge）。
+// WithEndpointRateStore 注入 endpoint 维度的 RateLimitStore（选中后 reserve + TPM charge）。
 //
 // 不传 = 跳过 endpoint quota（适合 dev / 不配 endpoint quota 的部署）。
-func WithEndpointRateStore(s ratelimit.Store) ScheduleOption {
+func WithEndpointRateStore(s RateLimitStore) ScheduleOption {
 	return scheduleOptionFunc(func(c *scheduleConfig) { c.rateStore = s })
 }
 
@@ -478,7 +496,7 @@ func parseFallbackModels(c *gin.Context) []string {
 
 // chargeEndpointTPM 选中 endpoint 响应成功后，把真实 usage.Total 写到 endpoint TPM bucket
 //（docs/04 §10）。超限只记 metric；不阻塞响应。
-func chargeEndpointTPM(ctx context.Context, store ratelimit.Store, ep *domain.Endpoint, usage *domain.Usage) {
+func chargeEndpointTPM(ctx context.Context, store RateLimitStore, ep *domain.Endpoint, usage *domain.Usage) {
 	if store == nil || ep == nil || usage == nil || usage.Total <= 0 {
 		return
 	}
@@ -543,21 +561,7 @@ func (translatorRegistryLookup) Has(source, target domain.Protocol) bool {
 	return translator.Find(source, target) != nil
 }
 
-// =============================================================================
-// AdaptRepoEndpoints
-// =============================================================================
-
-// AdaptRepoEndpoints 适配 repo.EndpointReader 为 middleware.EndpointReader。
-func AdaptRepoEndpoints(p repo.EndpointReader) EndpointReader {
-	return repoEndpointAdapter{p: p}
-}
-
-type repoEndpointAdapter struct{ p repo.EndpointReader }
-
-func (a repoEndpointAdapter) ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error) {
-	rows, err := a.p.ListForModel(ctx, model, group)
-	if err != nil {
-		return nil, err
-	}
-	return repo.ToDomainEndpoints(rows), nil
-}
+// 旧的 AdaptRepoEndpoints / AdaptRepoCatalog / AdaptRepoSubscriptions 已迁到
+// cmd/gateway/middleware_adapters.go（adaptEndpoints / adaptCatalog / adaptSubscriptions）。
+// 放在 composition root（cmd/gateway）是为了避免 middleware → ratelimit → repo → middleware
+// 的 import cycle。port 由 middleware 拥有；adapter 住装配层。

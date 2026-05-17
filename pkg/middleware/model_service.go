@@ -8,7 +8,6 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // ModelCatalog M5 用：按 model 字符串查全局 catalog。
@@ -121,32 +120,7 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 	}
 }
 
-// =============================================================================
-// repo adapter
-// =============================================================================
-
-// AdaptRepoCatalog 把 repo.ModelServiceReader 适配为 ModelCatalog。
-func AdaptRepoCatalog(p repo.ModelServiceReader) ModelCatalog {
-	return repoCatalogAdapter{p: p}
-}
-
-type repoCatalogAdapter struct{ p repo.ModelServiceReader }
-
-func (a repoCatalogAdapter) GetByModel(ctx context.Context, model string) (*domain.ModelService, error) {
-	ms, err := a.p.GetByModel(ctx, model)
-	if err != nil {
-		return nil, err
-	}
-	return repo.ToDomainModelService(ms), nil
-}
-
-// AdaptRepoSubscriptions 把 repo.SubscriptionProvider 适配为 SubscriptionChecker。
-func AdaptRepoSubscriptions(p repo.SubscriptionProvider) SubscriptionChecker {
-	return repoSubsAdapter{p: p}
-}
-
-type repoSubsAdapter struct{ p repo.SubscriptionProvider }
-
-func (a repoSubsAdapter) HasModel(ctx context.Context, accountID string, modelServiceID int64) (bool, error) {
-	return a.p.Has(ctx, accountID, modelServiceID)
-}
+// 旧的 AdaptRepoCatalog / AdaptRepoSubscriptions 已迁到 cmd/gateway/middleware_adapters.go
+// （adaptCatalog / adaptSubscriptions）；放在 composition root 是为了避免
+// middleware → ratelimit → repo → middleware 的 import cycle。middleware 现在
+// 不再 import pkg/repo。
