@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -18,18 +20,32 @@ type BudgetGate interface {
 	Check(c context.Context, subAccountID string) (domain.BudgetStatus, error)
 }
 
-// BudgetOption 配置 Budget middleware。
-type BudgetOption func(*budgetConfig)
-
-type budgetConfig struct {
-	gate BudgetGate
+// BudgetOption 配置 Budget middleware（otelgin v0.68.0 同款 interface-Option）。
+type BudgetOption interface {
+	apply(*budgetConfig)
 }
 
-// WithBudgetGate 注入 BudgetGate 实现。
-//
-// 不传 = M4 静默 pass-through（适合开发 / 无付费体系部署）。
+type budgetOptionFunc func(*budgetConfig)
+
+func (f budgetOptionFunc) apply(c *budgetConfig) { f(c) }
+
+type budgetConfig struct {
+	gate           BudgetGate
+	tracerProvider oteltrace.TracerProvider
+}
+
+// WithBudgetGate 注入 BudgetGate 实现。不传 = M4 静默 pass-through。
 func WithBudgetGate(g BudgetGate) BudgetOption {
-	return func(c *budgetConfig) { c.gate = g }
+	return budgetOptionFunc(func(c *budgetConfig) { c.gate = g })
+}
+
+// WithBudgetTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithBudgetTracerProvider(tp oteltrace.TracerProvider) BudgetOption {
+	return budgetOptionFunc(func(c *budgetConfig) {
+		if tp != nil {
+			c.tracerProvider = tp
+		}
+	})
 }
 
 // Budget 是 M4：调 BudgetGate 判断当前 subAccountID 是否仍可消费。
@@ -40,20 +56,23 @@ func WithBudgetGate(g BudgetGate) BudgetOption {
 //
 // 未注入 Gate 时直接 c.Next()（视同 alwayspass）。
 func Budget(opts ...BudgetOption) gin.HandlerFunc {
-	cfg := &budgetConfig{}
+	cfg := budgetConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt.apply(&cfg)
 	}
+	if cfg.gate == nil {
+		// pass-through 快路径：连 tracer 都不开。
+		return func(c *gin.Context) { c.Next() }
+	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	tracer := cfg.tracerProvider.Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		if cfg.gate == nil {
-			c.Next()
-			return
-		}
-
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "budget.check")
-		defer end()
+		ctx, span := tracer.Start(rc.Ctx, "budget.check")
+		defer span.End()
 		rc.Ctx = ctx
 
 		status, err := cfg.gate.Check(rc.Ctx, rc.Identity.SubAccountID)

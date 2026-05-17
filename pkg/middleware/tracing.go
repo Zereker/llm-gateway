@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -14,26 +16,43 @@ import (
 	"github.com/zereker/llm-gateway/pkg/usage"
 )
 
-// TracingOption 配置 Tracing middleware。
-type TracingOption func(*tracingConfig)
+// TracingOption 配置 Tracing middleware（otelgin v0.68.0 同款 interface-Option）。
+type TracingOption interface {
+	apply(*tracingConfig)
+}
+
+type tracingOptionFunc func(*tracingConfig)
+
+func (f tracingOptionFunc) apply(c *tracingConfig) { f(c) }
 
 type tracingConfig struct {
-	outbox usage.OutboxPublisher
-	tracer trace.Tracer
+	outbox         usage.OutboxPublisher
+	tracer         trace.Tracer // 业务 trace.Tracer（写 scheduling_decision），≠ OTel tracer
+	tracerProvider oteltrace.TracerProvider
 }
 
 // WithUsageOutbox 注入 Usage Event outbox publisher。
 //
 // 不传 = M10 不发 usage event（仅记 metric / trace）。
 func WithUsageOutbox(o usage.OutboxPublisher) TracingOption {
-	return func(c *tracingConfig) { c.outbox = o }
+	return tracingOptionFunc(func(c *tracingConfig) { c.outbox = o })
 }
 
-// WithTracer 注入 trace.Tracer 用于 scheduling_decision 日志。
+// WithTracer 注入 业务 trace.Tracer（写 scheduling_decision 日志）；不传 = 跳过。
 //
-// 不传 = M10 不写 scheduling_decision trace。
+// 注意：跟 OTel TracerProvider 是两回事——这里的 trace.Tracer 是网关内部审计 trace
+// （pkg/trace），用于把 SchedulingDecision 写到日志 / outbox。
 func WithTracer(t trace.Tracer) TracingOption {
-	return func(c *tracingConfig) { c.tracer = t }
+	return tracingOptionFunc(func(c *tracingConfig) { c.tracer = t })
+}
+
+// WithTracingTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithTracingTracerProvider(tp oteltrace.TracerProvider) TracingOption {
+	return tracingOptionFunc(func(c *tracingConfig) {
+		if tp != nil {
+			c.tracerProvider = tp
+		}
+	})
 }
 
 // Tracing 是 M10：聚合 metric + 发计量事件 + 写 SchedulingDecision trace。
@@ -43,17 +62,22 @@ func WithTracer(t trace.Tracer) TracingOption {
 // 用 context.Background()（带超时）发 Outbox，避免 client 已断开时
 // 还是要把 usage 落出（docs/05 §3）。
 func Tracing(opts ...TracingOption) gin.HandlerFunc {
-	cfg := &tracingConfig{}
+	cfg := tracingConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt.apply(&cfg)
 	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	otelTracer := cfg.tracerProvider.Tracer(ScopeName)
+
 	return func(c *gin.Context) {
 		c.Next()
 
 		rc := GetRequestContext(c)
 
-		ctx, end := startSpan(rc.Ctx, "tracing.commit")
-		defer end()
+		ctx, span := otelTracer.Start(rc.Ctx, "tracing.commit")
+		defer span.End()
 		rc.Ctx = ctx
 
 		now := time.Now().UTC()
