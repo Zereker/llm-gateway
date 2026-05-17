@@ -6,9 +6,33 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
+
+// EnvelopeOption 配置 Envelope middleware（otelgin v0.68.0 同款 interface-Option）。
+type EnvelopeOption interface {
+	apply(*envelopeConfig)
+}
+
+type envelopeOptionFunc func(*envelopeConfig)
+
+func (f envelopeOptionFunc) apply(c *envelopeConfig) { f(c) }
+
+type envelopeConfig struct {
+	tracerProvider oteltrace.TracerProvider
+}
+
+// WithEnvelopeTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithEnvelopeTracerProvider(tp oteltrace.TracerProvider) EnvelopeOption {
+	return envelopeOptionFunc(func(c *envelopeConfig) {
+		if tp != nil {
+			c.tracerProvider = tp
+		}
+	})
+}
 
 // WithSourceProtocol 把客户端协议钉在路由注册期。
 //
@@ -52,11 +76,20 @@ func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerF
 //   - 路由忘挂 WithSourceProtocol → 500 / ErrUnknown
 //   - 读 body 失败 → 400 / ErrInvalid / "envelope: read body: <err>"
 //   - 缺 model 字段 → 400 / ErrInvalid / "envelope: ..."
-func Envelope() gin.HandlerFunc {
+func Envelope(opts ...EnvelopeOption) gin.HandlerFunc {
+	cfg := envelopeConfig{}
+	for _, opt := range opts {
+		opt.apply(&cfg)
+	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	tracer := cfg.tracerProvider.Tracer(ScopeName)
+
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "envelope.parse")
-		defer end()
+		ctx, span := tracer.Start(rc.Ctx, "envelope.parse")
+		defer span.End()
 		rc.Ctx = ctx
 
 		if rc.Envelope == nil || rc.Envelope.SourceProtocol == domain.ProtoUnknown {

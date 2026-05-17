@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/repo"
@@ -21,22 +23,38 @@ type SubscriptionChecker interface {
 	HasModel(c context.Context, accountID string, modelServiceID int64) (bool, error)
 }
 
-// ModelServiceOption 配置 ModelService middleware。
-type ModelServiceOption func(*modelServiceConfig)
+// ModelServiceOption 配置 ModelService middleware（otelgin v0.68.0 同款 interface-Option）。
+type ModelServiceOption interface {
+	apply(*modelServiceConfig)
+}
+
+type modelServiceOptionFunc func(*modelServiceConfig)
+
+func (f modelServiceOptionFunc) apply(c *modelServiceConfig) { f(c) }
 
 type modelServiceConfig struct {
-	catalog       ModelCatalog
-	subscriptions SubscriptionChecker
+	catalog        ModelCatalog
+	subscriptions  SubscriptionChecker
+	tracerProvider oteltrace.TracerProvider
 }
 
 // WithModelCatalog 注入 ModelCatalog 实现。必填。
 func WithModelCatalog(c ModelCatalog) ModelServiceOption {
-	return func(cfg *modelServiceConfig) { cfg.catalog = c }
+	return modelServiceOptionFunc(func(cfg *modelServiceConfig) { cfg.catalog = c })
 }
 
 // WithSubscriptionChecker 注入 SubscriptionChecker 实现。必填。
 func WithSubscriptionChecker(s SubscriptionChecker) ModelServiceOption {
-	return func(cfg *modelServiceConfig) { cfg.subscriptions = s }
+	return modelServiceOptionFunc(func(cfg *modelServiceConfig) { cfg.subscriptions = s })
+}
+
+// WithModelServiceTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithModelServiceTracerProvider(tp oteltrace.TracerProvider) ModelServiceOption {
+	return modelServiceOptionFunc(func(cfg *modelServiceConfig) {
+		if tp != nil {
+			cfg.tracerProvider = tp
+		}
+	})
 }
 
 // ModelService 是 M5：rc.Envelope.Model → catalog → 验订阅 → rc.ModelService。
@@ -47,9 +65,9 @@ func WithSubscriptionChecker(s SubscriptionChecker) ModelServiceOption {
 //   - catalog 找不到 → 404 / model_not_found
 //   - 主账号没订阅 → 403 / model_not_subscribed
 func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
-	cfg := &modelServiceConfig{}
+	cfg := modelServiceConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt.apply(&cfg)
 	}
 	if cfg.catalog == nil {
 		panic("middleware.ModelService: WithModelCatalog required")
@@ -57,11 +75,15 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 	if cfg.subscriptions == nil {
 		panic("middleware.ModelService: WithSubscriptionChecker required")
 	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	tracer := cfg.tracerProvider.Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "catalog.resolve")
-		defer end()
+		ctx, span := tracer.Start(rc.Ctx, "catalog.resolve")
+		defer span.End()
 		rc.Ctx = ctx
 
 		if rc.Envelope == nil {

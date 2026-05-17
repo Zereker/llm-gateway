@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
@@ -19,18 +21,32 @@ type Moderator interface {
 	CheckOutput(c context.Context, chunk []byte) error
 }
 
-// ModerationOption 配置 Moderation middleware。
-type ModerationOption func(*moderationConfig)
-
-type moderationConfig struct {
-	moderator Moderator
+// ModerationOption 配置 Moderation middleware（otelgin v0.68.0 同款 interface-Option）。
+type ModerationOption interface {
+	apply(*moderationConfig)
 }
 
-// WithModerator 注入 Moderator 实现。
-//
-// 不传 = M8 静默 pass-through（适合开发 / 无审核需求部署）。
+type moderationOptionFunc func(*moderationConfig)
+
+func (f moderationOptionFunc) apply(c *moderationConfig) { f(c) }
+
+type moderationConfig struct {
+	moderator      Moderator
+	tracerProvider oteltrace.TracerProvider
+}
+
+// WithModerator 注入 Moderator 实现。不传 = M8 静默 pass-through。
 func WithModerator(m Moderator) ModerationOption {
-	return func(c *moderationConfig) { c.moderator = m }
+	return moderationOptionFunc(func(c *moderationConfig) { c.moderator = m })
+}
+
+// WithModerationTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithModerationTracerProvider(tp oteltrace.TracerProvider) ModerationOption {
+	return moderationOptionFunc(func(c *moderationConfig) {
+		if tp != nil {
+			c.tracerProvider = tp
+		}
+	})
 }
 
 // Moderation 是 M8：对请求 body 做 input 审核 + 把 Moderator 注入 ctx 让 M7
@@ -42,20 +58,23 @@ func WithModerator(m Moderator) ModerationOption {
 //
 // Moderator 不注入时 → c.Next() 直接放行。
 func Moderation(opts ...ModerationOption) gin.HandlerFunc {
-	cfg := &moderationConfig{}
+	cfg := moderationConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt.apply(&cfg)
 	}
+	if cfg.moderator == nil {
+		// pass-through 快路径：连 tracer 都不开。
+		return func(c *gin.Context) { c.Next() }
+	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	tracer := cfg.tracerProvider.Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		if cfg.moderator == nil {
-			c.Next()
-			return
-		}
-
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "moderation.check")
-		defer end()
+		ctx, span := tracer.Start(rc.Ctx, "moderation.check")
+		defer span.End()
 		rc.Ctx = ctx
 
 		if rc.Envelope == nil {

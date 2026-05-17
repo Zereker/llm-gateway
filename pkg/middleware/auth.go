@@ -4,7 +4,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/baggage"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -13,20 +15,34 @@ import (
 
 // AuthOption 配置 Auth middleware。
 //
-// 用 functional options 模式：每个依赖一个 With* 构造器。
-// 缺必填依赖时构造期 panic（fail-fast 暴露装配错）。
-type AuthOption func(*authConfig)
+// 走 otelgin v0.68.0 同款 interface-Option 模式：cfg 在 Auth() 启动期一次性 build，
+// hot path 闭包持有 tracer，per-request 0 lookup。
+type AuthOption interface {
+	apply(*authConfig)
+}
+
+type authOptionFunc func(*authConfig)
+
+func (f authOptionFunc) apply(c *authConfig) { f(c) }
 
 // authConfig Auth middleware 私有配置。
 type authConfig struct {
-	provider repo.IdentityProvider
+	provider       repo.IdentityProvider
+	tracerProvider oteltrace.TracerProvider
 }
 
-// WithIdentityProvider 注入 IdentityProvider 实现。
-//
-// 必填；缺则 Auth() 构造期 panic。
+// WithIdentityProvider 注入 IdentityProvider 实现。必填；缺则 Auth() 构造期 panic。
 func WithIdentityProvider(p repo.IdentityProvider) AuthOption {
-	return func(c *authConfig) { c.provider = p }
+	return authOptionFunc(func(c *authConfig) { c.provider = p })
+}
+
+// WithAuthTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithAuthTracerProvider(tp oteltrace.TracerProvider) AuthOption {
+	return authOptionFunc(func(c *authConfig) {
+		if tp != nil {
+			c.tracerProvider = tp
+		}
+	})
 }
 
 // Auth 是 M2：从 header 提取凭证 → 调 IdentityProvider → 写 rc.Identity。
@@ -39,18 +55,22 @@ func WithIdentityProvider(p repo.IdentityProvider) AuthOption {
 //   - rc.Identity 字段全部填充
 //   - sub_account_id 写入 OTel baggage；trace.CtxHandler 让所有后续 log record 自动带 sub_account_id 字段
 func Auth(opts ...AuthOption) gin.HandlerFunc {
-	cfg := &authConfig{}
+	cfg := authConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt.apply(&cfg)
 	}
 	if cfg.provider == nil {
 		panic("middleware.Auth: WithIdentityProvider required")
 	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	tracer := cfg.tracerProvider.Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "auth.lookup")
-		defer end()
+		ctx, span := tracer.Start(rc.Ctx, "auth.lookup")
+		defer span.End()
 		rc.Ctx = ctx
 
 		creds := extractCredentials(c)

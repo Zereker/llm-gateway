@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -14,22 +16,38 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// LimitOption 配置 Limit middleware。
-type LimitOption func(*limitConfig)
+// LimitOption 配置 Limit middleware（otelgin v0.68.0 同款 interface-Option）。
+type LimitOption interface {
+	apply(*limitConfig)
+}
+
+type limitOptionFunc func(*limitConfig)
+
+func (f limitOptionFunc) apply(c *limitConfig) { f(c) }
 
 type limitConfig struct {
-	store    ratelimit.Store
-	policies *ratelimit.PolicyCache
+	store          ratelimit.Store
+	policies       *ratelimit.PolicyCache
+	tracerProvider oteltrace.TracerProvider
 }
 
 // WithLimitStore 注入 ratelimit.Store 实现。必填。
 func WithLimitStore(s ratelimit.Store) LimitOption {
-	return func(c *limitConfig) { c.store = s }
+	return limitOptionFunc(func(c *limitConfig) { c.store = s })
 }
 
 // WithLimitPolicies 注入 PolicyCache。必填。
 func WithLimitPolicies(p *ratelimit.PolicyCache) LimitOption {
-	return func(c *limitConfig) { c.policies = p }
+	return limitOptionFunc(func(c *limitConfig) { c.policies = p })
+}
+
+// WithLimitTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithLimitTracerProvider(tp oteltrace.TracerProvider) LimitOption {
+	return limitOptionFunc(func(c *limitConfig) {
+		if tp != nil {
+			c.tracerProvider = tp
+		}
+	})
 }
 
 // Limit 是 M6：用户侧两层（account + apikey）+ additive RPM/RPS 前扣 + TPM 后扣。
@@ -49,19 +67,23 @@ func WithLimitPolicies(p *ratelimit.PolicyCache) LimitOption {
 //   - rc.Usage == nil → 不扣 TPM（usage extractor 覆盖率问题）
 //   - Charge 写入超限 → 不改本次响应；记 llm_gateway_tpm_overflow_total
 func Limit(opts ...LimitOption) gin.HandlerFunc {
-	cfg := &limitConfig{}
+	cfg := limitConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt.apply(&cfg)
 	}
 	// 没有 Store 或 Policies → no-op pass-through（适合 dev / 无限流部署）
 	if cfg.store == nil || cfg.policies == nil {
 		return func(c *gin.Context) { c.Next() }
 	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	tracer := cfg.tracerProvider.Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "ratelimit.reserve")
-		defer end()
+		ctx, span := tracer.Start(rc.Ctx, "ratelimit.reserve")
+		defer span.End()
 		rc.Ctx = ctx
 
 		if rc.Envelope == nil || rc.ModelService == nil {

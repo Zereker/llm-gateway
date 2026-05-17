@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
@@ -32,22 +34,29 @@ type EndpointReader interface {
 	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
 }
 
-// ScheduleOption 配置 Schedule middleware。
-type ScheduleOption func(*scheduleConfig)
+// ScheduleOption 配置 Schedule middleware（otelgin v0.68.0 同款 interface-Option）。
+type ScheduleOption interface {
+	apply(*scheduleConfig)
+}
+
+type scheduleOptionFunc func(*scheduleConfig)
+
+func (f scheduleOptionFunc) apply(c *scheduleConfig) { f(c) }
 
 type scheduleConfig struct {
-	endpoints     EndpointReader
-	catalog       ModelCatalog
-	subscriptions SubscriptionChecker
-	scheduler     schedule.Scheduler
-	sender        *upstream.Sender
-	rateStore     ratelimit.Store // 可空：跳过 endpoint quota
-	maxAttempts   int
+	endpoints      EndpointReader
+	catalog        ModelCatalog
+	subscriptions  SubscriptionChecker
+	scheduler      schedule.Scheduler
+	sender         *upstream.Sender
+	rateStore      ratelimit.Store // 可空：跳过 endpoint quota
+	maxAttempts    int
+	tracerProvider oteltrace.TracerProvider
 }
 
 // WithEndpointReader 注入 EndpointReader。必填。
 func WithEndpointReader(r EndpointReader) ScheduleOption {
-	return func(c *scheduleConfig) { c.endpoints = r }
+	return scheduleOptionFunc(func(c *scheduleConfig) { c.endpoints = r })
 }
 
 // WithFallbackCatalog 注入 ModelCatalog 用于 fallback model 重校验（docs/03 §1）。必填。
@@ -55,36 +64,45 @@ func WithEndpointReader(r EndpointReader) ScheduleOption {
 // 注意：这跟 M5 的 ModelCatalog 是同一接口，但需要单独注入到 M7（每个 fallback model
 // 都要重新走 catalog + subscription 校验，不能复用 M5 的结果）。
 func WithFallbackCatalog(c ModelCatalog) ScheduleOption {
-	return func(cfg *scheduleConfig) { cfg.catalog = c }
+	return scheduleOptionFunc(func(cfg *scheduleConfig) { cfg.catalog = c })
 }
 
 // WithFallbackSubscriptionChecker 注入 SubscriptionChecker 用于 fallback model 校验。必填。
 func WithFallbackSubscriptionChecker(s SubscriptionChecker) ScheduleOption {
-	return func(cfg *scheduleConfig) { cfg.subscriptions = s }
+	return scheduleOptionFunc(func(cfg *scheduleConfig) { cfg.subscriptions = s })
 }
 
 // WithScheduler 注入 schedule.Scheduler。必填。
 func WithScheduler(s schedule.Scheduler) ScheduleOption {
-	return func(c *scheduleConfig) { c.scheduler = s }
+	return scheduleOptionFunc(func(c *scheduleConfig) { c.scheduler = s })
 }
 
 // WithSender 注入 *upstream.Sender。必填。
 func WithSender(s *upstream.Sender) ScheduleOption {
-	return func(c *scheduleConfig) { c.sender = s }
+	return scheduleOptionFunc(func(c *scheduleConfig) { c.sender = s })
 }
 
 // WithEndpointRateStore 注入 endpoint 维度的 ratelimit.Store（选中后 reserve + TPM charge）。
 //
 // 不传 = 跳过 endpoint quota（适合 dev / 不配 endpoint quota 的部署）。
 func WithEndpointRateStore(s ratelimit.Store) ScheduleOption {
-	return func(c *scheduleConfig) { c.rateStore = s }
+	return scheduleOptionFunc(func(c *scheduleConfig) { c.rateStore = s })
 }
 
 // WithMaxAttempts 设置全局尝试上限；0 = 默认 3。
 //
 // header X-Gateway-Max-Attempts 可往**更小**方向覆盖；不能比这个值更大。
 func WithMaxAttempts(n int) ScheduleOption {
-	return func(c *scheduleConfig) { c.maxAttempts = n }
+	return scheduleOptionFunc(func(c *scheduleConfig) { c.maxAttempts = n })
+}
+
+// WithScheduleTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithScheduleTracerProvider(tp oteltrace.TracerProvider) ScheduleOption {
+	return scheduleOptionFunc(func(c *scheduleConfig) {
+		if tp != nil {
+			c.tracerProvider = tp
+		}
+	})
 }
 
 // Schedule 是 M7：
@@ -105,9 +123,9 @@ func WithMaxAttempts(n int) ScheduleOption {
 //
 // 详见 docs/architecture/03-endpoint-scheduling.md §1。
 func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
-	cfg := &scheduleConfig{}
+	cfg := scheduleConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt.apply(&cfg)
 	}
 	if cfg.endpoints == nil {
 		panic("middleware.Schedule: WithEndpointReader required")
@@ -128,10 +146,15 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	tracer := cfg.tracerProvider.Tracer(ScopeName)
+
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		ctx, end := startSpan(rc.Ctx, "schedule.pick")
-		defer end()
+		ctx, span := tracer.Start(rc.Ctx, "schedule.pick")
+		defer span.End()
 		rc.Ctx = ctx
 
 		if rc.Envelope == nil || rc.ModelService == nil {
