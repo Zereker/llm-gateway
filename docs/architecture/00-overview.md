@@ -26,23 +26,33 @@
 |------|------|------|
 | gateway | `cmd/gateway` | 数据面：鉴权、解析、限流、调度、上游转发、usage outbox |
 | admin | `cmd/admin` | 管理面：维护主账号、API key、model service、endpoint、quota policy、pricing_versions |
+| Debezium Server | 独立容器 `debezium/server` | 拉 MySQL binlog → 推 Redis Stream，admin → gateway 数据传播桥（见 [06 §8 CDC](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)） |
 
 gateway 启动流程：
 
 1. 加载 `configs/*/gateway.yaml`。
 2. 初始化 endpoint auth 加密 data key。
 3. 打开 **SQL DB（必需）**，执行 `repo.CheckSchema`；缺表直接退出。
-4. 打开 **Redis（必需）**；M6 限流和 scheduler cooldown 都依赖 Redis。
-5. 装配 SQL reader/provider、Redis rate limit store、scheduler、outbox、tracer。
+4. 打开 **Redis（必需）**；M6 限流、scheduler cooldown、CDC stream 消费都依赖 Redis。
+5. 装配 SQL reader/provider、Redis rate limit store、scheduler、outbox、tracer、
+   `cdc.TieredCache` + `cdc.StreamConsumer`（订阅 `llm_gateway.llm_gateway.<table>`
+   Stream，详见 [06 §8](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)）。
 6. 扫描 enabled endpoints，校验 vendor adapter 存在、`native_protocol` 合法、必要 translator 已注册；缺失只记 warn 和 metric，不阻塞启动。
 7. 调用 `router.NewEngine` 注册路由和 middleware。
 8. 交给 `pkg/server` 处理 listen、signal、graceful shutdown 和资源倒序关闭。
 
 部署顺序：
 
-1. admin 启动期执行 `infra.Migrate`，负责 schema migration。
-2. admin 写入/维护账号、API key、model service、subscription、endpoint、quota policy 等配置数据。
-3. gateway 启动时只执行 `repo.CheckSchema` 和只读查询；schema 缺失直接失败，不自动建表或迁移。
+1. docker stack 起 MySQL（binlog `ROW` + GTID） + Redis + Debezium Server。
+2. admin 启动期执行 `infra.Migrate`，负责 schema migration。
+3. admin 写入/维护账号、API key、model service、subscription、endpoint、quota policy 等配置数据。
+4. gateway 启动时只执行 `repo.CheckSchema` 和只读查询；schema 缺失直接失败，
+   不自动建表或迁移。CDC consumer 启动从 `$` 起读（不持久化 stream offset；
+   见 [06 §8.2](./06-pluggable-infra.md#82-位点策略)）。
+
+admin 与 gateway 数据传播走 Debezium binlog CDC：admin 写 MySQL → Debezium 捕获 →
+Redis Stream → gateway `TieredCache.HandleEvent` 失效 L1。**不直连同库每请求查表**，
+也**不**用 outbox 表方案。L1 cold start / Debezium 不可达时降级到 L3 直查 MySQL。
 
 admin 与 gateway 可以独立部署，但 schema 变更必须保持向后兼容：先部署兼容旧 gateway 的 schema，再滚动 gateway；删除字段或破坏性 schema 变更必须等所有 gateway 升级完成后再执行。
 
@@ -85,6 +95,11 @@ pkg/router
 
 pkg/middleware
   -> 请求生命周期、RequestContext 读写、错误 abort
+  -> 每个 middleware 自定义 Option (interface) + WithXxxTracerProvider，对齐 otelgin v0.68.0
+
+pkg/cdc
+  -> Debezium binlog event 解析 + Redis Stream XREAD + TieredCache[T]（L1 LRU + L3 loader）
+  -> ModelCatalog 等 middleware-owned reader 通过 TieredCache 适配
 
 pkg/schedule
   -> 对一批候选 endpoint 做 filter / pick / report；不持有 repo，不切 fallback model
@@ -118,9 +133,13 @@ pkg/repo + pkg/infra
 | `Scheduler` | M7 的批内 endpoint 选择器，暴露 Pick/Report，不负责跨 model fallback |
 | `RateLimitState` | M6/M7 写入的限流状态，供 TPM 后扣和排障使用；不作为客户端 header 契约 |
 | `Usage` | 单次请求资源消耗和 meta，M10 发布到 outbox |
+| `TieredCache` | gateway 端本地缓存，L1 LRU + L3 SQL loader；由 CDC event 触发失效 |
+| `CDC` | Change Data Capture；Debezium 读 MySQL binlog → Redis Stream → `pkg/cdc` 消费 |
+| `Debezium Stream Key` | Redis Stream 命名 `llm_gateway.llm_gateway.<table>`（Debezium 默认 `<db_server>.<schema>.<table>`） |
 
 ## 7. 文档版本
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v0.3-target | 2026-05-16 | 对齐目标边界：协议能力下沉 endpoint、简化 scheduler、RPM/RPS 前扣、TPM 后扣、下游计费 |
+| v0.4-target | 2026-05-17 | CDC 数据传播（Debezium binlog → Redis Stream → TieredCache）；middleware Option 对齐 otelgin v0.68.0；domain/repo 彻底解耦 |

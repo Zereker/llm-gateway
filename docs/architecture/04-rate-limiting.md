@@ -231,7 +231,12 @@ if usage != nil:
 - 默认 TTL 30 秒。
 - 缓存预解析后的 `PolicyRule`。
 - policy 不存在返回 `nil, nil`，表示该层不限。
-- admin 改 policy 后可调用 `Invalidate` 主动清缓存；否则等待 TTL。
+- admin 改 policy 后传播方式有两条路径，并存使用：
+  1. **被动 TTL**：默认；缓存项 30s 后自然过期重新加载（兜底，永远可用）。
+  2. **主动 CDC 失效**：`quota_policies` 表接入 [06 §8 CDC](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)
+     后，Debezium event → `pkg/cdc.TieredCache.HandleEvent` → 立即 invalidate；
+     秒级生效。当前 v0.4 默认只对 `model_services` 接入，`quota_policies` 接入按
+     [06 §8.4](./06-pluggable-infra.md#84-适用表) 路径推进。
 
 ## 12. 演进规则
 
