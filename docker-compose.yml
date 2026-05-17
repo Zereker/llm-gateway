@@ -1,4 +1,4 @@
-# 本地开发 stack：MySQL 8.0 + Redis 7 + Redpanda（Kafka 兼容）
+# 本地开发 stack：MySQL 8.0 + Redis 7 + Redpanda（Kafka 兼容）+ Debezium Server（CDC）
 #
 # 起：    docker compose up -d
 # 停：    docker compose down
@@ -8,6 +8,15 @@
 #   MYSQL_DSN=root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4
 #   redis://localhost:6379
 #   kafka://localhost:9092
+#
+# **Debezium CDC 链路**：
+#   admin POST /endpoints
+#       → MySQL endpoints 表 INSERT（admin 代码不感知 CDC）
+#       → MySQL binlog event
+#       → Debezium Server 读 binlog → 解析 row → 写 Redis Stream `llm_gateway.llm_gateway.endpoints`
+#       → gateway XREAD Stream → 反序列化 → 失效 L1 LRU cache
+#
+# 整条链路只多了 debezium 一个进程；admin / gateway 代码完全干净。
 
 services:
   mysql:
@@ -21,10 +30,19 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
       - --default-authentication-plugin=mysql_native_password
+      # === Debezium 要求的 binlog 配置 ===
+      - --server-id=1                       # 用作 fake slave 的 ID（唯一）
+      - --log-bin=mysql-bin                 # 开启 binlog
+      - --binlog-format=ROW                 # ROW 格式（Debezium 必须）
+      - --binlog-row-image=FULL             # 包含 before + after image
+      - --gtid-mode=ON                      # GTID 推荐
+      - --enforce-gtid-consistency=ON       # GTID 模式必须配套
+      - --expire-logs-days=1                # 本地开发 binlog 保留 1 天
     ports:
       - "3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
+      - ./configs/mysql-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot"]
       interval: 5s
@@ -72,7 +90,38 @@ services:
       timeout: 3s
       retries: 20
 
+  debezium:
+    # Debezium Server: 独立运行的 CDC pipeline；直接 MySQL binlog → Redis Streams。
+    # 不需要 Kafka Connect。
+    #
+    # 监控 MySQL 的 llm_gateway 库；每个表的变更对应一个 Redis Stream key：
+    #   llm_gateway.llm_gateway.model_services
+    #   llm_gateway.llm_gateway.endpoints
+    #   llm_gateway.llm_gateway.account_model_subscriptions
+    #   llm_gateway.llm_gateway.api_keys
+    #   llm_gateway.llm_gateway.quota_policies
+    #   llm_gateway.llm_gateway.accounts
+    #
+    # Schema 变更（DDL）写到：llm_gateway → topic prefix
+    image: debezium/server:2.7.3.Final
+    container_name: llm-gateway-debezium
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./configs/debezium:/debezium/conf:ro
+      - debezium-data:/debezium/data
+    healthcheck:
+      test: ["CMD-SHELL", "ls /debezium/data >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
 volumes:
   mysql-data:
   redis-data:
   redpanda-data:
+  debezium-data:
