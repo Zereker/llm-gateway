@@ -1,0 +1,66 @@
+name: Guard binaries & large files
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve diff range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [ "$base" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "$base" 2>/dev/null; then
+              base="$(git rev-parse HEAD~1 2>/dev/null || echo "$head")"
+            fi
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Reject files under bin/
+        run: |
+          base="${{ steps.range.outputs.base }}"
+          head="${{ steps.range.outputs.head }}"
+          violations=$(git diff --name-only --diff-filter=AM "$base" "$head" -- 'bin/**' || true)
+          if [ -n "$violations" ]; then
+            echo "::error::禁止提交 bin/ 目录下的文件 (build artifacts 应该走 make build 本地生成)："
+            echo "$violations" | sed 's/^/  - /'
+            exit 1
+          fi
+          echo "✓ no bin/ files in diff"
+
+      - name: Reject files larger than 5 MB
+        run: |
+          base="${{ steps.range.outputs.base }}"
+          head="${{ steps.range.outputs.head }}"
+          max=$((5 * 1024 * 1024))
+          fail=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            [ ! -f "$f" ] && continue
+            size=$(wc -c <"$f" | tr -d ' ')
+            if [ "$size" -gt "$max" ]; then
+              echo "::error file=$f::$f 大小 ${size} 字节，超过 5 MB 限制"
+              fail=1
+            fi
+          done < <(git diff --name-only --diff-filter=AM "$base" "$head")
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "✓ no files > 5 MB in diff"
