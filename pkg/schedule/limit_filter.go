@@ -122,14 +122,5 @@ func EndpointTPMChargeBucket(ep *domain.Endpoint, cost uint32) *ratelimit.Bucket
 	}
 }
 
-// EndpointTPMBucketKeys 已废弃：旧 M6 用，新模型 endpoint TPM 在 M7/M10 post-side 直接 ChargeBatch。
-// 保留 stub 兼容旧 caller。
-func EndpointTPMBucketKeys(ep *domain.Endpoint) []string {
-	if ep == nil || ep.Quota.TPM == nil || *ep.Quota.TPM == 0 {
-		return nil
-	}
-	return []string{fmt.Sprintf("rl:endpoint:%d:tpm", ep.ID)}
-}
-
 // 编译期断言。
 var _ Filter = (*LimitReadFilter)(nil)

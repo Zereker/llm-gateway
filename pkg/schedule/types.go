@@ -38,12 +38,11 @@ type Candidate struct {
 // 按 docs/03 §4：Request 只承载一批候选，**不**包含 LoadFallback /
 // FallbackModels / attempts 状态。
 type Request struct {
-	Model      string                  // 当前 model（未路由前 = 请求 model；路由 fallback 时 = fallback model）
-	Group      string                  // 路由分组（rc.Identity.Group）
-	TPMCost    uint32                  // M6 估算的 token cost；LimitReadFilter 用作 endpoint TPM bucket cost
-	Candidates []Candidate             // 资格过滤后的候选（含 EffectiveWeight）
-	ExcludeIDs map[int64]struct{}      // 本次请求里已经尝试过的 endpoint
-	PrefixKey  []byte                  // PrefixCacheFilter 用的一致性哈希 key
+	Model      string             // 当前 model（未路由前 = 请求 model；路由 fallback 时 = fallback model）
+	Group      string             // 路由分组（rc.Identity.Group）
+	Candidates []Candidate        // 资格过滤后的候选（含 EffectiveWeight）
+	ExcludeIDs map[int64]struct{} // 本次请求里已经尝试过的 endpoint
+	PrefixKey  []byte             // PrefixCacheFilter 用的一致性哈希 key
 }
 
 // ErrorClass 把上游 / 网络 / 协议错误归类成几个粗粒度桶。

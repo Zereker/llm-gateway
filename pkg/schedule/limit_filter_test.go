@@ -92,7 +92,7 @@ func TestLimitReadFilter_NoQuotaConfig_Passthrough(t *testing.T) {
 	store := &localStubStore{}
 	f := NewLimitReadFilter(store)
 	cands := []*domain.Endpoint{ep(1, 100)} // 无 quota
-	got := f.Apply(context.Background(), cands, &Request{TPMCost: 100})
+	got := f.Apply(context.Background(), cands, &Request{})
 	if len(got) != 1 {
 		t.Errorf("got=%d, want 1", len(got))
 	}
@@ -106,7 +106,7 @@ func TestLimitReadFilter_OverLimit_Excluded(t *testing.T) {
 	store := &localStubStore{usedFor: map[int64]uint32{1: 0, 2: 60}}
 	f := NewLimitReadFilter(store)
 	cands := []*domain.Endpoint{epWithQuota(1, 60, 0), epWithQuota(2, 60, 0)}
-	got := f.Apply(context.Background(), cands, &Request{TPMCost: 100})
+	got := f.Apply(context.Background(), cands, &Request{})
 	if len(got) != 1 || got[0].ID != 1 {
 		t.Errorf("got=%+v, want [ep1]", got)
 	}
@@ -116,7 +116,7 @@ func TestLimitReadFilter_FailOpen_OnStoreErr(t *testing.T) {
 	store := &localStubStore{err: errors.New("redis down")}
 	f := NewLimitReadFilter(store)
 	cands := []*domain.Endpoint{epWithQuota(1, 60, 0), epWithQuota(2, 60, 0)}
-	got := f.Apply(context.Background(), cands, &Request{TPMCost: 100})
+	got := f.Apply(context.Background(), cands, &Request{})
 	if len(got) != 2 {
 		t.Errorf("fail-open expected, got %d", len(got))
 	}
