@@ -434,19 +434,22 @@ M8 Moderation 可替换：
 
 返回 nil moderator 时 M8 pass-through。
 
-## 11. Recording / Outbox
+## 11. Recording / Usage Events
 
-Usage outbox 由 `outbox.driver` 选择，三个互斥 driver：
+Usage events 由 `usage_events.driver` 选择，四个互斥 driver（实现层走 Outbox Pattern，pkg/usage.OutboxPublisher 接口）：
 
 - `file`：本地 JSONL append；仅适合本地开发或临时排障。
-- `kafka`：同步 Kafka producer；发布完成才返回，延迟较高，无内存 buffer。
-- `async_kafka`：异步 buffer + 重试 + backoff + DLQ topic；生产推荐。
+- `kafka`：同步 Kafka producer；发布完成才返回，延迟较高，无本地副本。
+- `async_kafka`：异步 buffer + 重试 + backoff + DLQ topic；broker 短抖动可救。
+- `file_and_kafka`：**生产推荐**——Transactional Outbox Pattern；file 是 source of
+  truth（sync commit），Kafka 是异步广播（best-effort，复用 AsyncKafkaOutbox）。
+  broker 挂了仍能 commit；外部 replay 工具读 file 补发。
 
-完整配置 schema 见 [07-configuration §2 `outbox`](./07-configuration.md#2-gatewayyaml)，故障语义见 [05-metering-billing §5](./05-metering-billing.md#5-usage-outbox)。
+完整配置 schema 见 [07-configuration §2 `usage_events`](./07-configuration.md#2-gatewayyaml)，故障语义见 [05-metering-billing §5](./05-metering-billing.md#5-usage-outbox)。
 
 Content Log 是独立通道，不复用 Usage Event schema。内容记录器可通过 `upstream.WithHooks(...)` 装配。
 
-`async_kafka` 的 buffer、max retries、backoff、DLQ topic 在 `outbox.kafka.*` 配置块声明。producer 关闭由 `pkg/server` 统一管理（见 §12 graceful shutdown 顺序）。
+`async_kafka` 的 buffer、max retries、backoff、DLQ topic 在 `usage_events.kafka.*` 配置块声明（`file_and_kafka` 复用这些字段配 Kafka 那一侧）。producer 关闭由 `pkg/server` 统一管理（见 §12 graceful shutdown 顺序）。
 
 ## 12. Tracing
 

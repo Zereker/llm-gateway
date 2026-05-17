@@ -37,7 +37,7 @@ server:
   read_header_timeout: 10s
   shutdown_timeout: 30s
 
-middleware:
+request:
   body_limit_bytes: 10485760
   timeout: 60s
 
@@ -52,17 +52,17 @@ redis:
 
 data_key: "<hex-encoded-32-byte-key>"
 
-outbox:
+usage_events:
   driver: file # file | kafka
   file:
     path: /tmp/llm-gateway-usage.log
   kafka:
     brokers: ["kafka:9092"]
-    topic: llm-gateway.usage
+    topic: billing.usage.recorded.v1
     async: true
     buffer_size: 1024
     max_retries: 3
-    dlq_topic: llm-gateway.usage.dlq
+    dlq_topic: billing.usage.recorded.v1.dlq
 
 scheduler:
   filters: [cooldown, limit_read, weighted_random]

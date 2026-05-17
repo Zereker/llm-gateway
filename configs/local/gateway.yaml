@@ -12,10 +12,6 @@ server:
   read_header_timeout: 10s
   shutdown_timeout: 30s
 
-middleware:
-  body_limit_bytes: 10485760  # 10 MiB
-  timeout: 60s
-
 database:
   # ModelService / Endpoint / APIKey 的存储；admin 增删改、gateway 启动期 CheckSchema + 读。
   # docker-compose 起的 MySQL：root 无密码、库名 llm_gateway
@@ -35,16 +31,10 @@ redis:
 # 本地 dev 用一个固定值方便调试；**绝不能上生产**。
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-outbox:
-  # M10 Tracing 输出 usage 事件去哪：file 或 kafka。
-  driver: kafka
-  kafka:
-    brokers: ["localhost:9092"]
-    topic: llm-gateway.usage
-    async: true
-    buffer_size: 1024
-    max_retries: 3
-    dlq_topic: llm-gateway.usage.dlq
+request:
+  # per-request HTTP 默认限制（历史上叫 middleware:，实际跟 M1-M10 链无关；详见 pkg/config RequestConfig 文档）
+  body_limit_bytes: 10485760  # 10 MiB；M1 之前 router 层就拒掉
+  timeout: 60s                # gin TimeoutMiddleware 包整条 M1-M10 链的全局兜底
 
 budget:
   # M4 Budget Gate driver：
@@ -79,12 +69,31 @@ scheduler:
   # 全局尝试上限；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
   max_attempts: 3
 
-content_log:
-  # 内容记录通道（docs/05 §2 + docs/08 §6）
-  driver: kafka
-  sample_rate: 1.0       # e2e 测试全采
-  buffer_size: 1024
-  backpressure: drop_oldest
+usage_events:
+  # Transactional Outbox Pattern：file 是 source of truth（sync commit），
+  # Kafka 是 best-effort 异步广播。broker 挂了仍能 commit；外部 replay 工具
+  # 读 file 把缺的事件补发到 Kafka（详见 docs/05 §5）。
+  # topic 按"领域.实体.事件.版本"命名，跟生产者服务名解耦。
+  driver: file_and_kafka
+  file:
+    path: /tmp/llm-gateway-usage.jsonl   # source of truth；外部 logrotate 管轮转
   kafka:
     brokers: ["localhost:9092"]
-    topic: llm-gateway.content
+    topic: billing.usage.recorded.v1
+    async: true
+    buffer_size: 1024
+    max_retries: 3
+    # dlq_topic 可选：file 已是真理，DLQ 只用于单消息级问题（msg too large / schema invalid）
+    dlq_topic: billing.usage.recorded.v1.dlq
+
+content_log:
+  # 内容记录通道（docs/05 §2 + docs/08 §6）。
+  # gateway 只写本地 JSONL；下游分流（S3 归档 / Loki 检索 / Kafka 内容安全后审 /
+  # 训练数据回流）交给 fluent-bit / vector 这类日志收集器，gateway 不内嵌 Kafka producer。
+  # 文件本身的轮转 / 压缩 / 清理由外部 logrotate 或日志收集器负责。
+  driver: file
+  sample_rate: 1.0       # e2e 测试全采；生产按 account / 模型 / 错误状态降采样
+  buffer_size: 1024
+  backpressure: drop_oldest
+  file:
+    path: /tmp/llm-gateway-content.jsonl

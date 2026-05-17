@@ -1,13 +1,13 @@
 # examples/beam — usage outbox 流处理示例
 
-把 llm-gateway 的 usage outbox（Kafka topic `llm-gateway.usage`）接到 Apache Beam 做计费聚合的参考骨架。
+把 llm-gateway 的 usage outbox（Kafka topic `billing.usage.recorded.v1`）接到 Apache Beam 做计费聚合的参考骨架。
 
 ## 架构
 
 ```
 llm-gateway (M10 Tracing)
     ↓ JSON event
-Kafka [llm-gateway.usage]
+Kafka [billing.usage.recorded.v1]
     ↓
 Beam pipeline (本示例)
     ↓

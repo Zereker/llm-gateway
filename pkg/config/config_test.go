@@ -23,11 +23,11 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	if cfg.Server.Addr != ":8080" {
 		t.Errorf("Server.Addr = %q", cfg.Server.Addr)
 	}
-	if cfg.Middleware.BodyLimitBytes != 10<<20 {
-		t.Errorf("BodyLimitBytes = %d", cfg.Middleware.BodyLimitBytes)
+	if cfg.Request.BodyLimitBytes != 10<<20 {
+		t.Errorf("BodyLimitBytes = %d", cfg.Request.BodyLimitBytes)
 	}
-	if cfg.Middleware.Timeout != 60*time.Second {
-		t.Errorf("Timeout = %v", cfg.Middleware.Timeout)
+	if cfg.Request.Timeout != 60*time.Second {
+		t.Errorf("Timeout = %v", cfg.Request.Timeout)
 	}
 	if cfg.Server.ReadHeaderTimeout != 10*time.Second {
 		t.Errorf("ReadHeaderTimeout = %v", cfg.Server.ReadHeaderTimeout)
@@ -47,17 +47,17 @@ func TestLoad_HonorsYAMLValues(t *testing.T) {
 server:
   addr: ":9090"
   shutdown_timeout: 5s
-middleware:
+request:
   body_limit_bytes: 1048576
   timeout: 30s
 database:
   driver: mysql
   dsn: user:pwd@tcp(db.example.com:3306)/prod?parseTime=true
-outbox:
+usage_events:
   driver: kafka
   kafka:
     brokers: ["broker1:9092","broker2:9092"]
-    topic: llm-gateway.usage
+    topic: billing.usage.recorded.v1
 `
 	if err := os.WriteFile(p, []byte(yamlBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -73,11 +73,11 @@ outbox:
 	if cfg.Server.ShutdownTimeout != 5*time.Second {
 		t.Errorf("Server.ShutdownTimeout = %v", cfg.Server.ShutdownTimeout)
 	}
-	if cfg.Middleware.BodyLimitBytes != 1<<20 {
-		t.Errorf("BodyLimitBytes = %d", cfg.Middleware.BodyLimitBytes)
+	if cfg.Request.BodyLimitBytes != 1<<20 {
+		t.Errorf("BodyLimitBytes = %d", cfg.Request.BodyLimitBytes)
 	}
-	if cfg.Middleware.Timeout != 30*time.Second {
-		t.Errorf("Timeout = %v", cfg.Middleware.Timeout)
+	if cfg.Request.Timeout != 30*time.Second {
+		t.Errorf("Timeout = %v", cfg.Request.Timeout)
 	}
 	if cfg.Database.Driver != infra.DriverMySQL {
 		t.Errorf("Database.Driver = %q", cfg.Database.Driver)
@@ -86,11 +86,11 @@ outbox:
 	if cfg.Database.DSN != "user:pwd@tcp(db.example.com:3306)/prod?parseTime=true" {
 		t.Errorf("Database.DSN was rewritten unexpectedly: %q", cfg.Database.DSN)
 	}
-	if cfg.Outbox.Driver != "kafka" {
-		t.Errorf("Outbox.Driver = %q", cfg.Outbox.Driver)
+	if cfg.UsageEvents.Driver != "kafka" {
+		t.Errorf("UsageEvents.Driver = %q", cfg.UsageEvents.Driver)
 	}
-	if len(cfg.Outbox.Kafka.Brokers) != 2 || cfg.Outbox.Kafka.Topic != "llm-gateway.usage" {
-		t.Errorf("Outbox.Kafka = %+v", cfg.Outbox.Kafka)
+	if len(cfg.UsageEvents.Kafka.Brokers) != 2 || cfg.UsageEvents.Kafka.Topic != "billing.usage.recorded.v1" {
+		t.Errorf("UsageEvents.Kafka = %+v", cfg.UsageEvents.Kafka)
 	}
 }
 
@@ -103,11 +103,11 @@ func TestLoad_OutboxDefaultsToFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Outbox.Driver != "file" {
-		t.Errorf("Outbox.Driver = %q, want file", cfg.Outbox.Driver)
+	if cfg.UsageEvents.Driver != "file" {
+		t.Errorf("UsageEvents.Driver = %q, want file", cfg.UsageEvents.Driver)
 	}
-	if cfg.Outbox.File.Path != "/tmp/llm-gateway-usage.log" {
-		t.Errorf("Outbox.File.Path = %q", cfg.Outbox.File.Path)
+	if cfg.UsageEvents.File.Path != "/tmp/llm-gateway-usage.log" {
+		t.Errorf("UsageEvents.File.Path = %q", cfg.UsageEvents.File.Path)
 	}
 }
 
@@ -202,7 +202,7 @@ func TestApplyDefaults_OnZeroConfig(t *testing.T) {
 	if c.Server.Addr == "" {
 		t.Error("Server.Addr empty after ApplyDefaults")
 	}
-	if c.Middleware.BodyLimitBytes == 0 {
+	if c.Request.BodyLimitBytes == 0 {
 		t.Error("BodyLimitBytes zero after ApplyDefaults")
 	}
 	if c.Database.Driver != infra.DriverMySQL {

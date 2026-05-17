@@ -14,7 +14,8 @@ server:
   read_header_timeout: 10s
   shutdown_timeout: 30s
 
-middleware:
+request:
+  # per-request HTTP 默认限制（历史上叫 middleware:，实际跟 M1-M10 链无关）
   body_limit_bytes: 10485760  # 10 MiB；生产建议按业务 Body 大小调
   timeout: 120s               # 长 chat 流式可能超 60s；按 SLA 调
 
@@ -34,12 +35,19 @@ redis:
 # **生产强约束**：从 secret manager / KMS 注入，绝不 commit 真实值。
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-outbox:
-  # 生产推荐 kafka；file 适合本地 dev / 排障。
-  driver: kafka
+usage_events:
+  # usage 事件下游通道（Transactional Outbox Pattern 实现，pkg/usage.DualWriteOutbox）。
+  # 生产推荐 file_and_kafka：file 是 source of truth，Kafka 异步广播；broker 挂不丢数据。
+  # 其他可选 driver：file（仅本地）/ kafka（仅 Kafka，不推荐）/ async_kafka（Kafka + retry + DLQ）
+  driver: file_and_kafka
+  file:
+    path: /var/log/llm-gateway/usage.jsonl
   kafka:
     brokers: ["kafka-1.internal:9092", "kafka-2.internal:9092", "kafka-3.internal:9092"]
-    topic: llm-gateway.usage
+    # topic 按"领域.实体.事件.版本"命名，跟生产者服务名解耦
+    topic: billing.usage.recorded.v1
+    async: true
+    dlq_topic: billing.usage.recorded.v1.dlq
   # 切回 file 的话注释 driver 改成 file 即可：
   # driver: file
   # file:

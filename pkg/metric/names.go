@@ -70,6 +70,11 @@ const (
 	OutboxPublishDurationSeconds  = "llm_gateway_outbox_publish_duration_seconds" // driver / result
 	OutboxDroppedTotal            = "llm_gateway_outbox_dropped_total" // driver / reason
 	OutboxDLQTotal                = "llm_gateway_outbox_dlq_total"     // driver / result
+	// dual-write 模式（driver=file_and_kafka）：file 是 source of truth，Kafka 是异步广播。
+	// 两个 sink 各自的失败分开计数，便于告警：file_error 升 = 磁盘问题（严重）；
+	// kafka_publish_error 升 = broker 问题（数据安全，由 replay 工具兜）。
+	OutboxFileErrorTotal          = "llm_gateway_outbox_file_error_total" // dual-write: file sink 失败次数
+	OutboxKafkaPublishErrorTotal  = "llm_gateway_outbox_kafka_publish_error_total" // dual-write: kafka sink 失败次数（file 已 commit）
 	UsageExtractorSessionTotal    = "llm_gateway_usage_extractor_session_total"
 )
 

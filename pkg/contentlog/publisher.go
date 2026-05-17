@@ -1,10 +1,8 @@
 package contentlog
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,12 +10,16 @@ import (
 )
 
 // =============================================================================
-// FilePublisher：JSONL append；本地排障 / dev
+// FilePublisher：JSONL append
 // =============================================================================
 
 // FilePublisher 把 Record 序列化成 JSONL 追加写文件。
 //
-// 适合本地开发 / 单实例小流量；生产高吞吐用 KafkaPublisher。
+// 这是 Content Log 唯一支持的真实后端：gateway 只写本地 JSONL，由 fluent-bit /
+// vector 投递到下游各 sink（归档 / 检索 / 内容安全后审 / 训练数据回流）。详见
+// docs/architecture/05-metering-billing.md §2 + docs/07-configuration.md §2。
+//
+// 文件轮转 / 压缩 / 清理由外部 logrotate 或日志收集器负责，不在本进程内做。
 type FilePublisher struct {
 	mu sync.Mutex
 	w  io.WriteCloser
@@ -67,53 +69,3 @@ func (p *FilePublisher) Close() error {
 type NoopPublisher struct{}
 
 func (NoopPublisher) Publish(_ context.Context, _ *Record) error { return nil }
-
-// =============================================================================
-// KafkaPublisher：发到 Kafka topic（docs/08 §6 默认 topic llm-gateway.content）
-// =============================================================================
-
-// KafkaWriter Kafka producer 抽象（与 pkg/usage.KafkaWriter 同语义；避免跨包依赖）。
-type KafkaWriter interface {
-	Write(ctx context.Context, topic string, key, value []byte) error
-	Close() error
-}
-
-// KafkaPublisher 把 Record 序列化成 JSON 发到 Kafka topic。
-//
-// **partition key**：account_id 优先；缺失则 request_id。
-type KafkaPublisher struct {
-	w     KafkaWriter
-	topic string
-}
-
-func NewKafkaPublisher(w KafkaWriter, topic string) *KafkaPublisher {
-	return &KafkaPublisher{w: w, topic: topic}
-}
-
-func (p *KafkaPublisher) Publish(ctx context.Context, r *Record) error {
-	if p.topic == "" {
-		return fmt.Errorf("contentlog: KafkaPublisher: empty topic")
-	}
-	buf, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	key := r.AccountID
-	if key == "" {
-		key = r.RequestID
-	}
-	return p.w.Write(ctx, p.topic, []byte(key), buf)
-}
-
-func (p *KafkaPublisher) Close() error {
-	if p.w == nil {
-		return nil
-	}
-	return p.w.Close()
-}
-
-// =============================================================================
-// 占位防 unused import
-// =============================================================================
-var _ = bytes.NewBuffer
-var _ = errors.New

@@ -31,7 +31,7 @@ type KafkaOutbox struct {
 
 // NewKafkaOutbox 用现成 KafkaWriter + topic 构造。
 //
-// 典型用法：usage.NewKafkaOutbox(infra.NewKafkaProducer(brokers), "llm-gateway.usage")
+// 典型用法：usage.NewKafkaOutbox(infra.NewKafkaProducer(brokers), "billing.usage.recorded.v1")
 func NewKafkaOutbox(w KafkaWriter, topic string) *KafkaOutbox {
 	return &KafkaOutbox{w: w, topic: topic}
 }

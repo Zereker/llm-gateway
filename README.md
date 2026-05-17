@@ -108,7 +108,7 @@ curl http://localhost:8080/v1/chat/completions \
 The gateway authenticates `sk-test-alice` against `configs/local/apikeys.json`,
 forwards to the OpenAI endpoint stored in MySQL (`llm_gateway.endpoints`), and
 writes a usage event to `/tmp/llm-gateway-usage.log` (file outbox; switch to
-Kafka via `outbox.driver: kafka` in gateway.yaml).
+Kafka via `usage_events.driver: kafka` in gateway.yaml).
 
 ### Configuration files
 
