@@ -5,7 +5,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
-	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
@@ -31,22 +30,12 @@ type moderationOptionFunc func(*moderationConfig)
 func (f moderationOptionFunc) apply(c *moderationConfig) { f(c) }
 
 type moderationConfig struct {
-	moderator      Moderator
-	tracerProvider oteltrace.TracerProvider
+	moderator Moderator
 }
 
 // WithModerator 注入 Moderator 实现。不传 = M8 静默 pass-through。
 func WithModerator(m Moderator) ModerationOption {
 	return moderationOptionFunc(func(c *moderationConfig) { c.moderator = m })
-}
-
-// WithModerationTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
-func WithModerationTracerProvider(tp oteltrace.TracerProvider) ModerationOption {
-	return moderationOptionFunc(func(c *moderationConfig) {
-		if tp != nil {
-			c.tracerProvider = tp
-		}
-	})
 }
 
 // Moderation 是 M8：对请求 body 做 input 审核 + 把 Moderator 注入 ctx 让 M7
@@ -66,10 +55,7 @@ func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 		// pass-through 快路径：连 tracer 都不开。
 		return func(c *gin.Context) { c.Next() }
 	}
-	if cfg.tracerProvider == nil {
-		cfg.tracerProvider = otel.GetTracerProvider()
-	}
-	tracer := cfg.tracerProvider.Tracer(ScopeName)
+	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)

@@ -1,0 +1,19 @@
+# admin.yaml — 容器内启动配置（compose 服务名作为 host）
+#
+# 跟 configs/local/admin.yaml 形态一致；差别仅在：
+#   - database.dsn host = mysql（compose service 名）
+#   - 其它字段（token / data_key）跟 local 保持一致以便 e2e smoke 共享逻辑
+
+server:
+  addr: ":8081"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+admin:
+  token: local-dev-token
+
+database:
+  driver: mysql
+  dsn: "root:@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

@@ -1,0 +1,10 @@
+name: openai-responses
+metrics:
+  input_tokens:
+    expr: "#root['prompt_tokens']?.asLong() ?: #root['input_tokens']?.asLong() ?: 0"
+  output_tokens:
+    expr: "#root['completion_tokens']?.asLong() ?: #root['output_tokens']?.asLong() ?: 0"
+  cached_input_tokens:
+    expr: "#root['prompt_tokens_details']?['cached_tokens']?.asLong() ?: 0"
+  reasoning_tokens:
+    expr: "#root['completion_tokens_details']?['reasoning_tokens']?.asLong() ?: 0"

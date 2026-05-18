@@ -11,7 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
-	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
@@ -62,14 +61,13 @@ type scheduleOptionFunc func(*scheduleConfig)
 func (f scheduleOptionFunc) apply(c *scheduleConfig) { f(c) }
 
 type scheduleConfig struct {
-	endpoints      EndpointReader
-	catalog        ModelCatalog
-	subscriptions  SubscriptionChecker
-	scheduler      Scheduler
-	sender         Sender
-	rateStore      RateLimitStore // 可空：跳过 endpoint quota
-	maxAttempts    int
-	tracerProvider oteltrace.TracerProvider
+	endpoints     EndpointReader
+	catalog       ModelCatalog
+	subscriptions SubscriptionChecker
+	scheduler     Scheduler
+	sender        Sender
+	rateStore     RateLimitStore // 可空：跳过 endpoint quota
+	maxAttempts   int
 }
 
 // WithEndpointReader 注入 EndpointReader。必填。
@@ -114,15 +112,6 @@ func WithMaxAttempts(n int) ScheduleOption {
 	return scheduleOptionFunc(func(c *scheduleConfig) { c.maxAttempts = n })
 }
 
-// WithScheduleTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
-func WithScheduleTracerProvider(tp oteltrace.TracerProvider) ScheduleOption {
-	return scheduleOptionFunc(func(c *scheduleConfig) {
-		if tp != nil {
-			c.tracerProvider = tp
-		}
-	})
-}
-
 // Schedule 是 M7：
 //
 //	for model in [request.model] + fallback_models:
@@ -164,10 +153,7 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-	if cfg.tracerProvider == nil {
-		cfg.tracerProvider = otel.GetTracerProvider()
-	}
-	tracer := cfg.tracerProvider.Tracer(ScopeName)
+	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)

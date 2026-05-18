@@ -1,43 +1,61 @@
-# 本地开发 stack：MySQL 8.0 + Redis 7 + Redpanda（Kafka 兼容）+ Debezium Server（CDC）
+# 本地开发 + E2E 测试 stack。
 #
-# 起：    docker compose up -d
-# 停：    docker compose down
-# 全清：  docker compose down -v
+# **两档 profile**：
+#   - 默认（无 profile）：mysql + redis + redpanda + debezium
+#                       适合本地 `make run-admin` / `make run-gateway` 跑 Go 进程
+#   - --profile e2e   ：上述 + admin + gateway + mockupstream + nacos + flink 集群
+#                       适合一键全栈端到端测试
 #
-# 启动后默认连接：
-#   MYSQL_DSN=root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4
-#   redis://localhost:6379
-#   kafka://localhost:9092
+# 命令速查：
+#   docker compose up -d                          # 底层 stack（轻量）
+#   docker compose --profile e2e up -d            # 全栈 E2E
+#   docker compose --profile e2e down -v          # 全清
+#   ./scripts/e2e-smoke.sh                        # 跑冒烟测试
+#   make e2e                                      # = compose --profile e2e up + smoke
 #
-# **Debezium CDC 链路**：
-#   admin POST /endpoints
-#       → MySQL endpoints 表 INSERT（admin 代码不感知 CDC）
-#       → MySQL binlog event
-#       → Debezium Server 读 binlog → 解析 row → 写 Redis Stream `llm_gateway.llm_gateway.endpoints`
-#       → gateway XREAD Stream → 反序列化 → 失效 L1 LRU cache
+# 端口映射（host → container）：
+#   3306  → mysql
+#   6379  → redis
+#   9092  → redpanda kafka
+#   8080  → gateway
+#   8081  → admin
+#   8848  → nacos http
+#   8081/9090 → mockupstream（容器内 9090；不映射到 host，gateway 直接走 compose 网）
+#   8082  → flink-jobmanager web UI
 #
-# 整条链路只多了 debezium 一个进程；admin / gateway 代码完全干净。
+# **Debezium CDC 链路**（默认 profile 就启）：
+#   admin POST → MySQL → binlog → Debezium → Redis Stream `llm_gateway.llm_gateway.<table>`
+#   gateway XREAD → 失效 L1 cache（实时拿到最新 endpoint / api_key / pricing）
+#
+# **E2E profile 链路**：
+#   client → gateway:8080 → mockupstream:9090（不走真上游） → 响应带 usage
+#   gateway 把 usage 落 file（/var/lib/llm-gateway/usage.jsonl）+ Kafka
+#   Flink TaskManager 消费 Kafka → 窗口聚合 → enrich pricing → 写 batches.jsonl
 
 services:
+
+  # ===========================================================================
+  # 默认 profile：底层 stack
+  # ===========================================================================
+
   mysql:
     image: mysql:8.0
     container_name: llm-gateway-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"   # 仅本地开发；生产必须设密码
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
       MYSQL_DATABASE: llm_gateway
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
       - --default-authentication-plugin=mysql_native_password
-      # === Debezium 要求的 binlog 配置 ===
-      - --server-id=1                       # 用作 fake slave 的 ID（唯一）
-      - --log-bin=mysql-bin                 # 开启 binlog
-      - --binlog-format=ROW                 # ROW 格式（Debezium 必须）
-      - --binlog-row-image=FULL             # 包含 before + after image
-      - --gtid-mode=ON                      # GTID 推荐
-      - --enforce-gtid-consistency=ON       # GTID 模式必须配套
-      - --expire-logs-days=1                # 本地开发 binlog 保留 1 天
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --expire-logs-days=1
     ports:
       - "3306:3306"
     volumes:
@@ -64,8 +82,6 @@ services:
       retries: 20
 
   redpanda:
-    # Redpanda：Kafka 协议 100% 兼容，单二进制无 JVM 无 ZK，本地启动 < 1s。
-    # segmentio/kafka-go 直连。
     image: redpandadata/redpanda:latest
     container_name: llm-gateway-redpanda
     restart: unless-stopped
@@ -79,7 +95,7 @@ services:
       - --node-id=0
       - --check=false
       - --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
     ports:
       - "9092:9092"
     volumes:
@@ -90,19 +106,22 @@ services:
       timeout: 3s
       retries: 20
 
+  redpanda-init:
+    # 一次性：预建 billing 用的 topic（Flink earliest 起点要 topic 已存在）
+    image: redpandadata/redpanda:latest
+    container_name: llm-gateway-redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        rpk -X brokers=redpanda:9092 topic create billing.usage.recorded.v1 -p 1 -r 1 || true
+        rpk -X brokers=redpanda:9092 topic create billing.usage.recorded.v1.dlq -p 1 -r 1 || true
+        echo "topics ready"
+    restart: "no"
+
   debezium:
-    # Debezium Server: 独立运行的 CDC pipeline；直接 MySQL binlog → Redis Streams。
-    # 不需要 Kafka Connect。
-    #
-    # 监控 MySQL 的 llm_gateway 库；每个表的变更对应一个 Redis Stream key：
-    #   llm_gateway.llm_gateway.model_services
-    #   llm_gateway.llm_gateway.endpoints
-    #   llm_gateway.llm_gateway.account_model_subscriptions
-    #   llm_gateway.llm_gateway.api_keys
-    #   llm_gateway.llm_gateway.quota_policies
-    #   llm_gateway.llm_gateway.accounts
-    #
-    # Schema 变更（DDL）写到：llm_gateway → topic prefix
     image: debezium/server:2.7.3.Final
     container_name: llm-gateway-debezium
     restart: unless-stopped
@@ -120,8 +139,229 @@ services:
       timeout: 3s
       retries: 20
 
+  # ===========================================================================
+  # E2E profile：admin + gateway + mockupstream
+  # ===========================================================================
+
+  admin:
+    profiles: [e2e]
+    container_name: llm-gateway-admin
+    build:
+      context: .
+      target: admin-prebuilt
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./configs/docker/admin.yaml:/etc/llm-gateway/admin.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  gateway:
+    profiles: [e2e]
+    container_name: llm-gateway-gateway
+    build:
+      context: .
+      target: gateway-prebuilt
+    restart: unless-stopped
+    depends_on:
+      admin:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      mockupstream:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/docker/gateway.yaml:/etc/llm-gateway/gateway.yaml:ro
+      - gateway-data:/var/lib/llm-gateway
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  mockupstream:
+    profiles: [e2e]
+    container_name: llm-gateway-mockupstream
+    build:
+      context: .
+      target: mockupstream-prebuilt
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # E2E profile：Nacos（extractor spec 配置中心）
+  # ===========================================================================
+
+  nacos:
+    profiles: [e2e]
+    image: nacos/nacos-server:v2.3.2-slim
+    container_name: llm-gateway-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
+      EMBEDDED_STORAGE: embedded
+      JVM_XMS: 256m
+      JVM_XMX: 256m
+    ports:
+      - "8848:8848"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8848/nacos/v1/console/health/readiness >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  nacos-init:
+    profiles: [e2e]
+    image: curlimages/curl:8.10.1
+    container_name: llm-gateway-nacos-init
+    depends_on:
+      nacos:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/specs/push-specs.sh"]
+    environment:
+      NACOS_HOST: nacos:8848
+    volumes:
+      - ./configs/nacos:/specs:ro
+    restart: "no"
+
+  # ===========================================================================
+  # E2E profile：Flink 集群（JobManager + TaskManager + job-submit）
+  # ===========================================================================
+
+  flink-jobmanager:
+    profiles: [e2e]
+    image: flink:1.20.0-scala_2.12-java17
+    container_name: llm-gateway-flink-jm
+    restart: unless-stopped
+    command: ["jobmanager"]
+    ports:
+      - "8082:8081"          # Flink Web UI（避开 admin 的 8081）
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.address: flink-jobmanager
+        rest.bind-address: 0.0.0.0
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/config >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  flink-taskmanager:
+    profiles: [e2e]
+    image: flink:1.20.0-scala_2.12-java17
+    container_name: llm-gateway-flink-tm
+    restart: unless-stopped
+    command: ["taskmanager"]
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 1728m
+    volumes:
+      - billing-log:/var/log/billing-aggregator    # LogSink 输出
+      - flink-jar:/opt/flink/usrlib:ro              # 共享 jar（与 builder + submit 共用）
+
+  flink-jar-builder:
+    # 一次性：把宿主 `mvn package` 出的 jar 拷到命名卷 flink-jar，供 jobmanager /
+    # taskmanager / submit 三方共用。**前提**：本地先跑 `make flink-jar`（用宿主
+    # JDK17+/Maven3.9+）生成 flink/billing-aggregator/target/billing-aggregator.jar。
+    #
+    # 沙箱 / 离线场景下，container 内 mvn 拉依赖会因 TLS / proxy 失败；把构建上提到
+    # 宿主既绕开网络问题，又能复用 ~/.m2 本地缓存。
+    profiles: [e2e]
+    image: alpine:3.20
+    container_name: llm-gateway-flink-builder
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ ! -f /src/target/billing-aggregator.jar ]; then
+          echo "[builder] missing /src/target/billing-aggregator.jar — run 'make flink-jar' on host first"
+          exit 1
+        fi
+        cp /src/target/billing-aggregator.jar /out/
+        echo "[builder] copied jar ($(wc -c < /out/billing-aggregator.jar) bytes) to flink-jar volume"
+    volumes:
+      - ./flink/billing-aggregator:/src:ro
+      - flink-jar:/out
+    restart: "no"
+
+  flink-job-submit:
+    # 一次性：等 jar + jobmanager + nacos-init 都就绪后 `flink run` 提交作业
+    profiles: [e2e]
+    image: flink:1.20.0-scala_2.12-java17
+    container_name: llm-gateway-flink-submit
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+      flink-taskmanager:
+        condition: service_started
+      flink-jar-builder:
+        condition: service_completed_successfully
+      nacos-init:
+        condition: service_completed_successfully
+      redpanda-init:
+        condition: service_completed_successfully
+      admin:
+        condition: service_healthy        # admin 跑过 Migrate，pricing_versions 表已建
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "[submit] dispatching billing-aggregator.jar to jobmanager"
+        flink run -d \
+          -m flink-jobmanager:8081 \
+          -c com.zereker.billing.Main \
+          /opt/flink/usrlib/billing-aggregator.jar
+        echo "[submit] done"
+    environment:
+      # E2E：1 分钟窗口 + 5s out-of-orderness + 10s idleness，让 smoke 单事件场景
+      # 在 ~15-20s 内触发窗口（生产用 60min / 60s / 300s）
+      WINDOW_MINUTES: "1"
+      ALLOWED_LATENESS_MINUTES: "1"
+      OUT_OF_ORDERNESS_SECONDS: "5"
+      IDLENESS_SECONDS: "10"
+      KAFKA_BOOTSTRAP_SERVERS: "redpanda:9092"
+      # 注意：MySQL JDBC 的 characterEncoding 用 Java encoding 名（UTF-8），
+      # **不是** MySQL collation 名 (utf8mb4)。容器实际表 collation 由 server 决定（utf8mb4_unicode_ci）。
+      PRICING_JDBC_URL: "jdbc:mysql://mysql:3306/llm_gateway?useUnicode=true&characterEncoding=UTF-8"
+      PRICING_DB_USER: "root"
+      PRICING_DB_PASSWORD: ""
+      NACOS_SERVER: "nacos:8848"
+      NACOS_GROUP: "DEFAULT_GROUP"
+    volumes:
+      - flink-jar:/opt/flink/usrlib:ro
+    restart: "no"
+
 volumes:
   mysql-data:
   redis-data:
   redpanda-data:
   debezium-data:
+  gateway-data:
+  billing-log:
+  flink-jar:

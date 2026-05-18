@@ -14,8 +14,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-func u32(v uint32) *uint32 { return &v }
-func i64(v int64) *int64   { return &v }
+func i64(v int64) *int64 { return &v }
 
 func makePolicy(id int64, rule map[string]any) *repo.QuotaPolicy {
 	js, _ := json.Marshal(rule)

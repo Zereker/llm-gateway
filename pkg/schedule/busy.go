@@ -2,7 +2,6 @@ package schedule
 
 import (
 	"context"
-	"sync"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
@@ -79,45 +78,3 @@ func (f *BusyFilter) Apply(ctx context.Context, candidates []*domain.Endpoint, _
 
 // 编译期断言。
 var _ Filter = (*BusyFilter)(nil)
-
-// =============================================================================
-// 默认 Provider 实现
-// =============================================================================
-
-// InMemoryBusyProvider 进程内 busy score 表；外部（admin / metric scraper）
-// 调 Set 写入；BusyFilter 调 BusyScore 读出。
-//
-// **适用场景**：开发期 mock / 单实例部署 + 自定义 scraper goroutine。
-// **生产**：多副本部署需要走外部存储（Redis / Prometheus pull）；本实现仅作 reference。
-type InMemoryBusyProvider struct {
-	mu     sync.RWMutex
-	scores map[int64]float64
-}
-
-// NewInMemoryBusyProvider 构造空 provider。
-func NewInMemoryBusyProvider() *InMemoryBusyProvider {
-	return &InMemoryBusyProvider{scores: make(map[int64]float64)}
-}
-
-// BusyScore 实现 BusyMetricProvider。无 score 记录返 0。
-func (p *InMemoryBusyProvider) BusyScore(_ context.Context, endpointID int64) float64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.scores[endpointID]
-}
-
-// Set 写入 endpoint 的 busy score。score 应在 [0, 1] 范围；超界自动 clamp。
-func (p *InMemoryBusyProvider) Set(endpointID int64, score float64) {
-	if score < 0 {
-		score = 0
-	}
-	if score > 1 {
-		score = 1
-	}
-	p.mu.Lock()
-	p.scores[endpointID] = score
-	p.mu.Unlock()
-}
-
-// 编译期断言。
-var _ BusyMetricProvider = (*InMemoryBusyProvider)(nil)

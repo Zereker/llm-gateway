@@ -42,23 +42,6 @@ func (s *ModelServiceStore) GetByModel(ctx context.Context, model string) (*repo
 	return &ms, nil
 }
 
-// GetByID admin UI 按 ID 编辑详情。
-func (s *ModelServiceStore) GetByID(ctx context.Context, id int64) (*repo.ModelService, error) {
-	if id == 0 {
-		return nil, errors.New("model_service: id required")
-	}
-	var ms repo.ModelService
-	if err := s.db.WithContext(ctx).
-		Where("id = ? AND deleted_at IS NULL", id).
-		First(&ms).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("model_service: not found: id=%d", id)
-		}
-		return nil, fmt.Errorf("model_service: get by id: %w", err)
-	}
-	return &ms, nil
-}
-
 // List 列全部未删 records（全局 catalog）。
 func (s *ModelServiceStore) List(ctx context.Context) ([]repo.ModelService, error) {
 	var out []repo.ModelService

@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
-	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -42,9 +41,8 @@ type tracingOptionFunc func(*tracingConfig)
 func (f tracingOptionFunc) apply(c *tracingConfig) { f(c) }
 
 type tracingConfig struct {
-	outbox         UsageOutbox
-	tracer         AuditTracer // 业务审计 trace（写 scheduling_decision），≠ OTel tracer
-	tracerProvider oteltrace.TracerProvider
+	outbox UsageOutbox
+	tracer AuditTracer // 业务审计 trace（写 scheduling_decision），≠ OTel tracer
 }
 
 // WithUsageOutbox 注入 Usage Event outbox publisher。
@@ -62,15 +60,6 @@ func WithTracer(t AuditTracer) TracingOption {
 	return tracingOptionFunc(func(c *tracingConfig) { c.tracer = t })
 }
 
-// WithTracingTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
-func WithTracingTracerProvider(tp oteltrace.TracerProvider) TracingOption {
-	return tracingOptionFunc(func(c *tracingConfig) {
-		if tp != nil {
-			c.tracerProvider = tp
-		}
-	})
-}
-
 // Tracing 是 M10：聚合 metric + 发计量事件 + 写 SchedulingDecision trace。
 // 在 c.Next() 之后执行（defer 模式）。
 //
@@ -82,10 +71,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
-	if cfg.tracerProvider == nil {
-		cfg.tracerProvider = otel.GetTracerProvider()
-	}
-	otelTracer := cfg.tracerProvider.Tracer(ScopeName)
+	otelTracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		c.Next()
