@@ -36,6 +36,13 @@ type RequestContext struct {
 	// 下游计费平台按 Usage Event 的 RequestTime 完成；网关不维护 PricingSnapshot。
 	ModelService *ModelService
 
+	// === M5 ModelService 写入（预解析的尝试序列） ===
+	//
+	// ModelChain[0] = primary（== ModelService）；后续 = X-Gateway-Fallback-Models
+	// 按声明顺序去重并经过 catalog + subscription 校验后保留的 fallback model。
+	// 未声明 fallback 时长度 = 1。M7 outer loop 直接遍历这个序列，不再重做 M5。
+	ModelChain []*ModelService
+
 	// === M7 写入（实际成功 model） ===
 	//
 	// 跨 model fallback 时 RoutedModelService != ModelService。

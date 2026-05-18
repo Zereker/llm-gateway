@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
@@ -47,11 +48,16 @@ func WithSubscriptionChecker(s SubscriptionChecker) ModelServiceOption {
 
 // ModelService 是 M5：rc.Envelope.Model → catalog → 验订阅 → rc.ModelService。
 //
+// 同时解析 X-Gateway-Fallback-Models（docs/03 §5）：把 primary + 已校验过的
+// fallback model 写入 rc.ModelChain 供 M7 直接消费。fallback 不存在或未订阅
+// 时静默剔除，不影响主请求。
+//
 // 失败行为（docs/01 §7）：
 //   - rc.Envelope nil（M3 没跑）→ 500
 //   - catalog SQL 错 → 503 / dependency_unavailable
-//   - catalog 找不到 → 404 / model_not_found
-//   - 主账号没订阅 → 403 / model_not_subscribed
+//   - catalog 找不到 primary → 404 / model_not_found
+//   - 主账号没订阅 primary → 403 / model_not_subscribed
+//   - fallback 解析失败 → 静默剔除，不阻断（仅 primary 必须成功）
 func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 	cfg := modelServiceConfig{}
 	for _, opt := range opts {
@@ -102,8 +108,75 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 		}
 
 		rc.ModelService = ms
+		rc.ModelChain = resolveModelChain(rc.Ctx, cfg, ms, rc.Identity.AccountID,
+			parseFallbackModels(c, rc.Envelope.Model))
 		c.Next()
 	}
+}
+
+// resolveModelChain 把 primary + 已校验过的 fallback 拼成 rc.ModelChain。
+//
+// fallback 路径上**任何**校验失败（catalog 找不到 / subs 拒绝 / 依赖故障）都只是
+// 静默跳过该 fallback——primary 已经成功，不应该让 fallback 解析失败拖累主请求。
+func resolveModelChain(
+	ctx context.Context,
+	cfg modelServiceConfig,
+	primary *domain.ModelService,
+	accountID string,
+	fallbackModels []string,
+) []*domain.ModelService {
+	chain := make([]*domain.ModelService, 0, 1+len(fallbackModels))
+	chain = append(chain, primary)
+
+	if len(fallbackModels) == 0 {
+		return chain
+	}
+
+	seen := map[string]struct{}{primary.Model: {}}
+	for _, m := range fallbackModels {
+		if _, dup := seen[m]; dup {
+			continue
+		}
+		seen[m] = struct{}{}
+
+		ms, err := cfg.catalog.GetByModel(ctx, m)
+		if err != nil || ms == nil {
+			continue
+		}
+		subscribed, err := cfg.subscriptions.HasModel(ctx, accountID, ms.ID)
+		if err != nil || !subscribed {
+			continue
+		}
+		chain = append(chain, ms)
+	}
+	return chain
+}
+
+// parseFallbackModels 读 X-Gateway-Fallback-Models header（逗号分隔，去重保序）；
+// docs/03 §5：去重保序、空 model 忽略、数量上限 MaxFallbackModels。
+// primary 自身从结果里剔除——chain 里不允许它和 primary 同名。
+func parseFallbackModels(c *gin.Context, primary string) []string {
+	hdr := c.GetHeader(HeaderGatewayFallbackModels)
+	if hdr == "" {
+		return nil
+	}
+	seen := make(map[string]struct{}, MaxFallbackModels)
+	out := make([]string, 0, MaxFallbackModels)
+	for _, m := range strings.Split(hdr, ",") {
+		m = strings.TrimSpace(m)
+		if m == "" || m == primary {
+			continue
+		}
+		if _, dup := seen[m]; dup {
+			continue
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
+		if len(out) >= MaxFallbackModels {
+			break
+		}
+	}
+	return out
 }
 
 // 旧的 AdaptRepoCatalog / AdaptRepoSubscriptions 已迁到 cmd/gateway/middleware_adapters.go

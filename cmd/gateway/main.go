@@ -196,12 +196,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		QuotaPolicies:  ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0),
 
 		// M7 Schedule
-		EndpointReader:              adaptEndpoints(repo.NewSQLEndpointReader(sqldb)),
-		FallbackCatalog:             catalog,
-		FallbackSubscriptionChecker: subs,
-		Scheduler:                   sched,
-		Sender:                      sender,
-		MaxAttempts:                 cfg.Scheduler.MaxAttempts,
+		EndpointReader: adaptEndpoints(repo.NewSQLEndpointReader(sqldb)),
+		Scheduler:      sched,
+		Sender:         sender,
+		MaxAttempts:    cfg.Scheduler.MaxAttempts,
 
 		// M8 Moderation
 		Moderator: buildModerator(cfg.Moderation),
