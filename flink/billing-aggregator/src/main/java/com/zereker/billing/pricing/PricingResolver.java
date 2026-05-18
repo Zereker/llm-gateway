@@ -80,6 +80,10 @@ public class PricingResolver implements Closeable, Serializable {
         cfg.setMaximumPoolSize(poolMaxSize);
         cfg.setConnectionTimeout(5_000L);
         cfg.setPoolName("billing-aggregator-pricing");
+        // Flink user-jar 通过自定义 classloader 加载，DriverManager 走 SPI 时只看
+        // system classloader，找不到 fat jar 里的 com.mysql.cj.jdbc.Driver。
+        // 显式指定 driverClassName 绕开 SPI 探测。
+        cfg.setDriverClassName("com.mysql.cj.jdbc.Driver");
         this.ds = new HikariDataSource(cfg);
         this.cache = Caffeine.newBuilder()
                 .maximumSize(cacheMaxSize)

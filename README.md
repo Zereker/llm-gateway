@@ -73,7 +73,32 @@ make run-gateway
 ```sh
 make test               # unit tests; SQL tests skip without MYSQL_DSN
 make test-integration   # bring up stack, run all tests including SQL/outbox
+make e2e                # full E2E: admin + gateway + mock upstream + Nacos + Flink
+                        # 一键起栈 + 跑冒烟测试（详见下方）
 ```
+
+### E2E（全栈端到端）
+
+`make e2e` 在 `--profile e2e` 下额外起一组容器，跑完整流：
+**admin → MySQL（migrate）→ Debezium CDC → Redis → gateway → mockupstream
+→ outbox（file + Kafka）→ Flink 计费聚合 → batches.jsonl**。
+
+| 服务 | 镜像 / 来源 | 端口（host） | 作用 |
+|---|---|---|---|
+| `admin` | 本仓 Dockerfile target=admin | 8081 | CRUD + 启动期 Migrate |
+| `gateway` | 本仓 Dockerfile target=gateway | 8080 | 数据面，跑 M1-M10 |
+| `mockupstream` | 本仓 Dockerfile target=mockupstream | — | OpenAI/Anthropic/Gemini 假上游 |
+| `nacos` | nacos/nacos-server:v2.3.2-slim | 8848 | Flink extractor spec 配置中心 |
+| `nacos-init` | curlimages/curl | — | 一次性：把 configs/nacos/*.yaml 推到 Nacos |
+| `flink-jobmanager` + `taskmanager` | flink:1.20-java17 | 8082 | Flink 集群 |
+| `flink-jar-builder` | maven:3.9-temurin-17 | — | 一次性：mvn package → 共享卷 |
+| `flink-job-submit` | flink:1.20-java17 | — | 一次性：flink run 提交作业 |
+| `redpanda-init` | redpandadata/redpanda | — | 一次性：预建 billing topic |
+
+冒烟流程（scripts/e2e-smoke.sh）：admin 串完 quota → account → model → subscription
+→ pricing → endpoint → api_key → 等 Debezium → curl gateway → 校验
+usage.jsonl + Kafka topic + Flink batches.jsonl。
+首跑会拉 ~3GB 镜像 + 跑 mvn package（~2 分钟）；二次跑命中缓存只要十几秒。
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the
 apikeys file path, and the database connection. Defaults are sensible — see

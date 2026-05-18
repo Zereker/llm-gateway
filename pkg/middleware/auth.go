@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/baggage"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -38,22 +37,12 @@ func (f authOptionFunc) apply(c *authConfig) { f(c) }
 
 // authConfig Auth middleware 私有配置。
 type authConfig struct {
-	provider       IdentityProvider
-	tracerProvider trace.TracerProvider
+	provider IdentityProvider
 }
 
 // WithIdentityProvider 注入 IdentityProvider 实现。必填；缺则 Auth() 构造期 panic。
 func WithIdentityProvider(p IdentityProvider) AuthOption {
 	return authOptionFunc(func(c *authConfig) { c.provider = p })
-}
-
-// WithAuthTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
-func WithAuthTracerProvider(tp trace.TracerProvider) AuthOption {
-	return authOptionFunc(func(c *authConfig) {
-		if tp != nil {
-			c.tracerProvider = tp
-		}
-	})
 }
 
 // Auth 是 M2：从 header 提取凭证 → 调 IdentityProvider → 写 rc.Identity。
@@ -73,10 +62,7 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 	if cfg.provider == nil {
 		panic("middleware.Auth: WithIdentityProvider required")
 	}
-	if cfg.tracerProvider == nil {
-		cfg.tracerProvider = otel.GetTracerProvider()
-	}
-	tracer := cfg.tracerProvider.Tracer(ScopeName)
+	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)

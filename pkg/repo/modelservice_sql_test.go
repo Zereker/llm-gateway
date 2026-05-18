@@ -2,27 +2,10 @@ package repo
 
 import (
 	"context"
-	"encoding/json"
-	"reflect"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
 )
-
-// jsonEqual 比较两个 JSON byte slice 的语义相等（不在意空格 / 字段顺序）。
-func jsonEqual(t *testing.T, got, want []byte) bool {
-	t.Helper()
-	var g, w any
-	if err := json.Unmarshal(got, &g); err != nil {
-		t.Errorf("got not valid JSON: %v (raw: %s)", err, got)
-		return false
-	}
-	if err := json.Unmarshal(want, &w); err != nil {
-		t.Errorf("want not valid JSON: %v", err)
-		return false
-	}
-	return reflect.DeepEqual(g, w)
-}
 
 // seedModelService 把测试数据写进 db（bypass admin 写路径）。
 //

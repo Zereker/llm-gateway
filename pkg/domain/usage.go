@@ -24,19 +24,19 @@ import (
 // **Truncated**：流式响应中途断开 / 客户端关连接时为 true；下游可按 Confidence
 // 决定是否采信本次 usage。
 type Usage struct {
-	Input     int64 // 通用 input token 数；通常等于 prompt + 系统消息（含 cache 部分）
-	Output    int64 // 通用 output token 数
-	Total     int64 // 总数；有值时以此为准；无值时 = Input + Output
-	Truncated bool  // 响应是否未完整完成
+	Input     int64 `json:"input"`              // 通用 input token 数；通常等于 prompt + 系统消息（含 cache 部分）
+	Output    int64 `json:"output"`             // 通用 output token 数
+	Total     int64 `json:"total"`              // 总数；有值时以此为准；无值时 = Input + Output
+	Truncated bool  `json:"truncated,omitempty"` // 响应是否未完整完成
 
-	Raw json.RawMessage // 上游原始 usage 对象（透传给下游计费）
+	Raw json.RawMessage `json:"raw,omitempty"` // 上游原始 usage 对象（透传给下游计费）
 
 	// Source / Estimator / Confidence — 标识 usage 来源与可信度
-	Source     UsageSource     // upstream | extracted | estimated
-	Estimator  UsageEstimator  // tiktoken | naive_chars | vendor_default | ""
-	Confidence UsageConfidence // exact | derived | approximate
+	Source     UsageSource     `json:"source,omitempty"`     // upstream | extracted | estimated
+	Estimator  UsageEstimator  `json:"estimator,omitempty"`  // tiktoken | naive_chars | vendor_default | ""
+	Confidence UsageConfidence `json:"confidence,omitempty"` // exact | derived | approximate
 
-	Meta UsageMeta
+	Meta UsageMeta `json:"meta"`
 }
 
 // UsageSource 标识 usage 字段是怎么得到的。
@@ -71,26 +71,26 @@ const (
 //
 // 字段来源参见 docs/architecture/05-metering-billing.md §4。
 type UsageMeta struct {
-	AccountID    string // 主账号 pin / 计费主体（M2 写入）
-	Model        string // 实际路由模型；跨 model fallback 时取 RoutedModelService.Model
-	Vendor       string // endpoint vendor
-	EndpointID   string
-	SubAccountID string // 子账户 / 操作者
-	APIKeyID     string
-	ServiceID    string // model_services.service_id（字符串可重命名）
+	AccountID    string `json:"account_id"`                // 主账号 pin / 计费主体（M2 写入）
+	Model        string `json:"model"`                     // 实际路由模型；跨 model fallback 时取 RoutedModelService.Model
+	Vendor       string `json:"vendor"`                    // endpoint vendor
+	EndpointID   string `json:"endpoint_id"`
+	SubAccountID string `json:"sub_account_id"`            // 子账户 / 操作者
+	APIKeyID     string `json:"api_key_id"`
+	ServiceID    string `json:"service_id,omitempty"`      // model_services.service_id（字符串可重命名）
 
 	// ModelServiceID / ServiceUpdateTime —— pricing 查询指纹（docs/05 §4 + docs/09 §6）。
 	//
 	// 下游 billing aggregator 用 (account_id, model_service_id, service_update_time)
 	// 直接命中 pricing_versions 索引，无需经 service_id → id 二跳。
 	// 与 Model / ServiceID 一致取自 RoutedModelService（fallback 后实际计费的模型）。
-	ModelServiceID    int64
-	ServiceUpdateTime time.Time
+	ModelServiceID    int64     `json:"model_service_id,omitempty"`
+	ServiceUpdateTime time.Time `json:"service_update_time,omitempty"`
 
-	RequestID    string
-	TraceID      string
-	StartTime    time.Time
-	EndTime      time.Time
-	TTFTMs       int64 // 流式响应首字节耗时；非流式为 0
-	TotalLatency int64 // 网关端到端 latency，ms
+	RequestID    string    `json:"request_id"`
+	TraceID      string    `json:"trace_id,omitempty"`
+	StartTime    time.Time `json:"start_time"`
+	EndTime      time.Time `json:"end_time"`
+	TTFTMs       int64     `json:"ttft_ms,omitempty"`       // 流式响应首字节耗时；非流式为 0
+	TotalLatency int64     `json:"total_latency,omitempty"` // 网关端到端 latency，ms
 }
