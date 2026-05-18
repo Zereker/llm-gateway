@@ -299,31 +299,54 @@ public class Main {
             PricingResolverConfig pricing,
             ExtractMetricsCfg extract) {
 
+        /**
+         * Hard-coded defaults overridable via env vars (for E2E smoke + container deploys).
+         * v0.2 will move to YAML loader (configs/local + cfg.yaml mount).
+         *
+         * <pre>
+         * KAFKA_BOOTSTRAP_SERVERS  (default kafka-broker-0:9092)
+         * KAFKA_TOPIC              (default billing.usage.recorded.v1)
+         * CONSUMER_GROUP_ID        (default billing-aggregator)
+         * WINDOW_MINUTES           (default 60; e2e set to 1)
+         * ALLOWED_LATENESS_MINUTES (default 10)
+         * PRICING_JDBC_URL         (default jdbc:mysql://admin-db:3306/llm_gateway?...)
+         * PRICING_DB_USER          (default billing)
+         * PRICING_DB_PASSWORD      (default empty)
+         * NACOS_SERVER             (default nacos:8848)
+         * NACOS_NAMESPACE          (default empty)
+         * NACOS_GROUP              (default DEFAULT_GROUP)
+         * </pre>
+         */
         static AppConfig hardcoded() {
             return new AppConfig(
                     4,
                     60_000L,
                     300_000L,
-                    "kafka-broker-0:9092",
-                    "billing.usage.recorded.v1",
-                    "billing-aggregator",
-                    60,
-                    10,
+                    env("KAFKA_BOOTSTRAP_SERVERS", "kafka-broker-0:9092"),
+                    env("KAFKA_TOPIC", "billing.usage.recorded.v1"),
+                    env("CONSUMER_GROUP_ID", "billing-aggregator"),
+                    Integer.parseInt(env("WINDOW_MINUTES", "60")),
+                    Integer.parseInt(env("ALLOWED_LATENESS_MINUTES", "10")),
                     new PricingResolverConfig(
-                            "jdbc:mysql://admin-db:3306/llm_gateway?useUnicode=true&characterEncoding=utf8mb4",
-                            System.getenv().getOrDefault("PRICING_DB_USER", "billing"),
-                            System.getenv().getOrDefault("PRICING_DB_PASSWORD", ""),
+                            env("PRICING_JDBC_URL",
+                                    "jdbc:mysql://admin-db:3306/llm_gateway?useUnicode=true&characterEncoding=utf8mb4"),
+                            env("PRICING_DB_USER", "billing"),
+                            env("PRICING_DB_PASSWORD", ""),
                             16, 50_000L, Duration.ofHours(1), 16,
                             "standard"),
                     new ExtractMetricsCfg(
-                            System.getenv().getOrDefault("NACOS_SERVER", "nacos:8848"),
-                            System.getenv().getOrDefault("NACOS_NAMESPACE", ""),
-                            System.getenv().getOrDefault("NACOS_GROUP", "DEFAULT_GROUP"),
+                            env("NACOS_SERVER", "nacos:8848"),
+                            env("NACOS_NAMESPACE", ""),
+                            env("NACOS_GROUP", "DEFAULT_GROUP"),
                             List.of(
                                     "extractor-anthropic.yaml",
                                     "extractor-openai-responses.yaml",
                                     "extractor-google-gemini.yaml"),
                             Map.of(/* vendor-string → spec-name overrides; empty = use vendor name itself */)));
+        }
+
+        private static String env(String key, String dflt) {
+            return System.getenv().getOrDefault(key, dflt);
         }
     }
 }

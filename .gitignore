@@ -31,3 +31,6 @@ go.work.sum
 .idea/
 .vscode/
 bin/
+
+# Flink build artifacts (built via `make flink-jar`)
+flink/billing-aggregator/target/

@@ -1,0 +1,12 @@
+name: anthropic
+metrics:
+  input_tokens:
+    expr: "#root['input_tokens']?.asLong() ?: 0"
+  output_tokens:
+    expr: "#root['output_tokens']?.asLong() ?: 0"
+  cache_read_tokens:
+    expr: "#root['cache_read_input_tokens']?.asLong() ?: 0"
+  cache_5m_write_tokens:
+    expr: "#root['cache_creation']?['ephemeral_5m_input_tokens']?.asLong() ?: #root['cache_creation_input_tokens']?.asLong() ?: 0"
+  cache_1h_write_tokens:
+    expr: "#root['cache_creation']?['ephemeral_1h_input_tokens']?.asLong() ?: 0"

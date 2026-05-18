@@ -1,0 +1,8 @@
+name: google-gemini
+metrics:
+  input_tokens:
+    expr: "#root['promptTokenCount']?.asLong() ?: 0"
+  output_tokens:
+    expr: "#root['candidatesTokenCount']?.asLong() ?: 0"
+  cached_input_tokens:
+    expr: "#root['cachedContentTokenCount']?.asLong() ?: 0"
