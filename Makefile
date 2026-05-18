@@ -19,11 +19,11 @@ test-integration: stack ## 起 stack 后串行跑全测试（含 SQL / outbox）
 	@until docker compose exec -T mysql mysqladmin ping -h localhost -uroot --silent; do sleep 1; done
 	MYSQL_DSN='$(MYSQL_DSN)' go test -p 1 ./...
 
-build:                  ## 编译 cmd/gateway / cmd/admin / cmd/mockupstream 到 ./bin
+build:                  ## 编译 cmd/gateway / cmd/admin / cmd/mockupstream 到 ./bin（静态 binary，给容器用）
 	mkdir -p bin
-	go build -o bin/llm-gateway        ./cmd/gateway
-	go build -o bin/llm-gateway-admin  ./cmd/admin
-	go build -o bin/llm-gateway-mockup ./cmd/mockupstream
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway        ./cmd/gateway
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-admin  ./cmd/admin
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-mockup ./cmd/mockupstream
 
 run-gateway:            ## 跑 gateway（默认配置）
 	go run ./cmd/gateway -config ./configs/local/gateway.yaml
@@ -39,8 +39,9 @@ run-mockupstream:       ## 跑 mock 上游（监听 :9090）
 .PHONY: e2e e2e-up e2e-down e2e-smoke e2e-logs e2e-status flink-jar
 e2e: e2e-up e2e-smoke   ## 全栈起 + 自动跑冒烟测试（一键 E2E）
 
-e2e-up:                 ## 起 e2e profile：admin/gateway/mockupstream/nacos/flink
-	# --wait 等所有 service healthy / 一次性服务成功 exit；首跑 mvn 拉依赖较慢，超时给 10min
+e2e-up: build flink-jar ## 起 e2e profile：admin/gateway/mockupstream/nacos/flink
+	# build / flink-jar 先在宿主跑（绕开容器内网络拉依赖的限制）
+	# --wait 等所有 service healthy / 一次性服务成功 exit
 	docker compose --profile e2e up -d --build --wait --wait-timeout 600
 	@echo
 	@echo "服务清单："
@@ -58,8 +59,9 @@ e2e-logs:               ## 跟踪 admin / gateway / flink 日志
 e2e-status:             ## 显示 e2e 栈所有服务状态
 	docker compose --profile e2e ps
 
-flink-jar:              ## 仅构建 Flink fat-jar（不依赖宿主 JDK，用 maven 容器）
-	docker compose --profile e2e run --rm flink-jar-builder
+flink-jar:              ## 构建 Flink fat-jar（宿主 JDK17+/Maven3.9+；e2e-up 会消费）
+	cd flink/billing-aggregator && mvn -B -DskipTests -Dmaven.compiler.release=17 package
+	@ls -lh flink/billing-aggregator/target/billing-aggregator.jar
 
 .PHONY: help
 help:                   ## 列出所有目标

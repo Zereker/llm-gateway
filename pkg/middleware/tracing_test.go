@@ -57,8 +57,8 @@ func TestTracing_PublishesUsageWhenSet(t *testing.T) {
 	if !contains(body, `"schema_version":"usage.v1"`) {
 		t.Errorf("payload missing schema_version: %s", body)
 	}
-	if !contains(body, `"Total":150`) {
-		t.Errorf("payload missing Total: %s", body)
+	if !contains(body, `"total":150`) {
+		t.Errorf("payload missing total: %s", body)
 	}
 }
 
