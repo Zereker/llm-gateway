@@ -158,15 +158,20 @@ curl -fsS -X POST "${GATEWAY_URL}/v1/chat/completions" \
 echo "  等待 Flink 处理 + 输出 batches.jsonl 行（最多 60s）..."
 
 # user-jar 里的 log4j2.xml 被 Flink /opt/flink/conf/ 下的 properties 覆盖，
-# LogSink 落 'billing.batches' logger 实际走 console。从 TM stdout 抓即可。
+# LogSink 落 'billing.batches' logger 实际只走 console。从 TM stdout 抓即可。
+# 不用 grep -oE 切完整 JSON——嵌套结构 regex 不可靠；直接 grep 整行（含日志前缀），
+# sed 抠到 schema_version 起始为止给 jq；jq 失败也只用作辅助打印，不参与判定。
 deadline=$(( $(date +%s) + 60 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    BATCH=$(docker compose logs --tail=500 flink-taskmanager 2>&1 \
-        | grep -oE '\{"schema_version":"billing-batch\.v1"[^}]*\}[^}]*\}[^}]*\}[^}]*\}[^}]*\}' \
-        | head -1)
-    if [ -n "$BATCH" ]; then
+    if docker compose logs --tail=500 flink-taskmanager 2>&1 \
+        | grep -q '"schema_version":"billing-batch.v1"'; then
         echo "  ✓ Flink emitted billing batch:"
-        echo "$BATCH" | $JQ -c '{schema_version, window_start, window_end, account_id, requests: .totals.requests, lines: .lines | length}'
+        docker compose logs --tail=500 flink-taskmanager 2>&1 \
+            | grep '"schema_version":"billing-batch.v1"' \
+            | head -1 \
+            | sed 's/.*INFO  billing.batches[^-]*- //' \
+            | $JQ -c '{schema_version, window_start, window_end, account_id, requests: .totals.requests, lines: .lines | length}' \
+            || true
         echo
         echo "✓ E2E smoke PASSED"
         exit 0
