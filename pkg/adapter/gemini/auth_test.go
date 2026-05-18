@@ -71,9 +71,3 @@ func TestNewTokenProvider_UnsupportedType_Error(t *testing.T) {
 	}
 }
 
-func TestRandID_Format(t *testing.T) {
-	got := randID()
-	if len(got) != 24 { // 12 bytes hex = 24 chars
-		t.Errorf("len=%d, want=24", len(got))
-	}
-}

@@ -2,8 +2,6 @@ package gemini
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -103,9 +101,3 @@ func (o *oauthBearer) AuthHeader(_ context.Context) (string, string, error) {
 	return "Authorization", "Bearer " + tok.AccessToken, nil
 }
 
-// randID 生成响应里的 chatcmpl-XXX 后缀（OpenAI 格式约定）。
-func randID() string {
-	b := make([]byte, 12)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}

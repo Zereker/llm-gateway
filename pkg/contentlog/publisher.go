@@ -61,11 +61,3 @@ func (p *FilePublisher) Close() error {
 	return err
 }
 
-// =============================================================================
-// NoopPublisher：默认禁用；不输出任何 Record
-// =============================================================================
-
-// NoopPublisher 永远成功且不做任何事；driver=none 时使用。
-type NoopPublisher struct{}
-
-func (NoopPublisher) Publish(_ context.Context, _ *Record) error { return nil }

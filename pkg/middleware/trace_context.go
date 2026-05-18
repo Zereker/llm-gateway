@@ -25,11 +25,8 @@ import (
 // ScopeName 是 M1 root span 的 instrumentation scope 名（OTel collector 按此过滤）。
 const ScopeName = "github.com/zereker/llm-gateway/pkg/middleware"
 
-// SpanNameFormatter 把 *gin.Context 映射成 root span 名字（参考 otelgin v0.68.0）。
-type SpanNameFormatter func(*gin.Context) string
-
 // defaultSpanNameFormatter 与 otelgin 一致："{METHOD} {fullpath}"；未匹配路由时退到 "{METHOD}"。
-var defaultSpanNameFormatter SpanNameFormatter = func(c *gin.Context) string {
+func defaultSpanNameFormatter(c *gin.Context) string {
 	method := strings.ToUpper(c.Request.Method)
 	if !slices.Contains([]string{
 		http.MethodGet, http.MethodHead,
@@ -46,66 +43,16 @@ var defaultSpanNameFormatter SpanNameFormatter = func(c *gin.Context) string {
 	return method
 }
 
-// traceContextConfig 是 M1 装配配置（otelgin 同名 config 结构对位）。
-type traceContextConfig struct {
-	tracerProvider    oteltrace.TracerProvider
-	propagators       propagation.TextMapPropagator
-	spanStartOptions  []oteltrace.SpanStartOption
-	spanNameFormatter SpanNameFormatter
-}
-
-// TraceContextOption 是 M1 functional option（对位 otelgin.Option）。
-type TraceContextOption interface {
-	apply(*traceContextConfig)
-}
-
-type traceContextOptionFunc func(*traceContextConfig)
-
-func (f traceContextOptionFunc) apply(c *traceContextConfig) { f(c) }
-
-// WithTraceContextTracerProvider 注入自定义 TracerProvider；nil 走 otel.GetTracerProvider()。
-func WithTraceContextTracerProvider(tp oteltrace.TracerProvider) TraceContextOption {
-	return traceContextOptionFunc(func(c *traceContextConfig) {
-		if tp != nil {
-			c.tracerProvider = tp
-		}
-	})
-}
-
-// WithTraceContextPropagators 注入自定义 Propagators；nil 走 otel.GetTextMapPropagator()（默认 W3C 兜底）。
-func WithTraceContextPropagators(p propagation.TextMapPropagator) TraceContextOption {
-	return traceContextOptionFunc(func(c *traceContextConfig) {
-		if p != nil {
-			c.propagators = p
-		}
-	})
-}
-
-// WithTraceContextSpanStartOptions 追加 root span Start 时的额外 SpanStartOption。
-func WithTraceContextSpanStartOptions(opts ...oteltrace.SpanStartOption) TraceContextOption {
-	return traceContextOptionFunc(func(c *traceContextConfig) {
-		c.spanStartOptions = append(c.spanStartOptions, opts...)
-	})
-}
-
-// WithSpanNameFormatter 自定义 root span name 推导逻辑。
-func WithSpanNameFormatter(f SpanNameFormatter) TraceContextOption {
-	return traceContextOptionFunc(func(c *traceContextConfig) {
-		if f != nil {
-			c.spanNameFormatter = f
-		}
-	})
-}
 
 // TraceContext 是 M1：root span + RequestContext 注入 + W3C trace context 提取。
 //
 // **设计参考**：opentelemetry-go-contrib / otelgin v0.68.0
-// （instrumentation/github.com/gin-gonic/gin/otelgin/gin.go）—— 同款 Option 模式 +
-// SpanNameFormatter + 启动期 cfg 固化 + 每请求 tracer.Start/defer span.End。
+// （instrumentation/github.com/gin-gonic/gin/otelgin/gin.go）—— 启动期固化 +
+// 每请求 tracer.Start/defer span.End。
 //
 // **职责**（按时序）：
 //
-//  1. 用 cfg.propagators 从 request headers 提取上游 traceparent → ctx 里若有 valid SpanContext 续传
+//  1. 从 request headers 提取上游 traceparent → ctx 里若有 valid SpanContext 续传
 //  2. 没 traceparent → 自己构造 parent SpanContext，兜底生成 trace_id
 //  3. request_id 注入 OTel baggage（trace.CtxHandler 自动加到所有 log record，跨 service 透传）
 //  4. tracer.Start("{METHOD} {route}", SpanKindServer, 初始 attrs) → root span
@@ -117,28 +64,16 @@ func WithSpanNameFormatter(f SpanNameFormatter) TraceContextOption {
 // string 形态 trace_id 用 middleware.TraceIDFromCtx 提取。
 //
 // **必须最先注册**（在 Recover / Auth 之前），否则 GetRequestContext 会 panic。
-func TraceContext(opts ...TraceContextOption) gin.HandlerFunc {
-	cfg := traceContextConfig{}
-	for _, opt := range opts {
-		opt.apply(&cfg)
-	}
-	if cfg.tracerProvider == nil {
-		cfg.tracerProvider = otel.GetTracerProvider()
-	}
-	if cfg.propagators == nil {
-		cfg.propagators = defaultPropagator()
-	}
-	if cfg.spanNameFormatter == nil {
-		cfg.spanNameFormatter = defaultSpanNameFormatter
-	}
-	tracer := cfg.tracerProvider.Tracer(ScopeName)
+func TraceContext() gin.HandlerFunc {
+	propagators := defaultPropagator()
+	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		savedCtx := c.Request.Context()
 		defer func() { c.Request = c.Request.WithContext(savedCtx) }()
 
 		// 1. 提取上游 traceparent（W3C）
-		ctx := cfg.propagators.Extract(savedCtx, propagation.HeaderCarrier(c.Request.Header))
+		ctx := propagators.Extract(savedCtx, propagation.HeaderCarrier(c.Request.Header))
 
 		// 2. 兜底生成 trace_id。
 		//    必须保证调 tracer.Start 之前 ctx 里有 valid SpanContext，原因有二：
@@ -164,12 +99,12 @@ func TraceContext(opts ...TraceContextOption) gin.HandlerFunc {
 		}
 
 		// 4. 计算 span name 并开 root span
-		spanName := cfg.spanNameFormatter(c)
+		spanName := defaultSpanNameFormatter(c)
 		if spanName == "" {
 			spanName = fmt.Sprintf("HTTP %s route not found", c.Request.Method)
 		}
 
-		startOpts := []oteltrace.SpanStartOption{
+		ctx, span := tracer.Start(ctx, spanName,
 			oteltrace.WithSpanKind(oteltrace.SpanKindServer),
 			oteltrace.WithAttributes(
 				attribute.String("http.request.method", c.Request.Method),
@@ -179,10 +114,7 @@ func TraceContext(opts ...TraceContextOption) gin.HandlerFunc {
 				attribute.String("user_agent.original", c.Request.UserAgent()),
 				attribute.String("llm_gateway.request_id", requestID),
 			),
-		}
-		startOpts = append(startOpts, cfg.spanStartOptions...)
-
-		ctx, span := tracer.Start(ctx, spanName, startOpts...)
+		)
 		defer span.End()
 
 		// 5. 构造并挂 RequestContext
