@@ -86,9 +86,9 @@ public class Main {
                 .build();
 
         WatermarkStrategy<UsageEvent> watermarks = WatermarkStrategy
-                .<UsageEvent>forBoundedOutOfOrderness(Duration.ofMinutes(1))
+                .<UsageEvent>forBoundedOutOfOrderness(Duration.ofSeconds(cfg.outOfOrdernessSeconds))
                 .withTimestampAssigner((ev, ts) -> ev.usage.meta.endTime.toEpochMilli())
-                .withIdleness(Duration.ofMinutes(5));
+                .withIdleness(Duration.ofSeconds(cfg.idlenessSeconds));
 
         DataStream<UsageEvent> events = env.fromSource(source, watermarks, "usage-events");
 
@@ -285,7 +285,7 @@ public class Main {
     record PricingResolverConfig(
             String jdbcUrl, String username, String password,
             int poolMaxSize, long cacheMaxSize, Duration cacheTtl, int dbSemaphorePermits,
-            String ruleClass) {}
+            String ruleClass) implements java.io.Serializable {}
 
     record AppConfig(
             int parallelism,
@@ -296,6 +296,8 @@ public class Main {
             String consumerGroupId,
             int windowMinutes,
             int allowedLatenessMinutes,
+            int outOfOrdernessSeconds,
+            int idlenessSeconds,
             PricingResolverConfig pricing,
             ExtractMetricsCfg extract) {
 
@@ -327,9 +329,11 @@ public class Main {
                     env("CONSUMER_GROUP_ID", "billing-aggregator"),
                     Integer.parseInt(env("WINDOW_MINUTES", "60")),
                     Integer.parseInt(env("ALLOWED_LATENESS_MINUTES", "10")),
+                    Integer.parseInt(env("OUT_OF_ORDERNESS_SECONDS", "60")),
+                    Integer.parseInt(env("IDLENESS_SECONDS", "300")),
                     new PricingResolverConfig(
                             env("PRICING_JDBC_URL",
-                                    "jdbc:mysql://admin-db:3306/llm_gateway?useUnicode=true&characterEncoding=utf8mb4"),
+                                    "jdbc:mysql://admin-db:3306/llm_gateway?useUnicode=true&characterEncoding=UTF-8"),
                             env("PRICING_DB_USER", "billing"),
                             env("PRICING_DB_PASSWORD", ""),
                             16, 50_000L, Duration.ofHours(1), 16,

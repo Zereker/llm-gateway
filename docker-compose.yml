@@ -148,7 +148,7 @@ services:
     container_name: llm-gateway-admin
     build:
       context: .
-      target: admin
+      target: admin-prebuilt
     restart: unless-stopped
     depends_on:
       mysql:
@@ -158,7 +158,7 @@ services:
     volumes:
       - ./configs/docker/admin.yaml:/etc/llm-gateway/admin.yaml:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8081/healthz"]
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8081/healthz"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -169,7 +169,7 @@ services:
     container_name: llm-gateway-gateway
     build:
       context: .
-      target: gateway
+      target: gateway-prebuilt
     restart: unless-stopped
     depends_on:
       admin:
@@ -186,7 +186,7 @@ services:
       - ./configs/docker/gateway.yaml:/etc/llm-gateway/gateway.yaml:ro
       - gateway-data:/var/lib/llm-gateway
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/healthz"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -197,10 +197,10 @@ services:
     container_name: llm-gateway-mockupstream
     build:
       context: .
-      target: mockupstream
+      target: mockupstream-prebuilt
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:9090/health"]
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9090/health"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -286,25 +286,27 @@ services:
       - flink-jar:/opt/flink/usrlib:ro              # 共享 jar（与 builder + submit 共用）
 
   flink-jar-builder:
-    # 一次性：mvn package → flink/billing-aggregator/target/billing-aggregator.jar
-    # 把成品复制到命名卷 flink-jar，供 jobmanager / taskmanager / submit 读取
+    # 一次性：把宿主 `mvn package` 出的 jar 拷到命名卷 flink-jar，供 jobmanager /
+    # taskmanager / submit 三方共用。**前提**：本地先跑 `make flink-jar`（用宿主
+    # JDK17+/Maven3.9+）生成 flink/billing-aggregator/target/billing-aggregator.jar。
+    #
+    # 沙箱 / 离线场景下，container 内 mvn 拉依赖会因 TLS / proxy 失败；把构建上提到
+    # 宿主既绕开网络问题，又能复用 ~/.m2 本地缓存。
     profiles: [e2e]
-    image: maven:3.9-eclipse-temurin-17
+    image: alpine:3.20
     container_name: llm-gateway-flink-builder
-    working_dir: /src
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -e
-        if [ -f /out/billing-aggregator.jar ]; then
-          echo "[builder] jar exists, skip"; exit 0
+        if [ ! -f /src/target/billing-aggregator.jar ]; then
+          echo "[builder] missing /src/target/billing-aggregator.jar — run 'make flink-jar' on host first"
+          exit 1
         fi
-        mvn -q -B -DskipTests package
-        cp target/billing-aggregator.jar /out/
-        echo "[builder] copied jar to /out"
+        cp /src/target/billing-aggregator.jar /out/
+        echo "[builder] copied jar ($(wc -c < /out/billing-aggregator.jar) bytes) to flink-jar volume"
     volumes:
-      - ./flink/billing-aggregator:/src
-      - maven-cache:/root/.m2
+      - ./flink/billing-aggregator:/src:ro
       - flink-jar:/out
     restart: "no"
 
@@ -337,11 +339,16 @@ services:
           /opt/flink/usrlib/billing-aggregator.jar
         echo "[submit] done"
     environment:
-      # E2E：1 分钟窗口让 smoke test 90s 内能看到结果；生产 60 min
+      # E2E：1 分钟窗口 + 5s out-of-orderness + 10s idleness，让 smoke 单事件场景
+      # 在 ~15-20s 内触发窗口（生产用 60min / 60s / 300s）
       WINDOW_MINUTES: "1"
       ALLOWED_LATENESS_MINUTES: "1"
+      OUT_OF_ORDERNESS_SECONDS: "5"
+      IDLENESS_SECONDS: "10"
       KAFKA_BOOTSTRAP_SERVERS: "redpanda:9092"
-      PRICING_JDBC_URL: "jdbc:mysql://mysql:3306/llm_gateway?useUnicode=true&characterEncoding=utf8mb4"
+      # 注意：MySQL JDBC 的 characterEncoding 用 Java encoding 名（UTF-8），
+      # **不是** MySQL collation 名 (utf8mb4)。容器实际表 collation 由 server 决定（utf8mb4_unicode_ci）。
+      PRICING_JDBC_URL: "jdbc:mysql://mysql:3306/llm_gateway?useUnicode=true&characterEncoding=UTF-8"
       PRICING_DB_USER: "root"
       PRICING_DB_PASSWORD: ""
       NACOS_SERVER: "nacos:8848"
@@ -358,4 +365,3 @@ volumes:
   gateway-data:
   billing-log:
   flink-jar:
-  maven-cache:
