@@ -39,12 +39,13 @@ type Deps struct {
 	QuotaPolicies  middleware.QuotaPolicies
 
 	// M7 Schedule
-	EndpointReader              middleware.EndpointReader
-	FallbackCatalog             middleware.ModelCatalog        // 通常跟 ModelCatalog 同实例
-	FallbackSubscriptionChecker middleware.SubscriptionChecker // 同上
-	Scheduler                   middleware.Scheduler
-	Sender                      middleware.Sender
-	MaxAttempts                 int
+	//
+	// fallback model 解析 + catalog/subscription 校验在 M5 完成，结果走 rc.ModelChain；
+	// M7 这里不再需要 catalog / subscriptions 依赖。
+	EndpointReader middleware.EndpointReader
+	Scheduler      middleware.Scheduler
+	Sender         middleware.Sender
+	MaxAttempts    int
 	// EndpointRateStore 不另开字段——M7 复用 RateLimitStore（endpoint 桶 key 跟 user 桶 key
 	// 在同一存储里）。
 

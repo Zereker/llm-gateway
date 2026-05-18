@@ -70,12 +70,10 @@ func minDeps() Deps {
 		ModelCatalog:        stubMSProvider{},
 		SubscriptionChecker: stubSubscriptions{},
 		// M7
-		EndpointReader:              stubEPProvider{},
-		FallbackCatalog:             stubMSProvider{},
-		FallbackSubscriptionChecker: stubSubscriptions{},
-		Scheduler:                   schedule.New(schedule.Config{}),
-		Sender:                      upstream.New(),
-		MaxAttempts:                 3,
+		EndpointReader: stubEPProvider{},
+		Scheduler:      schedule.New(schedule.Config{}),
+		Sender:         upstream.New(),
+		MaxAttempts:    3,
 		// M4 / M6 / M8 / M10 留空：各 middleware 在 nil/empty 时走 no-op pass-through
 	}
 }
