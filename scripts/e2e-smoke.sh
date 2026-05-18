@@ -144,19 +144,35 @@ docker compose exec -T redpanda rpk topic consume billing.usage.recorded.v1 -n 1
     | $JQ -r '.value' | head -c 400
 echo
 
-section "12. wait for Flink billing batch (up to 90s)"
-deadline=$(( $(date +%s) + 90 ))
+section "12. push watermark + wait for Flink billing batch"
+# event-time tumbling 1-min 窗口需要后续事件把 watermark 推过 window_end 才会 fire。
+# Flink 的 withIdleness 只能 mark subtask idle，不会自动把 watermark 抬到 MAX。
+# 所以再发一条 bumper 请求，等其 event_time 推进 watermark 触发首个窗口。
+echo "  sleeping 65s 让 bumper 事件的 event_time 跨过第一条事件的 window_end..."
+sleep 65
+echo "  发送 bumper 请求..."
+curl -fsS -X POST "${GATEWAY_URL}/v1/chat/completions" \
+    -H "Authorization: Bearer ${API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"gpt-4o","messages":[{"role":"user","content":"bump"}]}' >/dev/null
+echo "  等待 Flink 处理 + 输出 batches.jsonl 行（最多 60s）..."
+
+# user-jar 里的 log4j2.xml 被 Flink /opt/flink/conf/ 下的 properties 覆盖，
+# LogSink 落 'billing.batches' logger 实际走 console。从 TM stdout 抓即可。
+deadline=$(( $(date +%s) + 60 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    if docker compose exec -T flink-taskmanager sh -c \
-        '[ -s /var/log/billing-aggregator/batches.jsonl ]' 2>/dev/null; then
-        echo "  batches.jsonl populated:"
-        docker compose exec -T flink-taskmanager head -c 400 /var/log/billing-aggregator/batches.jsonl
-        echo
+    BATCH=$(docker compose logs --tail=500 flink-taskmanager 2>&1 \
+        | grep -oE '\{"schema_version":"billing-batch\.v1"[^}]*\}[^}]*\}[^}]*\}[^}]*\}[^}]*\}' \
+        | head -1)
+    if [ -n "$BATCH" ]; then
+        echo "  ✓ Flink emitted billing batch:"
+        echo "$BATCH" | $JQ -c '{schema_version, window_start, window_end, account_id, requests: .totals.requests, lines: .lines | length}'
         echo
         echo "✓ E2E smoke PASSED"
         exit 0
     fi
     sleep 5
 done
-echo "✗ Flink batch never landed within 90s"
+echo "✗ no billing batch in TM stdout within deadline"
+docker compose logs --tail=50 flink-taskmanager 2>&1 | tail -30
 exit 1
