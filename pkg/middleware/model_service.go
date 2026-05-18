@@ -5,7 +5,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
-	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
@@ -32,9 +31,8 @@ type modelServiceOptionFunc func(*modelServiceConfig)
 func (f modelServiceOptionFunc) apply(c *modelServiceConfig) { f(c) }
 
 type modelServiceConfig struct {
-	catalog        ModelCatalog
-	subscriptions  SubscriptionChecker
-	tracerProvider oteltrace.TracerProvider
+	catalog       ModelCatalog
+	subscriptions SubscriptionChecker
 }
 
 // WithModelCatalog 注入 ModelCatalog 实现。必填。
@@ -45,15 +43,6 @@ func WithModelCatalog(c ModelCatalog) ModelServiceOption {
 // WithSubscriptionChecker 注入 SubscriptionChecker 实现。必填。
 func WithSubscriptionChecker(s SubscriptionChecker) ModelServiceOption {
 	return modelServiceOptionFunc(func(cfg *modelServiceConfig) { cfg.subscriptions = s })
-}
-
-// WithModelServiceTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
-func WithModelServiceTracerProvider(tp oteltrace.TracerProvider) ModelServiceOption {
-	return modelServiceOptionFunc(func(cfg *modelServiceConfig) {
-		if tp != nil {
-			cfg.tracerProvider = tp
-		}
-	})
 }
 
 // ModelService 是 M5：rc.Envelope.Model → catalog → 验订阅 → rc.ModelService。
@@ -74,10 +63,7 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 	if cfg.subscriptions == nil {
 		panic("middleware.ModelService: WithSubscriptionChecker required")
 	}
-	if cfg.tracerProvider == nil {
-		cfg.tracerProvider = otel.GetTracerProvider()
-	}
-	tracer := cfg.tracerProvider.Tracer(ScopeName)
+	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)

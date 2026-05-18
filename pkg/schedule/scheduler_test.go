@@ -295,15 +295,6 @@ func TestPick_ScorerAdjustsWeights(t *testing.T) {
 	}
 }
 
-// 一个超简单 duration helper（避免再 import time 让 lint 抱怨）
-func mustParseDuration(unit string) int64 {
-	switch unit {
-	case "ms":
-		return 1_000_000 // 1ms in ns
-	}
-	return 1
-}
-
 // =============================================================================
 // InMemoryStatsStore
 // =============================================================================

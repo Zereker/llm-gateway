@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
-	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -42,9 +41,8 @@ type limitOptionFunc func(*limitConfig)
 func (f limitOptionFunc) apply(c *limitConfig) { f(c) }
 
 type limitConfig struct {
-	store          RateLimitStore
-	policies       QuotaPolicies
-	tracerProvider oteltrace.TracerProvider
+	store    RateLimitStore
+	policies QuotaPolicies
 }
 
 // WithLimitStore 注入 RateLimitStore 实现。必填。
@@ -55,15 +53,6 @@ func WithLimitStore(s RateLimitStore) LimitOption {
 // WithLimitPolicies 注入 QuotaPolicies 实现。必填。
 func WithLimitPolicies(p QuotaPolicies) LimitOption {
 	return limitOptionFunc(func(c *limitConfig) { c.policies = p })
-}
-
-// WithLimitTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
-func WithLimitTracerProvider(tp oteltrace.TracerProvider) LimitOption {
-	return limitOptionFunc(func(c *limitConfig) {
-		if tp != nil {
-			c.tracerProvider = tp
-		}
-	})
 }
 
 // Limit 是 M6：用户侧两层（account + apikey）+ additive RPM/RPS 前扣 + TPM 后扣。
@@ -91,10 +80,7 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 	if cfg.store == nil || cfg.policies == nil {
 		return func(c *gin.Context) { c.Next() }
 	}
-	if cfg.tracerProvider == nil {
-		cfg.tracerProvider = otel.GetTracerProvider()
-	}
-	tracer := cfg.tracerProvider.Tracer(ScopeName)
+	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)

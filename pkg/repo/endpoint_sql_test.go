@@ -8,8 +8,6 @@ import (
 	"gorm.io/datatypes"
 )
 
-const testAccount = "default"
-
 // seedEndpoint 用 NamedExec 插测试 endpoint。
 //
 // 走 NamedExec 是为了让 Auth/Routing/Quota/Capabilities 字段经 Valuer 接口

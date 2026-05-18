@@ -60,39 +60,3 @@ func ToDomainModelService(m *ModelService) *domain.ModelService {
 	}
 }
 
-// ToDomainModelServices 批量。
-func ToDomainModelServices(rows []*ModelService) []*domain.ModelService {
-	if rows == nil {
-		return nil
-	}
-	out := make([]*domain.ModelService, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, ToDomainModelService(r))
-	}
-	return out
-}
-
-// =============================================================================
-// 反向映射：domain → repo（admin POST 把客户端 DTO 转 SQL row）
-// =============================================================================
-
-// FromDomainEndpoint domain.Endpoint → repo.Endpoint。
-func FromDomainEndpoint(e *domain.Endpoint) *Endpoint {
-	if e == nil {
-		return nil
-	}
-	return &Endpoint{
-		ID:           e.ID,
-		Name:         e.Name,
-		Vendor:       e.Vendor,
-		Model:        e.Model,
-		Group:        e.Group,
-		Weight:       e.Weight,
-		Enabled:      e.Enabled,
-		Auth:         AuthConfig{Type: e.Auth.Type, Payload: e.Auth.Payload},
-		Routing:      RoutingConfig(e.Routing),
-		Quota:        QuotaConfig(e.Quota),
-		Capabilities: EndpointCapabilities(e.Capabilities),
-		// Extra 走 datatypes.JSON；如果 caller 没填留空
-	}
-}

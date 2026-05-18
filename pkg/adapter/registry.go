@@ -23,11 +23,3 @@ func Get(vendor string) Factory {
 	return registry[vendor]
 }
 
-// Vendors 返回当前已注册的厂商列表（启动诊断 / 与 ConfigStore 比对覆盖）。
-func Vendors() []string {
-	out := make([]string, 0, len(registry))
-	for v := range registry {
-		out = append(out, v)
-	}
-	return out
-}
