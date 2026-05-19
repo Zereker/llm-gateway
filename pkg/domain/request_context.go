@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"context"
 	"time"
 )
 
@@ -36,6 +35,13 @@ type RequestContext struct {
 	// 下游计费平台按 Usage Event 的 RequestTime 完成；网关不维护 PricingSnapshot。
 	ModelService *ModelService
 
+	// === M5 ModelService 写入（预解析的尝试序列） ===
+	//
+	// ModelChain[0] = primary（== ModelService）；后续 = X-Gateway-Fallback-Models
+	// 按声明顺序去重并经过 catalog + subscription 校验后保留的 fallback model。
+	// 未声明 fallback 时长度 = 1。M7 outer loop 直接遍历这个序列，不再重做 M5。
+	ModelChain []*ModelService
+
 	// === M7 写入（实际成功 model） ===
 	//
 	// 跨 model fallback 时 RoutedModelService != ModelService。
@@ -54,9 +60,11 @@ type RequestContext struct {
 	Error              *AdapterError
 	SchedulingDecision *SchedulingDecision
 
-	// === 全链路共享 ===
-	Ctx context.Context // 业务 context（带 OTel SpanContext + Baggage）
-
 	// === 扩展点 ===
+	//
+	// **context.Context 不在 RC 里**：单源真相是 `c.Request.Context()`，每个 mw
+	// 通过 `c.Request = c.Request.WithContext(ctx)` 接力。把 ctx 字段挂在 mutable
+	// struct 上违反 Go 「context is values, not state」原则，还会跟 gin 原生
+	// `c.Request.Context()` drift（M1 之后只更新 RC.Ctx 不更新 c.Request 时丢 span）。
 	Extras map[string]any // 临时性 / 实验性字段
 }

@@ -65,10 +65,9 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctx, span := tracer.Start(rc.Ctx, "auth.lookup")
+		ctx, span := tracer.Start(c.Request.Context(), "auth.lookup")
 		defer span.End()
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
 		creds := extractCredentials(c)
 		if creds == nil {
@@ -77,17 +76,19 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 			return
 		}
 
-		u, err := cfg.provider.Resolve(rc.Ctx, creds)
+		u, err := cfg.provider.Resolve(ctx, creds)
 		if err != nil {
 			metric.Inc(metric.AuthTotal, "result", "invalid")
 			abortWithCode(c, 401, domain.ErrPermanent, domain.ErrCodeUnauthorized, "invalid credentials: "+err.Error())
 			return
 		}
 
+		rc := GetRequestContext(c)
 		rc.Identity = *u
 		if member, err := baggage.NewMember("sub_account_id", u.SubAccountID); err == nil {
-			if newBag, err := baggage.FromContext(rc.Ctx).SetMember(member); err == nil {
-				rc.Ctx = baggage.ContextWithBaggage(rc.Ctx, newBag)
+			if newBag, err := baggage.FromContext(ctx).SetMember(member); err == nil {
+				ctx = baggage.ContextWithBaggage(ctx, newBag)
+				c.Request = c.Request.WithContext(ctx)
 			}
 		}
 

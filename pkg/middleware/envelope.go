@@ -57,11 +57,11 @@ func Envelope() gin.HandlerFunc {
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctx, span := tracer.Start(rc.Ctx, "envelope.parse")
+		ctx, span := tracer.Start(c.Request.Context(), "envelope.parse")
 		defer span.End()
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
+		rc := GetRequestContext(c)
 		if rc.Envelope == nil || rc.Envelope.SourceProtocol == domain.ProtoUnknown {
 			abort(c, 500, domain.ErrUnknown, "envelope: WithSourceProtocol middleware missing")
 			return

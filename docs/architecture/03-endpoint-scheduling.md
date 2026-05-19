@@ -11,32 +11,31 @@
 
 | 包 | 职责 |
 |----|------|
-| `pkg/middleware/schedule.go` | 读取 header fallback models、逐 model 校验、拉候选、调用资格过滤、driver loop、写 RC |
+| `pkg/middleware/model_service.go` (M5) | 解析 `X-Gateway-Fallback-Models`、逐 model 走 catalog + subscription、把已校验序列写到 `rc.ModelChain` |
+| `pkg/middleware/schedule.go` (M7) | 遍历 `rc.ModelChain`、拉候选、调用资格过滤、driver loop、写 RC |
 | `pkg/schedule` | 对一批候选做 filter / pick / report / decision 记录 |
 | `pkg/schedule/eligibility` | 纯函数资格过滤：modality / native protocol / adapter / translator 可用性 |
 | `pkg/upstream` | adapter / translator lookup、HTTP Do、响应 forward、错误分类 |
 | `pkg/repo` | SQL endpoint reader |
 
-`pkg/schedule` 不应该持有 repo 依赖，也不应该自己切换 model。跨模型 fallback 属于业务语义变化，放在 M7 外层循环里显式处理。
+`pkg/schedule` 不应该持有 repo 依赖，也不应该自己切换 model。跨模型 fallback 属于业务语义变化：**校验在 M5 完成**，**切 model 的外层循环留在 M7**。`pkg/schedule` 完全无感知。
+
+M5 已经把 `rc.ModelChain = [primary, fb1, fb2, ...]`（已校验过的 `*ModelService` 序列）准备好，M7 直接遍历，不再做 catalog/subscription 调用。这样 M7 是纯驱动循环，没有 per-request msCache / subCache 状态，也没有"找不到 fallback 静默 continue"分支——找不到的 fallback 在 M5 阶段就被剔除了。
 
 目标流程：
 
 ```text
-models = [request.model] + parse(X-Gateway-Fallback-Models)
+# M5（model_service.go）已写好 rc.ModelChain = [primary, ...validated fallbacks]
+# M7（schedule.go）：
 
-for model in models:
-    modelService = ModelCatalog.GetByModel(model)
-    if !SubscriptionChecker.HasModel(account, modelService.ID):
-        continue
-
-    candidates = EndpointReader.ListForModel(model, group)
+for modelService in rc.ModelChain:
+    candidates = EndpointReader.ListForModel(modelService.Model, group)
     candidates = eligibilityFilter(candidates, envelope)
     if candidates empty:
         continue
 
-    excluded = {}
     for attempts < maxAttempts:
-        ep = Scheduler.Pick(Request{Candidates, TPMCost, ExcludeIDs: excluded})
+        ep = Scheduler.Pick(Request{Candidates, ExcludeIDs: excluded})
         if ep == nil:
             break
 
@@ -51,15 +50,12 @@ for model in models:
             rc.Endpoint = ep
             rc.Usage = forward.Usage
             return
-    }
-}
+        excluded.add(ep.ID)
 
 abort 503
 ```
 
-跨 model fallback 不能复用原始 model 的 M5 结果。每个 fallback model 都必须重新做 model catalog 和 subscription 校验，避免通过 header 绕过模型可见性。
-
-实现时 M7 可以在本次请求范围内缓存 `ModelCatalog.GetByModel` 和 `SubscriptionChecker.HasModel` 的结果，避免 fallback list 较长时重复查询同一 model。该缓存只在单次请求内有效，不替代 DB 权限判断。
+跨 model fallback 不能绕过模型可见性：M5 对每个 fallback model 都走完整 catalog + subscription 校验后才能进入 `rc.ModelChain`。fallback 不存在 / 未订阅 / 依赖瞬时报错时**静默剔除**（不阻断请求；primary 已经验过，request 仍然继续）。
 
 ## 2. Endpoint 数据
 
@@ -156,7 +152,7 @@ M7 自己维护：
 保留两层就够：
 
 - **同 model 换 endpoint**：一次调用失败且错误可重试时，M7 把 endpoint 加入 `ExcludeIDs`，下一轮 `Pick` 选择其它 endpoint。
-- **跨 model fallback**：只有请求带 `X-Gateway-Fallback-Models` 时，M7 外层循环切到下一个 model。
+- **跨 model fallback**：只有请求带 `X-Gateway-Fallback-Models` 时，`rc.ModelChain` 长度 > 1，M7 外层循环切到下一个 model。
 
 默认不需要 L1 同 endpoint retry。网络抖动可以通过同 model 其它 endpoint 承接；如果未来确实需要同 endpoint retry，再作为显式配置加回来。
 
@@ -174,13 +170,15 @@ X-Gateway-Fallback-Models: gpt-4o-mini,deepseek-v3
 
 网关只按声明顺序尝试这些模型的 endpoint，不做自动模型替换，也不根据 admin 侧默认链路隐式降级。未带该 header 时，即使其它模型有可用 endpoint，也只在当前请求 model 内换 endpoint。
 
-header 解析规则：
+header 解析 + 校验全部在 **M5（`pkg/middleware/model_service.go`）** 完成，结果写到 `rc.ModelChain`。M7 不再读 header、不再调 catalog/subscription。规则：
 
-- 去重并保持首次出现顺序。
+- 去重并保持首次出现顺序；与 primary 同名的也剔除。
 - 空 model 直接忽略。
-- fallback model 数量有上限，默认 3。
-- 每个 fallback model 都重新走 M5 model catalog + subscription 校验。
-- `SchedulingDecision.Attempt` 必须记录本次 attempt 对应的 model。
+- fallback model 数量上限，默认 3（`middleware.MaxFallbackModels`）。
+- 每个 fallback model 都走 catalog + subscription 校验；任何一项失败（找不到 / 未订阅 / 依赖错）→ **静默剔除**该 fallback，不阻断主请求。
+- primary 自身的校验失败仍然按原行为 abort（404 / 403 / 503）——fallback 解析失败不能"救回"已经失效的 primary。
+- `rc.ModelChain[0] == rc.ModelService`，长度 ≥ 1。
+- `SchedulingDecision.Attempt` 必须记录本次 attempt 对应的 model；`AttemptRole` 按在 chain 里的位置赋值（`[0]` → `primary`，其余 → `fallback`）。
 
 ## 6. 错误分类
 
@@ -322,7 +320,7 @@ Outcome 推导：
 ## 12. 演进规则
 
 - `pkg/schedule` 只处理一批候选，不负责从 repo 加载 fallback model。
-- 跨 model fallback 只来自 `X-Gateway-Fallback-Models`。
+- 跨 model fallback 只来自 `X-Gateway-Fallback-Models`；header 解析 + catalog/subscription 校验在 M5 完成，M7 只消费 `rc.ModelChain`。
 - 新增 endpoint native protocol / modality 配置时，先补候选资格过滤，再让请求进入 retry/cooldown。
 - 不能把协议不支持归类成上游失败；这会放大无效重试并污染 cooldown。
 - 新增 filter 要在 `cmd/gateway buildSchedulerFilters` 中注册名称，并保持可选。

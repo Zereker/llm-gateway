@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
@@ -24,6 +24,8 @@ import (
 )
 
 // MaxFallbackModels X-Gateway-Fallback-Models header 允许的最多 model 数（docs/03 §5）。
+//
+// 解析在 M5（ModelService middleware）完成；M7 直接消费 rc.ModelChain。
 const MaxFallbackModels = 3
 
 // EndpointReader M7 用：按 (model, group) 拉候选 endpoints。
@@ -61,31 +63,17 @@ type scheduleOptionFunc func(*scheduleConfig)
 func (f scheduleOptionFunc) apply(c *scheduleConfig) { f(c) }
 
 type scheduleConfig struct {
-	endpoints     EndpointReader
-	catalog       ModelCatalog
-	subscriptions SubscriptionChecker
-	scheduler     Scheduler
-	sender        Sender
-	rateStore     RateLimitStore // 可空：跳过 endpoint quota
-	maxAttempts   int
+	endpoints      EndpointReader
+	scheduler      Scheduler
+	sender         Sender
+	rateStore      RateLimitStore // 可空：跳过 endpoint quota
+	maxAttempts    int
+	tracerProvider oteltrace.TracerProvider
 }
 
 // WithEndpointReader 注入 EndpointReader。必填。
 func WithEndpointReader(r EndpointReader) ScheduleOption {
 	return scheduleOptionFunc(func(c *scheduleConfig) { c.endpoints = r })
-}
-
-// WithFallbackCatalog 注入 ModelCatalog 用于 fallback model 重校验（docs/03 §1）。必填。
-//
-// 注意：这跟 M5 的 ModelCatalog 是同一接口，但需要单独注入到 M7（每个 fallback model
-// 都要重新走 catalog + subscription 校验，不能复用 M5 的结果）。
-func WithFallbackCatalog(c ModelCatalog) ScheduleOption {
-	return scheduleOptionFunc(func(cfg *scheduleConfig) { cfg.catalog = c })
-}
-
-// WithFallbackSubscriptionChecker 注入 SubscriptionChecker 用于 fallback model 校验。必填。
-func WithFallbackSubscriptionChecker(s SubscriptionChecker) ScheduleOption {
-	return scheduleOptionFunc(func(cfg *scheduleConfig) { cfg.subscriptions = s })
 }
 
 // WithScheduler 注入 Scheduler 实现。必填。
@@ -112,11 +100,19 @@ func WithMaxAttempts(n int) ScheduleOption {
 	return scheduleOptionFunc(func(c *scheduleConfig) { c.maxAttempts = n })
 }
 
+// WithScheduleTracerProvider 注入 OTel TracerProvider；nil 时启动期退到 otel.GetTracerProvider()。
+func WithScheduleTracerProvider(tp oteltrace.TracerProvider) ScheduleOption {
+	return scheduleOptionFunc(func(c *scheduleConfig) {
+		if tp != nil {
+			c.tracerProvider = tp
+		}
+	})
+}
+
 // Schedule 是 M7：
 //
-//	for model in [request.model] + fallback_models:
-//	    re-do M5 (catalog + subscription)
-//	    cands := EndpointReader.ListForModel(model, group)
+//	for ms in rc.ModelChain:          # primary + 已校验的 fallback，M5 准备好
+//	    cands := EndpointReader.ListForModel(ms.Model, group)
 //	    cands := eligibility.Filter(cands, envelope)
 //	    for attempts < max:
 //	        ep := Scheduler.Pick(ctx, Request{Candidates, ExcludeIDs})
@@ -137,12 +133,6 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 	if cfg.endpoints == nil {
 		panic("middleware.Schedule: WithEndpointReader required")
 	}
-	if cfg.catalog == nil {
-		panic("middleware.Schedule: WithFallbackCatalog required")
-	}
-	if cfg.subscriptions == nil {
-		panic("middleware.Schedule: WithFallbackSubscriptionChecker required")
-	}
 	if cfg.scheduler == nil {
 		panic("middleware.Schedule: WithScheduler required")
 	}
@@ -153,15 +143,18 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-	tracer := otel.GetTracerProvider().Tracer(ScopeName)
+	if cfg.tracerProvider == nil {
+		cfg.tracerProvider = otel.GetTracerProvider()
+	}
+	tracer := cfg.tracerProvider.Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctx, span := tracer.Start(rc.Ctx, "schedule.pick")
+		ctx, span := tracer.Start(c.Request.Context(), "schedule.pick")
 		defer span.End()
-		rc.Ctx = ctx
 
-		if rc.Envelope == nil || rc.ModelService == nil {
+		rc := GetRequestContext(c)
+		if rc.Envelope == nil || rc.ModelService == nil || len(rc.ModelChain) == 0 {
+			c.Request = c.Request.WithContext(ctx)
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3/M5 did not run before M7")
 			return
@@ -178,26 +171,13 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 			Protocol:     rc.Envelope.SourceProtocol.String(),
 			Modality:     rc.Envelope.Modality.String(),
 		})
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
 		// 本请求实际允许的 attempts（header override 仅允许更紧）
 		attemptsCap := maxAttempts
 		if h := parseMaxAttempts(c); h > 0 && h < attemptsCap {
 			attemptsCap = h
 		}
-
-		// model 序列：primary + fallback
-		fallbacks := parseFallbackModels(c)
-		if len(fallbacks) > MaxFallbackModels {
-			fallbacks = fallbacks[:MaxFallbackModels]
-		}
-		modelSeq := append([]string{rc.ModelService.Model}, fallbacks...)
-
-		// per-request cache 避免对同 model 重复查 catalog/subscription
-		msCache := make(map[string]*domain.ModelService, len(modelSeq))
-		msCache[rc.ModelService.Model] = rc.ModelService
-		subCache := make(map[string]bool, len(modelSeq))
-		subCache[rc.ModelService.Model] = true // M5 已经验过 primary
 
 		excluded := make(map[int64]struct{}, attemptsCap)
 		decisions := make([]domain.Attempt, 0, attemptsCap)
@@ -221,25 +201,12 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 			}
 		}()
 
-		for modelIdx, model := range modelSeq {
+		for modelIdx, ms := range rc.ModelChain {
 			role := domain.AttemptRolePrimary
 			if modelIdx > 0 {
 				role = domain.AttemptRoleFallback
 			}
-
-			// 每个 fallback model 重新做 M5（docs/03 §1：不能复用原 M5 结果）
-			ms, ok, err := resolveModel(ctx, cfg.catalog, cfg.subscriptions, rc.Identity.AccountID, model, msCache, subCache)
-			if err != nil {
-				// 依赖故障，整请求中止
-				if !responseStarted {
-					abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
-						"schedule: re-validate model "+model+": "+err.Error())
-				}
-				return
-			}
-			if !ok {
-				continue // 模型不存在或未订阅 → 试下一个 fallback
-			}
+			model := ms.Model
 
 			// 拉候选 + eligibility 过滤
 			rawCands, err := cfg.endpoints.ListForModel(ctx, model, rc.Identity.Group)
@@ -346,7 +313,7 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 				if outcome.Success() {
 					rc.RoutedModelService = ms
 					decisions[len(decisions)-1].Outcome = domain.AttemptSuccess
-					handler := wrapWithModerator(outcome.Translator.NewResponseHandler(), rc.Ctx)
+					handler := wrapWithModerator(outcome.Translator.NewResponseHandler(), ctx)
 					responseStarted = true
 					// 注入 rc.StartTime 让 Forward 计算 TTFT（docs/05 §4）
 					fwdCtx := upstream.WithRequestStartTime(ctx, rc.StartTime)
@@ -395,48 +362,6 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 	}
 }
 
-// resolveModel 拿单个 model 的 ModelService + 校验主账号订阅。
-//
-// 返回 (*ModelService, true, nil) 表示 OK 可以继续；
-// (nil, false, nil) 表示该 model 不存在或未订阅，应跳过试下一个 fallback；
-// (nil, false, err) 表示依赖故障，调用方应整个 abort。
-func resolveModel(
-	ctx context.Context,
-	catalog ModelCatalog,
-	subs SubscriptionChecker,
-	accountID, model string,
-	msCache map[string]*domain.ModelService,
-	subCache map[string]bool,
-) (*domain.ModelService, bool, error) {
-	ms, cached := msCache[model]
-	if !cached {
-		var err error
-		ms, err = catalog.GetByModel(ctx, model)
-		if err != nil {
-			return nil, false, err
-		}
-		msCache[model] = ms
-	}
-	if ms == nil {
-		return nil, false, nil
-	}
-	if sub, ok := subCache[model]; ok {
-		if !sub {
-			return nil, false, nil
-		}
-		return ms, true, nil
-	}
-	subscribed, err := subs.HasModel(ctx, accountID, ms.ID)
-	if err != nil {
-		return nil, false, err
-	}
-	subCache[model] = subscribed
-	if !subscribed {
-		return nil, false, nil
-	}
-	return ms, true, nil
-}
-
 // =============================================================================
 // header 解析
 // =============================================================================
@@ -452,29 +377,6 @@ func parseMaxAttempts(c *gin.Context) int {
 		return 0
 	}
 	return v
-}
-
-// parseFallbackModels 读 X-Gateway-Fallback-Models header（逗号分隔，去重保序）；
-// docs/03 §5：去重保序，空 model 忽略，数量上限 MaxFallbackModels。
-func parseFallbackModels(c *gin.Context) []string {
-	hdr := c.GetHeader(HeaderGatewayFallbackModels)
-	if hdr == "" {
-		return nil
-	}
-	seen := make(map[string]struct{}, MaxFallbackModels)
-	var out []string
-	for _, m := range strings.Split(hdr, ",") {
-		m = strings.TrimSpace(m)
-		if m == "" {
-			continue
-		}
-		if _, dup := seen[m]; dup {
-			continue
-		}
-		seen[m] = struct{}{}
-		out = append(out, m)
-	}
-	return out
 }
 
 // chargeEndpointTPM 选中 endpoint 响应成功后，把真实 usage.Total 写到 endpoint TPM bucket

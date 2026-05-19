@@ -121,11 +121,11 @@ func TraceContext() gin.HandlerFunc {
 		rc := &domain.RequestContext{
 			RequestID: requestID,
 			StartTime: time.Now(),
-			Ctx:       ctx,
 			Extras:    make(map[string]any),
 		}
-		// AttachRequestContext 内部把 (rc, span ctx) 一起写回 c.Request.Context()——
-		// 不要在它之后再用 bare span ctx 覆盖（会丢掉 rc value）。
+		// AttachRequestContext 把当前 ctx + rc value 一起写回 c.Request.Context()。
+		// 之后下游 middleware 从 c.Request.Context() 拿 ctx，不要绕开。
+		c.Request = c.Request.WithContext(ctx)
 		AttachRequestContext(c, rc)
 
 		// 6. request.start 日志（debug；docs/08 §2）
