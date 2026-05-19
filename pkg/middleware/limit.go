@@ -83,11 +83,11 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctx, span := tracer.Start(rc.Ctx, "ratelimit.reserve")
+		ctx, span := tracer.Start(c.Request.Context(), "ratelimit.reserve")
 		defer span.End()
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
+		rc := GetRequestContext(c)
 		if rc.Envelope == nil || rc.ModelService == nil {
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3/M5 did not run before M6")

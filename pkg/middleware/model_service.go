@@ -72,18 +72,18 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctx, span := tracer.Start(rc.Ctx, "catalog.resolve")
+		ctx, span := tracer.Start(c.Request.Context(), "catalog.resolve")
 		defer span.End()
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
+		rc := GetRequestContext(c)
 		if rc.Envelope == nil {
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3 Envelope did not run before M5")
 			return
 		}
 
-		ms, err := cfg.catalog.GetByModel(rc.Ctx, rc.Envelope.Model)
+		ms, err := cfg.catalog.GetByModel(ctx, rc.Envelope.Model)
 		if err != nil {
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
 				"model catalog: "+err.Error())
@@ -95,7 +95,7 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 			return
 		}
 
-		subscribed, err := cfg.subscriptions.HasModel(rc.Ctx, rc.Identity.AccountID, ms.ID)
+		subscribed, err := cfg.subscriptions.HasModel(ctx, rc.Identity.AccountID, ms.ID)
 		if err != nil {
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
 				"subscription lookup: "+err.Error())
@@ -108,7 +108,7 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 		}
 
 		rc.ModelService = ms
-		rc.ModelChain = resolveModelChain(rc.Ctx, cfg, ms, rc.Identity.AccountID,
+		rc.ModelChain = resolveModelChain(ctx, cfg, ms, rc.Identity.AccountID,
 			parseFallbackModels(c, rc.Envelope.Model))
 		c.Next()
 	}

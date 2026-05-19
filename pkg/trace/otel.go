@@ -76,8 +76,8 @@ func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.T
 //
 // **关于 trace_id 联动**：M1 TraceContext middleware 已用 OTel propagator 解析
 // W3C traceparent header（pkg/middleware/trace_context.go），把 SpanContext 注入
-// rc.Ctx；本 tracer 的 StartSpan(rc.Ctx, ...) 自动以 rc.SpanID 为 parent 创建
-// 子 span，trace_id 跟 rc.TraceID 一致——gateway 日志里的 trace_id 和 OTel
+// c.Request.Context()；本 tracer 的 StartSpan(ctx, ...) 自动以当前 span 为 parent
+// 创建子 span，trace_id 跟入口 root span 一致——gateway 日志里的 trace_id 和 OTel
 // collector 看到的 trace_id 是同一个。
 type OtelTracer struct {
 	tracer oteltrace.Tracer

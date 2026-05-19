@@ -49,14 +49,14 @@ type RequestContext struct {
     Error              *AdapterError
     SchedulingDecision *SchedulingDecision
 
-    Ctx context.Context
     Extras map[string]any
 }
 ```
 
 重要约束：
 
-- `trace_id` / `span_id` 不作为字段保存；从 `rc.Ctx` 中的 OTel context 提取。
+- `trace_id` / `span_id` 不作为字段保存；从 `c.Request.Context()` 中的 OTel context 提取（`middleware.TraceIDFromCtx`）。
+- **`context.Context` 不挂在 RC 上**——单源真相是 `c.Request.Context()`。Middleware 拿 ctx 走 `c.Request.Context()`，回写走 `c.Request = c.Request.WithContext(ctx)`。把 ctx 字段挂在 mutable struct 上违反 Go 「context is values, not state」原则，还会跟 gin 原生 `c.Request.Context()` drift。
 - 不保存 `*gin.Context`；响应写出由 middleware 使用当前 handler 的 `c.Writer`。
 - 不保存 `*slog.Logger`；日志使用 `slog.*Context`，`trace.CtxHandler` 自动补 trace/baggage 字段。
 - 业务代码必须使用 `slog.InfoContext` / `ErrorContext` / `WarnContext` 等带 context 的方法；禁止在请求路径直接调用 `slog.Info` / `Error`，否则 trace 字段无法注入。
@@ -196,10 +196,22 @@ tracer := cfg.tracerProvider.Tracer(ScopeName)   // 闭包持有
 return func(c *gin.Context) { /* 热路径 */ }
 ```
 
-热路径直接用闭包持有的 `tracer.Start(rc.Ctx, "auth.lookup")` / `defer span.End()`，
-**不再** 走全局 lookup。Pass-through 快路径（pass-through moderator / no budget gate
-/ no ratelimit store）在 startup 期就 return `func(c) { c.Next() }`，连 tracer 都
-不开。详见 [06 §6 Middleware Options](./06-pluggable-infra.md#6-middleware-options)。
+热路径标准模板（ctx 接力的单源真相是 `c.Request.Context()`，**不**走 RC 字段）：
+
+```go
+return func(c *gin.Context) {
+    ctx, span := tracer.Start(c.Request.Context(), "xxx.action")
+    defer span.End()
+    c.Request = c.Request.WithContext(ctx)   // ← 下游 mw 自动接力 span
+
+    rc := GetRequestContext(c)               // RC 只承载数据，不带 ctx
+    // ... 业务调用全部传局部 ctx：cfg.dep.Call(ctx, ...)
+}
+```
+
+Pass-through 快路径（pass-through moderator / no budget gate / no ratelimit
+store）在 startup 期就 return `func(c) { c.Next() }`，连 tracer 都不开。详见
+[06 §6 Middleware Options](./06-pluggable-infra.md#6-middleware-options)。
 
 M1 TraceContext 是参考实现，额外暴露 `WithTraceContextPropagators` /
 `WithSpanNameFormatter` / `WithTraceContextSpanStartOptions`，完整对位 otelgin 的
