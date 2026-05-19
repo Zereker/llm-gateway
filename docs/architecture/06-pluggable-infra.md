@@ -287,11 +287,13 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
     tracer := cfg.tracerProvider.Tracer(ScopeName)
 
     return func(c *gin.Context) {
-        rc := GetRequestContext(c)
-        ctx, span := tracer.Start(rc.Ctx, "auth.lookup")
+        ctx, span := tracer.Start(c.Request.Context(), "auth.lookup")
         defer span.End()
-        rc.Ctx = ctx
-        // ... handler ...
+        c.Request = c.Request.WithContext(ctx)
+
+        rc := GetRequestContext(c)
+        // ... handler 用局部 ctx 调依赖（cfg.dep.Call(ctx, ...)）；不在 RC 上挂 ctx
+        _ = rc
     }
 }
 ```

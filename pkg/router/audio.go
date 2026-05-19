@@ -50,8 +50,6 @@ func registerAudioRoutes(engine *gin.Engine, deps Deps) {
 			),
 			middleware.Schedule(
 				middleware.WithEndpointReader(deps.EndpointReader),
-				middleware.WithFallbackCatalog(deps.FallbackCatalog),
-				middleware.WithFallbackSubscriptionChecker(deps.FallbackSubscriptionChecker),
 				middleware.WithScheduler(deps.Scheduler),
 				middleware.WithSender(deps.Sender),
 				middleware.WithEndpointRateStore(deps.RateLimitStore),

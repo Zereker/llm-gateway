@@ -76,12 +76,11 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
 
-		rc := GetRequestContext(c)
-
-		ctx, span := otelTracer.Start(rc.Ctx, "tracing.commit")
+		ctx, span := otelTracer.Start(c.Request.Context(), "tracing.commit")
 		defer span.End()
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
+		rc := GetRequestContext(c)
 		now := time.Now().UTC()
 		elapsed := now.Sub(rc.StartTime)
 
@@ -117,7 +116,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 		)
 
 		if rc.Usage != nil {
-			fillUsageMeta(rc, now, elapsed.Milliseconds())
+			fillUsageMeta(rc, ctx, now, elapsed.Milliseconds())
 			// usage tokens metric
 			metric.Add(metric.UsageTokensTotal, float64(rc.Usage.Input),
 				"model", model, "routed_model", routedModel,
@@ -150,7 +149,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 		}
 
 		if rc.SchedulingDecision != nil && cfg.tracer != nil {
-			cfg.tracer.Log(rc.Ctx, "scheduling_decision", rc.SchedulingDecision)
+			cfg.tracer.Log(ctx, "scheduling_decision", rc.SchedulingDecision)
 		}
 	}
 }
@@ -159,7 +158,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 //
 // 按 docs/05 §4 字段来源表。RoutedModelService 优先；fallback 时
 // usage.meta.Model = 实际成功的 model（不是请求的 model）。
-func fillUsageMeta(rc *domain.RequestContext, endTime time.Time, totalLatencyMs int64) {
+func fillUsageMeta(rc *domain.RequestContext, ctx context.Context, endTime time.Time, totalLatencyMs int64) {
 	m := &rc.Usage.Meta
 
 	m.StartTime = rc.StartTime
@@ -168,7 +167,7 @@ func fillUsageMeta(rc *domain.RequestContext, endTime time.Time, totalLatencyMs 
 	// TTFTMs 由 upstream/forward.go 在首字节流出时回写
 
 	m.RequestID = rc.RequestID
-	m.TraceID = TraceIDFromCtx(rc.Ctx)
+	m.TraceID = TraceIDFromCtx(ctx)
 
 	m.AccountID = rc.Identity.AccountID
 	m.SubAccountID = rc.Identity.SubAccountID

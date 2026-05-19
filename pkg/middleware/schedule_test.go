@@ -92,7 +92,9 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 			Model:          model,
 			RawBytes:       []byte(`{"model":"` + model + `"}`),
 		}
-		rc.ModelService = &domain.ModelService{ID: 1, Model: model}
+		ms := &domain.ModelService{ID: 1, Model: model}
+		rc.ModelService = ms
+		rc.ModelChain = []*domain.ModelService{ms}
 		rc.RateLimit = &domain.RateLimitState{}
 		c.Next()
 	}
@@ -101,8 +103,6 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 func defaultScheduleOpts(scheduler schedule.Scheduler, eps map[string][]*domain.Endpoint) []ScheduleOption {
 	return []ScheduleOption{
 		WithEndpointReader(stubEndpointReader{eps: eps}),
-		WithFallbackCatalog(stubCatalog{ms: &domain.ModelService{ID: 1, Model: "gpt-4o"}}),
-		WithFallbackSubscriptionChecker(stubSubs{has: true}),
 		WithScheduler(scheduler),
 		WithSender(upstream.New()),
 		WithMaxAttempts(3),
@@ -116,8 +116,6 @@ func defaultScheduleOpts(scheduler schedule.Scheduler, eps map[string][]*domain.
 func TestSchedule_500_M3orM5Missing(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), Schedule(
 		WithEndpointReader(stubEndpointReader{}),
-		WithFallbackCatalog(stubCatalog{}),
-		WithFallbackSubscriptionChecker(stubSubs{has: true}),
 		WithScheduler(&stubScheduler{}),
 		WithSender(upstream.New()),
 	))
@@ -140,8 +138,6 @@ func TestSchedule_500_M3orM5Missing(t *testing.T) {
 func TestSchedule_ListError_503(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(
 		WithEndpointReader(stubEndpointReader{err: errors.New("db down")}),
-		WithFallbackCatalog(stubCatalog{ms: &domain.ModelService{ID: 1}}),
-		WithFallbackSubscriptionChecker(stubSubs{has: true}),
 		WithScheduler(&stubScheduler{}),
 		WithSender(upstream.New()),
 		WithMaxAttempts(3),
@@ -205,39 +201,6 @@ func TestParseMaxAttempts(t *testing.T) {
 		r.ServeHTTP(w, req)
 		if got != tc.want {
 			t.Errorf("hdr=%q: got=%d, want=%d", tc.hdr, got, tc.want)
-		}
-	}
-}
-
-func TestParseFallbackModels(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	cases := []struct {
-		hdr  string
-		want []string
-	}{
-		{"", nil},
-		{",,,", nil},
-		{"gpt-4o", []string{"gpt-4o"}},
-		{"gpt-4o,gpt-4-turbo", []string{"gpt-4o", "gpt-4-turbo"}},
-		{"  gpt-4o ,  claude-3 , ", []string{"gpt-4o", "claude-3"}},
-		// 去重保序（docs/03 §5）
-		{"a,b,a,c", []string{"a", "b", "c"}},
-	}
-	for _, tc := range cases {
-		r := gin.New()
-		var got []string
-		r.GET("/x", func(c *gin.Context) {
-			got = parseFallbackModels(c)
-			c.Status(200)
-		})
-		req := httptest.NewRequest("GET", "/x", nil)
-		if tc.hdr != "" {
-			req.Header.Set(HeaderGatewayFallbackModels, tc.hdr)
-		}
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if !sliceEq(got, tc.want) {
-			t.Errorf("hdr=%q: got=%+v, want=%+v", tc.hdr, got, tc.want)
 		}
 	}
 }
