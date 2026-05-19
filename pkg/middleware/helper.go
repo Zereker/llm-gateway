@@ -30,14 +30,12 @@ func GetRequestContext(c *gin.Context) *domain.RequestContext {
 }
 
 // AttachRequestContext 将 *RequestContext 挂到 c.Request.Context()；仅 M1 TraceContext 调用。
+//
+// 之后任何下游 middleware 取 RC 都走 `GetRequestContext(c)`，取 ctx 都走
+// `c.Request.Context()`——单源真相。
 func AttachRequestContext(c *gin.Context, rc *domain.RequestContext) {
-	base := rc.Ctx
-	if base == nil {
-		base = c.Request.Context()
-	}
-	ctx := context.WithValue(base, requestContextKey, rc)
+	ctx := context.WithValue(c.Request.Context(), requestContextKey, rc)
 	c.Request = c.Request.WithContext(ctx)
-	rc.Ctx = ctx
 }
 
 // fromCtx 内部 typed-key 提取。ctx 为 nil 或 key 不存在返 nil。

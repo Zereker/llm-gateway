@@ -25,7 +25,7 @@ import (
 //	base := slog.NewJSONHandler(os.Stderr, nil)
 //	slog.SetDefault(slog.New(trace.NewCtxHandler(base)))
 //
-// 之后任何代码 `slog.InfoContext(rc.Ctx, "msg", ...)` 自动带 trace_id / span_id /
+// 之后任何代码 `slog.InfoContext(ctx, "msg", ...)` 自动带 trace_id / span_id /
 // 已注入 baggage 的字段（sub_account_id 等）。
 //
 // **没装 OTel TracerProvider 时也工作**：M1 TraceContext middleware 自己用

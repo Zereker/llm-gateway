@@ -149,12 +149,12 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 	tracer := cfg.tracerProvider.Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctx, span := tracer.Start(rc.Ctx, "schedule.pick")
+		ctx, span := tracer.Start(c.Request.Context(), "schedule.pick")
 		defer span.End()
-		rc.Ctx = ctx
 
+		rc := GetRequestContext(c)
 		if rc.Envelope == nil || rc.ModelService == nil || len(rc.ModelChain) == 0 {
+			c.Request = c.Request.WithContext(ctx)
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3/M5 did not run before M7")
 			return
@@ -171,7 +171,7 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 			Protocol:     rc.Envelope.SourceProtocol.String(),
 			Modality:     rc.Envelope.Modality.String(),
 		})
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
 		// 本请求实际允许的 attempts（header override 仅允许更紧）
 		attemptsCap := maxAttempts
@@ -313,7 +313,7 @@ func Schedule(opts ...ScheduleOption) gin.HandlerFunc {
 				if outcome.Success() {
 					rc.RoutedModelService = ms
 					decisions[len(decisions)-1].Outcome = domain.AttemptSuccess
-					handler := wrapWithModerator(outcome.Translator.NewResponseHandler(), rc.Ctx)
+					handler := wrapWithModerator(outcome.Translator.NewResponseHandler(), ctx)
 					responseStarted = true
 					// 注入 rc.StartTime 让 Forward 计算 TTFT（docs/05 §4）
 					fwdCtx := upstream.WithRequestStartTime(ctx, rc.StartTime)

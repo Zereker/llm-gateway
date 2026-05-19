@@ -58,25 +58,25 @@ func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctx, span := tracer.Start(rc.Ctx, "moderation.check")
+		ctx, span := tracer.Start(c.Request.Context(), "moderation.check")
 		defer span.End()
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
+		rc := GetRequestContext(c)
 		if rc.Envelope == nil {
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3 Envelope did not run before M8")
 			return
 		}
 
-		if err := cfg.moderator.CheckInput(rc.Ctx, rc.Envelope); err != nil {
+		if err := cfg.moderator.CheckInput(ctx, rc.Envelope); err != nil {
 			abortWithCode(c, 400, domain.ErrInvalid, domain.ErrCodeContentRejected,
 				"content rejected: "+err.Error())
 			return
 		}
 
 		// 把 Moderator 装进 ctx，让 M7 schedule 包 ResponseHandler 时拿到
-		rc.Ctx = withModerator(rc.Ctx, cfg.moderator)
+		c.Request = c.Request.WithContext(withModerator(ctx, cfg.moderator))
 
 		c.Next()
 	}

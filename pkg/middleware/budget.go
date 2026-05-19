@@ -56,12 +56,12 @@ func Budget(opts ...BudgetOption) gin.HandlerFunc {
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctx, span := tracer.Start(rc.Ctx, "budget.check")
+		ctx, span := tracer.Start(c.Request.Context(), "budget.check")
 		defer span.End()
-		rc.Ctx = ctx
+		c.Request = c.Request.WithContext(ctx)
 
-		status, err := cfg.gate.Check(rc.Ctx, rc.Identity.SubAccountID)
+		rc := GetRequestContext(c)
+		status, err := cfg.gate.Check(ctx, rc.Identity.SubAccountID)
 		if err != nil {
 			metric.Inc(metric.BudgetCheckTotal, "result", "error")
 			abortWithCode(c, 502, domain.ErrUnknown, domain.ErrCodeUpstreamError,

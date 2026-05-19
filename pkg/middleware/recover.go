@@ -21,8 +21,7 @@ func Recover() gin.HandlerFunc {
 		defer func() {
 			if r := recover(); r != nil {
 				metric.Inc(metric.PanicTotal, "component", "middleware")
-				ctx := GetRequestContext(c).Ctx
-				slog.ErrorContext(ctx, "panic recovered",
+				slog.ErrorContext(c.Request.Context(), "panic recovered",
 					"recover", r,
 					"stack", string(debug.Stack()),
 				)
@@ -65,7 +64,7 @@ func writeError(c *gin.Context, e *domain.AdapterError) {
 			Class:     e.Class.String(),
 			Details:   e.Details,
 			RequestID: rc.RequestID,
-			TraceID:   TraceIDFromCtx(rc.Ctx),
+			TraceID:   TraceIDFromCtx(c.Request.Context()),
 		},
 	}
 	c.AbortWithStatusJSON(status, body)

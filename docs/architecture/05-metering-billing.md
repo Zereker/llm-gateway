@@ -192,7 +192,7 @@ type UsageMeta struct {
 | Meta 字段 | 来源 |
 |-----------|------|
 | `RequestID` | M1 `rc.RequestID` |
-| `TraceID` | `TraceIDFromCtx(rc.Ctx)` |
+| `TraceID` | `TraceIDFromCtx(c.Request.Context())` |
 | `AccountID` / `SubAccountID` / `APIKeyID` | M2 `rc.Identity` |
 | `Model` / `ServiceID` / `ModelServiceID` / `ServiceUpdateTime` | M7 `rc.RoutedModelService`，未 fallback 时等于 M5 `rc.ModelService` |
 | `Vendor` / `EndpointID` | M7 `rc.Endpoint` |

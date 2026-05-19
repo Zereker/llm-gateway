@@ -63,8 +63,7 @@ func TestModeration_CheckInputOK_InjectsModeratorInCtx(t *testing.T) {
 		Moderation(WithModerator(mod)),
 	)
 	r.POST("/x", func(c *gin.Context) {
-		rc := GetRequestContext(c)
-		ctxMod = moderatorFromCtx(rc.Ctx)
+		ctxMod = moderatorFromCtx(c.Request.Context())
 		c.Status(200)
 	})
 
