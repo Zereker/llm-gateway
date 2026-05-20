@@ -54,7 +54,7 @@ moderation:
   # base_url 留空走 OpenAI 官方
   # base_url: ""
 
-scheduler:
+selector:
   # M7 端点选路 Filter chain（顺序就是执行顺序；weighted_random 必须放最后）
   filters: [cooldown, limit_read, weighted_random]
 

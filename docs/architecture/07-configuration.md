@@ -77,7 +77,7 @@ usage_events:
     retry_backoff: 500ms
     publish_timeout: 5s
 
-scheduler:
+selector:
   filters: [cooldown, limit_read, weighted_random]
   max_attempts: 3
   cooldown:

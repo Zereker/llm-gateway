@@ -2,90 +2,76 @@ package middleware
 
 import (
 	"context"
-	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/schedule"
-	"github.com/zereker/llm-gateway/pkg/upstream"
 )
 
 // =============================================================================
-// stub: EndpointReader
+// M7 thin-adapter 测试
+//
+// driver loop 行为（retry / fallback / verdict / streaming）由 pkg/dispatch 测；
+// 这里只验证 middleware.Schedule 这层 wrapper：
+//   - Dispatcher nil → panic
+//   - M3/M5 未跑 → 500
+//   - X-Gateway-Max-Attempts header → 写入 rc.Extras[dispatch.HeaderKey]
+//   - Outcome → HTTP code 翻译
 // =============================================================================
 
-type stubEndpointReader struct {
-	eps map[string][]*domain.Endpoint // model → endpoints
+// stubSelectorReturns 永远返一个固定 endpoint 或 nil。
+type stubSelectorReturns struct {
+	ep  *domain.Endpoint
 	err error
 }
 
-func (s stubEndpointReader) ListForModel(_ context.Context, model, _ string) ([]*domain.Endpoint, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	if s.eps == nil {
-		return nil, nil
-	}
-	return s.eps[model], nil
+func (s stubSelectorReturns) Select(_ context.Context, _ dispatch.Query) (*domain.Endpoint, error) {
+	return s.ep, s.err
 }
 
-// =============================================================================
-// stub: schedule.Scheduler（无状态 Pick + Report）
-// =============================================================================
+type stubInvokerFactory struct{ res dispatch.Result }
 
-type stubScheduler struct {
-	picks   []*domain.Endpoint // 按顺序返回；用尽则返 nil
-	idx     atomic.Int32
-	pickErr error
-	reports []reportEntry
+func (s stubInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte) dispatch.Invoker {
+	return stubInvoker{res: s.res}
 }
 
-type reportEntry struct {
-	EpID int64
-	Cls  schedule.ErrorClass
+type stubInvoker struct{ res dispatch.Result }
+
+func (s stubInvoker) Invoke(_ context.Context) (dispatch.Result, error) { return s.res, nil }
+
+type stubResult struct {
+	verdict dispatch.Verdict
+	ep      *domain.Endpoint
 }
 
-func (s *stubScheduler) Pick(_ context.Context, req *schedule.Request) (*domain.Endpoint, error) {
-	if s.pickErr != nil {
-		return nil, s.pickErr
-	}
-	for {
-		i := int(s.idx.Load())
-		if i >= len(s.picks) {
-			return nil, nil
-		}
-		s.idx.Add(1)
-		ep := s.picks[i]
-		if ep == nil {
-			continue
-		}
-		// 尊重 ExcludeIDs
-		if _, excluded := req.ExcludeIDs[ep.ID]; excluded {
-			continue
-		}
-		return ep, nil
-	}
+func (r stubResult) Verdict() dispatch.Verdict  { return r.verdict }
+func (r stubResult) Endpoint() *domain.Endpoint { return r.ep }
+func (r stubResult) StreamTo(_ context.Context, w http.ResponseWriter) dispatch.StreamReport {
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte(`{"ok":true}`))
+	return dispatch.StreamReport{Usage: &domain.Usage{Total: 1}}
 }
+func (r stubResult) Close() error { return nil }
 
-func (s *stubScheduler) Report(_ context.Context, ep *domain.Endpoint, r schedule.Result) {
-	if ep != nil {
-		s.reports = append(s.reports, reportEntry{EpID: ep.ID, Cls: r.Class})
-	}
+func newTestDispatcher(ep *domain.Endpoint, v dispatch.Verdict) *dispatch.Dispatcher {
+	return dispatch.New(
+		dispatch.WithSelector(stubSelectorReturns{ep: ep}),
+		dispatch.WithInvokerFactory(stubInvokerFactory{res: stubResult{verdict: v, ep: ep}}),
+		dispatch.WithCap(dispatch.HeaderAttemptCap{Default: 3}),
+		dispatch.WithRetry(dispatch.DefaultRetry{}),
+		dispatch.WithFallback(dispatch.ModelChainFallback{}),
+	)
 }
-
-// =============================================================================
-// attachM7Inputs
-// =============================================================================
 
 func attachM7Inputs(model string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		rc.Identity = domain.UserIdentity{AccountID: "a", SubAccountID: "s", Group: "default"}
+		rc.Identity = domain.UserIdentity{AccountID: "a", Group: "default"}
 		rc.Envelope = &domain.RequestEnvelope{
 			SourceProtocol: domain.ProtoOpenAI,
 			Modality:       domain.ModalityChat,
@@ -95,122 +81,41 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 		ms := &domain.ModelService{ID: 1, Model: model}
 		rc.ModelService = ms
 		rc.ModelChain = []*domain.ModelService{ms}
-		rc.RateLimit = &domain.RateLimitState{}
 		c.Next()
 	}
 }
 
-func defaultScheduleOpts(scheduler schedule.Scheduler, eps map[string][]*domain.Endpoint) []ScheduleOption {
-	return []ScheduleOption{
-		WithEndpointReader(stubEndpointReader{eps: eps}),
-		WithScheduler(scheduler),
-		WithSender(upstream.New()),
-		WithMaxAttempts(3),
-	}
-}
-
-// =============================================================================
-// 装配契约
-// =============================================================================
-
-func TestSchedule_500_M3orM5Missing(t *testing.T) {
-	r := newGinTest(TraceContext(), Recover(), Schedule(
-		WithEndpointReader(stubEndpointReader{}),
-		WithScheduler(&stubScheduler{}),
-		WithSender(upstream.New()),
-	))
-	r.POST("/x", func(c *gin.Context) { c.Status(200) })
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
-	if w.Code != 500 {
-		t.Fatalf("status=%d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "M3/M5 did not run") {
-		t.Errorf("body=%s", w.Body.String())
-	}
-}
-
-// =============================================================================
-// list / candidates 失败路径
-// =============================================================================
-
-func TestSchedule_ListError_503(t *testing.T) {
-	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(
-		WithEndpointReader(stubEndpointReader{err: errors.New("db down")}),
-		WithScheduler(&stubScheduler{}),
-		WithSender(upstream.New()),
-		WithMaxAttempts(3),
-	))
-	r.POST("/x", func(c *gin.Context) { c.Status(200) })
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
-	if w.Code != 503 {
-		t.Fatalf("status=%d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "list endpoints") {
-		t.Errorf("body=%s", w.Body.String())
-	}
-}
-
-func TestSchedule_NoEndpointAtAll_503(t *testing.T) {
-	opts := defaultScheduleOpts(&stubScheduler{}, map[string][]*domain.Endpoint{})
-	r := newGinTest(TraceContext(), Recover(), attachM7Inputs("gpt-4o"), Schedule(opts...))
-	r.POST("/x", func(c *gin.Context) { c.Status(200) })
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
-	if w.Code != 503 {
-		t.Fatalf("status=%d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "no_endpoint_available") {
-		t.Errorf("body=%s", w.Body.String())
-	}
-}
-
-// =============================================================================
-// header 解析
-// =============================================================================
-
-func TestParseMaxAttempts(t *testing.T) {
+func runSchedule(t *testing.T, mw gin.HandlerFunc) *httptest.ResponseRecorder {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
-	cases := []struct {
-		hdr  string
-		want int
-	}{
-		{"", 0},
-		{"abc", 0},
-		{"-3", 0},
-		{"0", 0},
-		{"5", 5},
-		{"100", 100},
-	}
-	for _, tc := range cases {
-		r := gin.New()
-		var got int
-		r.GET("/x", func(c *gin.Context) {
-			got = parseMaxAttempts(c)
-			c.Status(200)
-		})
-		req := httptest.NewRequest("GET", "/x", nil)
-		if tc.hdr != "" {
-			req.Header.Set(HeaderGatewayMaxAttempts, tc.hdr)
-		}
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if got != tc.want {
-			t.Errorf("hdr=%q: got=%d, want=%d", tc.hdr, got, tc.want)
-		}
+	e := gin.New()
+	e.POST("/x",
+		TraceContext(),
+		Recover(),
+		attachRCM7(),
+		attachM7Inputs("gpt-4"),
+		mw,
+	)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest("POST", "/x", strings.NewReader(`{}`)))
+	return w
+}
+
+// attachRCM7 装一个 RequestContext，模拟 M1 之后状态。
+func attachRCM7() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("rc", &domain.RequestContext{})
+		c.Next()
 	}
 }
 
+// sliceEq 给 model_service_test.go 用——之前住在删掉的 schedule_test.go 里。
 func sliceEq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	for i, v := range a {
+		if v != b[i] {
 			return false
 		}
 	}
@@ -218,20 +123,46 @@ func sliceEq(a, b []string) bool {
 }
 
 // =============================================================================
-// routedModelOf
+// 测试
 // =============================================================================
 
-func TestRoutedModelOf(t *testing.T) {
-	rc := &domain.RequestContext{}
-	if routedModelOf(rc) != "" {
-		t.Error("empty RC should return empty")
+func TestSchedule_PanicsOnNilDispatcher(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil Dispatcher")
+		}
+	}()
+	Schedule(nil)
+}
+
+func TestSchedule_SuccessStreams200(t *testing.T) {
+	ep := &domain.Endpoint{ID: 1, Vendor: "openai", Model: "gpt-4"}
+	d := newTestDispatcher(ep, dispatch.Verdict{Class: dispatch.ClassSuccess, HTTPCode: 200})
+	w := runSchedule(t, Schedule(d))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	rc.ModelService = &domain.ModelService{Model: "primary"}
-	if routedModelOf(rc) != "primary" {
-		t.Error("falls back to ModelService")
+}
+
+func TestSchedule_InvalidReturns400(t *testing.T) {
+	ep := &domain.Endpoint{ID: 1, Vendor: "openai", Model: "gpt-4"}
+	d := newTestDispatcher(ep, dispatch.Verdict{Class: dispatch.ClassInvalid, HTTPCode: 400, Reason: "bad body"})
+	w := runSchedule(t, Schedule(d))
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
-	rc.RoutedModelService = &domain.ModelService{Model: "routed"}
-	if routedModelOf(rc) != "routed" {
-		t.Error("prefers RoutedModelService")
+}
+
+func TestSchedule_MissingRCFields500(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	ep := &domain.Endpoint{ID: 1}
+	d := newTestDispatcher(ep, dispatch.Verdict{Class: dispatch.ClassSuccess})
+	// 这里**不**挂 attachM7Inputs——rc.Envelope / ModelChain 都没填
+	e.POST("/x", TraceContext(), Recover(), attachRCM7(), Schedule(d))
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest("POST", "/x", strings.NewReader(`{}`)))
+	if w.Code != 500 {
+		t.Fatalf("status = %d, want 500 (M3/M5 missing)", w.Code)
 	}
 }

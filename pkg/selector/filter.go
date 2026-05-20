@@ -1,4 +1,4 @@
-package schedule
+package selector
 
 import (
 	"context"
@@ -13,11 +13,11 @@ import (
 // **内置 filters（v0.5）**：
 //   - cooldown        排除冷却中候选（CooldownFilter）
 //   - limit_read      排除 endpoint quota 超限候选（LimitReadFilter）
-//   - weighted_random 按 weight 概率选 1 个（WeightedRandomSelector，必须放最后）
+//   - weighted_random 按 weight 概率选 1 个（WeightedRandomPicker，必须放最后）
 //
-// 加新 filter：实现 Filter 接口；cmd 装配时按 cfg.Scheduler.Filters 顺序 wire。
+// 加新 filter：实现 Filter 接口；cmd 装配时按 cfg.Selector.Filters 顺序 wire。
 type Filter interface {
-	// Name 用于 cfg.Scheduler.Filters 的 string 匹配 + log/metric 标签。
+	// Name 用于 cfg.Selector.Filters 的 string 匹配 + log/metric 标签。
 	Name() string
 
 	// Apply 输入候选 + 请求上下文 → 输出筛后候选。

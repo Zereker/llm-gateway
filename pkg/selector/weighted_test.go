@@ -1,4 +1,4 @@
-package schedule
+package selector
 
 import (
 	"context"
@@ -6,14 +6,14 @@ import (
 )
 
 func TestWeightedRandom_Empty_ReturnsNil(t *testing.T) {
-	s := NewWeightedRandomSelector()
+	s := NewWeightedRandomPicker()
 	if got := s.Select(context.Background(), nil); got != nil {
 		t.Errorf("got=%+v, want nil", got)
 	}
 }
 
 func TestWeightedRandom_AllZeroWeight_ReturnsNil(t *testing.T) {
-	s := NewWeightedRandomSelector()
+	s := NewWeightedRandomPicker()
 	got := s.Select(context.Background(), []Candidate{
 		{Endpoint: ep(1, 0), EffectiveWeight: 0},
 		{Endpoint: ep(2, 0), EffectiveWeight: 0},
@@ -24,7 +24,7 @@ func TestWeightedRandom_AllZeroWeight_ReturnsNil(t *testing.T) {
 }
 
 func TestWeightedRandom_SingleEp_AlwaysPicks(t *testing.T) {
-	s := NewWeightedRandomSelector()
+	s := NewWeightedRandomPicker()
 	cands := candidates(ep(1, 100))
 	for i := 0; i < 10; i++ {
 		got := s.Select(context.Background(), cands)
@@ -35,7 +35,7 @@ func TestWeightedRandom_SingleEp_AlwaysPicks(t *testing.T) {
 }
 
 func TestWeightedRandom_DistributionRoughlyMatchesWeights(t *testing.T) {
-	s := NewWeightedRandomSelector()
+	s := NewWeightedRandomPicker()
 	cands := candidates(ep(1, 90), ep(2, 10))
 	const N = 1000
 	count := map[int64]int{}
@@ -55,7 +55,7 @@ func TestWeightedRandom_DistributionRoughlyMatchesWeights(t *testing.T) {
 }
 
 func TestWeightedRandom_ZeroWeightExcluded(t *testing.T) {
-	s := NewWeightedRandomSelector()
+	s := NewWeightedRandomPicker()
 	cands := []Candidate{
 		{Endpoint: ep(1, 0), EffectiveWeight: 0},
 		{Endpoint: ep(2, 100), EffectiveWeight: 100},
@@ -72,7 +72,7 @@ func TestWeightedRandom_UsesEffectiveWeight_NotStaticWeight(t *testing.T) {
 	// 关键测试：docs/03 §4 — WeightedRandom 必须基于 EffectiveWeight
 	// ep1 static weight=100, EffectiveWeight=0 → 应被排除
 	// ep2 static weight=10, EffectiveWeight=100 → 应被选中
-	s := NewWeightedRandomSelector()
+	s := NewWeightedRandomPicker()
 	cands := []Candidate{
 		{Endpoint: ep(1, 100), EffectiveWeight: 0},
 		{Endpoint: ep(2, 10), EffectiveWeight: 100},

@@ -28,16 +28,17 @@ import (
 	"github.com/zereker/llm-gateway/pkg/cdc"
 	"github.com/zereker/llm-gateway/pkg/config"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/health"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/repo"
 	"github.com/zereker/llm-gateway/pkg/router"
-	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/server"
 	"github.com/zereker/llm-gateway/pkg/trace"
-	"github.com/zereker/llm-gateway/pkg/upstream"
+	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/usage"
 
 	// adapter blank imports：init() 自动注册到 adapter registry
@@ -134,11 +135,11 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	startHealthProber(srv, cfg.Health, healthListerAdapter{p: repo.NewSQLEndpointReader(sqldb)}, stats)
 
 	// Sender 装配：Content Logger 通过 hooks 接入字节流（可选）
-	senderOpts := []upstream.Option{}
+	senderOpts := []invoker.Option{}
 	if contentLogger != nil {
-		senderOpts = append(senderOpts, upstream.WithHooks(contentLogger))
+		senderOpts = append(senderOpts, invoker.WithHooks(contentLogger))
 	}
-	sender := upstream.New(senderOpts...)
+	sender := invoker.New(senderOpts...)
 
 	// 三层缓存的 ModelCatalog：L1 进程内 LRU + L3 MySQL fallback。
 	// L2 由 Debezium → Redis Streams 推送驱动 invalidation（不主动 SET Redis cache key）。
@@ -162,20 +163,33 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 
 	subs := adaptSubscriptions(repo.NewSQLSubscriptionProvider(sqldb))
 	rateStore := ratelimit.NewRedisStore(rdb)
-	cooldown := schedule.NewRedisCooldownManager(rdb, schedule.CooldownDurations{
-		Transient: cfg.Scheduler.Cooldown.Transient,
-		Capacity:  cfg.Scheduler.Cooldown.Capacity,
-		Permanent: cfg.Scheduler.Cooldown.Permanent,
-		Invalid:   cfg.Scheduler.Cooldown.Invalid,
-		Unknown:   cfg.Scheduler.Cooldown.Unknown,
+	cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{
+		Transient: cfg.Selector.Cooldown.Transient,
+		Capacity:  cfg.Selector.Cooldown.Capacity,
+		Permanent: cfg.Selector.Cooldown.Permanent,
+		Invalid:   cfg.Selector.Cooldown.Invalid,
+		Unknown:   cfg.Selector.Cooldown.Unknown,
 	})
-	sched := schedule.New(schedule.Config{
-		Filters:  buildSchedulerFilters(cfg.Scheduler.Filters, rateStore, cooldown),
-		Selector: schedule.NewWeightedRandomSelector(),
+	sched := selector.New(selector.Config{
+		Filters:  buildSchedulerFilters(cfg.Selector.Filters, rateStore, cooldown),
+		Picker:   selector.NewWeightedRandomPicker(),
 		Cooldown: cooldown,
 		Scorer:   scorer,
 		Stats:    stats,
 	})
+
+	// Dispatcher 装配（M7 业务编排：Selector + Invoker + Policy）。
+	//
+	// selectorAdapter / invokerFactoryAdapter 在 cmd/gateway/dispatch_wiring.go：
+	//   - selectorAdapter 包揽 EndpointReader + eligibility + selector.Pick
+	//   - invokerFactoryAdapter 包揽 reserve + sender.Send + Report + Forward + charge
+	dispatcher := dispatch.New(
+		dispatch.WithSelector(newSelectorAdapter(adaptEndpoints(repo.NewSQLEndpointReader(sqldb)), sched)),
+		dispatch.WithInvokerFactory(newInvokerFactoryAdapter(sender, sched, rateStore)),
+		dispatch.WithCap(dispatch.HeaderAttemptCap{Default: cfg.Selector.MaxAttempts}),
+		dispatch.WithRetry(dispatch.DefaultRetry{}),
+		dispatch.WithFallback(dispatch.ModelChainFallback{}),
+	)
 
 	engine = router.NewEngine(router.Deps{
 		BodyLimit: cfg.Request.BodyLimitBytes,
@@ -195,11 +209,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		RateLimitStore: rateStore,
 		QuotaPolicies:  ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0),
 
-		// M7 Schedule
-		EndpointReader: adaptEndpoints(repo.NewSQLEndpointReader(sqldb)),
-		Scheduler:      sched,
-		Sender:         sender,
-		MaxAttempts:    cfg.Scheduler.MaxAttempts,
+		// M7 Schedule (Dispatcher 编排：fallback / retry / streaming 在 pkg/dispatch 内)
+		Dispatcher: dispatcher,
 
 		// M8 Moderation
 		Moderator: buildModerator(cfg.Moderation),
@@ -212,28 +223,28 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	return engine, srv, nil
 }
 
-// buildSchedulerFilters 按 cfg.Scheduler.Filters 列表名字 → Filter 实例。
+// buildSchedulerFilters 按 cfg.Selector.Filters 列表名字 → Filter 实例。
 //
 // 不在 schedule pkg 里 hardcode 这个映射——cmd 才知道有哪些 deps（redis client / store /
 // cooldown manager）。新加 filter 类型时在这里加一个 case。
 //
 // 找不到的名字直接 panic（fail-fast；启动期暴露配置错）。
-func buildSchedulerFilters(names []string, store ratelimit.Store, cd schedule.CooldownManager) []schedule.Filter {
-	out := make([]schedule.Filter, 0, len(names))
+func buildSchedulerFilters(names []string, store ratelimit.Store, cd selector.CooldownManager) []selector.Filter {
+	out := make([]selector.Filter, 0, len(names))
 	for _, n := range names {
 		switch n {
 		case "cooldown":
-			out = append(out, schedule.NewCooldownFilter(cd))
+			out = append(out, selector.NewCooldownFilter(cd))
 		case "limit_read":
-			out = append(out, schedule.NewLimitReadFilter(store))
+			out = append(out, selector.NewLimitReadFilter(store))
 		case "weighted_random":
 			// weighted_random 是 Selector 而非 Filter；它在 cfg.Selector 单独配，
 			// 这里忽略（仅为了向后兼容旧 yaml 列表）。
 			continue
 		case "prefix_cache":
-			out = append(out, schedule.NewPrefixCacheFilter(0)) // 0 = 默认 vnodes=64
+			out = append(out, selector.NewPrefixCacheFilter(0)) // 0 = 默认 vnodes=64
 		case "busy":
-			out = append(out, schedule.NewBusyFilter(0)) // 0 = 默认 threshold=0.85
+			out = append(out, selector.NewBusyFilter(0)) // 0 = 默认 threshold=0.85
 		default:
 			panic("unknown scheduler filter: " + n)
 		}
@@ -268,7 +279,7 @@ func buildTracer(srv *server.Server, cfg config.TraceConfig) trace.Tracer {
 // buildScoring 构造 Runtime Scoring 的 stats store + scorer（docs/03 §8）。
 //
 // 未启用时返回 (nil, nil) —— scheduler 将走纯静态 weight，无任何运行时打分。
-func buildScoring(cfg config.ScoringConfig) (schedule.EndpointStatsStore, schedule.Scorer) {
+func buildScoring(cfg config.ScoringConfig) (selector.EndpointStatsStore, selector.Scorer) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
@@ -276,12 +287,12 @@ func buildScoring(cfg config.ScoringConfig) (schedule.EndpointStatsStore, schedu
 	if decay <= 0 {
 		decay = 0.2
 	}
-	store := schedule.NewInMemoryStatsStore(decay)
+	store := selector.NewInMemoryStatsStore(decay)
 	baselineMs := float64(200)
 	if cfg.LatencyBaseline > 0 {
 		baselineMs = float64(cfg.LatencyBaseline.Milliseconds())
 	}
-	scorer := schedule.NewDefaultScorer(store, cfg.MinSamples, baselineMs)
+	scorer := selector.NewDefaultScorer(store, cfg.MinSamples, baselineMs)
 	return store, scorer
 }
 
@@ -340,7 +351,7 @@ func startCDCConsumer(srv *server.Server, rdb *redis.Client, msCache *cdc.Tiered
 // startHealthProber 按 cfg 启动 Health Prober（docs/03 §10）。
 //
 // 未启用时不做任何事。stats == nil 时也跳过（probe 结果没人消费没意义）。
-func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister health.EndpointLister, stats schedule.EndpointStatsStore) {
+func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister health.EndpointLister, stats selector.EndpointStatsStore) {
 	if !cfg.Enabled || stats == nil {
 		return
 	}

@@ -101,10 +101,10 @@ pkg/cdc
   -> Debezium binlog event 解析 + Redis Stream XREAD + TieredCache[T]（L1 LRU + L3 loader）
   -> ModelCatalog 等 middleware-owned reader 通过 TieredCache 适配
 
-pkg/schedule
+pkg/selector
   -> 对一批候选 endpoint 做 filter / pick / report；不持有 repo，不切 fallback model
 
-pkg/upstream
+pkg/invoker
   -> adapter lookup、translator lookup、HTTP Do、响应 forward
 
 pkg/adapter

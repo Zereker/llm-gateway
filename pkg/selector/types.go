@@ -8,14 +8,14 @@
 //
 // **依赖**：
 //
-//	pkg/middleware/schedule.go (M7)
+//	pkg/middleware/selector.go (M7)
 //	    │
-//	    ├─→ schedule.Scheduler.Pick(ctx, req) → *Endpoint
+//	    ├─→ selector.Scheduler.Pick(ctx, req) → *Endpoint
 //	    ├─→ Sender.Send(ctx, ep, env, body) → Outcome
-//	    └─→ schedule.Scheduler.Report(ctx, ep, result)
+//	    └─→ selector.Scheduler.Report(ctx, ep, result)
 //
 // 详见 docs/architecture/03-endpoint-scheduling.md。
-package schedule
+package selector
 
 import (
 	"context"

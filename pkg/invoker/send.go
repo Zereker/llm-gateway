@@ -1,4 +1,4 @@
-package upstream
+package invoker
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
@@ -56,7 +56,7 @@ func (s *Sender) Send(
 	factory := s.lookup.Get(ep.Vendor)
 	if factory == nil {
 		out = Outcome{
-			Class:   schedule.ClassPermanent,
+			Class:   selector.ClassPermanent,
 			Reason:  "no adapter registered for vendor: " + ep.Vendor,
 			Latency: time.Since(start),
 		}
@@ -68,7 +68,7 @@ func (s *Sender) Send(
 	trans := translator.Find(srcProto, tgtProto)
 	if trans == nil {
 		out = Outcome{
-			Class:   schedule.ClassPermanent,
+			Class:   selector.ClassPermanent,
 			Reason:  fmt.Sprintf("no translator for %s → %s", srcProto, tgtProto),
 			Latency: time.Since(start),
 		}
@@ -78,7 +78,7 @@ func (s *Sender) Send(
 	upstreamBody, err := trans.TranslateRequest(srcBody)
 	if err != nil {
 		out = Outcome{
-			Class:   schedule.ClassInvalid,
+			Class:   selector.ClassInvalid,
 			Reason:  "translate request: " + err.Error(),
 			Latency: time.Since(start),
 		}
@@ -88,7 +88,7 @@ func (s *Sender) Send(
 	sess, err := factory.NewSession(ctx, ep, env)
 	if err != nil {
 		out = Outcome{
-			Class:   schedule.ClassTransient,
+			Class:   selector.ClassTransient,
 			Reason:  "NewSession: " + err.Error(),
 			Latency: time.Since(start),
 		}
@@ -99,7 +99,7 @@ func (s *Sender) Send(
 	if err != nil {
 		_ = sess.Close()
 		out = Outcome{
-			Class:   schedule.ClassPermanent,
+			Class:   selector.ClassPermanent,
 			Reason:  "BuildRequest: " + err.Error(),
 			Latency: time.Since(start),
 		}
@@ -116,7 +116,7 @@ func (s *Sender) Send(
 	if err != nil {
 		_ = sess.Close()
 		out = Outcome{
-			Class:   schedule.ClassTransient,
+			Class:   selector.ClassTransient,
 			Reason:  "upstream call: " + err.Error(),
 			Latency: time.Since(start),
 		}
@@ -127,7 +127,7 @@ func (s *Sender) Send(
 	// 可选 Adapter Classifier 接管：vendor 自己看 error body 细化 class。
 	// 例：OpenAI 区分 insufficient_quota（permanent）vs 真 rate-limit（capacity）；
 	// Anthropic 529 overloaded_error → capacity。
-	if class != schedule.ClassSuccess {
+	if class != selector.ClassSuccess {
 		if cls, ok := factory.(adapter.Classifier); ok {
 			peeked := peekBodyForClassify(resp)
 			if refined := cls.Classify(resp.StatusCode, peeked); refined != nil {
@@ -136,7 +136,7 @@ func (s *Sender) Send(
 		}
 	}
 
-	if class != schedule.ClassSuccess {
+	if class != selector.ClassSuccess {
 		_ = resp.Body.Close()
 		_ = sess.Close()
 		out = Outcome{
@@ -172,11 +172,11 @@ func emitUpstreamMetrics(ep *domain.Endpoint, out Outcome) {
 	model := ep.Model
 	result := "ok"
 	errClass := ""
-	if out.Class != schedule.ClassSuccess {
+	if out.Class != selector.ClassSuccess {
 		result = "error"
 		errClass = out.Class.String()
 	}
-	metric.Inc(metric.UpstreamRequestsTotal,
+	metric.Inc(metric.InvokerRequestsTotal,
 		"vendor", vendor,
 		"endpoint_id", endpointID,
 		"model", model,
@@ -184,7 +184,7 @@ func emitUpstreamMetrics(ep *domain.Endpoint, out Outcome) {
 		"result", result,
 		"error_class", errClass,
 	)
-	metric.Observe(metric.UpstreamDurationSeconds, out.Latency.Seconds(),
+	metric.Observe(metric.InvokerDurationSeconds, out.Latency.Seconds(),
 		"vendor", vendor,
 		"endpoint_id", endpointID,
 		"model", model,
@@ -215,39 +215,39 @@ func peekBodyForClassify(resp *http.Response) []byte {
 	return peeked
 }
 
-// classifyHTTPStatus 把 HTTP 状态码归类成 schedule.ErrorClass。
-func classifyHTTPStatus(code int) schedule.ErrorClass {
+// classifyHTTPStatus 把 HTTP 状态码归类成 selector.ErrorClass。
+func classifyHTTPStatus(code int) selector.ErrorClass {
 	switch {
 	case code >= 200 && code < 300:
-		return schedule.ClassSuccess
+		return selector.ClassSuccess
 	case code == 401 || code == 403:
-		return schedule.ClassPermanent
+		return selector.ClassPermanent
 	case code == 429:
-		return schedule.ClassCapacity
+		return selector.ClassCapacity
 	case code >= 500:
-		return schedule.ClassTransient
+		return selector.ClassTransient
 	case code >= 400:
-		return schedule.ClassInvalid
+		return selector.ClassInvalid
 	default:
-		return schedule.ClassUnknown
+		return selector.ClassUnknown
 	}
 }
 
-// adapterErrToScheduleClass domain.ErrorClass → schedule.ErrorClass。
+// adapterErrToScheduleClass domain.ErrorClass → selector.ErrorClass。
 //
 // 不能 1:1 映射：domain.ErrUnknown 兜底到原 fallback class（HTTP-status 推导的那个），
-// 因为 schedule.ClassUnknown 在 IsRetryable 上是 true（会被 retry），而 ErrUnknown 在
+// 因为 selector.ClassUnknown 在 IsRetryable 上是 true（会被 retry），而 ErrUnknown 在
 // adapter 看应该是"我不知道"——保留原 HTTP-status 分类更安全。
-func adapterErrToScheduleClass(c domain.ErrorClass, fallback schedule.ErrorClass) schedule.ErrorClass {
+func adapterErrToScheduleClass(c domain.ErrorClass, fallback selector.ErrorClass) selector.ErrorClass {
 	switch c {
 	case domain.ErrInvalid:
-		return schedule.ClassInvalid
+		return selector.ClassInvalid
 	case domain.ErrPermanent:
-		return schedule.ClassPermanent
+		return selector.ClassPermanent
 	case domain.ErrTransient:
-		return schedule.ClassTransient
+		return selector.ClassTransient
 	case domain.ErrRateLimit:
-		return schedule.ClassCapacity
+		return selector.ClassCapacity
 	default:
 		return fallback
 	}

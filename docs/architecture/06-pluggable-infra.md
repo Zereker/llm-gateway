@@ -20,7 +20,7 @@
 pkg/domain                         纯业务结构，无 repo import
       ▲
       ├── pkg/middleware           定义 middleware 最小接口，调用 schedule / upstream
-      │       └── pkg/schedule     调度纯逻辑和 eligibility，不持有 repo
+      │       └── pkg/selector     调度纯逻辑和 eligibility，不持有 repo
       │
       └── pkg/repo                 SQL schema model + SQL 实现，适配并返回 domain 类型
 
@@ -226,9 +226,9 @@ var _ middleware.EndpointReader = (*SQLEndpointReader)(nil)
 
 ```bash
 go list -deps ./pkg/domain | rg '/pkg/repo$'
-go list -deps ./pkg/schedule | rg '/pkg/repo$'
+go list -deps ./pkg/selector | rg '/pkg/repo$'
 go list -deps ./pkg/translator | rg '/pkg/repo$'
-go list -deps ./pkg/upstream | rg '/pkg/repo$'
+go list -deps ./pkg/invoker | rg '/pkg/repo$'
 ```
 
 这些命令目标是无输出。`pkg/repo` 自己依赖 `pkg/domain` 是允许的。
@@ -304,8 +304,8 @@ M7 / M10 / 其它 middleware 同形：
 type ScheduleOption interface { apply(*scheduleConfig) }
 
 func WithEndpointReader(r EndpointReader) ScheduleOption
-func WithScheduler(s schedule.Scheduler) ScheduleOption
-func WithSender(s *upstream.Sender) ScheduleOption
+func WithScheduler(s selector.Scheduler) ScheduleOption
+func WithSender(s *invoker.Sender) ScheduleOption
 func WithScheduleTracerProvider(tp oteltrace.TracerProvider) ScheduleOption
 ```
 
@@ -339,7 +339,7 @@ M1 `TraceContext` 是最完整的参考实现：除 `WithTraceContextTracerProvi
 Redis 承担三类共享状态：
 
 1. **Rate limit buckets**：`ratelimit.RedisStore` 实现用户侧 RPM/RPS 前扣、TPM 后扣，以及 endpoint 选中后的 quota reserve / charge。
-2. **Cooldown**：`schedule.NewRedisCooldownManager` 记录失败 endpoint 的短期隔离状态。
+2. **Cooldown**：`selector.NewRedisCooldownManager` 记录失败 endpoint 的短期隔离状态。
 3. **CDC stream**：admin 改的 SQL 行经 Debezium 捕获 binlog 后写到 Redis Stream
    `llm_gateway.llm_gateway.<table>`；gateway 的 `pkg/cdc.StreamConsumer` 阻塞
    XREAD 这些 stream，触发 `TieredCache` L1 失效（详见 §8）。
