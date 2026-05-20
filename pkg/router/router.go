@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
@@ -40,14 +41,11 @@ type Deps struct {
 
 	// M7 Schedule
 	//
-	// fallback model 解析 + catalog/subscription 校验在 M5 完成，结果走 rc.ModelChain；
-	// M7 这里不再需要 catalog / subscriptions 依赖。
-	EndpointReader middleware.EndpointReader
-	Scheduler      middleware.Scheduler
-	Sender         middleware.Sender
-	MaxAttempts    int
-	// EndpointRateStore 不另开字段——M7 复用 RateLimitStore（endpoint 桶 key 跟 user 桶 key
-	// 在同一存储里）。
+	// Dispatcher 是 Selector + Invoker + Policy 的协调器（pkg/dispatch）。
+	// M7 middleware 现在是 thin adapter，调 Dispatcher.Dispatch 完事——
+	// fallback model / retry / streaming 全部在 dispatch 内编排，router 不再认
+	// EndpointReader / Scheduler / Sender / MaxAttempts 等细节。
+	Dispatcher *dispatch.Dispatcher
 
 	// M8 Moderation
 	Moderator middleware.Moderator

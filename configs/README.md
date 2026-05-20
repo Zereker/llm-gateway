@@ -64,7 +64,7 @@ usage_events:
     max_retries: 3
     dlq_topic: billing.usage.recorded.v1.dlq
 
-scheduler:
+selector:
   filters: [cooldown, limit_read, weighted_random]
   max_attempts: 3
   cooldown:

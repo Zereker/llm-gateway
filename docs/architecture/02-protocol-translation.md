@@ -1,7 +1,7 @@
 # 02 — Protocol Translation
 
 本文记录协议转换边界：`pkg/adapter` 只处理厂商 HTTP 细节，`pkg/translator`
-处理请求/响应 shape 转换和 usage 提取，`pkg/upstream` 把两者串起来。
+处理请求/响应 shape 转换和 usage 提取，`pkg/invoker` 把两者串起来。
 
 核心原则：保留协议转换扩展能力，但不追求补齐任意 `source × target` 矩阵。
 一个 vendor / endpoint 如果原生支持某个协议，就按该原生协议接入；不支持时只有在已存在
@@ -13,13 +13,13 @@
 Client request
   -> M3 RequestEnvelope(raw body + source protocol + modality)
   -> M7 Schedule 选 endpoint
-  -> upstream.Sender.Send
+  -> invoker.Sender.Send
        -> adapter.Factory.NewSession(endpoint, envelope)
        -> translator.Get(source protocol, endpoint native protocol, modality)
        -> translator.TranslateRequest(raw body)
        -> adapter.Session.BuildRequest(translated body)
        -> http.Client.Do
-  -> upstream.Sender.Forward
+  -> invoker.Sender.Forward
        -> translator.ResponseHandler.Feed chunks
        -> write client response
        -> finalize Usage
@@ -141,9 +141,9 @@ Gemini 当前是上游协议支持：客户端仍从 OpenAI/Anthropic/Responses 
 2. 明确需要的跨协议 translator：例如 OpenAI Chat → Anthropic、OpenAI Chat → Gemini。
 3. 未注册的组合直接视为不支持，不作为调度候选或返回明确错误。
 
-## 7. upstream.Sender
+## 7. invoker.Sender
 
-`pkg/upstream` 封装一次上游调用和响应转发：
+`pkg/invoker` 封装一次上游调用和响应转发：
 
 ```go
 type Sender struct {

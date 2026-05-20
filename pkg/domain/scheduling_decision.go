@@ -44,7 +44,7 @@ type Attempt struct {
 	AttemptRole AttemptRole     // primary | fallback
 	Outcome     AttemptOutcome
 	LatencyMs   int64
-	ErrorClass  string // ErrorClass.String() / schedule.ErrorClass.String()
+	ErrorClass  string // ErrorClass.String() / selector.ErrorClass.String()
 	Started     time.Time
 }
 

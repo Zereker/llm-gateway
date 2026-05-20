@@ -1,4 +1,4 @@
-package schedule
+package selector
 
 import (
 	"context"
@@ -22,7 +22,7 @@ type CooldownManager interface {
 	InCooldown(ctx context.Context, endpointIDs []int64) (map[int64]bool, error)
 }
 
-// CooldownDurations 各 ErrorClass 对应的冷却时长（来自 cfg.Scheduler.Cooldown）。
+// CooldownDurations 各 ErrorClass 对应的冷却时长（来自 cfg.Selector.Cooldown）。
 type CooldownDurations struct {
 	Transient time.Duration
 	Capacity  time.Duration

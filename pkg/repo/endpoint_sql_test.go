@@ -31,7 +31,7 @@ func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 		ep.Auth = auth
 	}
 	if (ep.Routing == RoutingConfig{}) {
-		ep.Routing = RoutingConfig{URL: "https://upstream.test/v1/chat"}
+		ep.Routing = RoutingConfig{URL: "https://invoker.test/v1/chat"}
 	}
 	res, err := db.NamedExec(
 		`INSERT INTO endpoints
