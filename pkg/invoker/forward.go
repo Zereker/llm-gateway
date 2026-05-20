@@ -1,4 +1,4 @@
-package upstream
+package invoker
 
 import (
 	"context"
@@ -48,7 +48,7 @@ type startTimeCtxKey struct{}
 
 // WithRequestStartTime 让 caller 把 "请求开始时间" 注入 ctx 供 Forward 计算 TTFT。
 //
-// M7 应在 Send 之前调一次：`ctx = upstream.WithRequestStartTime(ctx, time.Now())`。
+// M7 应在 Send 之前调一次：`ctx = invoker.WithRequestStartTime(ctx, time.Now())`。
 func WithRequestStartTime(ctx context.Context, t time.Time) context.Context {
 	return context.WithValue(ctx, startTimeCtxKey{}, t)
 }

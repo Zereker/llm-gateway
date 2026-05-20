@@ -37,7 +37,7 @@ type Config struct {
 	Database   infra.DBConfig    `yaml:"database"` // schema 在 pkg/infra
 	Redis      infra.RedisConfig `yaml:"redis"`    // M6 RateLimit + 未来 cache layer 共享
 	UsageEvents UsageEventsConfig `yaml:"usage_events"`
-	Scheduler  SchedulerConfig   `yaml:"scheduler"`  // M7 端点调度 + cooldown 配置
+	Selector  SelectorConfig   `yaml:"selector"`  // M7 端点调度 + cooldown 配置
 	Budget     BudgetConfig      `yaml:"budget"`     // M4 Budget driver
 	Moderation ModerationConfig  `yaml:"moderation"` // M8 内容审核 driver
 	Trace      TraceConfig       `yaml:"trace"`      // M10 Tracer driver（slog / otel）
@@ -228,7 +228,7 @@ type KafkaOutboxSection struct {
 	DLQTopic          string        `yaml:"dlq_topic"`    // 重试耗尽后的 DLQ topic；空 = 直接丢
 }
 
-// SchedulerConfig M7 端点选路 + cooldown + 重试配置。
+// SelectorConfig M7 端点选路 + cooldown + 重试配置。
 //
 // **filters**：执行顺序就是数组顺序；可用值（v0.5）：
 //   - `cooldown`         排除冷却中 endpoint
@@ -241,7 +241,7 @@ type KafkaOutboxSection struct {
 //
 // **max_per_endpoint**：同 endpoint 最大尝试次数（含首次）；默认 1 = 无 L1 retry，
 // 失败立刻换 ep。设 2-3 可吸收上游网络偶发抖动。
-type SchedulerConfig struct {
+type SelectorConfig struct {
 	Filters        []string       `yaml:"filters"`
 	Cooldown       CooldownConfig `yaml:"cooldown"`
 	MaxAttempts    int            `yaml:"max_attempts"`
@@ -298,7 +298,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("data_key must be 64 hex chars (32 bytes); got %d", len(c.DataKey))
 	}
 	// scheduler.cooldown 必须覆盖全 5 类（任一为 0 视作有意，但至少 cfg 段非 zero）
-	cd := c.Scheduler.Cooldown
+	cd := c.Selector.Cooldown
 	if cd.Transient == 0 && cd.Capacity == 0 && cd.Permanent == 0 && cd.Invalid == 0 && cd.Unknown == 0 {
 		return errors.New("scheduler.cooldown all-zero; configure at least transient/capacity/permanent")
 	}
@@ -380,26 +380,26 @@ func (c *Config) ApplyDefaults() {
 	// UsageEvents.Kafka 不给默认（driver=kafka 时必须显式配置）
 
 	// Scheduler defaults
-	if len(c.Scheduler.Filters) == 0 {
-		c.Scheduler.Filters = []string{"cooldown", "limit_read", "weighted_random"}
+	if len(c.Selector.Filters) == 0 {
+		c.Selector.Filters = []string{"cooldown", "limit_read", "weighted_random"}
 	}
-	if c.Scheduler.MaxAttempts == 0 {
-		c.Scheduler.MaxAttempts = 3
+	if c.Selector.MaxAttempts == 0 {
+		c.Selector.MaxAttempts = 3
 	}
-	if c.Scheduler.MaxPerEndpoint == 0 {
-		c.Scheduler.MaxPerEndpoint = 1 // 默认无 L1 retry；显式开启需配置
+	if c.Selector.MaxPerEndpoint == 0 {
+		c.Selector.MaxPerEndpoint = 1 // 默认无 L1 retry；显式开启需配置
 	}
-	if c.Scheduler.Cooldown.Transient == 0 {
-		c.Scheduler.Cooldown.Transient = 30 * time.Second
+	if c.Selector.Cooldown.Transient == 0 {
+		c.Selector.Cooldown.Transient = 30 * time.Second
 	}
-	if c.Scheduler.Cooldown.Capacity == 0 {
-		c.Scheduler.Cooldown.Capacity = 60 * time.Second
+	if c.Selector.Cooldown.Capacity == 0 {
+		c.Selector.Cooldown.Capacity = 60 * time.Second
 	}
-	if c.Scheduler.Cooldown.Permanent == 0 {
-		c.Scheduler.Cooldown.Permanent = 5 * time.Minute
+	if c.Selector.Cooldown.Permanent == 0 {
+		c.Selector.Cooldown.Permanent = 5 * time.Minute
 	}
-	if c.Scheduler.Cooldown.Unknown == 0 {
-		c.Scheduler.Cooldown.Unknown = 10 * time.Second
+	if c.Selector.Cooldown.Unknown == 0 {
+		c.Selector.Cooldown.Unknown = 10 * time.Second
 	}
 	// Cooldown.Invalid 默认 0（客户端错误不该冷却 endpoint）
 

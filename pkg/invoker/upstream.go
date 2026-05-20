@@ -11,7 +11,7 @@
 //
 // **使用形态**（M7 内部）：
 //
-//	sender := upstream.New()  // 默认 = adapter 全局 registry + http.DefaultClient
+//	sender := invoker.New()  // 默认 = adapter 全局 registry + http.DefaultClient
 //	for {
 //	    ep := sel.Pick()
 //	    if ep == nil { break }
@@ -24,7 +24,7 @@
 //	}
 //
 // 详见 docs/architecture/03-endpoint-scheduling.md。
-package upstream
+package invoker
 
 import (
 	"errors"
@@ -32,7 +32,7 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
-	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
@@ -55,7 +55,7 @@ type HTTPDoer interface {
 // 失败 = Response==nil（Send 已自己 close 失败响应的 body）。
 type Outcome struct {
 	Response *http.Response // 仅成功时填；失败 nil
-	Class    schedule.ErrorClass
+	Class    selector.ErrorClass
 	HTTPCode int
 	Reason   string
 	Latency  time.Duration
@@ -67,12 +67,12 @@ type Outcome struct {
 
 // Success outcome 是否成功（HTTP 2xx + 无协议层错）。
 func (o Outcome) Success() bool {
-	return o.Class == schedule.ClassSuccess && o.Response != nil
+	return o.Class == selector.ClassSuccess && o.Response != nil
 }
 
-// ToScheduleResult 转成 sel.Report 需要的 schedule.Result。
-func (o Outcome) ToScheduleResult() schedule.Result {
-	return schedule.Result{
+// ToScheduleResult 转成 sel.Report 需要的 selector.Result。
+func (o Outcome) ToScheduleResult() selector.Result {
+	return selector.Result{
 		Class:    o.Class,
 		HTTPCode: o.HTTPCode,
 		Reason:   o.Reason,

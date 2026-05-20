@@ -40,21 +40,21 @@ const (
 
 // === Schedule (M7 / docs/03) ===
 const (
-	SchedulerAttemptsTotal         = "llm_gateway_scheduler_attempts_total" // model / routed_model / vendor / endpoint_id / attempt_role / result / error_class
-	SchedulerCandidates            = "llm_gateway_scheduler_candidates"     // histogram: model / stage
+	InvokerAttemptsTotal         = "llm_gateway_invoker_attempts_total" // model / routed_model / vendor / endpoint_id / attempt_role / result / error_class
+	SelectorCandidates            = "llm_gateway_selector_candidates"     // histogram: model / stage
 	SchedulingDurationSeconds      = "llm_gateway_scheduling_duration_seconds" // model / attempts
 	EligibilityDurationSeconds     = "llm_gateway_eligibility_duration_seconds" // model
-	SchedulerCooldownEnterTotal    = "llm_gateway_scheduler_cooldown_enter_total"
+	SelectorCooldownEnterTotal    = "llm_gateway_selector_cooldown_enter_total"
 	ScheduleResultTotal            = "llm_gateway_schedule_result_total"
-	SchedulerEndpointSelectedTotal = "llm_gateway_scheduler_endpoint_selected_total"
-	SchedulerEndpointFilteredTotal = "llm_gateway_scheduler_endpoint_filtered_total"
-	SchedulerEndpointCallTotal     = "llm_gateway_scheduler_endpoint_call_total"
+	SelectorEndpointSelectedTotal = "llm_gateway_selector_endpoint_selected_total"
+	SelectorEndpointFilteredTotal = "llm_gateway_selector_endpoint_filtered_total"
+	SelectorEndpointCallTotal     = "llm_gateway_selector_endpoint_call_total"
 )
 
 // === Upstream (docs/03) ===
 const (
-	UpstreamRequestsTotal         = "llm_gateway_upstream_requests_total"          // vendor / endpoint_id / model / native_protocol / result / error_class
-	UpstreamDurationSeconds       = "llm_gateway_upstream_duration_seconds"         // vendor / endpoint_id / model / result / error_class
+	InvokerRequestsTotal         = "llm_gateway_invoker_requests_total"          // vendor / endpoint_id / model / native_protocol / result / error_class
+	InvokerDurationSeconds       = "llm_gateway_invoker_duration_seconds"         // vendor / endpoint_id / model / result / error_class
 	AdapterRequestTotal           = "llm_gateway_adapter_request_total"
 	AdapterRequestDurationSeconds = "llm_gateway_adapter_request_duration_seconds"
 	AdapterErrorTotal             = "llm_gateway_adapter_error_total"

@@ -1,4 +1,4 @@
-package schedule
+package selector
 
 import (
 	"context"
@@ -11,15 +11,15 @@ import (
 type Config struct {
 	Filters  []Filter           // hard filters（cooldown / limit_read / ...）按顺序执行
 	Scorer   Scorer             // Runtime Scoring（docs/03 §8）；nil = 不打分（保留静态 weight）
-	Selector Selector           // 最终选择器；nil = 默认 WeightedRandomSelector
+	Picker Picker             // 最终选择器；nil = 默认 WeightedRandomPicker
 	Cooldown CooldownManager    // Report 失败时调用；nil = 不冷却
 	Stats    EndpointStatsStore // 统计读模型；nil = 不更新（Report 不写）
 }
 
-// New 构造默认 Scheduler。Selector 缺省 = WeightedRandomSelector。
+// New 构造默认 Scheduler。Selector 缺省 = WeightedRandomPicker。
 func New(cfg Config) Scheduler {
-	if cfg.Selector == nil {
-		cfg.Selector = NewWeightedRandomSelector()
+	if cfg.Picker == nil {
+		cfg.Picker = NewWeightedRandomPicker()
 	}
 	return &defaultScheduler{cfg: cfg}
 }
@@ -87,7 +87,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 	}
 
 	// 4. 用 Selector 按 EffectiveWeight 选 1 个
-	chosen := s.cfg.Selector.Select(ctx, survived)
+	chosen := s.cfg.Picker.Select(ctx, survived)
 	if chosen == nil {
 		return nil, nil
 	}

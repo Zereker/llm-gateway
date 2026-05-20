@@ -1,4 +1,4 @@
-package schedule
+package selector
 
 import (
 	"context"
@@ -13,27 +13,27 @@ import (
 //   - 全部 EffectiveWeight=0 或空 → 返回 nil（M7 abort 503）
 //
 // 实现 MUST be safe for concurrent use。
-type Selector interface {
+type Picker interface {
 	Select(ctx context.Context, candidates []Candidate) *Candidate
 }
 
-// WeightedRandomSelector 按 EffectiveWeight 概率分布选 1。
+// WeightedRandomPicker 按 EffectiveWeight 概率分布选 1。
 //
 // weight=0 → 排除（管理上的"软下线"语义）。
 // 全 0 → 返回 nil。
-type WeightedRandomSelector struct {
+type WeightedRandomPicker struct {
 	rng *rand.Rand // nil = 用 math/rand 全局
 }
 
-// NewWeightedRandomSelector 构造一个 selector。
+// NewWeightedRandomPicker 构造一个 selector。
 //
 // rng=nil 时用 math/rand 全局（thread-safe，Go 1.20+ 自动 per-goroutine seed）。
-func NewWeightedRandomSelector() *WeightedRandomSelector {
-	return &WeightedRandomSelector{}
+func NewWeightedRandomPicker() *WeightedRandomPicker {
+	return &WeightedRandomPicker{}
 }
 
 // Select 按 EffectiveWeight 加权随机选 1。
-func (s *WeightedRandomSelector) Select(_ context.Context, candidates []Candidate) *Candidate {
+func (s *WeightedRandomPicker) Select(_ context.Context, candidates []Candidate) *Candidate {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -64,7 +64,7 @@ func (s *WeightedRandomSelector) Select(_ context.Context, candidates []Candidat
 	return &live[len(live)-1]
 }
 
-func (s *WeightedRandomSelector) randFloat() float64 {
+func (s *WeightedRandomPicker) randFloat() float64 {
 	if s.rng != nil {
 		return s.rng.Float64()
 	}

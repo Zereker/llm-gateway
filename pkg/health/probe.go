@@ -31,7 +31,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
 // EndpointSource 提供"当前要 probe 的 endpoint 集合"。
@@ -49,7 +49,7 @@ type HTTPDoer interface {
 // Config Prober 装配参数。
 type Config struct {
 	Source     EndpointSource
-	Stats      schedule.EndpointStatsStore // 接收 probe 结果；写法跟 Scheduler.Report 同
+	Stats      selector.EndpointStatsStore // 接收 probe 结果；写法跟 Scheduler.Report 同
 	Client     HTTPDoer                    // nil = http.DefaultClient
 	Interval   time.Duration               // 默认 30s
 	Timeout    time.Duration               // 单次 probe 超时；默认 5s
@@ -148,7 +148,7 @@ func (p *Prober) cycle(parentCtx context.Context) {
 	wg.Wait()
 }
 
-// probeOne 单 endpoint：GET 健康端点 → 按响应填 schedule.Result → 写 stats。
+// probeOne 单 endpoint：GET 健康端点 → 按响应填 selector.Result → 写 stats。
 func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	if ep == nil {
 		return
@@ -164,23 +164,23 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		p.recordResult(ep, schedule.Result{Class: schedule.ClassPermanent, Reason: "build_request: " + err.Error(), Latency: time.Since(start)})
+		p.recordResult(ep, selector.Result{Class: selector.ClassPermanent, Reason: "build_request: " + err.Error(), Latency: time.Since(start)})
 		return
 	}
 	resp, err := p.cfg.Client.Do(req)
 	latency := time.Since(start)
 	if err != nil {
-		p.recordResult(ep, schedule.Result{Class: schedule.ClassTransient, Reason: err.Error(), Latency: latency})
+		p.recordResult(ep, selector.Result{Class: selector.ClassTransient, Reason: err.Error(), Latency: latency})
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	cls := classify(resp.StatusCode)
-	p.recordResult(ep, schedule.Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
+	p.recordResult(ep, selector.Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
 }
 
 // recordResult 写 stats + 发 metric。
-func (p *Prober) recordResult(ep *domain.Endpoint, r schedule.Result) {
+func (p *Prober) recordResult(ep *domain.Endpoint, r selector.Result) {
 	p.cfg.Stats.Record(context.Background(), ep.ID, r)
 	metric.Inc("llm_gateway_health_probe_total",
 		"endpoint_id", strconv.FormatInt(ep.ID, 10),
@@ -189,20 +189,20 @@ func (p *Prober) recordResult(ep *domain.Endpoint, r schedule.Result) {
 }
 
 // classify HTTP status → ErrorClass（跟 upstream classifyHTTPStatus 一致）。
-func classify(code int) schedule.ErrorClass {
+func classify(code int) selector.ErrorClass {
 	switch {
 	case code >= 200 && code < 300:
-		return schedule.ClassSuccess
+		return selector.ClassSuccess
 	case code == 401 || code == 403:
-		return schedule.ClassPermanent
+		return selector.ClassPermanent
 	case code == 429:
-		return schedule.ClassCapacity
+		return selector.ClassCapacity
 	case code >= 500:
-		return schedule.ClassTransient
+		return selector.ClassTransient
 	case code >= 400:
-		return schedule.ClassInvalid
+		return selector.ClassInvalid
 	default:
-		return schedule.ClassUnknown
+		return selector.ClassUnknown
 	}
 }
 

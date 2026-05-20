@@ -2,7 +2,7 @@
 #
 # 跟 configs/local/gateway.yaml 的差别：
 #   - 启用 Kafka outbox（生产形态）+ 注释保留 file driver 作回退
-#   - 显式列出所有 scheduler filter（含 limit_read 用 redis 限流计数）
+#   - 显式列出所有 selector filter（含 limit_read 用 redis 限流计数）
 #   - cooldown 按 ErrorClass 分维度配
 #   - 多 model + 多 endpoint 的典型配置（数据走 admin SQL，本文件只配运行时）
 #
@@ -67,7 +67,7 @@ moderation:
   # base_url 留空走 OpenAI 官方
   # base_url: "https://api.openai.com"
 
-scheduler:
+selector:
   # 生产推荐 filter chain：cooldown（隔离故障 ep）→ limit_read（read-only 避开已限流 ep）
   #                       → weighted_random（按权重抽样）。
   # weighted_random 必须放最后（其它 filter 是 prune；它是 select）。

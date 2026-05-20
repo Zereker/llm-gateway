@@ -40,15 +40,15 @@ data:
         dlq_topic: {{ $cfg.usage_events.kafka.dlq_topic | quote }}
         {{- end }}
       {{- end }}
-    scheduler:
-      filters: {{ $cfg.scheduler.filters | toJson }}
-      max_attempts: {{ $cfg.scheduler.max_attempts }}
+    selector:
+      filters: {{ $cfg.selector.filters | toJson }}
+      max_attempts: {{ $cfg.selector.max_attempts }}
       cooldown:
-        transient: {{ $cfg.scheduler.cooldown.transient }}
-        capacity: {{ $cfg.scheduler.cooldown.capacity }}
-        permanent: {{ $cfg.scheduler.cooldown.permanent }}
-        invalid: {{ $cfg.scheduler.cooldown.invalid }}
-        unknown: {{ $cfg.scheduler.cooldown.unknown }}
+        transient: {{ $cfg.selector.cooldown.transient }}
+        capacity: {{ $cfg.selector.cooldown.capacity }}
+        permanent: {{ $cfg.selector.cooldown.permanent }}
+        invalid: {{ $cfg.selector.cooldown.invalid }}
+        unknown: {{ $cfg.selector.cooldown.unknown }}
     budget:
       driver: {{ $cfg.budget.driver | quote }}
     moderation:

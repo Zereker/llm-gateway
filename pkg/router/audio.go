@@ -48,13 +48,7 @@ func registerAudioRoutes(engine *gin.Engine, deps Deps) {
 				middleware.WithLimitStore(deps.RateLimitStore),
 				middleware.WithLimitPolicies(deps.QuotaPolicies),
 			),
-			middleware.Schedule(
-				middleware.WithEndpointReader(deps.EndpointReader),
-				middleware.WithScheduler(deps.Scheduler),
-				middleware.WithSender(deps.Sender),
-				middleware.WithEndpointRateStore(deps.RateLimitStore),
-				middleware.WithMaxAttempts(deps.MaxAttempts),
-			),
+			middleware.Schedule(deps.Dispatcher),
 			middleware.Tracing(
 				middleware.WithUsageOutbox(deps.UsageOutbox),
 				middleware.WithTracer(deps.AuditTracer),

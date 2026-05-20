@@ -1,4 +1,4 @@
-package upstream
+package invoker
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/schedule"
+	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
@@ -162,7 +162,7 @@ func TestSend_NoFactory(t *testing.T) {
 	ep := &domain.Endpoint{ID: 1, Vendor: "noone"}
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
-	if err != nil || out.Class != schedule.ClassPermanent {
+	if err != nil || out.Class != selector.ClassPermanent {
 		t.Fatalf("want Permanent / nil err; got class=%v err=%v", out.Class, err)
 	}
 	if out.Response != nil {
@@ -178,7 +178,7 @@ func TestSend_NoTranslator(t *testing.T) {
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
-	if err != nil || out.Class != schedule.ClassPermanent {
+	if err != nil || out.Class != selector.ClassPermanent {
 		t.Fatalf("want Permanent / nil err; got class=%v err=%v", out.Class, err)
 	}
 	if !strings.Contains(out.Reason, "no translator") {
@@ -199,7 +199,7 @@ func TestSend_TranslateRequestError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("want non-nil err to flag invalid request")
 	}
-	if out.Class != schedule.ClassInvalid {
+	if out.Class != selector.ClassInvalid {
 		t.Fatalf("want Invalid; got %v", out.Class)
 	}
 }
@@ -220,7 +220,7 @@ func TestSend_5xxClassifiedTransient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if out.Class != schedule.ClassTransient {
+	if out.Class != selector.ClassTransient {
 		t.Fatalf("want Transient; got %v", out.Class)
 	}
 	if out.Response != nil {
@@ -250,7 +250,7 @@ func TestSend_ClassifierRefinesTo429AsCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if out.Class != schedule.ClassPermanent {
+	if out.Class != selector.ClassPermanent {
 		t.Fatalf("want Permanent (classifier override); got %v", out.Class)
 	}
 }
@@ -265,7 +265,7 @@ func TestSend_NetworkError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err should be nil for transport-level fail; got %v", err)
 	}
-	if out.Class != schedule.ClassTransient {
+	if out.Class != selector.ClassTransient {
 		t.Fatalf("want Transient; got %v", out.Class)
 	}
 }
@@ -376,18 +376,18 @@ func TestForward_StripsContentLength(t *testing.T) {
 func TestClassifyHTTPStatus(t *testing.T) {
 	cases := []struct {
 		code int
-		want schedule.ErrorClass
+		want selector.ErrorClass
 	}{
-		{200, schedule.ClassSuccess},
-		{299, schedule.ClassSuccess},
-		{401, schedule.ClassPermanent},
-		{403, schedule.ClassPermanent},
-		{429, schedule.ClassCapacity},
-		{500, schedule.ClassTransient},
-		{503, schedule.ClassTransient},
-		{400, schedule.ClassInvalid},
-		{404, schedule.ClassInvalid},
-		{100, schedule.ClassUnknown},
+		{200, selector.ClassSuccess},
+		{299, selector.ClassSuccess},
+		{401, selector.ClassPermanent},
+		{403, selector.ClassPermanent},
+		{429, selector.ClassCapacity},
+		{500, selector.ClassTransient},
+		{503, selector.ClassTransient},
+		{400, selector.ClassInvalid},
+		{404, selector.ClassInvalid},
+		{100, selector.ClassUnknown},
 	}
 	for _, tc := range cases {
 		if got := classifyHTTPStatus(tc.code); got != tc.want {
@@ -484,7 +484,7 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 	}
 
 	// AttemptComplete 触发一次（success）
-	if len(hook.completes) != 1 || hook.completes[0].Class != schedule.ClassSuccess {
+	if len(hook.completes) != 1 || hook.completes[0].Class != selector.ClassSuccess {
 		t.Fatalf("AttemptComplete got %v", hook.completes)
 	}
 	if hook.completedEPs[0] != 7 {
@@ -514,10 +514,10 @@ func TestHooks_AttemptCompleteFiredOnFailure(t *testing.T) {
 		t.Fatalf("UpstreamRequest must not fire when factory missing; got %d", len(hook.upstreamReq))
 	}
 	// AttemptComplete：失败路径必须触发，且 outcome 是 Permanent
-	if len(hook.completes) != 1 || hook.completes[0].Class != schedule.ClassPermanent {
+	if len(hook.completes) != 1 || hook.completes[0].Class != selector.ClassPermanent {
 		t.Fatalf("AttemptComplete on failure: %v", hook.completes)
 	}
-	if out.Class != schedule.ClassPermanent {
+	if out.Class != selector.ClassPermanent {
 		t.Fatalf("expected Permanent outcome")
 	}
 }

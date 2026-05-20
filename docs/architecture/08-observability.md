@@ -55,10 +55,10 @@
 |------|------|--------|------|
 | `llm_gateway_http_requests_total` | counter | `method`, `route`, `status`, `error_class` | HTTP 请求总量 |
 | `llm_gateway_http_request_duration_seconds` | histogram | `method`, `route`, `status`, `model`, `routed_model` | 网关端到端延迟 |
-| `llm_gateway_upstream_requests_total` | counter | `vendor`, `endpoint_id`, `model`, `native_protocol`, `result`, `error_class` | 上游请求总量 |
-| `llm_gateway_upstream_duration_seconds` | histogram | `vendor`, `endpoint_id`, `model`, `result`, `error_class` | 上游调用延迟 |
-| `llm_gateway_scheduler_attempts_total` | counter | `model`, `routed_model`, `vendor`, `endpoint_id`, `attempt_role`, `result`, `error_class` | endpoint attempt 统计 |
-| `llm_gateway_scheduler_candidates` | histogram | `model`, `stage` | 候选数量，stage 为 list/eligible/cooldown/quota |
+| `llm_gateway_invoker_requests_total` | counter | `vendor`, `endpoint_id`, `model`, `native_protocol`, `result`, `error_class` | 上游请求总量 |
+| `llm_gateway_invoker_duration_seconds` | histogram | `vendor`, `endpoint_id`, `model`, `result`, `error_class` | 上游调用延迟 |
+| `llm_gateway_selector_attempts_total` | counter | `model`, `routed_model`, `vendor`, `endpoint_id`, `attempt_role`, `result`, `error_class` | endpoint attempt 统计 |
+| `llm_gateway_selector_candidates` | histogram | `model`, `stage` | 候选数量，stage 为 list/eligible/cooldown/quota |
 | `llm_gateway_scheduling_duration_seconds` | histogram | `model`, `attempts` | 调度 filter / pick / report 总耗时 |
 | `llm_gateway_eligibility_duration_seconds` | histogram | `model` | 资格过滤耗时 |
 | `llm_gateway_ratelimit_decisions_total` | counter | `scope`, `dimension`, `result` | 用户侧和 endpoint 侧限流判断 |
@@ -148,7 +148,7 @@ gateway.request                     (M1, span name = "POST /v1/chat/completions"
   moderation.check                   (M8, optional)
   ratelimit.reserve                  (M6 pre-side)
   schedule.pick                      (M7)
-    upstream.call                    (pkg/upstream)
+    upstream.call                    (pkg/invoker)
     usage.extract                    (translator 内)
   ratelimit.charge_tpm               (M6 post-side, 跑在 c.Next() 之后)
   tracing.commit                     (M10)
