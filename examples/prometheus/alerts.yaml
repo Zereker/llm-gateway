@@ -32,9 +32,9 @@ groups:
 
       - alert: AiGatewayUpstreamCallFailing
         expr: |
-          sum(rate(llm_gateway_scheduler_endpoint_call_total{outcome="fail"}[2m]))
+          sum(rate(llm_gateway_selector_endpoint_call_total{outcome="fail"}[2m]))
             /
-          sum(rate(llm_gateway_scheduler_endpoint_call_total[2m]))
+          sum(rate(llm_gateway_selector_endpoint_call_total[2m]))
             > 0.30
         for: 3m
         labels:
@@ -109,7 +109,7 @@ groups:
     rules:
 
       - alert: AiGatewayCooldownStorm
-        expr: sum(rate(llm_gateway_scheduler_cooldown_enter_total[5m])) > 5
+        expr: sum(rate(llm_gateway_selector_cooldown_enter_total[5m])) > 5
         for: 5m
         labels:
           severity: warning

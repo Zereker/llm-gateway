@@ -34,7 +34,7 @@ budget:
 moderation:
   driver: none
 
-scheduler:
+selector:
   filters: [cooldown, limit_read, weighted_random]
   cooldown:
     transient: 30s

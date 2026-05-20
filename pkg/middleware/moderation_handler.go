@@ -50,16 +50,24 @@ func moderatorFromCtx(ctx context.Context) Moderator {
 	return v
 }
 
-// wrapWithModerator 用 moderatedResponseHandler 包装 inner handler。
+// WrapWithModerator 用 moderatedResponseHandler 包装 inner handler。
 //
 // ctx 为 nil 或 ctx 里没 moderator → 返回 inner 不动（避免 wrap 开销）。
-// 这是给 M7 schedule.go 用的入口。
-func wrapWithModerator(inner translator.ResponseHandler, ctx context.Context) translator.ResponseHandler {
+// 给 M7 + cmd/gateway invoker adapter 用——M8 通过 withModerator 把 Moderator
+// 塞进 ctx，调用方在构造 ResponseHandler 后 wrap 一次即可。
+func WrapWithModerator(inner translator.ResponseHandler, ctx context.Context) translator.ResponseHandler {
 	mod := moderatorFromCtx(ctx)
 	if mod == nil {
 		return inner
 	}
 	return &moderatedResponseHandler{inner: inner, mod: mod, ctx: ctx}
+}
+
+// wrapWithModerator 旧名（保留 unexported alias，待 PR3 清理）。
+//
+// 仅 pkg/middleware 内部 + 既有测试用。新代码统一走 WrapWithModerator。
+func wrapWithModerator(inner translator.ResponseHandler, ctx context.Context) translator.ResponseHandler {
+	return WrapWithModerator(inner, ctx)
 }
 
 // moderatedResponseHandler 装饰器：在 translator inner Feed 之后插入 Moderator.CheckOutput。

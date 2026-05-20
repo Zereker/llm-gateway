@@ -1,4 +1,4 @@
-package schedule
+package selector
 
 import (
 	"context"
@@ -36,10 +36,10 @@ func (s *stubFilter) Apply(_ context.Context, candidates []*domain.Endpoint, _ *
 	return out
 }
 
-// stubSelector 永远返回第一个候选。
-type stubSelector struct{}
+// stubPicker 永远返回第一个候选。
+type stubPicker struct{}
 
-func (stubSelector) Select(_ context.Context, cs []Candidate) *Candidate {
+func (stubPicker) Select(_ context.Context, cs []Candidate) *Candidate {
 	if len(cs) == 0 {
 		return nil
 	}
@@ -134,7 +134,7 @@ func TestErrorClass_IsRetryable(t *testing.T) {
 // =============================================================================
 
 func TestPick_NilRequest_Error(t *testing.T) {
-	s := New(Config{Selector: stubSelector{}})
+	s := New(Config{Picker: stubPicker{}})
 	_, err := s.Pick(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected err")
@@ -142,7 +142,7 @@ func TestPick_NilRequest_Error(t *testing.T) {
 }
 
 func TestPick_NoCandidates_Nil(t *testing.T) {
-	s := New(Config{Selector: stubSelector{}})
+	s := New(Config{Picker: stubPicker{}})
 	got, err := s.Pick(context.Background(), &Request{Model: "x"})
 	if err != nil || got != nil {
 		t.Errorf("got=%v err=%v", got, err)
@@ -150,7 +150,7 @@ func TestPick_NoCandidates_Nil(t *testing.T) {
 }
 
 func TestPick_HappyPath_ReturnsCandidate(t *testing.T) {
-	s := New(Config{Selector: stubSelector{}})
+	s := New(Config{Picker: stubPicker{}})
 	got, err := s.Pick(context.Background(), &Request{
 		Model:      "x",
 		Candidates: candidates(ep(1, 100), ep(2, 100)),
@@ -164,7 +164,7 @@ func TestPick_HappyPath_ReturnsCandidate(t *testing.T) {
 }
 
 func TestPick_ExcludesAlreadyTried(t *testing.T) {
-	s := New(Config{Selector: stubSelector{}})
+	s := New(Config{Picker: stubPicker{}})
 	excluded := map[int64]struct{}{1: {}}
 	got, _ := s.Pick(context.Background(), &Request{
 		Candidates: candidates(ep(1, 100), ep(2, 100)),
@@ -177,7 +177,7 @@ func TestPick_ExcludesAlreadyTried(t *testing.T) {
 
 func TestPick_FilterChainNarrows(t *testing.T) {
 	f := &stubFilter{name: "f1", excludeIDs: map[int64]bool{1: true}}
-	s := New(Config{Filters: []Filter{f}, Selector: stubSelector{}})
+	s := New(Config{Filters: []Filter{f}, Picker: stubPicker{}})
 	got, _ := s.Pick(context.Background(), &Request{
 		Candidates: candidates(ep(1, 100), ep(2, 100), ep(3, 100)),
 	})
@@ -191,7 +191,7 @@ func TestPick_FilterChainNarrows(t *testing.T) {
 
 func TestPick_AllFiltered_Nil(t *testing.T) {
 	f := &stubFilter{name: "f1", excludeIDs: map[int64]bool{1: true, 2: true}}
-	s := New(Config{Filters: []Filter{f}, Selector: stubSelector{}})
+	s := New(Config{Filters: []Filter{f}, Picker: stubPicker{}})
 	got, _ := s.Pick(context.Background(), &Request{
 		Candidates: candidates(ep(1, 100), ep(2, 100)),
 	})
@@ -206,7 +206,7 @@ func TestPick_AllFiltered_Nil(t *testing.T) {
 
 func TestReport_NilEp_NoOp(t *testing.T) {
 	cd := &stubCooldown{}
-	s := New(Config{Cooldown: cd, Selector: stubSelector{}})
+	s := New(Config{Cooldown: cd, Picker: stubPicker{}})
 	s.Report(context.Background(), nil, Result{Class: ClassTransient}) // 不应 panic
 	if len(cd.marks) != 0 {
 		t.Errorf("nil ep should be no-op")
@@ -215,7 +215,7 @@ func TestReport_NilEp_NoOp(t *testing.T) {
 
 func TestReport_Success_NoCooldown(t *testing.T) {
 	cd := &stubCooldown{}
-	s := New(Config{Cooldown: cd, Selector: stubSelector{}})
+	s := New(Config{Cooldown: cd, Picker: stubPicker{}})
 	s.Report(context.Background(), ep(1, 100), Result{Class: ClassSuccess})
 	if len(cd.marks) != 0 {
 		t.Errorf("Success should not Mark")
@@ -224,7 +224,7 @@ func TestReport_Success_NoCooldown(t *testing.T) {
 
 func TestReport_Invalid_NoCooldown(t *testing.T) {
 	cd := &stubCooldown{}
-	s := New(Config{Cooldown: cd, Selector: stubSelector{}})
+	s := New(Config{Cooldown: cd, Picker: stubPicker{}})
 	s.Report(context.Background(), ep(1, 100), Result{Class: ClassInvalid})
 	if len(cd.marks) != 0 {
 		t.Errorf("Invalid should not Mark")
@@ -233,7 +233,7 @@ func TestReport_Invalid_NoCooldown(t *testing.T) {
 
 func TestReport_Capacity_TriggersCooldown(t *testing.T) {
 	cd := &stubCooldown{}
-	s := New(Config{Cooldown: cd, Selector: stubSelector{}})
+	s := New(Config{Cooldown: cd, Picker: stubPicker{}})
 	s.Report(context.Background(), ep(1, 100), Result{Class: ClassCapacity})
 	if len(cd.marks) != 1 || cd.marks[0].Class != ClassCapacity {
 		t.Errorf("expected Mark capacity, got %+v", cd.marks)
@@ -243,7 +243,7 @@ func TestReport_Capacity_TriggersCooldown(t *testing.T) {
 func TestReport_Unknown_NoCooldown(t *testing.T) {
 	// docs/03 §6：Unknown 可重试但分类不明确——Scheduler.Report 默认不冷却，避免误伤
 	cd := &stubCooldown{}
-	s := New(Config{Cooldown: cd, Selector: stubSelector{}})
+	s := New(Config{Cooldown: cd, Picker: stubPicker{}})
 	s.Report(context.Background(), ep(1, 100), Result{Class: ClassUnknown})
 	if len(cd.marks) != 0 {
 		t.Errorf("Unknown should not trigger cooldown (could be transient noise), got %+v", cd.marks)
@@ -270,7 +270,7 @@ func (s *recordingStats) Snapshot(_ context.Context, _ int64) EndpointStats {
 
 func TestReport_Stats_RecordsResult(t *testing.T) {
 	st := &recordingStats{}
-	s := New(Config{Stats: st, Selector: stubSelector{}})
+	s := New(Config{Stats: st, Picker: stubPicker{}})
 	s.Report(context.Background(), ep(1, 100), Result{Class: ClassSuccess})
 	if len(st.records) != 1 {
 		t.Errorf("expected 1 record, got %d", len(st.records))
@@ -286,7 +286,7 @@ func TestPick_ScorerAdjustsWeights(t *testing.T) {
 	// 5 个样本之后 scorer 应该开始打分
 	scorer := NewDefaultScorer(store, 5, 200)
 
-	s := New(Config{Scorer: scorer, Selector: stubSelector{}})
+	s := New(Config{Scorer: scorer, Picker: stubPicker{}})
 	got, _ := s.Pick(context.Background(), &Request{
 		Candidates: candidates(ep(1, 100)),
 	})

@@ -2,13 +2,13 @@ package router
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/schedule"
-	"github.com/zereker/llm-gateway/pkg/upstream"
 )
 
 // stubIdentity 永远拒（router 这层只关心路由 + middleware 链是否注册，
@@ -43,24 +43,34 @@ func (stubSubscriptions) HasModel(_ context.Context, _ string, _ int64) (bool, e
 	return false, nil
 }
 
-// stubEPProvider for tests.
-type stubEPProvider struct{ ep *domain.Endpoint }
+// panicSelector / panicInvokerFactory：M7 永远跑不到（M2 Auth 已 401 短路），
+// 用 panic 保护——一旦被调说明测试预期错了。
+type panicSelector struct{}
 
-func (s stubEPProvider) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
-	if s.ep == nil {
-		return nil, nil
-	}
-	return []*domain.Endpoint{s.ep}, nil
+func (panicSelector) Select(_ context.Context, _ dispatch.Query) (*domain.Endpoint, error) {
+	panic("router test: Selector.Select should not be reached (M2 Auth must reject first)")
 }
-func (s stubEPProvider) PickForModel(_ context.Context, _, _ string) (*domain.Endpoint, error) {
-	return s.ep, nil
+
+type panicInvokerFactory struct{}
+
+func (panicInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte) dispatch.Invoker {
+	panic("router test: InvokerFactory.For should not be reached")
 }
-func (s stubEPProvider) GetByID(_ context.Context, _ int64) (*domain.Endpoint, error) {
-	return s.ep, nil
+
+type panicInvoker struct{}
+
+func (panicInvoker) Invoke(_ context.Context) (dispatch.Result, error) {
+	panic("router test: Invoker.Invoke should not be reached")
 }
-func (s stubEPProvider) List(_ context.Context) ([]*domain.Endpoint, error) {
-	return []*domain.Endpoint{s.ep}, nil
+
+type panicResult struct{}
+
+func (panicResult) Verdict() dispatch.Verdict      { panic("not reached") }
+func (panicResult) Endpoint() *domain.Endpoint     { panic("not reached") }
+func (panicResult) StreamTo(context.Context, http.ResponseWriter) dispatch.StreamReport {
+	panic("not reached")
 }
+func (panicResult) Close() error { return nil }
 
 func minDeps() Deps {
 	return Deps{
@@ -69,11 +79,14 @@ func minDeps() Deps {
 		// M5
 		ModelCatalog:        stubMSProvider{},
 		SubscriptionChecker: stubSubscriptions{},
-		// M7
-		EndpointReader: stubEPProvider{},
-		Scheduler:      schedule.New(schedule.Config{}),
-		Sender:         upstream.New(),
-		MaxAttempts:    3,
+		// M7 (dispatcher：M2 Auth 之后才会触发，本测试在 401 前短路)
+		Dispatcher: dispatch.New(
+			dispatch.WithSelector(panicSelector{}),
+			dispatch.WithInvokerFactory(panicInvokerFactory{}),
+			dispatch.WithCap(dispatch.HeaderAttemptCap{Default: 3}),
+			dispatch.WithRetry(dispatch.DefaultRetry{}),
+			dispatch.WithFallback(dispatch.ModelChainFallback{}),
+		),
 		// M4 / M6 / M8 / M10 留空：各 middleware 在 nil/empty 时走 no-op pass-through
 	}
 }

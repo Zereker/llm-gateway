@@ -10,6 +10,7 @@
 | 01 | [request-pipeline](01-request-pipeline.md) | `domain.RequestContext` 与 middleware 链路 |
 | 02 | [protocol-translation](02-protocol-translation.md) | slim adapter、translator、上游转发边界 |
 | 03 | [endpoint-scheduling](03-endpoint-scheduling.md) | endpoint 候选、批内选择、显式 fallback、runtime scoring |
+| 03a | [schedule-overview](03a-schedule-overview.md) | schedule 模块速查 / 上手伴读（数据流、各包职责、装配点） |
 | 04 | [rate-limiting](04-rate-limiting.md) | 用户侧 RPM/RPS 前扣、TPM 后扣、endpoint quota |
 | 05 | [metering-billing](05-metering-billing.md) | 内容记录、Usage Event、Metrics / Trace、下游计费边界 |
 | 06 | [pluggable-infra](06-pluggable-infra.md) | DB、Redis、Kafka、OTel、预算和审核的注入点 |
