@@ -53,7 +53,7 @@ func (panicSelector) Select(_ context.Context, _ dispatch.Query) (*domain.Endpoi
 
 type panicInvokerFactory struct{}
 
-func (panicInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte) dispatch.Invoker {
+func (panicInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte, _ dispatch.Lookups) dispatch.Invoker {
 	panic("router test: InvokerFactory.For should not be reached")
 }
 

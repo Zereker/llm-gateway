@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/selector"
@@ -19,24 +20,31 @@ import (
 // Send 调一次上游，不做 retry / cooldown / 选路。
 //
 // 流程：
-//  1. lookup 取 adapter.Factory + translator.Find
-//  2. translator.TranslateRequest（同协议 identity 透传）
-//  3. factory.NewSession + sess.BuildRequest
-//  4. fan-out OnRequest hook（拿到上游 request body）
-//  5. client.Do
-//  6. 按 HTTP status + Adapter Classifier 分类，填 Outcome
-//  7. defer fan-out OnAttemptComplete hook（成功 / 失败都触发）
+//  1. adapters.Get(vendor) 取 adapter.Factory
+//  2. translators.Find(src, tgt) 取 translator.Translator
+//  3. translator.TranslateRequest（同协议 identity 透传）
+//  4. factory.NewSession + sess.BuildRequest
+//  5. fan-out OnRequest hook（拿到上游 request body）
+//  6. client.Do
+//  7. 按 HTTP status + Adapter Classifier 分类，填 Outcome
+//  8. defer fan-out OnAttemptComplete hook（成功 / 失败都触发）
 //
 // 任意步骤失败 → Outcome.Class != ClassSuccess + Response==nil（资源已 close）。
 // 成功 → Response.Body 交给 caller 自行 forward + close（Sender.Forward 会 defer Close）。
 //
 // **特殊**：translator.TranslateRequest 失败返 (Outcome{Class:ClassInvalid}, ErrInvalidRequest)，
 // caller 应直接 abort 400（不重试）。
+//
+// **lookup 入参**：请求级注入，由 caller（通常是 dispatch_wiring 的 invokerAdapter）
+// 从 rc 取出（dispatch.AdaptersFrom / TranslatorsFrom）。nil 时退化为 nil-safe
+// 行为：lookup 调用返回零值 → Send 走"vendor 未注册 / translator 未注册"分支。
 func (s *Sender) Send(
 	ctx context.Context,
 	ep *domain.Endpoint,
 	env *domain.RequestEnvelope,
 	srcBody []byte,
+	adapters dispatch.AdapterLookup,
+	translators dispatch.TranslatorLookup,
 ) (out Outcome, retErr error) {
 	start := time.Now()
 
@@ -53,7 +61,10 @@ func (s *Sender) Send(
 	// 这是网关接收到的原始字节——审计 / 合规观察这里就够了。
 	s.hooks.fireClientRequest(ctx, ep, srcBody)
 
-	factory := s.lookup.Get(ep.Vendor)
+	var factory adapter.Factory
+	if adapters != nil {
+		factory = adapters.Get(ep.Vendor)
+	}
 	if factory == nil {
 		out = Outcome{
 			Class:   selector.ClassPermanent,
@@ -65,7 +76,10 @@ func (s *Sender) Send(
 
 	tgtProto := factory.Metadata().NativeProtocol
 	srcProto := env.SourceProtocol
-	trans := translator.Find(srcProto, tgtProto)
+	var trans translator.Translator
+	if translators != nil {
+		trans = translators.Find(srcProto, tgtProto)
+	}
 	if trans == nil {
 		out = Outcome{
 			Class:   selector.ClassPermanent,

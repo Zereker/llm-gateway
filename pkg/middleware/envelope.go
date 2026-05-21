@@ -8,6 +8,7 @@ import (
 	"github.com/tidwall/gjson"
 	"go.opentelemetry.io/otel"
 
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -82,6 +83,16 @@ func Envelope() gin.HandlerFunc {
 
 		rc.Envelope.RawBytes = raw
 		rc.Envelope.Model = model
+
+		// 请求级 lookup 默认值：全局 registry 包装一层。后续 middleware（如自定义
+		// 多租户 / 灰度策略）可覆盖 rc.Adapters / rc.Translators。
+		if rc.Adapters == nil {
+			rc.Adapters = dispatch.DefaultAdapters{}
+		}
+		if rc.Translators == nil {
+			rc.Translators = dispatch.DefaultTranslators{}
+		}
+
 		c.Next()
 	}
 }

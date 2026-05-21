@@ -111,7 +111,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		return d.fallback.OnExhausted(s)
 	}
 
-	inv := d.invokerFactory.For(ep, s.Envelope(), s.Body())
+	inv := d.invokerFactory.For(ep, s.Envelope(), s.Body(), s.Lookups())
 	res, ierr := inv.Invoke(ctx)
 	if ierr != nil {
 		return Abort{

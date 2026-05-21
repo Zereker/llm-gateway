@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/translator"
@@ -20,9 +21,22 @@ import (
 // =============================================================================
 
 // stubLookup 直接返回固定 factory（避开全局 registry）。
+// 同时满足 dispatch.AdapterLookup（签名一致）。
 type stubLookup struct{ f adapter.Factory }
 
 func (s stubLookup) Get(string) adapter.Factory { return s.f }
+
+// testSender 把 Send 调用所需的请求级 AdapterLookup 提前固化，避免每个
+// 测试都重复写 6 参数。translator 用 dispatch.DefaultTranslators 落到测试已
+// translator.Register 过的全局 registry。
+type testSender struct {
+	*Sender
+	adapters dispatch.AdapterLookup
+}
+
+func (ts *testSender) Send(ctx context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte) (Outcome, error) {
+	return ts.Sender.Send(ctx, ep, env, body, ts.adapters, dispatch.DefaultTranslators{})
+}
 
 type fakeFactory struct {
 	meta       adapter.Metadata
@@ -117,9 +131,9 @@ func registerOpenAITranslator(t *testing.T, tr translator.Translator) {
 	t.Cleanup(translator.Reset)
 }
 
-func newSender(t *testing.T, factory adapter.Factory) *Sender {
+func newSender(t *testing.T, factory adapter.Factory, opts ...Option) *testSender {
 	t.Helper()
-	return New(WithFactoryLookup(stubLookup{f: factory}))
+	return &testSender{Sender: New(opts...), adapters: stubLookup{f: factory}}
 }
 
 // =============================================================================
@@ -158,7 +172,7 @@ func TestSend_Success(t *testing.T) {
 func TestSend_NoFactory(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 
-	sender := New(WithFactoryLookup(stubLookup{f: nil}))
+	sender := newSender(t, nil)
 	ep := &domain.Endpoint{ID: 1, Vendor: "noone"}
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
@@ -292,8 +306,8 @@ func TestSend_WithCustomHTTPDoer(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
 		},
 	}
-	sender := New(
-		WithFactoryLookup(stubLookup{f: &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}}}),
+	sender := newSender(t,
+		&fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}},
 		WithHTTPClient(doer),
 	)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
@@ -437,8 +451,8 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 
 	hook := &recordingHook{}
-	sender := New(
-		WithFactoryLookup(stubLookup{f: &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}}}),
+	sender := newSender(t,
+		&fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}},
 		WithHooks(hook),
 	)
 	ep := &domain.Endpoint{ID: 7, Vendor: "fakev"}
@@ -497,10 +511,7 @@ func TestHooks_AttemptCompleteFiredOnFailure(t *testing.T) {
 
 	hook := &recordingHook{}
 	// 让 factory 返 nil 触发 Permanent 失败路径
-	sender := New(
-		WithFactoryLookup(stubLookup{f: nil}),
-		WithHooks(hook),
-	)
+	sender := newSender(t, nil, WithHooks(hook))
 	ep := &domain.Endpoint{ID: 8, Vendor: "missing"}
 
 	out, _ := sender.Send(context.Background(), ep, newEnv(), []byte("body"))
@@ -533,10 +544,8 @@ func TestHooks_PartialInterfaceIsAllowed(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 
 	partial := &onlyClientReqHook{}
-	sender := New(
-		WithFactoryLookup(stubLookup{f: nil}), // factory 缺失走 Permanent 路径
-		WithHooks(partial),
-	)
+	// factory 缺失走 Permanent 路径
+	sender := newSender(t, nil, WithHooks(partial))
 	ep := &domain.Endpoint{ID: 9}
 	_, _ = sender.Send(context.Background(), ep, newEnv(), []byte("x"))
 
@@ -555,10 +564,7 @@ func TestHooks_MultipleHooksFireInOrder(t *testing.T) {
 		})
 	}
 
-	sender := New(
-		WithFactoryLookup(stubLookup{f: nil}),
-		WithHooks(mk("a"), mk("b"), mk("c")),
-	)
+	sender := newSender(t, nil, WithHooks(mk("a"), mk("b"), mk("c")))
 	_, _ = sender.Send(context.Background(), &domain.Endpoint{ID: 1}, newEnv(), []byte("x"))
 
 	if got := strings.Join(order, ","); got != "a,b,c" {

@@ -107,6 +107,7 @@ func (s *state) Query() Query {
 		Envelope: s.rc.Envelope,
 		Identity: s.rc.Identity,
 		Exclude:  s.excluded,
+		Lookups:  LookupsFrom(s.rc),
 	}
 }
 
@@ -120,6 +121,11 @@ func (s *state) Body() []byte {
 	}
 	return s.rc.Envelope.RawBytes
 }
+
+// Lookups 给 InvokerFactory.For 用——从 rc 取的请求级 adapter / translator
+// 查询端口（M3 默认填 DefaultAdapters / DefaultTranslators，可被后续 middleware
+// 覆盖）。
+func (s *state) Lookups() Lookups { return LookupsFrom(s.rc) }
 
 // Record 记一次 attempt：attempts++ / excluded / lastVerdict / decisions append。
 // Outcome 字段先填 Unknown，finalize 阶段按终态修正。
