@@ -33,7 +33,7 @@ type RequestContext struct {
 	//
 	// 类型 = protocol.Lookup（用 any 是为了避 pkg/domain → pkg/dispatch →
 	// pkg/protocol → pkg/adapter → pkg/domain 循环依赖）。访问走
-	// dispatch.HandlersFrom(rc) 类型安全 helper，不要直接 type-assert。
+	// middleware.HandlersFrom(rc) 类型安全 helper，不要直接 type-assert。
 	//
 	// **v0.6 融合**：原 v0.5 把 adapter / translator 两个独立 lookup 挂在 RC 上
 	// （rc.Adapters + rc.Translators），消费侧两次查找；v0.6 融合成单一

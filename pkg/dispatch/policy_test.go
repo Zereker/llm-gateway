@@ -41,8 +41,8 @@ func TestDefaultRetry_Decide(t *testing.T) {
 // =============================================================================
 
 func TestModelChainFallback_OnExhausted_HasNext(t *testing.T) {
-	rc := newTestRC("gpt-4", "gpt-3.5", "gpt-3")
-	s := newState(rc, 3)
+	in := newTestInput("gpt-4", "gpt-3.5", "gpt-3")
+	s := newState(in, 3)
 	// 当前在 idx=0；remaining = [gpt-3.5, gpt-3]
 	got := ModelChainFallback{}.OnExhausted(s)
 	sw, ok := got.(Switch)
@@ -55,8 +55,8 @@ func TestModelChainFallback_OnExhausted_HasNext(t *testing.T) {
 }
 
 func TestModelChainFallback_OnExhausted_NoMore(t *testing.T) {
-	rc := newTestRC("gpt-4")
-	s := newState(rc, 3)
+	in := newTestInput("gpt-4")
+	s := newState(in, 3)
 	got := ModelChainFallback{}.OnExhausted(s)
 	ab, ok := got.(Abort)
 	if !ok {
@@ -73,10 +73,10 @@ func TestModelChainFallback_OnExhausted_NoMore(t *testing.T) {
 
 func TestHeaderAttemptCap_Resolve(t *testing.T) {
 	tests := []struct {
-		name    string
-		def     int
-		hdr     string
-		want    int
+		name string
+		def  int
+		hdr  string
+		want int
 	}{
 		{"default only", 3, "", 3},
 		{"header tighter wins", 3, "1", 1},
@@ -89,11 +89,8 @@ func TestHeaderAttemptCap_Resolve(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rc := &domain.RequestContext{Extras: map[string]any{}}
-			if tc.hdr != "" {
-				rc.Extras[HeaderKey] = tc.hdr
-			}
-			got := HeaderAttemptCap{Default: tc.def}.Resolve(rc)
+			in := Input{AttemptCapOverride: tc.hdr}
+			got := HeaderAttemptCap{Default: tc.def}.Resolve(in)
 			if got != tc.want {
 				t.Fatalf("Resolve(def=%d hdr=%q) = %d, want %d", tc.def, tc.hdr, got, tc.want)
 			}
@@ -101,10 +98,10 @@ func TestHeaderAttemptCap_Resolve(t *testing.T) {
 	}
 }
 
-func TestHeaderAttemptCap_NilRequest(t *testing.T) {
-	got := HeaderAttemptCap{Default: 5}.Resolve(nil)
+func TestHeaderAttemptCap_ZeroInput(t *testing.T) {
+	got := HeaderAttemptCap{Default: 5}.Resolve(Input{})
 	if got != 5 {
-		t.Fatalf("Resolve(nil) = %d, want 5", got)
+		t.Fatalf("Resolve(Input{}) = %d, want 5", got)
 	}
 }
 
@@ -113,17 +110,17 @@ func TestHeaderAttemptCap_NilRequest(t *testing.T) {
 // =============================================================================
 
 func TestState_FinalizeStreamedFillsLastAsSuccess(t *testing.T) {
-	rc := newTestRC("gpt-4")
-	s := newState(rc, 3)
+	in := newTestInput("gpt-4")
+	s := newState(in, 3)
 
 	s.Record(newTestEP(1), Verdict{Class: ClassTransient, Latency: time.Millisecond})
 	s.Record(newTestEP(2), Verdict{Class: ClassSuccess, Latency: time.Millisecond})
 	s.ApplyStream(StreamReport{Usage: &domain.Usage{Total: 1}})
 
-	if rc.SchedulingDecision == nil {
+	if s.Outcome().Decision == nil {
 		t.Fatalf("SchedulingDecision missing")
 	}
-	atts := rc.SchedulingDecision.Attempts
+	atts := s.Outcome().Decision.Attempts
 	if len(atts) != 2 {
 		t.Fatalf("want 2 attempts, got %d", len(atts))
 	}
@@ -136,14 +133,14 @@ func TestState_FinalizeStreamedFillsLastAsSuccess(t *testing.T) {
 }
 
 func TestState_FinalizeAbortFillsLastAsFail(t *testing.T) {
-	rc := newTestRC("gpt-4")
-	s := newState(rc, 3)
+	in := newTestInput("gpt-4")
+	s := newState(in, 3)
 
 	s.Record(newTestEP(1), Verdict{Class: ClassTransient, Latency: time.Millisecond})
 	s.Record(newTestEP(2), Verdict{Class: ClassPermanent, Latency: time.Millisecond})
 	s.SetAbort(Abort{Result: OutcomeNoEndpoint, HTTPCode: 503, Reason: "x"})
 
-	atts := rc.SchedulingDecision.Attempts
+	atts := s.Outcome().Decision.Attempts
 	if atts[0].Outcome != domain.AttemptFallback {
 		t.Fatalf("attempt[0] = %s, want fallback", atts[0].Outcome)
 	}
@@ -153,12 +150,12 @@ func TestState_FinalizeAbortFillsLastAsFail(t *testing.T) {
 }
 
 func TestState_NoAttemptsNoDecision(t *testing.T) {
-	rc := newTestRC("gpt-4")
-	s := newState(rc, 3)
+	in := newTestInput("gpt-4")
+	s := newState(in, 3)
 	s.SetAbort(Abort{Result: OutcomeDepFail, HTTPCode: 503})
 
-	if rc.SchedulingDecision != nil {
-		t.Fatalf("expected no SchedulingDecision when no attempts; got %+v", rc.SchedulingDecision)
+	if s.Outcome().Decision != nil {
+		t.Fatalf("expected no SchedulingDecision when no attempts; got %+v", s.Outcome().Decision)
 	}
 }
 

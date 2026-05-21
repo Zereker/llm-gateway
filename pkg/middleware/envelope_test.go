@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
@@ -79,7 +78,7 @@ func TestEnvelope_HappyPath_ParsesModel(t *testing.T) {
 
 // TestEnvelope_PopulatesDefaultHandlers 证明 M3 给 rc.Handlers 写默认值
 // （protocol.DefaultLookup 包装全局 adapter + translator registry），让后续
-// middleware / dispatch / invoker 能通过 dispatch.HandlersFrom(rc) 拿到 nil-safe
+// middleware / dispatch / invoker 能通过 HandlersFrom(rc) 拿到 nil-safe
 // 的请求级查询端口。
 func TestEnvelope_PopulatesDefaultHandlers(t *testing.T) {
 	r := newGinTest(
@@ -90,7 +89,7 @@ func TestEnvelope_PopulatesDefaultHandlers(t *testing.T) {
 	var gotHandlers protocol.Lookup
 	r.POST("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		gotHandlers = dispatch.HandlersFrom(rc)
+		gotHandlers = HandlersFrom(rc)
 		c.Status(200)
 	})
 
@@ -124,7 +123,7 @@ func TestEnvelope_PreservesPreSetHandlers(t *testing.T) {
 	var gotHandlers protocol.Lookup
 	r.POST("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		gotHandlers = dispatch.HandlersFrom(rc)
+		gotHandlers = HandlersFrom(rc)
 		c.Status(200)
 	})
 

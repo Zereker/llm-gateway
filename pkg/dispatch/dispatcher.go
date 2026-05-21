@@ -3,8 +3,6 @@ package dispatch
 import (
 	"context"
 	"net/http"
-
-	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // Dispatcher 协调 Selector + Invoker + Policy，把一次请求路由到合适的 endpoint
@@ -51,20 +49,21 @@ func New(opts ...Option) *Dispatcher {
 	return d
 }
 
-// Dispatch 入口。framework-free——只认 stdlib http.ResponseWriter。
+// Dispatch 入口。framework-free——只认 stdlib http.ResponseWriter 和 typed Input。
 //
 // **流程**：
 //
-//	state := newState(rc, cap.Resolve(rc))
+//	state := newState(in, cap.Resolve(in))
 //	for {
 //	    action := d.step(ctx, w, state)
 //	    switch action.(type) { Continue / Switch / Stream / Abort }
 //	}
 //
 // **返回**：Outcome.Result == OutcomeStreamed 表示响应已通过 w 写出；
-// 否则 middleware 需根据 HTTPCode / Class / Reason 写错误响应。
-func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, rc *domain.RequestContext) Outcome {
-	s := newState(rc, d.cap.Resolve(rc))
+// 否则 middleware 需根据 HTTPCode / Class / Reason 写错误响应。caller 把
+// outcome.Decision / Usage / RoutedModel / Error 等字段映射回 RC（dispatch 不直接动 RC）。
+func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Input) Outcome {
+	s := newState(in, d.cap.Resolve(in))
 
 	for {
 		switch a := d.step(ctx, w, s).(type) {
@@ -111,13 +110,9 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		return d.fallback.OnExhausted(s)
 	}
 
-	// v0.6 融合：从 rc.Handlers 按 (endpoint, srcProto) 动态组合 Handler。
+	// v0.6 融合：按 (endpoint, srcProto) 动态组合 Handler。
 	// eligibility filter 已挡掉 handler-missing 的 endpoint，这里再防一手。
-	srcProto := domain.ProtoUnknown
-	if s.Envelope() != nil {
-		srcProto = s.Envelope().SourceProtocol
-	}
-	handler := s.Handlers().Get(ep, srcProto)
+	handler := s.Handlers().Get(ep, s.in.SourceProtocol())
 	if handler == nil {
 		// 极少触达：eligibility 已挡；可能是请求级 lookup 跟 eligibility 看到的
 		// lookup 不一致（middleware 在两者之间换了 rc.Handlers）。

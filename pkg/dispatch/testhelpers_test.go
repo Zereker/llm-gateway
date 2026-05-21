@@ -131,25 +131,19 @@ func newTestEP(id int64) *domain.Endpoint {
 	}
 }
 
-func newTestRC(models ...string) *domain.RequestContext {
-	rc := &domain.RequestContext{
-		RequestID: "req_test",
-		StartTime: time.Now(),
-		Identity:  domain.UserIdentity{AccountID: "acc-1", Group: "free", APIKeyID: "ak-1"},
-		Envelope:  &domain.RequestEnvelope{RawBytes: []byte(`{}`)},
-		// 给 dispatcher.step 一个 always-OK 的 Handler 查询端口；fakeInvokerFactory
-		// 不会真调它（只看 verdict），但 dispatcher 在调 fakeInvokerFactory 之前需要
-		// 拿到一个 non-nil handler。
+// newTestInput 构造 dispatch.Input；handlers 永远返回 stubHandlerOK，
+// fakeInvokerFactory 不会真调它（只看 verdict），dispatcher 在 invoke 前能拿到 non-nil handler。
+func newTestInput(models ...string) Input {
+	in := Input{
+		Identity: domain.UserIdentity{AccountID: "acc-1", Group: "free", APIKeyID: "ak-1"},
+		Envelope: &domain.RequestEnvelope{RawBytes: []byte(`{}`)},
 		Handlers: stubHandlers{},
 	}
-	rc.ModelChain = make([]*domain.ModelService, len(models))
+	in.ModelChain = make([]*domain.ModelService, len(models))
 	for i, m := range models {
-		rc.ModelChain[i] = &domain.ModelService{ID: int64(i + 1), Model: m}
+		in.ModelChain[i] = &domain.ModelService{ID: int64(i + 1), Model: m}
 	}
-	if len(rc.ModelChain) > 0 {
-		rc.ModelService = rc.ModelChain[0]
-	}
-	return rc
+	return in
 }
 
 // stubHandlers 永远返回 stubHandlerOK；fakeInvokerFactory.For 拿到后忽略不调用。
