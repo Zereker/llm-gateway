@@ -3,7 +3,17 @@ package dispatch
 // Option 装配 Dispatcher 的可选项。
 type Option func(*Dispatcher)
 
+// WithCandidates 注入 CandidateSource 实现。必填。
+//
+// 典型实现：cmd/gateway/middleware_adapters.go adaptEndpoints
+// 把 repo.EndpointReader 桥接成 dispatch.CandidateSource。
+func WithCandidates(c CandidateSource) Option {
+	return func(d *Dispatcher) { d.candidates = c }
+}
+
 // WithSelector 注入 Selector 实现。必填。
+//
+// 默认实现见 pkg/dispatch/adapters.PickerAdapter（wrap selector.Scheduler.Pick + Report）。
 func WithSelector(s Selector) Option {
 	return func(d *Dispatcher) { d.selector = s }
 }

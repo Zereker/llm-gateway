@@ -12,24 +12,28 @@ import (
 // Selector port — 选哪个 endpoint
 // =============================================================================
 
-// Selector 在当前 model + 已排除集合下选一个可用 endpoint；也接收每次 attempt
-// 的 Verdict 反馈用于 cooldown 决策。
+// Selector "已知候选集 → 选一个"——纯 picker，不拉候选不做 eligibility（那两步
+// 由 Dispatcher 内部 CandidateSource + filterEligible 完成）。
 //
-// **职责范围**：候选拉取由 CandidateSource port 单独负责；Selector 本身只做
-// "已知候选集 → 选一个"——eligibility 过滤 + filter chain + scoring + cooldown
-// 读判定。Dispatcher 调用 Select 之前应当先经过 CandidateSource 拿候选。
+// **Pick 返回约定**：
 //
-// **Select 返回约定**：
-//
-//	(ep, nil)     ── 选到了
-//	(nil, nil)    ── 当前 model 候选耗尽（让 FallbackPolicy 决定切 model 还是 abort）
-//	(nil, err)    ── 依赖故障（如 DB / Redis 调用失败），driver 直接 abort 503
+//	(ep, nil)     ── 选到了（ep 必属于 eligible 输入集，已排除 query.Exclude）
+//	(nil, nil)    ── 候选耗尽（让 FallbackPolicy 决定切 model 还是 abort）
+//	(nil, err)    ── 依赖故障（如 Redis cooldown 读失败），driver 直接 abort 503
 //
 // **Report**：每次 invoke / reserve 出 verdict 后，Dispatcher 调一次反馈给 Selector
-// 内部的 cooldown 状态机（实现侧把 Verdict.Class 翻成自己的 ErrorClass）。
+// 内部的 cooldown 状态机。
 type Selector interface {
-	Select(ctx context.Context, q Query) (*domain.Endpoint, error)
+	Pick(ctx context.Context, eligible []*domain.Endpoint, q PickQuery) (*domain.Endpoint, error)
 	Report(ctx context.Context, ep *domain.Endpoint, v Verdict)
+}
+
+// PickQuery Selector.Pick 的入参——只含 picker 需要的信息（不含 Envelope /
+// Identity / Handlers，这些已经被 CandidateSource 和 filterEligible 消化过）。
+type PickQuery struct {
+	Model   string              // 当前轮次 model（metric label / cooldown key）
+	Group   string              // endpoint 池分组（filter 用）
+	Exclude map[int64]struct{}  // 本请求已尝试过的 endpoint ID
 }
 
 // =============================================================================
@@ -39,27 +43,13 @@ type Selector interface {
 // CandidateSource 按 (model, group) 拉候选 endpoints 的 port。
 //
 // **跟 Selector 的关系**：CandidateSource 负责"endpoint 从哪里来"（DB / 缓存 /
-// CDC snapshot 都可），Selector 负责"已知候选集挑一个"。两个职责分开，让 selector
-// 算法不需要知道存储细节。
+// CDC snapshot 都可），Selector 负责"已知候选集挑一个"。Dispatcher 串联：
+//
+//	candidates := CandidateSource.ListForModel(ctx, model, group)
+//	eligible   := dispatch.filterEligible(candidates, env, handlers)  // 内部 helper
+//	ep         := Selector.Pick(ctx, eligible, query)
 type CandidateSource interface {
 	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
-}
-
-// Query Selector.Select 的入参。
-//
-// **字段语义**：
-//
-//	Model    ── 当前轮次的 model（primary 或某个 fallback）
-//	Envelope ── 给 eligibility filter 用（modality / protocol 资格判定）
-//	Identity ── 给 group-aware filter 用
-//	Exclude  ── 本请求里已尝试过的 endpoint ID 集合（跨 model 累加）
-//	Handlers ── 请求级 Handler 查询端口（给 eligibility filter 用）
-type Query struct {
-	Model    string
-	Envelope *domain.RequestEnvelope
-	Identity domain.UserIdentity
-	Exclude  map[int64]struct{}
-	Handlers protocol.Lookup
 }
 
 // =============================================================================

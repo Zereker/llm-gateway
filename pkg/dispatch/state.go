@@ -100,26 +100,38 @@ func (s *state) LastVerdict() Verdict { return s.lastVerdict }
 // Exhausted attempt 数已到上限。
 func (s *state) Exhausted() bool { return s.attempts >= s.attemptsCap }
 
-// Query 构造给 Selector.Select 的入参。
-func (s *state) Query() Query {
+// PickQuery 构造给 Selector.Pick 的入参（model / group / exclude）。
+func (s *state) PickQuery() PickQuery {
 	cur := s.CurrentModel()
 	model := ""
 	if cur != nil {
 		model = cur.Model
 	}
-	return Query{
-		Model:    model,
-		Envelope: s.in.Envelope,
-		Identity: s.in.Identity,
-		Exclude:  s.excluded,
-		Handlers: s.in.Handlers,
+	return PickQuery{
+		Model:   model,
+		Group:   s.in.Identity.Group,
+		Exclude: s.excluded,
 	}
 }
 
-// Envelope 给 InvokerFactory.For 用（含 RawBytes）。
+// CurrentModelName 当前轮次的 model 字符串（CandidateSource.ListForModel 入参）；
+// 链已耗尽返 ""。
+func (s *state) CurrentModelName() string {
+	cur := s.CurrentModel()
+	if cur == nil {
+		return ""
+	}
+	return cur.Model
+}
+
+// Group 用户分组（CandidateSource.ListForModel 入参）。
+func (s *state) Group() string { return s.in.Identity.Group }
+
+// Envelope 给 InvokerFactory.For 用（含 RawBytes）+ filterEligible 用。
 func (s *state) Envelope() *domain.RequestEnvelope { return s.in.Envelope }
 
-// Handlers 给 dispatcher.step 用——Input 的请求级 Handler 查询端口。
+// Handlers 给 dispatcher.step 用——Input 的请求级 Handler 查询端口
+// （filterEligible + dispatcher 选 handler 都要）。
 func (s *state) Handlers() protocol.Lookup { return s.in.Handlers }
 
 // Record 记一次 attempt：attempts++ / excluded / lastVerdict / decisions append。

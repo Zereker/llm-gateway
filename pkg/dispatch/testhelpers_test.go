@@ -14,6 +14,14 @@ import (
 // fakeSelector / fakeInvokerFactory / fakeResult — 通用 test doubles
 // =============================================================================
 
+// fakeCandidates 永远返一个 dummy 候选（让 filterEligible / fakeSelector 跑通）。
+// dispatcher 拿到 ep 后会传给 fakeSelector.Pick 决定真返哪个。
+type fakeCandidates struct{}
+
+func (fakeCandidates) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
+	return []*domain.Endpoint{{ID: 999, Vendor: "stub", Enabled: true, Weight: 1}}, nil
+}
+
 // fakeSelector 顺序消费 responses；out-of-range → panic（防止测试漏配 fixture）。
 type fakeSelector struct {
 	responses []selResp
@@ -29,7 +37,7 @@ func newFakeSelector(rs ...selResp) *fakeSelector {
 	return &fakeSelector{responses: rs}
 }
 
-func (f *fakeSelector) Select(_ context.Context, _ Query) (*domain.Endpoint, error) {
+func (f *fakeSelector) Pick(_ context.Context, _ []*domain.Endpoint, _ PickQuery) (*domain.Endpoint, error) {
 	if f.calls >= len(f.responses) {
 		panic("fakeSelector: out of responses")
 	}

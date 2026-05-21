@@ -16,6 +16,7 @@ import (
 func TestDispatcher_HappyPath(t *testing.T) {
 	ep := newTestEP(1)
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(selResp{ep: ep})),
 		WithInvokerFactory(newFakeInvokerFactory(successResult(&domain.Usage{Total: 100}, 50))),
 		WithCap(HeaderAttemptCap{Default: 3}),
@@ -51,6 +52,7 @@ func TestDispatcher_HappyPath(t *testing.T) {
 func TestDispatcher_InvalidAbortsImmediately(t *testing.T) {
 	ep := newTestEP(1)
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(selResp{ep: ep})),
 		WithInvokerFactory(newFakeInvokerFactory(invalidResult())),
 		WithCap(HeaderAttemptCap{Default: 3}),
@@ -81,6 +83,7 @@ func TestDispatcher_RetryUntilSuccess(t *testing.T) {
 	ep1 := newTestEP(1)
 	ep2 := newTestEP(2)
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(
 			selResp{ep: ep1},
 			selResp{ep: ep2},
@@ -114,6 +117,7 @@ func TestDispatcher_RetryUntilSuccess(t *testing.T) {
 // TestDispatcher_AttemptsExhausted: 一直 transient 到 cap → NoEndpoint 503。
 func TestDispatcher_AttemptsExhausted(t *testing.T) {
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(
 			selResp{ep: newTestEP(1)},
 			selResp{ep: newTestEP(2)},
@@ -142,6 +146,7 @@ func TestDispatcher_AttemptsExhausted(t *testing.T) {
 func TestDispatcher_FallbackToNextModel(t *testing.T) {
 	ep := newTestEP(10)
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(
 			selResp{ep: nil},   // primary 候选耗尽
 			selResp{ep: ep},    // fallback 模型有候选
@@ -172,6 +177,7 @@ func TestDispatcher_FallbackToNextModel(t *testing.T) {
 // TestDispatcher_AllModelsExhausted: 所有 model 候选都耗尽 → NoEndpoint 503。
 func TestDispatcher_AllModelsExhausted(t *testing.T) {
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(
 			selResp{ep: nil},
 			selResp{ep: nil},
@@ -196,6 +202,7 @@ func TestDispatcher_AllModelsExhausted(t *testing.T) {
 // TestDispatcher_SelectorDepFail: Selector.Select 返 err → DepFail 503。
 func TestDispatcher_SelectorDepFail(t *testing.T) {
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(selResp{err: errFakeDep})),
 		WithInvokerFactory(newFakeInvokerFactory()),
 		WithCap(HeaderAttemptCap{Default: 3}),
@@ -218,6 +225,7 @@ func TestDispatcher_SelectorDepFail(t *testing.T) {
 func TestDispatcher_InvokerDepFail(t *testing.T) {
 	r := &fakeResult{invokeErr: errFakeDep}
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(selResp{ep: newTestEP(1)})),
 		WithInvokerFactory(newFakeInvokerFactory(r)),
 		WithCap(HeaderAttemptCap{Default: 3}),
@@ -239,6 +247,7 @@ func TestDispatcher_InvokerDepFail(t *testing.T) {
 // 只有 invalid 才直接 abort。所以这个 case 实际上会重试，直到 attempts 用完。
 func TestDispatcher_TerminalNonRetryable(t *testing.T) {
 	d := New(
+		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(
 			selResp{ep: newTestEP(1)},
 			selResp{ep: newTestEP(2)},
@@ -263,11 +272,12 @@ func TestDispatcher_PanicsOnMissingDeps(t *testing.T) {
 		name string
 		opts []Option
 	}{
-		{"missing selector", []Option{WithInvokerFactory(newFakeInvokerFactory()), WithCap(HeaderAttemptCap{Default: 3}), WithRetry(DefaultRetry{}), WithFallback(ModelChainFallback{})}},
-		{"missing invoker", []Option{WithSelector(newFakeSelector()), WithCap(HeaderAttemptCap{Default: 3}), WithRetry(DefaultRetry{}), WithFallback(ModelChainFallback{})}},
-		{"missing cap", []Option{WithSelector(newFakeSelector()), WithInvokerFactory(newFakeInvokerFactory()), WithRetry(DefaultRetry{}), WithFallback(ModelChainFallback{})}},
-		{"missing retry", []Option{WithSelector(newFakeSelector()), WithInvokerFactory(newFakeInvokerFactory()), WithCap(HeaderAttemptCap{Default: 3}), WithFallback(ModelChainFallback{})}},
-		{"missing fallback", []Option{WithSelector(newFakeSelector()), WithInvokerFactory(newFakeInvokerFactory()), WithCap(HeaderAttemptCap{Default: 3}), WithRetry(DefaultRetry{})}},
+		{"missing candidates", []Option{WithSelector(newFakeSelector()), WithInvokerFactory(newFakeInvokerFactory()), WithCap(HeaderAttemptCap{Default: 3}), WithRetry(DefaultRetry{}), WithFallback(ModelChainFallback{})}},
+		{"missing selector", []Option{WithCandidates(fakeCandidates{}), WithInvokerFactory(newFakeInvokerFactory()), WithCap(HeaderAttemptCap{Default: 3}), WithRetry(DefaultRetry{}), WithFallback(ModelChainFallback{})}},
+		{"missing invoker", []Option{WithCandidates(fakeCandidates{}), WithSelector(newFakeSelector()), WithCap(HeaderAttemptCap{Default: 3}), WithRetry(DefaultRetry{}), WithFallback(ModelChainFallback{})}},
+		{"missing cap", []Option{WithCandidates(fakeCandidates{}), WithSelector(newFakeSelector()), WithInvokerFactory(newFakeInvokerFactory()), WithRetry(DefaultRetry{}), WithFallback(ModelChainFallback{})}},
+		{"missing retry", []Option{WithCandidates(fakeCandidates{}), WithSelector(newFakeSelector()), WithInvokerFactory(newFakeInvokerFactory()), WithCap(HeaderAttemptCap{Default: 3}), WithFallback(ModelChainFallback{})}},
+		{"missing fallback", []Option{WithCandidates(fakeCandidates{}), WithSelector(newFakeSelector()), WithInvokerFactory(newFakeInvokerFactory()), WithCap(HeaderAttemptCap{Default: 3}), WithRetry(DefaultRetry{})}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

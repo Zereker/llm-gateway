@@ -50,8 +50,15 @@ type panicSelector struct{}
 
 func (panicSelector) Report(_ context.Context, _ *domain.Endpoint, _ dispatch.Verdict) {}
 
-func (panicSelector) Select(_ context.Context, _ dispatch.Query) (*domain.Endpoint, error) {
-	panic("router test: Selector.Select should not be reached (M2 Auth must reject first)")
+func (panicSelector) Pick(_ context.Context, _ []*domain.Endpoint, _ dispatch.PickQuery) (*domain.Endpoint, error) {
+	panic("router test: Selector.Pick should not be reached (M2 Auth must reject first)")
+}
+
+// panicCandidates 永远 panic——M2 Auth 401 短路后 CandidateSource 不该被调。
+type panicCandidates struct{}
+
+func (panicCandidates) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
+	panic("router test: CandidateSource.ListForModel should not be reached")
 }
 
 type panicInvokerFactory struct{}
@@ -84,6 +91,7 @@ func minDeps() Deps {
 		SubscriptionChecker: stubSubscriptions{},
 		// M7 (dispatcher：M2 Auth 之后才会触发，本测试在 401 前短路)
 		Dispatcher: dispatch.New(
+			dispatch.WithCandidates(panicCandidates{}),
 			dispatch.WithSelector(panicSelector{}),
 			dispatch.WithInvokerFactory(panicInvokerFactory{}),
 			dispatch.WithCap(dispatch.HeaderAttemptCap{Default: 3}),
