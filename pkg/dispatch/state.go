@@ -33,9 +33,13 @@ type State interface {
 // =============================================================================
 // state — Dispatcher 内部的运行时门面，实现 State + 自带 mutator
 // =============================================================================
+//
+// **不持 *RequestContext**：dispatch 跟 RC 解耦后，state 只看 typed Input；
+// 副作用（Decision / Usage / RoutedModel / Error）全部写入 s.outcome，
+// 由 caller（middleware/schedule.go）从 Outcome 翻译回 RC 字段。
 
 type state struct {
-	rc *domain.RequestContext
+	in Input
 
 	attemptsCap int
 	attempts    int
@@ -51,13 +55,13 @@ type state struct {
 	outcome   Outcome
 }
 
-// newState 用 rc + 已 resolve 的 cap 初始化运行时状态。
-func newState(rc *domain.RequestContext, cap int) *state {
+// newState 用 Input + 已 resolve 的 cap 初始化运行时状态。
+func newState(in Input, cap int) *state {
 	return &state{
-		rc:          rc,
+		in:          in,
 		attemptsCap: cap,
 		excluded:    make(map[int64]struct{}, cap),
-		modelChain:  rc.ModelChain,
+		modelChain:  in.ModelChain,
 		curIdx:      0,
 		decisions:   make([]domain.Attempt, 0, cap),
 		startTime:   time.Now(),
@@ -105,27 +109,26 @@ func (s *state) Query() Query {
 	}
 	return Query{
 		Model:    model,
-		Envelope: s.rc.Envelope,
-		Identity: s.rc.Identity,
+		Envelope: s.in.Envelope,
+		Identity: s.in.Identity,
 		Exclude:  s.excluded,
-		Handlers: HandlersFrom(s.rc),
+		Handlers: s.in.Handlers,
 	}
 }
 
 // Envelope 给 InvokerFactory.For 用。
-func (s *state) Envelope() *domain.RequestEnvelope { return s.rc.Envelope }
+func (s *state) Envelope() *domain.RequestEnvelope { return s.in.Envelope }
 
 // Body 给 InvokerFactory.For 用——原始请求字节。
 func (s *state) Body() []byte {
-	if s.rc.Envelope == nil {
+	if s.in.Envelope == nil {
 		return nil
 	}
-	return s.rc.Envelope.RawBytes
+	return s.in.Envelope.RawBytes
 }
 
-// Handlers 给 dispatcher.step 用——从 rc 取的请求级 Handler 查询端口
-// （M3 默认填 protocol.DefaultLookup，可被后续 middleware 覆盖）。
-func (s *state) Handlers() protocol.Lookup { return HandlersFrom(s.rc) }
+// Handlers 给 dispatcher.step 用——Input 的请求级 Handler 查询端口。
+func (s *state) Handlers() protocol.Lookup { return s.in.Handlers }
 
 // Record 记一次 attempt：attempts++ / excluded / lastVerdict / decisions append。
 // Outcome 字段先填 Unknown，finalize 阶段按终态修正。
@@ -169,25 +172,29 @@ func (s *state) SetModel(ms *domain.ModelService) {
 	s.curIdx = len(s.modelChain) - 1
 }
 
-// ApplyStream Stream 成功后写 RoutedModel + Usage + TTFT + finalize。
+// ApplyStream Stream 成功后写 RoutedModel + Usage + TTFT + Outcome.Error；
+// 全部记到 s.outcome，不直接动 RC（dispatch 跟 RC 解耦）。
 func (s *state) ApplyStream(rep StreamReport) {
-	s.rc.RoutedModelService = s.CurrentModel()
-	s.rc.Usage = rep.Usage
-	if rep.Usage != nil && rep.TTFTMs > 0 {
-		s.rc.Usage.Meta.TTFTMs = rep.TTFTMs
+	routed := s.CurrentModel()
+	usage := rep.Usage
+	if usage != nil && rep.TTFTMs > 0 {
+		usage.Meta.TTFTMs = rep.TTFTMs
 	}
+	var streamErr *domain.AdapterError
 	if rep.Err != nil {
-		s.rc.Error = &domain.AdapterError{
+		streamErr = &domain.AdapterError{
 			Class:   domain.ErrTransient,
 			Code:    domain.ErrCodeUpstreamError,
 			Message: "stream: " + rep.Err.Error(),
 		}
 	}
 	s.outcome = Outcome{
-		Result:    OutcomeStreamed,
-		Usage:     rep.Usage,
-		StreamErr: rep.Err,
-		TTFTMs:    rep.TTFTMs,
+		Result:      OutcomeStreamed,
+		Usage:       usage,
+		StreamErr:   rep.Err,
+		TTFTMs:      rep.TTFTMs,
+		RoutedModel: routed,
+		Error:       streamErr,
 	}
 	s.finalize()
 }
@@ -208,44 +215,45 @@ func (s *state) SetAbort(a Abort) {
 	s.finalize()
 }
 
-// Outcome 取最终产出（含 SchedulingDecision 写入到 rc.SchedulingDecision）。
+// Outcome 取最终产出（含 SchedulingDecision）。
 func (s *state) Outcome() Outcome { return s.outcome }
 
 // =============================================================================
-// finalize — 终态时给 decisions[].Outcome 补值并写 rc.SchedulingDecision
+// finalize — 终态时给 decisions[].Outcome 补值并写 Outcome.Decision
 // =============================================================================
 
 func (s *state) finalize() {
-	if len(s.decisions) > 0 {
-		last := len(s.decisions) - 1
-		for i := 0; i < last; i++ {
-			s.decisions[i].Outcome = domain.AttemptFallback
-		}
-		if s.outcome.Result == OutcomeStreamed {
-			s.decisions[last].Outcome = domain.AttemptSuccess
-		} else {
-			s.decisions[last].Outcome = domain.AttemptFail
-		}
+	if len(s.decisions) == 0 {
+		return
+	}
+	last := len(s.decisions) - 1
+	for i := 0; i < last; i++ {
+		s.decisions[i].Outcome = domain.AttemptFallback
+	}
+	if s.outcome.Result == OutcomeStreamed {
+		s.decisions[last].Outcome = domain.AttemptSuccess
+	} else {
+		s.decisions[last].Outcome = domain.AttemptFail
+	}
 
-		routed := ""
-		if s.rc.RoutedModelService != nil {
-			routed = s.rc.RoutedModelService.Model
-		} else if s.rc.ModelService != nil {
-			routed = s.rc.ModelService.Model
-		}
-		model := ""
-		if s.rc.ModelService != nil {
-			model = s.rc.ModelService.Model
-		}
+	primary := s.in.PrimaryModel()
+	model := ""
+	if primary != nil {
+		model = primary.Model
+	}
+	routedName := ""
+	if s.outcome.RoutedModel != nil {
+		routedName = s.outcome.RoutedModel.Model
+	} else if primary != nil {
+		routedName = primary.Model
+	}
 
-		s.rc.SchedulingDecision = &domain.SchedulingDecision{
-			Model:       model,
-			RoutedModel: routed,
-			UserGroup:   s.rc.Identity.Group,
-			Attempts:    s.decisions,
-			DurationMs:  time.Since(s.startTime).Milliseconds(),
-		}
-		s.outcome.Decision = s.rc.SchedulingDecision
+	s.outcome.Decision = &domain.SchedulingDecision{
+		Model:       model,
+		RoutedModel: routedName,
+		UserGroup:   s.in.Identity.Group,
+		Attempts:    s.decisions,
+		DurationMs:  time.Since(s.startTime).Milliseconds(),
 	}
 }
 

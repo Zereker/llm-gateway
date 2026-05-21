@@ -23,9 +23,9 @@ func TestDispatcher_HappyPath(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4")
+	in := newTestInput("gpt-4")
 	w := httptest.NewRecorder()
-	out := d.Dispatch(context.Background(), w, rc)
+	out := d.Dispatch(context.Background(), w, in)
 
 	if out.Result != OutcomeStreamed {
 		t.Fatalf("want OutcomeStreamed, got %s", out.Result)
@@ -36,14 +36,14 @@ func TestDispatcher_HappyPath(t *testing.T) {
 	if out.TTFTMs != 50 {
 		t.Fatalf("want TTFTMs=50, got %d", out.TTFTMs)
 	}
-	if rc.RoutedModelService == nil || rc.RoutedModelService.Model != "gpt-4" {
-		t.Fatalf("RoutedModelService not set to gpt-4: %+v", rc.RoutedModelService)
+	if out.RoutedModel == nil || out.RoutedModel.Model != "gpt-4" {
+		t.Fatalf("RoutedModelService not set to gpt-4: %+v", out.RoutedModel)
 	}
-	if rc.SchedulingDecision == nil || len(rc.SchedulingDecision.Attempts) != 1 {
-		t.Fatalf("decision missing or wrong attempts: %+v", rc.SchedulingDecision)
+	if out.Decision == nil || len(out.Decision.Attempts) != 1 {
+		t.Fatalf("decision missing or wrong attempts: %+v", out.Decision)
 	}
-	if rc.SchedulingDecision.Attempts[0].Outcome != domain.AttemptSuccess {
-		t.Fatalf("want success outcome, got %s", rc.SchedulingDecision.Attempts[0].Outcome)
+	if out.Decision.Attempts[0].Outcome != domain.AttemptSuccess {
+		t.Fatalf("want success outcome, got %s", out.Decision.Attempts[0].Outcome)
 	}
 }
 
@@ -58,9 +58,9 @@ func TestDispatcher_InvalidAbortsImmediately(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4")
+	in := newTestInput("gpt-4")
 	w := httptest.NewRecorder()
-	out := d.Dispatch(context.Background(), w, rc)
+	out := d.Dispatch(context.Background(), w, in)
 
 	if out.Result != OutcomeInvalid {
 		t.Fatalf("want OutcomeInvalid, got %s", out.Result)
@@ -68,11 +68,11 @@ func TestDispatcher_InvalidAbortsImmediately(t *testing.T) {
 	if out.HTTPCode != 400 {
 		t.Fatalf("want 400, got %d", out.HTTPCode)
 	}
-	if rc.SchedulingDecision == nil || len(rc.SchedulingDecision.Attempts) != 1 {
-		t.Fatalf("expected 1 attempt, got %+v", rc.SchedulingDecision)
+	if out.Decision == nil || len(out.Decision.Attempts) != 1 {
+		t.Fatalf("expected 1 attempt, got %+v", out.Decision)
 	}
-	if rc.SchedulingDecision.Attempts[0].Outcome != domain.AttemptFail {
-		t.Fatalf("want fail outcome, got %s", rc.SchedulingDecision.Attempts[0].Outcome)
+	if out.Decision.Attempts[0].Outcome != domain.AttemptFail {
+		t.Fatalf("want fail outcome, got %s", out.Decision.Attempts[0].Outcome)
 	}
 }
 
@@ -94,20 +94,20 @@ func TestDispatcher_RetryUntilSuccess(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4")
-	out := d.Dispatch(context.Background(), httptest.NewRecorder(), rc)
+	in := newTestInput("gpt-4")
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
 
 	if out.Result != OutcomeStreamed {
 		t.Fatalf("want OutcomeStreamed, got %s (reason=%s)", out.Result, out.Reason)
 	}
-	if len(rc.SchedulingDecision.Attempts) != 2 {
-		t.Fatalf("want 2 attempts, got %d", len(rc.SchedulingDecision.Attempts))
+	if len(out.Decision.Attempts) != 2 {
+		t.Fatalf("want 2 attempts, got %d", len(out.Decision.Attempts))
 	}
-	if rc.SchedulingDecision.Attempts[0].Outcome != domain.AttemptFallback {
-		t.Fatalf("attempt[0] outcome want fallback, got %s", rc.SchedulingDecision.Attempts[0].Outcome)
+	if out.Decision.Attempts[0].Outcome != domain.AttemptFallback {
+		t.Fatalf("attempt[0] outcome want fallback, got %s", out.Decision.Attempts[0].Outcome)
 	}
-	if rc.SchedulingDecision.Attempts[1].Outcome != domain.AttemptSuccess {
-		t.Fatalf("attempt[1] outcome want success, got %s", rc.SchedulingDecision.Attempts[1].Outcome)
+	if out.Decision.Attempts[1].Outcome != domain.AttemptSuccess {
+		t.Fatalf("attempt[1] outcome want success, got %s", out.Decision.Attempts[1].Outcome)
 	}
 }
 
@@ -124,8 +124,8 @@ func TestDispatcher_AttemptsExhausted(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4")
-	out := d.Dispatch(context.Background(), httptest.NewRecorder(), rc)
+	in := newTestInput("gpt-4")
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
 
 	if out.Result != OutcomeNoEndpoint {
 		t.Fatalf("want OutcomeNoEndpoint, got %s (reason=%s)", out.Result, out.Reason)
@@ -133,8 +133,8 @@ func TestDispatcher_AttemptsExhausted(t *testing.T) {
 	if out.HTTPCode != 503 {
 		t.Fatalf("want 503, got %d", out.HTTPCode)
 	}
-	if len(rc.SchedulingDecision.Attempts) != 2 {
-		t.Fatalf("want 2 attempts, got %d", len(rc.SchedulingDecision.Attempts))
+	if len(out.Decision.Attempts) != 2 {
+		t.Fatalf("want 2 attempts, got %d", len(out.Decision.Attempts))
 	}
 }
 
@@ -152,20 +152,20 @@ func TestDispatcher_FallbackToNextModel(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4", "gpt-3.5") // primary + 1 fallback
-	out := d.Dispatch(context.Background(), httptest.NewRecorder(), rc)
+	in := newTestInput("gpt-4", "gpt-3.5") // primary + 1 fallback
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
 
 	if out.Result != OutcomeStreamed {
 		t.Fatalf("want OutcomeStreamed, got %s (reason=%s)", out.Result, out.Reason)
 	}
-	if rc.RoutedModelService.Model != "gpt-3.5" {
-		t.Fatalf("want routed gpt-3.5, got %s", rc.RoutedModelService.Model)
+	if out.RoutedModel.Model != "gpt-3.5" {
+		t.Fatalf("want routed gpt-3.5, got %s", out.RoutedModel.Model)
 	}
-	if len(rc.SchedulingDecision.Attempts) != 1 {
-		t.Fatalf("want 1 attempt, got %d", len(rc.SchedulingDecision.Attempts))
+	if len(out.Decision.Attempts) != 1 {
+		t.Fatalf("want 1 attempt, got %d", len(out.Decision.Attempts))
 	}
-	if rc.SchedulingDecision.Attempts[0].AttemptRole != domain.AttemptRoleFallback {
-		t.Fatalf("want fallback role, got %s", rc.SchedulingDecision.Attempts[0].AttemptRole)
+	if out.Decision.Attempts[0].AttemptRole != domain.AttemptRoleFallback {
+		t.Fatalf("want fallback role, got %s", out.Decision.Attempts[0].AttemptRole)
 	}
 }
 
@@ -182,8 +182,8 @@ func TestDispatcher_AllModelsExhausted(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4", "gpt-3.5")
-	out := d.Dispatch(context.Background(), httptest.NewRecorder(), rc)
+	in := newTestInput("gpt-4", "gpt-3.5")
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
 
 	if out.Result != OutcomeNoEndpoint {
 		t.Fatalf("want OutcomeNoEndpoint, got %s (reason=%s)", out.Result, out.Reason)
@@ -203,8 +203,8 @@ func TestDispatcher_SelectorDepFail(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4")
-	out := d.Dispatch(context.Background(), httptest.NewRecorder(), rc)
+	in := newTestInput("gpt-4")
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
 
 	if out.Result != OutcomeDepFail {
 		t.Fatalf("want OutcomeDepFail, got %s (reason=%s)", out.Result, out.Reason)
@@ -225,8 +225,8 @@ func TestDispatcher_InvokerDepFail(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4")
-	out := d.Dispatch(context.Background(), httptest.NewRecorder(), rc)
+	in := newTestInput("gpt-4")
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
 
 	if out.Result != OutcomeDepFail {
 		t.Fatalf("want OutcomeDepFail, got %s (reason=%s)", out.Result, out.Reason)
@@ -249,8 +249,8 @@ func TestDispatcher_TerminalNonRetryable(t *testing.T) {
 		WithFallback(ModelChainFallback{}),
 	)
 
-	rc := newTestRC("gpt-4")
-	out := d.Dispatch(context.Background(), httptest.NewRecorder(), rc)
+	in := newTestInput("gpt-4")
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
 
 	if out.Result != OutcomeNoEndpoint {
 		t.Fatalf("want OutcomeNoEndpoint (attempts exhausted), got %s", out.Result)

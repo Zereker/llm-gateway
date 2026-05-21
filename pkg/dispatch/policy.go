@@ -1,13 +1,14 @@
 package dispatch
 
-import "github.com/zereker/llm-gateway/pkg/domain"
-
 // AttemptCap 决定本请求的最大 attempt 数。
 //
 // 默认实现 HeaderAttemptCap：cfg 默认值 + X-Gateway-Max-Attempts header
 // 只允许往更紧（更小）的方向覆盖。
+//
+// **输入是 Input 不是 RC**：dispatch 不接触 RequestContext；客户端 header 之类
+// 的 override 由 middleware 解析后塞进 Input.AttemptCapOverride 透传。
 type AttemptCap interface {
-	Resolve(rc *domain.RequestContext) int
+	Resolve(in Input) int
 }
 
 // RetryPolicy 一次 Invoker.Invoke 完成后，决定 driver loop 的下一步。

@@ -28,15 +28,17 @@ type EndpointReader interface {
 	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
 }
 
-// Schedule 是 M7 middleware——thin adapter：把 gin 上下文转给 dispatch.Dispatcher。
+// Schedule 是 M7 middleware——thin adapter：把 gin / RC 转 dispatch.Input，
+// 跑 dispatcher.Dispatch，再把 dispatch.Outcome 映射回 RC + HTTP。
 //
 // **职责**：
 //   1. 前置检查 rc.Envelope / rc.ModelChain（M3/M5 必须先跑过）
 //   2. 注入 content log enrichment（Invoker hook 通过 ctx 拿请求元信息；docs/05 §2）
-//   3. 写 X-Gateway-Max-Attempts header 到 rc.Extras 供 HeaderAttemptCap 读
+//   3. 构造 dispatch.Input（envelope / identity / modelChain / handlers / 客户端 header override）
 //   4. 调 dispatcher.Dispatch 跑业务编排
 //   5. metric: scheduling_duration_seconds
-//   6. 把 Outcome 翻译成 HTTP 错误响应（成功路径已 stream，啥也不做）
+//   6. 从 outcome 写回 RC（RoutedModelService / Usage / Error / SchedulingDecision）
+//   7. 把 Outcome 翻译成 HTTP 错误响应（成功路径已 stream，啥也不做）
 //
 // **不做**：retry / fallback / verdict 决策 / reserve / charge / TTFT——全部在
 // pkg/dispatch 内编排。
@@ -71,17 +73,18 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 		})
 		c.Request = c.Request.WithContext(ctx)
 
-		// 把 max-attempts header 透给 dispatch.HeaderAttemptCap
-		if rc.Extras == nil {
-			rc.Extras = make(map[string]any, 1)
-		}
-		if h := c.GetHeader(HeaderGatewayMaxAttempts); h != "" {
-			rc.Extras[dispatch.HeaderKey] = h
+		// 构造 dispatch.Input —— RC → typed input 单向投影（dispatch 不接触 RC）
+		in := dispatch.Input{
+			Envelope:           rc.Envelope,
+			Identity:           rc.Identity,
+			ModelChain:         rc.ModelChain,
+			Handlers:           HandlersFrom(rc),
+			AttemptCapOverride: c.GetHeader(HeaderGatewayMaxAttempts),
 		}
 
 		// metric: scheduling_duration_seconds（docs/08 §3）
 		start := time.Now()
-		out := d.Dispatch(ctx, c.Writer, rc)
+		out := d.Dispatch(ctx, c.Writer, in)
 
 		attempts := 0
 		if out.Decision != nil {
@@ -92,18 +95,31 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 			"attempts", strconv.Itoa(attempts),
 		)
 
+		// dispatch.Outcome → RC 单向回写（dispatch 不直接动 RC）
+		applyOutcomeToRC(rc, out)
+
 		// 失败路径翻译成 HTTP（成功路径已通过 c.Writer stream 完）
 		if out.Result == dispatch.OutcomeStreamed {
-			if out.StreamErr != nil {
-				rc.Error = &domain.AdapterError{
-					Class:   domain.ErrTransient,
-					Code:    domain.ErrCodeUpstreamError,
-					Message: "stream: " + out.StreamErr.Error(),
-				}
-			}
 			return
 		}
 		abortByOutcome(c, out)
+	}
+}
+
+// applyOutcomeToRC 把 dispatch 产出的字段映射回 RC（dispatch 已解耦 RC，
+// 所有副作用集中在这里）。
+func applyOutcomeToRC(rc *domain.RequestContext, out dispatch.Outcome) {
+	if out.RoutedModel != nil {
+		rc.RoutedModelService = out.RoutedModel
+	}
+	if out.Usage != nil {
+		rc.Usage = out.Usage
+	}
+	if out.Error != nil {
+		rc.Error = out.Error
+	}
+	if out.Decision != nil {
+		rc.SchedulingDecision = out.Decision
 	}
 }
 
