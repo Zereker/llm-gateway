@@ -15,26 +15,18 @@
 //
 // **跟 v0.5 (split adapter + translator) 的差异**：
 //
-//	v0.5: 两个独立抽象，消费侧要做两次 lookup + match 检查；adapter / translator
-//	      之间的接缝散在 invoker / eligibility / wiring 多处。
-//	v0.6: 一个 Handler 抽象，封装 (vendor, sourceProtocol) 二元组。消费侧
-//	      只看 Handler。translator / adapter 仍是内部实现（pkg/translator /
-//	      pkg/adapter），但通过 protocol.Combine() 在注册期组装成 Handler。
+//	v0.5: 两个独立抽象（adapter + translator），消费侧两次 lookup + match 检查；
+//	      adapter.Metadata.NativeProtocol 写死 vendor → 上游协议绑死。
+//	v0.6: 一个 Handler 抽象（facade），由 DefaultLookup 按 (endpoint, srcProto)
+//	      动态组合 adapter + translator。endpoint 携带 Protocol 字段——同 vendor
+//	      可以挂多条不同协议的 endpoint。
 //
-// **注册形态**：每个 vendor 子包（pkg/protocol/<vendor>/）的 init() 直接
-// 注册 N 个 Handler——每个对应一个支持的 srcProto。
+// **组合时机**：请求级，不是 init()。DefaultLookup.Get(ep, srcProto) 调用：
+//   1. adapter.Get(ep.Vendor) → adapter.Factory（vendor HTTP 实现）
+//   2. translator.Find(srcProto, ep.Protocol) → translator.Translator（body 转换）
+//   3. Combine(ad, tr) → Handler
 //
-//	pkg/protocol/anthropic/init.go:
-//	    func init() {
-//	        f := Factory{}  // 内部 HTTP 层
-//	        // 同协议透传
-//	        protocol.Register(protocol.Combine(f, identity.AnthropicTranslator()))
-//	        // 跨协议接 OpenAI 客户端
-//	        protocol.Register(protocol.Combine(f, openai_anthropic.Translator()))
-//	    }
-//
-// **查找**：消费侧（dispatcher / invoker / eligibility）走 protocol.Lookup
-// (vendor, srcProto) → Handler。一次 lookup 拿齐所有协议层信息。
+// 任一缺失 → return nil → eligibility filter 剔除该 endpoint。
 package protocol
 
 import (

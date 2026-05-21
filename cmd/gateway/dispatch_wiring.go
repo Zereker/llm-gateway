@@ -134,15 +134,9 @@ func (i *invokerAdapter) Invoke(ctx context.Context) (dispatch.Result, error) {
 	// 3) scheduler.Report
 	i.sched.Report(ctx, i.ep, outcome.ToScheduleResult())
 
-	// 4) 转 dispatch.Verdict —— Stage 按 outcome.Class 推断：
-	//    Permanent + 无 HTTPCode = Prepare 失败（handler.PrepareCall 阶段）；
-	//    其它都是 Invoke 阶段。这是个简化推断；更精确的话 sender 应该返 typed stage。
-	stage := dispatch.StageInvoke
-	if outcome.HTTPCode == 0 && outcome.Class == selector.ClassInvalid {
-		stage = dispatch.StagePrepare // translator 失败（ErrInvalidRequest）
-	}
+	// 4) 转 dispatch.Verdict —— Stage 直接读 sender 标的 typed 字段。
 	v := dispatch.Verdict{
-		Stage:    stage,
+		Stage:    invokerStageToDispatch(outcome.Stage),
 		Class:    scheduleClassToDispatch(outcome.Class),
 		HTTPCode: outcome.HTTPCode,
 		Reason:   outcome.Reason,
@@ -219,6 +213,16 @@ func (r *invocationResult) Close() error {
 // =============================================================================
 // helpers
 // =============================================================================
+
+// invokerStageToDispatch invoker.Stage → dispatch.Stage（1:1 映射）。
+func invokerStageToDispatch(s invoker.Stage) dispatch.Stage {
+	switch s {
+	case invoker.StagePrepare:
+		return dispatch.StagePrepare
+	default:
+		return dispatch.StageInvoke
+	}
+}
 
 // scheduleClassToDispatch selector.ErrorClass → dispatch.Class（1:1 映射）。
 func scheduleClassToDispatch(c selector.ErrorClass) dispatch.Class {

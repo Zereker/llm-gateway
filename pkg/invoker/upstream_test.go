@@ -32,17 +32,6 @@ func (ts *testSender) Send(ctx context.Context, ep *domain.Endpoint, env *domain
 	return ts.Sender.Send(ctx, ep, env, body, ts.handler)
 }
 
-// composeHandler 用 fakeFactory + tr 合成 Handler。tr 与 factory 的 NativeProtocol
-// 不匹配时（旧测试 TestSend_NoTranslator 那种）返回 nil。
-func composeHandler(factory adapter.Factory, tr translator.Translator) protocol.Handler {
-	if factory == nil || tr == nil {
-		return nil
-	}
-	if tr.Target() != factory.Metadata().NativeProtocol {
-		return nil
-	}
-	return protocol.Combine(factory, tr)
-}
 
 type fakeFactory struct {
 	meta       adapter.Metadata
@@ -137,16 +126,16 @@ func registerOpenAITranslator(t *testing.T, tr translator.Translator) {
 	t.Cleanup(translator.Reset)
 }
 
-// newSender 构造 testSender。translator 取全局 registry 第一个匹配 factory
-// NativeProtocol 的（测试已经通过 registerOpenAITranslator / registerXxx 注册）。
-// factory == nil 或匹配不到 translator 时 handler = nil，测试 Send 的"无 handler"分支。
-func newSender(t *testing.T, factory adapter.Factory, opts ...Option) *testSender {
+// newSender 构造 testSender。target 指明 factory HTTP 层 produces 的协议，
+// 用于 translator.Find(OpenAI, target) 查找 translator。target == ProtoUnknown
+// 或 factory == nil → handler = nil（测试 Send 的"无 handler"分支）。
+func newSender(t *testing.T, factory adapter.Factory, target domain.Protocol, opts ...Option) *testSender {
 	t.Helper()
 	var h protocol.Handler
-	if factory != nil {
-		// 测试通常先调 registerOpenAITranslator 注册一个 (OpenAI → factory.Native) translator
-		tr := translator.Find(domain.ProtoOpenAI, factory.Metadata().NativeProtocol)
-		h = composeHandler(factory, tr)
+	if factory != nil && target != domain.ProtoUnknown {
+		if tr := translator.Find(domain.ProtoOpenAI, target); tr != nil {
+			h = protocol.Combine(factory, tr)
+		}
 	}
 	return &testSender{Sender: New(opts...), handler: h}
 }
@@ -164,7 +153,7 @@ func TestSend_Success(t *testing.T) {
 
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 
-	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}})
+	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}}, domain.ProtoOpenAI)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
 	ep.Routing.URL = srv.URL
 
@@ -187,7 +176,7 @@ func TestSend_Success(t *testing.T) {
 func TestSend_NoFactory(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 
-	sender := newSender(t, nil)
+	sender := newSender(t, nil, domain.ProtoUnknown)
 	ep := &domain.Endpoint{ID: 1, Vendor: "noone"}
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
@@ -203,7 +192,7 @@ func TestSend_NoTranslator(t *testing.T) {
 	translator.Reset()
 	t.Cleanup(translator.Reset)
 
-	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoAnthropic}})
+	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}}, domain.ProtoAnthropic)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
@@ -222,7 +211,7 @@ func TestSend_TranslateRequestError(t *testing.T) {
 		tgt:          domain.ProtoOpenAI,
 		translateErr: fmt.Errorf("bad json"),
 	})
-	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}})
+	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}}, domain.ProtoOpenAI)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
@@ -242,7 +231,7 @@ func TestSend_5xxClassifiedTransient(t *testing.T) {
 	defer srv.Close()
 
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
-	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}})
+	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}}, domain.ProtoOpenAI)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
 	ep.Routing.URL = srv.URL
 
@@ -270,9 +259,9 @@ func TestSend_ClassifierRefinesTo429AsCapacity(t *testing.T) {
 
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 	sender := newSender(t, &fakeFactory{
-		meta:       adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI},
+		meta:       adapter.Metadata{Vendor: "fakev"},
 		classifier: stubClassifier{},
-	})
+	}, domain.ProtoOpenAI)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
 	ep.Routing.URL = srv.URL
 
@@ -287,7 +276,7 @@ func TestSend_ClassifierRefinesTo429AsCapacity(t *testing.T) {
 
 func TestSend_NetworkError(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
-	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}})
+	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}}, domain.ProtoOpenAI)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
 	ep.Routing.URL = "http://127.0.0.1:1"
 
@@ -323,7 +312,8 @@ func TestSend_WithCustomHTTPDoer(t *testing.T) {
 		},
 	}
 	sender := newSender(t,
-		&fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}},
+		&fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}},
+		domain.ProtoOpenAI,
 		WithHTTPClient(doer),
 	)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
@@ -348,7 +338,7 @@ func TestSend_WithCustomHTTPDoer(t *testing.T) {
 
 func TestForward_StreamsBodyToWriter(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
-	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}})
+	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}}, domain.ProtoOpenAI)
 
 	resp := &http.Response{
 		StatusCode: 200,
@@ -379,7 +369,7 @@ func TestForward_StreamsBodyToWriter(t *testing.T) {
 
 func TestForward_StripsContentLength(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
-	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}})
+	sender := newSender(t, &fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}}, domain.ProtoOpenAI)
 
 	resp := &http.Response{
 		StatusCode: 200,
@@ -468,7 +458,8 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 
 	hook := &recordingHook{}
 	sender := newSender(t,
-		&fakeFactory{meta: adapter.Metadata{Vendor: "fakev", NativeProtocol: domain.ProtoOpenAI}},
+		&fakeFactory{meta: adapter.Metadata{Vendor: "fakev"}},
+		domain.ProtoOpenAI,
 		WithHooks(hook),
 	)
 	ep := &domain.Endpoint{ID: 7, Vendor: "fakev"}
@@ -527,7 +518,7 @@ func TestHooks_AttemptCompleteFiredOnFailure(t *testing.T) {
 
 	hook := &recordingHook{}
 	// 让 factory 返 nil 触发 Permanent 失败路径
-	sender := newSender(t, nil, WithHooks(hook))
+	sender := newSender(t, nil, domain.ProtoUnknown, WithHooks(hook))
 	ep := &domain.Endpoint{ID: 8, Vendor: "missing"}
 
 	out, _ := sender.Send(context.Background(), ep, newEnv(), []byte("body"))
@@ -561,7 +552,7 @@ func TestHooks_PartialInterfaceIsAllowed(t *testing.T) {
 
 	partial := &onlyClientReqHook{}
 	// factory 缺失走 Permanent 路径
-	sender := newSender(t, nil, WithHooks(partial))
+	sender := newSender(t, nil, domain.ProtoUnknown, WithHooks(partial))
 	ep := &domain.Endpoint{ID: 9}
 	_, _ = sender.Send(context.Background(), ep, newEnv(), []byte("x"))
 
@@ -580,7 +571,7 @@ func TestHooks_MultipleHooksFireInOrder(t *testing.T) {
 		})
 	}
 
-	sender := newSender(t, nil, WithHooks(mk("a"), mk("b"), mk("c")))
+	sender := newSender(t, nil, domain.ProtoUnknown, WithHooks(mk("a"), mk("b"), mk("c")))
 	_, _ = sender.Send(context.Background(), &domain.Endpoint{ID: 1}, newEnv(), []byte("x"))
 
 	if got := strings.Join(order, ","); got != "a,b,c" {

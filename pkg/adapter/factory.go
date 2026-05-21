@@ -1,24 +1,24 @@
-// Package adapter 定义 vendor adapter 的契约 + 注册表。
+// Package adapter 定义 vendor HTTP-layer 的契约 + 注册表。
 //
-// **v0.5 架构（slim adapter + translator）**：
+// **架构定位（v0.6 facade）**：
 //
-//	┌──────────┐       ┌────────────┐       ┌─────────┐       ┌──────────┐
-//	│ Client   │  ───→ │ Translator │  ───→ │ Adapter │  ───→ │ Upstream │
-//	└──────────┘       └────────────┘       └─────────┘       └──────────┘
+//	pkg/protocol.Handler = Combine(adapter.Factory, translator.Translator)
 //
-// Adapter 的责任收窄到只管 HTTP 层（URL / auth headers / TLS / proxy 等 vendor 特定细节），
-// 数据 shape / SSE 解析 / usage 提取等"协议层"任务搬到 pkg/translator。
+// adapter 只管 vendor 特定的 HTTP 层（URL / auth headers / TLS / proxy）；body
+// shape 翻译走 pkg/translator；端到端协议处理走 pkg/protocol.Handler facade。
+// 消费侧（dispatcher / invoker / eligibility）只看 protocol.Handler，不直接接触
+// adapter.Factory——adapter 是 facade 内部细节。
 //
 // **新增 vendor 步骤**：
 //  1. 实现 Factory + Session（slim 版：BuildRequest(body) + Close()）
 //  2. init() 注册到 adapter.Register
-//  3. 如果上游协议跟客户端不同：在 pkg/translator/<from>_<to>/ 加 Translator
+//  3. 如果跟现有 src/tgt 协议组合没覆盖：在 pkg/translator/<from>_<to>/ 加 Translator
 //  4. cmd/gateway 加 blank import
 //
 // 例：
-//   - DeepSeek / ARK：vendor=ark + OpenAI 协议族（identity translator 透传）
-//   - Vertex Gemini：vendor=gemini + openai_gemini Translator 翻译
-//   - Anthropic Claude：vendor=anthropic + openai_anthropic Translator（future）
+//   - DeepSeek / ARK：vendor=ark，endpoint.Protocol=OpenAI（identity translator）
+//   - Vertex Gemini：vendor=gemini，endpoint.Protocol=Gemini（客户端 OpenAI → openai_gemini）
+//   - Anthropic Claude：vendor=anthropic，endpoint.Protocol=Anthropic（identity 或 openai_anthropic）
 package adapter
 
 import (
@@ -32,12 +32,13 @@ import (
 //
 // 由 Factory.Metadata() 返回；启动期就能拿到，可用来：
 //   - 与 ConfigStore 中的 vendor 集合做覆盖比对（漏注册告警）
-//   - 路由层根据 SupportedModalities 做能力过滤
+//   - protocol.Capabilities 透出 SupportedModalities 给 eligibility 过滤
 //   - 调度日志 / metric 标签
-//   - **关键**：M7 用 NativeProtocol 找对应 Translator（envelope.SourceProtocol → NativeProtocol）
+//
+// **不带 NativeProtocol**：协议归属是 endpoint 级属性（domain.Endpoint.Protocol），
+// 不是 vendor 级——同 vendor 可以挂多条 endpoint 走不同协议。
 type Metadata struct {
 	Vendor              string            // vendor 名（跟 endpoints.vendor 对齐）
-	NativeProtocol      domain.Protocol   // 上游使用的协议
 	SupportedModalities []domain.Modality // 能处理的模态
 }
 

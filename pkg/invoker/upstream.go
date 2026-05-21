@@ -43,6 +43,17 @@ type HTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// Stage 标记 Send 内部哪一阶段产出本 Outcome——给 wiring 层翻译成
+// dispatch.Stage 用，让 Policy.Decide 区分 prepare 失败 vs invoke 失败。
+type Stage int
+
+const (
+	// StageInvoke HTTP 调用阶段（默认；成功 / 网络错 / 上游 4xx-5xx 都属此阶段）。
+	StageInvoke Stage = iota
+	// StagePrepare handler.PrepareCall 阶段失败（pre-call 协议转换 / vendor HTTP 构造）。
+	StagePrepare
+)
+
 // Outcome Send 的结果。
 //
 // 成功 = Class==ClassSuccess && Response != nil。Response.Body 由 caller 关
@@ -50,6 +61,7 @@ type HTTPDoer interface {
 // 失败 = Response==nil（Send 已自己 close 失败响应的 body）。
 type Outcome struct {
 	Response *http.Response // 仅成功时填；失败 nil
+	Stage    Stage          // 本次 Outcome 产自哪一阶段
 	Class    selector.ErrorClass
 	HTTPCode int
 	Reason   string

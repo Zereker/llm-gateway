@@ -1,24 +1,22 @@
-// Package translator 把"协议间数据 shape 翻译"从 adapter 抽出来作为独立层。
+// Package translator 协议间数据 shape 翻译（body / SSE / usage）。
 //
-// **架构定位**：
+// **架构定位**（v0.6 facade）：
 //
-//	┌──────────┐       ┌────────────┐       ┌─────────┐       ┌──────────┐
-//	│ Client   │  ───→ │ Translator │  ───→ │ Adapter │  ───→ │ Upstream │
-//	│ (OpenAI) │       │ ↓ TranslateRequest  │ + auth  │       │ (Gemini) │
-//	│          │  ←─── │ ↓ ResponseHandler   │ + URL   │  ←─── │          │
-//	└──────────┘       └────────────┘       └─────────┘       └──────────┘
+//	pkg/protocol.Handler = Combine(adapter.Factory, translator.Translator)
 //
-//	Adapter 关心：怎么打到这个 vendor 的 HTTP（URL / auth / headers）
-//	Translator 关心：协议间 body shape 翻译 + usage 提取
-//	M7 关心：编排
+// translator 只管 body shape；HTTP 层走 pkg/adapter；端到端 Handler 由
+// pkg/protocol.Combine 在请求时按 (srcProto, ep.Protocol) 动态组合。消费侧
+// 只看 protocol.Handler，不直接消费 Translator。
 //
-// **同协议短路**：用 identity translator，request 几乎透传，response 仅做 SSE / usage 解析。
+// **同协议短路**：identity translator 注册在 pkg/translator/identity（OpenAI/
+// Anthropic/Responses 各一个），request 几乎透传，response 仅做 SSE / usage 解析。
 //
 // **跨协议**：每对 (source, target) 一个 translator 实现（pkg/translator/<from>_<to>/）。
-// 流式翻译复杂度高（chunk 边界 + 部分 JSON 解析），v0.5 实现 buffer-then-translate
-// （Flush 时一次性翻整 body），等 v0.6 单独迭代加流式翻译。
+// 流式翻译复杂度高（chunk 边界 + 部分 JSON 解析），当前实现 buffer-then-translate
+// （Flush 时一次性翻整 body）；流式翻译留待后续迭代。
 //
-// **注册**：translator init() 调 Register；启动时 cmd 完成全部 blank import。
+// **注册**：每个 translator 子包 init() 调 Register；cmd 完成全部 blank import。
+// protocol.DefaultLookup 通过 translator.Find(src, tgt) 在请求时检索。
 //
 // 详见 docs/architecture/02-protocol-translation.md。
 package translator
@@ -36,7 +34,7 @@ import (
 type Translator interface {
 	// Source 客户端使用的协议（envelope.SourceProtocol）。
 	Source() domain.Protocol
-	// Target 上游使用的协议（adapter.Metadata().NativeProtocol）。
+	// Target 上游使用的协议（match domain.Endpoint.Protocol）。
 	Target() domain.Protocol
 
 	// TranslateRequest 客户端 body → 上游 body。

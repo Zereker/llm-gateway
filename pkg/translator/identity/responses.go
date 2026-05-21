@@ -35,9 +35,6 @@ import (
 // 大多数走 Responses 协议的客户端都直连 OpenAI 上游。
 type responsesTranslator struct{}
 
-// ResponsesTranslator (Responses → Responses) identity translator 公共构造器。
-func ResponsesTranslator() translator.Translator { return responsesTranslator{} }
-
 func (responsesTranslator) Source() domain.Protocol { return domain.ProtoResponses }
 func (responsesTranslator) Target() domain.Protocol { return domain.ProtoResponses }
 

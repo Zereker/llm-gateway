@@ -56,6 +56,7 @@ func (s *Sender) Send(
 
 	if handler == nil {
 		out = Outcome{
+			Stage:   StagePrepare,
 			Class:   selector.ClassPermanent,
 			Reason:  "no handler for endpoint+srcProto",
 			Latency: time.Since(start),
@@ -119,18 +120,21 @@ func (s *Sender) Send(
 }
 
 // handlePrepareError 把 protocol.PrepareError 翻译成 Outcome + retErr。
+// 所有 prepare 阶段失败一律标 Stage=StagePrepare，让 Policy 区分 prepare vs invoke。
 func handlePrepareError(err error, start time.Time) (Outcome, error) {
 	var pe *protocol.PrepareError
 	if errors.As(err, &pe) {
 		switch pe.Phase {
 		case protocol.PhaseTranslate:
 			return Outcome{
+				Stage:   StagePrepare,
 				Class:   selector.ClassInvalid,
 				Reason:  "translate request: " + pe.Err.Error(),
 				Latency: time.Since(start),
 			}, fmt.Errorf("%w: %v", ErrInvalidRequest, pe.Err)
 		case protocol.PhaseBuild:
 			return Outcome{
+				Stage:   StagePrepare,
 				Class:   selector.ClassPermanent,
 				Reason:  "build request: " + pe.Err.Error(),
 				Latency: time.Since(start),
@@ -138,6 +142,7 @@ func handlePrepareError(err error, start time.Time) (Outcome, error) {
 		}
 	}
 	return Outcome{
+		Stage:   StagePrepare,
 		Class:   selector.ClassPermanent,
 		Reason:  "prepare: " + err.Error(),
 		Latency: time.Since(start),
@@ -162,7 +167,7 @@ func emitUpstreamMetrics(ep *domain.Endpoint, out Outcome) {
 		"vendor", vendor,
 		"endpoint_id", endpointID,
 		"model", model,
-		"native_protocol", "",
+		"protocol", ep.Protocol.String(),
 		"result", result,
 		"error_class", errClass,
 	)

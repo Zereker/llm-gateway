@@ -16,9 +16,8 @@ import (
 // endpoint 的 adapter + 选中的 translator 组合成 Handler；不在 init() 时静态
 // 注册。这是 v0.6 把"协议归属"从 vendor 级移到 endpoint 级的体现。
 //
-// **约束**：translator.Target() 必须 == 调用方期望的上游协议（DefaultLookup
-// 用 ep.Protocol；老 endpoint 缺失时 fallback 到 adapter.Metadata().NativeProtocol）。
-// Combine 不验证（运行期高频路径），由 DefaultLookup 在挑选 translator 时保证。
+// **约束**：translator.Target() 必须 == ep.Protocol；Combine 不验证（运行期
+// 高频路径），由 DefaultLookup 在按 translator.Find(src, ep.Protocol) 挑选时保证。
 func Combine(ad adapter.Factory, tr translator.Translator) Handler {
 	if ad == nil {
 		panic("protocol.Combine: nil adapter.Factory")

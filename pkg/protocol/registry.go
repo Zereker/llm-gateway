@@ -34,20 +34,14 @@ type Lookup interface {
 type DefaultLookup struct{}
 
 func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler {
-	if ep == nil {
+	if ep == nil || ep.Protocol == domain.ProtoUnknown {
 		return nil
 	}
 	ad := adapter.Get(ep.Vendor)
 	if ad == nil {
 		return nil
 	}
-	// endpoint 的目标协议：admin 显式配置；缺省时 fallback 到 adapter Metadata
-	// 的 NativeProtocol（保留 v0.5 旧行为，避免老 endpoint 配置上线即坏）。
-	tgtProto := ep.Protocol
-	if tgtProto == domain.ProtoUnknown {
-		tgtProto = ad.Metadata().NativeProtocol
-	}
-	tr := translator.Find(srcProto, tgtProto)
+	tr := translator.Find(srcProto, ep.Protocol)
 	if tr == nil {
 		return nil
 	}
