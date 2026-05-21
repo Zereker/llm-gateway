@@ -1,7 +1,7 @@
 // Package server 是进程 lifecycle manager：把"打开 infra 依赖 + 服务运行 +
 // 收到信号优雅退出 + 倒序 close 全部依赖"这套样板代码集中到一处。
 //
-// cmd/gateway 与 cmd/admin 都通过本包装配，省掉每个 cmd 各自写一份生命周期代码。
+// cmd/gateway 通过本包装配，省掉自己写生命周期代码。
 //
 // 用法：
 //

@@ -1,19 +1,14 @@
-// Package config 加载两个独立服务的启动配置：
-//
-//   - config.go  →  Config  + Load        （gateway / 数据平面 → gateway.yaml）
-//   - admin.go   →  AdminConfig + LoadAdmin（admin / 控制平面 → admin.yaml）
-//
-// 两个 *Config 完全独立、各自独立 yaml。
+// Package config 加载 gateway 启动配置（gateway.yaml 的根 = Config 类型）。
 //
 // **infra 子系统的 Config 类型住在 pkg/infra**（infra.DBConfig / infra.KafkaConfig
 // 等），pkg/config 通过 import 引用——这样新增 infra 时 schema 演进的所有权
 // 集中在 infra 那边，pkg/config 只是 yaml 编排层。
 //
-// 区分于 pkg/repo —— pkg/repo 是 admin 可增删改的"业务记录"
-// （ModelService / Endpoint）；pkg/config 是启动时一次性读入的"进程本身的设置"
-// （监听端口、超时、apikeys 文件、DB 连接、日志路径、admin token 等）。
+// 区分于 pkg/repo —— pkg/repo 是"业务记录"（ModelService / Endpoint 等，由
+// deployer 直接 SQL 维护）；pkg/config 是启动时一次性读入的"进程本身的设置"
+// （监听端口、超时、DB 连接、日志路径等）。
 //
-// 示例：configs/local/gateway.yaml + configs/local/admin.yaml。
+// 示例：configs/local/gateway.yaml。
 package config
 
 import (
@@ -47,7 +42,7 @@ type Config struct {
 
 	// DataKey 是 AES-256-GCM 的 KEK（hex-encoded 32 字节 = 64 字符）。
 	// gateway 启动期调 repo.SetDataKey 装载；用于解密 endpoints.auth 列。
-	// 必须跟 admin.yaml 的 data_key 字面相同（共享同一份密文存储）。
+	// deployer 加密 endpoints.auth 列时必须用同一个 KEK。
 	// 生产应从 secret manager 注入，**不要 commit 真实 key**。
 	DataKey string `yaml:"data_key"`
 }
@@ -59,7 +54,7 @@ type Config struct {
 //	  inmemory   — 进程内余额跟踪（适合单实例 demo / 单主账号）；丢内存重启清零
 //
 // inmemory 时 default_balance 是新 user 首次出现时分配的余额（USD）。
-// 0 = safe-by-default 拒绝（必须 admin 显式 SetBalance 才能用）。
+// 0 = safe-by-default 拒绝（要用 inmemory budget 必须显式 SetBalance）。
 type BudgetConfig struct {
 	Driver         string  `yaml:"driver"`
 	DefaultBalance float64 `yaml:"default_balance"`
@@ -168,7 +163,7 @@ type RequestConfig struct {
 
 // PathsConfig 文件型数据路径。
 //
-// v0.1：apikeys / model_services / endpoints 全部迁到 DB（admin 管理），
+// v0.1：apikeys / model_services / endpoints 全部迁到 DB（直接 SQL 维护），
 // usage 输出迁到 outbox 段。本结构体当前为空但保留——未来如果有"必须是文件"
 // 的资源（例如 TLS 证书），加在这里。
 type PathsConfig struct{}
@@ -250,7 +245,7 @@ type SelectorConfig struct {
 
 // CooldownConfig 各 ErrorClass 对应的冷却时长。
 //
-// 命中 admin 标记后，candidate 在 TTL 内被 CooldownFilter 排除。
+// 命中冷却标记后，candidate 在 TTL 内被 CooldownFilter 排除。
 type CooldownConfig struct {
 	Transient time.Duration `yaml:"transient"` // 上游 5xx / 网络错 / timeout 等暂时性
 	Capacity  time.Duration `yaml:"capacity"`  // 上游 429 / quota 满 / overloaded

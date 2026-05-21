@@ -11,7 +11,7 @@ import (
 
 // QuotaPolicyProvider M6 RateLimit middleware 用：按 ID 加载限流策略。
 //
-// 只声明读方法（admin 写走 pkg/admin.QuotaPolicyStore）。
+// 只声明读方法——写直接走 SQL（quota_policies 表）。
 //
 // **v0.5 直查 DB，无缓存**——M6 每请求 2 次（ account + apikey policy）。
 // 真上量后加 LRU + TTL；schema 不变。
@@ -19,7 +19,7 @@ import (
 // Implementations MUST be safe for concurrent use。
 type QuotaPolicyProvider interface {
 	// GetByID 取指定 policy；找不到 / 已软删 / disabled 都返回 (nil, nil)
-	// 让 M6 当作"该层不限"——避免 admin 临时禁用 policy 时锁死所有引用方。
+	// 让 M6 当作"该层不限"——避免 deployer 临时禁用 policy 时锁死所有引用方。
 	GetByID(ctx context.Context, id int64) (*QuotaPolicy, error)
 }
 

@@ -1,42 +1,28 @@
-# 本地开发 + E2E 测试 stack。
-#
-# **两档 profile**：
-#   - 默认（无 profile）：mysql + redis + redpanda + debezium
-#                       适合本地 `make run-admin` / `make run-gateway` 跑 Go 进程
-#   - --profile e2e   ：上述 + admin + gateway + mockupstream + nacos + flink 集群
-#                       适合一键全栈端到端测试
+# 本地开发 stack——只包含 gateway 跑起来需要的底层 infra：
+#   - mysql       业务数据（model_services / endpoints / api_keys / pricing 等）
+#   - redis       L1 cache + ratelimit bucket store
+#   - redpanda    usage event Kafka 投递（billing.usage.recorded.v1）
+#   - debezium    MySQL binlog → Redis Stream（gateway L1 cache 失效通路）
 #
 # 命令速查：
-#   docker compose up -d                          # 底层 stack（轻量）
-#   docker compose --profile e2e up -d            # 全栈 E2E
-#   docker compose --profile e2e down -v          # 全清
-#   ./scripts/e2e-smoke.sh                        # 跑冒烟测试
-#   make e2e                                      # = compose --profile e2e up + smoke
+#   docker compose up -d        # 起 stack
+#   docker compose down -v      # 全清（数据卷一起删）
+#
+# 上层进程（gateway / mockupstream）跑在宿主：
+#   make run-gateway       # 启动期自跑 infra.Migrate 建表
+#   make run-mockupstream  # 调试用 mock 上游（接 mockupstream 见 cmd/mockupstream）
 #
 # 端口映射（host → container）：
 #   3306  → mysql
 #   6379  → redis
 #   9092  → redpanda kafka
-#   8080  → gateway
-#   8081  → admin
-#   8848  → nacos http
-#   8081/9090 → mockupstream（容器内 9090；不映射到 host，gateway 直接走 compose 网）
-#   8082  → flink-jobmanager web UI
 #
-# **Debezium CDC 链路**（默认 profile 就启）：
-#   admin POST → MySQL → binlog → Debezium → Redis Stream `llm_gateway.llm_gateway.<table>`
+# **Debezium CDC 链路**（启动 stack 后自动跑）：
+#   SQL 写入 → MySQL binlog → Debezium → Redis Stream
+#     `llm_gateway.llm_gateway.<table>`
 #   gateway XREAD → 失效 L1 cache（实时拿到最新 endpoint / api_key / pricing）
-#
-# **E2E profile 链路**：
-#   client → gateway:8080 → mockupstream:9090（不走真上游） → 响应带 usage
-#   gateway 把 usage 落 file（/var/lib/llm-gateway/usage.jsonl）+ Kafka
-#   Flink TaskManager 消费 Kafka → 窗口聚合 → enrich pricing → 写 batches.jsonl
 
 services:
-
-  # ===========================================================================
-  # 默认 profile：底层 stack
-  # ===========================================================================
 
   mysql:
     image: mysql:8.0
@@ -107,7 +93,7 @@ services:
       retries: 20
 
   redpanda-init:
-    # 一次性：预建 billing 用的 topic（Flink earliest 起点要 topic 已存在）
+    # 一次性：预建 billing 用的 topic（gateway outbox 投递目的地）
     image: redpandadata/redpanda:latest
     container_name: llm-gateway-redpanda-init
     depends_on:
@@ -139,229 +125,8 @@ services:
       timeout: 3s
       retries: 20
 
-  # ===========================================================================
-  # E2E profile：admin + gateway + mockupstream
-  # ===========================================================================
-
-  admin:
-    profiles: [e2e]
-    container_name: llm-gateway-admin
-    build:
-      context: .
-      target: admin-prebuilt
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
-    ports:
-      - "8081:8081"
-    volumes:
-      - ./configs/docker/admin.yaml:/etc/llm-gateway/admin.yaml:ro
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8081/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
-
-  gateway:
-    profiles: [e2e]
-    container_name: llm-gateway-gateway
-    build:
-      context: .
-      target: gateway-prebuilt
-    restart: unless-stopped
-    depends_on:
-      admin:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      redpanda:
-        condition: service_healthy
-      mockupstream:
-        condition: service_started
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./configs/docker/gateway.yaml:/etc/llm-gateway/gateway.yaml:ro
-      - gateway-data:/var/lib/llm-gateway
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
-
-  mockupstream:
-    profiles: [e2e]
-    container_name: llm-gateway-mockupstream
-    build:
-      context: .
-      target: mockupstream-prebuilt
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9090/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  # ===========================================================================
-  # E2E profile：Nacos（extractor spec 配置中心）
-  # ===========================================================================
-
-  nacos:
-    profiles: [e2e]
-    image: nacos/nacos-server:v2.3.2-slim
-    container_name: llm-gateway-nacos
-    restart: unless-stopped
-    environment:
-      MODE: standalone
-      PREFER_HOST_MODE: hostname
-      EMBEDDED_STORAGE: embedded
-      JVM_XMS: 256m
-      JVM_XMX: 256m
-    ports:
-      - "8848:8848"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8848/nacos/v1/console/health/readiness >/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 30s
-
-  nacos-init:
-    profiles: [e2e]
-    image: curlimages/curl:8.10.1
-    container_name: llm-gateway-nacos-init
-    depends_on:
-      nacos:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "/specs/push-specs.sh"]
-    environment:
-      NACOS_HOST: nacos:8848
-    volumes:
-      - ./configs/nacos:/specs:ro
-    restart: "no"
-
-  # ===========================================================================
-  # E2E profile：Flink 集群（JobManager + TaskManager + job-submit）
-  # ===========================================================================
-
-  flink-jobmanager:
-    profiles: [e2e]
-    image: flink:1.20.0-scala_2.12-java17
-    container_name: llm-gateway-flink-jm
-    restart: unless-stopped
-    command: ["jobmanager"]
-    ports:
-      - "8082:8081"          # Flink Web UI（避开 admin 的 8081）
-    environment:
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
-        rest.address: flink-jobmanager
-        rest.bind-address: 0.0.0.0
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/config >/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 15s
-
-  flink-taskmanager:
-    profiles: [e2e]
-    image: flink:1.20.0-scala_2.12-java17
-    container_name: llm-gateway-flink-tm
-    restart: unless-stopped
-    command: ["taskmanager"]
-    depends_on:
-      flink-jobmanager:
-        condition: service_healthy
-    environment:
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
-        taskmanager.numberOfTaskSlots: 4
-        taskmanager.memory.process.size: 1728m
-    volumes:
-      - billing-log:/var/log/billing-aggregator    # LogSink 输出
-      - flink-jar:/opt/flink/usrlib:ro              # 共享 jar（与 builder + submit 共用）
-
-  flink-jar-builder:
-    # 一次性：把宿主 `mvn package` 出的 jar 拷到命名卷 flink-jar，供 jobmanager /
-    # taskmanager / submit 三方共用。**前提**：本地先跑 `make flink-jar`（用宿主
-    # JDK17+/Maven3.9+）生成 flink/billing-aggregator/target/billing-aggregator.jar。
-    #
-    # 沙箱 / 离线场景下，container 内 mvn 拉依赖会因 TLS / proxy 失败；把构建上提到
-    # 宿主既绕开网络问题，又能复用 ~/.m2 本地缓存。
-    profiles: [e2e]
-    image: alpine:3.20
-    container_name: llm-gateway-flink-builder
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        if [ ! -f /src/target/billing-aggregator.jar ]; then
-          echo "[builder] missing /src/target/billing-aggregator.jar — run 'make flink-jar' on host first"
-          exit 1
-        fi
-        cp /src/target/billing-aggregator.jar /out/
-        echo "[builder] copied jar ($(wc -c < /out/billing-aggregator.jar) bytes) to flink-jar volume"
-    volumes:
-      - ./flink/billing-aggregator:/src:ro
-      - flink-jar:/out
-    restart: "no"
-
-  flink-job-submit:
-    # 一次性：等 jar + jobmanager + nacos-init 都就绪后 `flink run` 提交作业
-    profiles: [e2e]
-    image: flink:1.20.0-scala_2.12-java17
-    container_name: llm-gateway-flink-submit
-    depends_on:
-      flink-jobmanager:
-        condition: service_healthy
-      flink-taskmanager:
-        condition: service_started
-      flink-jar-builder:
-        condition: service_completed_successfully
-      nacos-init:
-        condition: service_completed_successfully
-      redpanda-init:
-        condition: service_completed_successfully
-      admin:
-        condition: service_healthy        # admin 跑过 Migrate，pricing_versions 表已建
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        echo "[submit] dispatching billing-aggregator.jar to jobmanager"
-        flink run -d \
-          -m flink-jobmanager:8081 \
-          -c com.zereker.billing.Main \
-          /opt/flink/usrlib/billing-aggregator.jar
-        echo "[submit] done"
-    environment:
-      # E2E：1 分钟窗口 + 5s out-of-orderness + 10s idleness，让 smoke 单事件场景
-      # 在 ~15-20s 内触发窗口（生产用 60min / 60s / 300s）
-      WINDOW_MINUTES: "1"
-      ALLOWED_LATENESS_MINUTES: "1"
-      OUT_OF_ORDERNESS_SECONDS: "5"
-      IDLENESS_SECONDS: "10"
-      KAFKA_BOOTSTRAP_SERVERS: "redpanda:9092"
-      # 注意：MySQL JDBC 的 characterEncoding 用 Java encoding 名（UTF-8），
-      # **不是** MySQL collation 名 (utf8mb4)。容器实际表 collation 由 server 决定（utf8mb4_unicode_ci）。
-      PRICING_JDBC_URL: "jdbc:mysql://mysql:3306/llm_gateway?useUnicode=true&characterEncoding=UTF-8"
-      PRICING_DB_USER: "root"
-      PRICING_DB_PASSWORD: ""
-      NACOS_SERVER: "nacos:8848"
-      NACOS_GROUP: "DEFAULT_GROUP"
-    volumes:
-      - flink-jar:/opt/flink/usrlib:ro
-    restart: "no"
-
 volumes:
   mysql-data:
   redis-data:
   redpanda-data:
   debezium-data:
-  gateway-data:
-  billing-log:
-  flink-jar:

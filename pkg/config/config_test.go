@@ -133,69 +133,6 @@ func TestLoad_RejectsBadYAML(t *testing.T) {
 	}
 }
 
-func TestLoadAdmin_AppliesDefaults(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "admin.yaml")
-	_ = os.WriteFile(p, []byte("admin:\n  token: my-token\n"), 0o644)
-
-	cfg, err := LoadAdmin(p)
-	if err != nil {
-		t.Fatalf("LoadAdmin: %v", err)
-	}
-	if cfg.Server.Addr != ":8081" {
-		t.Errorf("Server.Addr = %q, want :8081", cfg.Server.Addr)
-	}
-	if cfg.Admin.Token != "my-token" {
-		t.Errorf("Admin.Token = %q", cfg.Admin.Token)
-	}
-	if cfg.Database.Driver != infra.DriverMySQL {
-		t.Errorf("Database.Driver = %q", cfg.Database.Driver)
-	}
-	if cfg.Database.DSN == "" {
-		t.Error("Database.DSN empty after defaults")
-	}
-}
-
-func TestLoadAdmin_HonorsYAMLValues(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "admin.yaml")
-	_ = os.WriteFile(p, []byte(`
-server:
-  addr: "127.0.0.1:9999"
-admin:
-  token: secret-tok
-database:
-  driver: mysql
-  dsn: user:pwd@tcp(db.example.com:3306)/prod?parseTime=true
-`), 0o644)
-
-	cfg, err := LoadAdmin(p)
-	if err != nil {
-		t.Fatalf("LoadAdmin: %v", err)
-	}
-	if cfg.Server.Addr != "127.0.0.1:9999" {
-		t.Errorf("Server.Addr = %q", cfg.Server.Addr)
-	}
-	if cfg.Admin.Token != "secret-tok" {
-		t.Errorf("Admin.Token = %q", cfg.Admin.Token)
-	}
-	if cfg.Database.DSN != "user:pwd@tcp(db.example.com:3306)/prod?parseTime=true" {
-		t.Errorf("Database.DSN was rewritten unexpectedly: %q", cfg.Database.DSN)
-	}
-}
-
-func TestLoadAdmin_TokenStaysEmptyByDefault(t *testing.T) {
-	// Token 没默认；缺失时 adminAuthMW 必须拒绝所有请求。
-	dir := t.TempDir()
-	p := filepath.Join(dir, "admin.yaml")
-	_ = os.WriteFile(p, []byte(""), 0o644)
-
-	cfg, _ := LoadAdmin(p)
-	if cfg.Admin.Token != "" {
-		t.Errorf("Admin.Token should default to empty, got %q", cfg.Admin.Token)
-	}
-}
-
 func TestApplyDefaults_OnZeroConfig(t *testing.T) {
 	var c Config
 	c.ApplyDefaults()

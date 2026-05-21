@@ -14,58 +14,65 @@ targets are tracked in [`docs/architecture`](docs/architecture/).
 ```
 llm-gateway/
 ├── cmd/
-│   ├── gateway/         data plane: serves /v1/* LLM requests, reads DB
-│   └── admin/           control plane: CRUD APIs over model_services / endpoints,
-│                          owns schema (runs Migrate on boot)
+│   ├── gateway/           data plane: serves /v1/* LLM requests, reads DB,
+│   │                      runs infra.Migrate on boot to bootstrap schema
+│   └── mockupstream/      dev/test helper: fake upstream that returns canned
+│                          usage; used for local smoke testing
 ├── pkg/
-│   ├── config/          gateway.yaml loader (boot config)
-│   ├── domain/          shared domain types (RequestContext, Endpoint, ...)
-│   ├── infra/           infrastructure adapters (sqlx + schema, kafka producer)
-│   ├── server/          process lifecycle: open infra, run http, close in LIFO order
-│   ├── repo/            data-access layer: Reader/Writer interfaces + sqlx impls
-│   ├── middleware/      M1-M10 + helpers + default impls
-│   ├── router/          gin engine + per-modality route registration
+│   ├── config/            gateway.yaml loader (boot config)
+│   ├── domain/            shared domain types (RequestContext, Endpoint, ...)
+│   ├── infra/             infra adapters + schema.sql + Migrate
+│   ├── server/            process lifecycle: open infra, run http, close in LIFO
+│   ├── repo/              data-access layer: Reader interfaces + sqlx impls
+│   ├── middleware/        M1-M10 + helpers + default impls
+│   ├── router/            gin engine + per-modality route registration
 │   │                      (chat / image / audio / embedding files)
-│   ├── adapter/         vendor-pluggable adapters; Factory + Session contracts
-│   │   └── openai/      OpenAI / OpenAI-compatible adapter
-│   ├── schedule/        endpoint selection abstractions (v0.5+ full impl)
-│   ├── ratelimit/       rate-limit checker abstractions (v0.5+ full impl)
-│   ├── usage/           Usage extraction + outbox (file | kafka) + pricing
-│   ├── trace/           Tracer abstraction + SlogTracer default
-│   └── metric/          Prometheus metric name constants
-├── docs/architecture/   design docs (00-overview through 06-pluggable-infra)
-└── configs/            per-environment configurations (local / prod / ...)
+│   ├── dispatch/          调度执行：Dispatcher + Policies +
+│   │                      Selector / InvokerFactory / EndpointQuota /
+│   │                      CandidateSource ports
+│   │   └── adapters/      默认 port 实现（组合 selector / invoker / ratelimit primitives）
+│   ├── selector/          primitives：filters / scorer / picker / cooldown / Scheduler
+│   ├── invoker/           primitives：HTTP call + forward stream
+│   ├── protocol/          facade：Handler = Combine(adapter, translator)
+│   │   ├── openai/        OpenAI vendor + ark alias
+│   │   ├── anthropic/     Anthropic vendor
+│   │   └── gemini/        Google Gemini vendor
+│   ├── adapter/           internal contract（被 protocol.Combine 包成 Handler）
+│   ├── translator/        body shape 转换：identity + 跨协议 pairs
+│   ├── moderation/        Moderator + 响应流装饰器 + ctx helpers
+│   ├── ratelimit/         primitives：Store + Bucket + endpoint bucket helpers
+│   ├── usage/             Usage extraction + outbox (file | kafka) + pricing
+│   ├── trace/             Tracer abstraction + SlogTracer default
+│   └── metric/            Prometheus metric name constants
+├── docs/architecture/     design docs (00-overview through 08-observability)
+└── configs/               per-environment configurations (local / prod / docker)
 ```
 
 ## Quick start
 
-The two services are independent binaries. **Boot order: stack → admin → gateway**.
-Admin owns the DB schema (runs `Migrate` on boot); gateway only reads.
+Gateway is one binary that runs `infra.Migrate` on boot to bootstrap the schema.
+Business data (model_services / endpoints / api_keys / pricing / quota_policies /
+subscriptions / accounts) is managed by inserting SQL directly into MySQL —
+this repository does not ship a control-plane / admin REST API.
 
 ```sh
-# 1. Start the local stack (MySQL + Redis + Redpanda) via Docker.
-docker compose up -d
-# (or: make stack)
+# 1. Start the local stack (MySQL + Redis + Redpanda + Debezium) via Docker.
+make stack
+# (or: docker compose up -d)
 
-# 2. Start admin — connects to MySQL + creates tables.
-make run-admin
-# (or: go run ./cmd/admin -config ./configs/local/admin.yaml)
-
-# 3. Insert a model_service + an endpoint via the admin REST API.
-TOKEN=local-dev-token
-
-curl -X POST http://localhost:8081/admin/v1/modelservices \
-  -H "X-Admin-Token: $TOKEN" -H "Content-Type: application/json" \
-  -d '{"service_id":"openai/gpt-4o","model":"gpt-4o","group":"default"}'
-
-curl -X POST http://localhost:8081/admin/v1/endpoints \
-  -H "X-Admin-Token: $TOKEN" -H "Content-Type: application/json" \
-  -d '{"id":"openai_main","vendor":"openai","model":"gpt-4o","group":"default",
-       "url":"https://api.openai.com/v1/chat/completions",
-       "api_key":"sk-REPLACE-ME"}'
-
-# 4. Start gateway — Open + repo.CheckSchema; fails fast if step 2 was skipped.
+# 2. Start gateway — runs infra.Migrate on boot to create tables.
 make run-gateway
+# (or: go run ./cmd/gateway -config ./configs/local/gateway.yaml)
+
+# 3. Insert a model_service + endpoint + api_key directly via SQL.
+#    Example seed: see examples/full-config/seed.sql
+mysql -h 127.0.0.1 -uroot llm_gateway < examples/full-config/seed.sql
+
+# 4. Send a request.
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-test-alice" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi!"}]}'
 ```
 
 ### Tests
@@ -73,36 +80,12 @@ make run-gateway
 ```sh
 make test               # unit tests; SQL tests skip without MYSQL_DSN
 make test-integration   # bring up stack, run all tests including SQL/outbox
-make e2e                # full E2E: admin + gateway + mock upstream + Nacos + Flink
-                        # 一键起栈 + 跑冒烟测试（详见下方）
 ```
 
-### E2E（全栈端到端）
-
-`make e2e` 在 `--profile e2e` 下额外起一组容器，跑完整流：
-**admin → MySQL（migrate）→ Debezium CDC → Redis → gateway → mockupstream
-→ outbox（file + Kafka）→ Flink 计费聚合 → batches.jsonl**。
-
-| 服务 | 镜像 / 来源 | 端口（host） | 作用 |
-|---|---|---|---|
-| `admin` | 本仓 Dockerfile target=admin | 8081 | CRUD + 启动期 Migrate |
-| `gateway` | 本仓 Dockerfile target=gateway | 8080 | 数据面，跑 M1-M10 |
-| `mockupstream` | 本仓 Dockerfile target=mockupstream | — | OpenAI/Anthropic/Gemini 假上游 |
-| `nacos` | nacos/nacos-server:v2.3.2-slim | 8848 | Flink extractor spec 配置中心 |
-| `nacos-init` | curlimages/curl | — | 一次性：把 configs/nacos/*.yaml 推到 Nacos |
-| `flink-jobmanager` + `taskmanager` | flink:1.20-java17 | 8082 | Flink 集群 |
-| `flink-jar-builder` | maven:3.9-temurin-17 | — | 一次性：mvn package → 共享卷 |
-| `flink-job-submit` | flink:1.20-java17 | — | 一次性：flink run 提交作业 |
-| `redpanda-init` | redpandadata/redpanda | — | 一次性：预建 billing topic |
-
-冒烟流程（scripts/e2e-smoke.sh）：admin 串完 quota → account → model → subscription
-→ pricing → endpoint → api_key → 等 Debezium → curl gateway → 校验
-usage.jsonl + Kafka topic + Flink batches.jsonl。
-首跑会拉 ~3GB 镜像 + 跑 mvn package（~2 分钟）；二次跑命中缓存只要十几秒。
-
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the
-apikeys file path, and the database connection. Defaults are sensible — see
-[`pkg/config/config.go`](pkg/config/config.go) for the full schema.
+database connection, outbox driver, and middleware tunables. Defaults are
+sensible — see [`pkg/config/config.go`](pkg/config/config.go) for the full
+schema.
 
 The gateway listens on `:8080` by default. With the bundled config:
 
@@ -110,47 +93,31 @@ The gateway listens on `:8080` by default. With the bundled config:
 |----------|--------|-------|
 | `/healthz` | GET | liveness probe |
 | `/readyz` | GET | readiness probe |
-| `/metrics` | GET | Prometheus scrape (v0.1: stub) |
+| `/metrics` | GET | Prometheus scrape |
 | `/v1/chat/completions` | POST | OpenAI Chat Completions |
-| `/v1/messages` | POST | Anthropic-style chat (v0.5+) |
+| `/v1/messages` | POST | Anthropic-style chat |
 | `/v1/embeddings` | POST | OpenAI Embeddings |
-| `/v1/images/{generations,edits,variations}` | POST | OpenAI Images (v0.5+ adapter) |
-| `/v1/audio/{speech,transcriptions,translations}` | POST | TTS + ASR (v0.5+ adapter) |
+| `/v1/images/{generations,edits,variations}` | POST | OpenAI Images |
+| `/v1/audio/{speech,transcriptions,translations}` | POST | TTS + ASR |
 
 Routes are defined per-modality under [`pkg/router/`](pkg/router/) — each
 modality file (`chat.go` / `image.go` / `audio.go` / `embedding.go`) registers
 its own paths and explicitly lists its middleware chain.
 
-### Send a request
-
-```sh
-curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-test-alice" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi!"}]}'
-```
-
-The gateway authenticates `sk-test-alice` against `configs/local/apikeys.json`,
-forwards to the OpenAI endpoint stored in MySQL (`llm_gateway.endpoints`), and
-writes a usage event to `/tmp/llm-gateway-usage.log` (file outbox; switch to
-Kafka via `usage_events.driver: kafka` in gateway.yaml).
-
 ### Configuration files
 
 Per-environment configs live under [`configs/`](configs/) (see
-[`configs/README.md`](configs/README.md) for layout + secret-management
-recommendations).
+[`configs/README.md`](configs/README.md)).
 
-A single environment directory contains:
+A single environment directory contains one file:
 - `gateway.yaml` — server / middleware / database / redis / outbox
-- `admin.yaml` — admin server config (separate binary, port :8081)
 
-`accounts`, `api_keys`, `model_services`, `subscriptions`, `endpoints`, and
-`quota_policies` live in MySQL — `cmd/admin` owns the schema
-(runs `infra.Migrate` on boot) and exposes CRUD over `/admin/v1/...`.
+Business data lives in MySQL. The gateway runs `infra.Migrate` on boot to
+create tables; CRUD is performed by inserting SQL directly. Debezium CDC pushes
+binlog changes into Redis Streams, and the gateway invalidates its L1 cache in
+real time.
 
-Reload requires restart in v0.1; hot-reload (gateway polling DB / pg LISTEN)
-is in v0.5+.
+Reload of `gateway.yaml` requires restart.
 
 ## Build / test
 

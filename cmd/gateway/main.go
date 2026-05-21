@@ -8,7 +8,8 @@
 // database / outbox 四段（apikeys 已迁 DB，不再有 paths.apikeys）。
 //
 // 路由与 middleware 装配在 pkg/router；DB（model_services / endpoints / api_keys）
-// 由 admin 进程通过 cmd/admin 维护，gateway 启动期 CheckSchema + 读全量。
+// 启动时 gateway 自己跑 infra.Migrate 建表；业务数据（model_services / endpoints /
+// api_keys / pricing 等）由 deployer 直接 SQL 插入维护（本仓库不带控制平面）。
 //
 // lifecycle（infra Open + 信号处理 + 倒序 close）走 pkg/server，本文件只做
 // 配置加载 + 业务装配 + 把 engine 交给 server。
@@ -30,6 +31,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/contentlog"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/health"
+	"github.com/zereker/llm-gateway/pkg/infra"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/repo"
@@ -90,9 +92,10 @@ func run(configPath string) error {
 // buildEngine 构造 deps 并装配 router.NewEngine；同时返回 *server.Server，
 // 供调用方决定 Serve（生产）或 Close（测试）。
 //
-// gateway 不拥有 schema：启动只 OpenDB + repo.CheckSchema 验证表存在；缺表
-// 直接报错退出（schema 由 cmd/admin 维护）。表里没有 model_service / endpoint /
-// api_key 时 gateway 仍能启动，请求过来时 M5 / M7 / M2 会 404 / 503 / 401。
+// gateway 启动期：OpenDB → infra.Migrate（IF NOT EXISTS 幂等）→ repo.CheckSchema
+// 验证表存在。schema 演进直接改 pkg/infra/schema.sql；表里没有
+// model_service / endpoint / api_key 时 gateway 仍能启动，请求过来时 M5 / M7 / M2
+// 会 404 / 503 / 401。
 //
 // 任意中间步骤失败时通过 defer 把已 open 的 infra 一并 Close，避免泄漏。
 func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, err error) {
@@ -106,6 +109,9 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	sqldb, err := srv.OpenDB(cfg.Database)
 	if err != nil {
 		return nil, nil, fmt.Errorf("infra.Open: %w", err)
+	}
+	if err = infra.Migrate(context.Background(), sqldb); err != nil {
+		return nil, nil, fmt.Errorf("infra.Migrate: %w", err)
 	}
 	if err = repo.CheckSchema(context.Background(), sqldb); err != nil {
 		return nil, nil, err

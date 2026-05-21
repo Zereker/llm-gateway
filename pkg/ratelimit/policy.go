@@ -45,8 +45,8 @@ type CachedPolicy struct {
 // **设计**：sync.Map + 每条目带过期时间（lazy 清理）。
 // policy 数量预期几十量级，不需要 LRU；TTL 控制最长 staleness。
 //
-// **TTL 默认 30s**：admin 改 policy 后窗口期内 gateway 仍走旧值——可接受
-// （限流不需要严格实时；admin 大改时手动 flush 或重启）。
+// **TTL 默认 30s**：SQL 改 policy 后窗口期内 gateway 仍走旧值——可接受
+// （限流不需要严格实时；大改时手动 Invalidate 或重启）。
 type PolicyCache struct {
 	upstream repo.QuotaPolicyProvider
 	ttl      time.Duration
@@ -101,7 +101,7 @@ func (c *PolicyCache) Get(ctx context.Context, id int64) (*PolicyRule, error) {
 	return rule, nil
 }
 
-// Invalidate 显式清缓存（admin 改 policy 后调一次让窗口期内立即生效；可选）。
+// Invalidate 显式清缓存（SQL 改 policy 后调一次让窗口期内立即生效；可选）。
 func (c *PolicyCache) Invalidate(id int64) {
 	c.entries.Delete(id)
 }
