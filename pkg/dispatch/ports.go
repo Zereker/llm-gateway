@@ -15,8 +15,9 @@ import (
 // Selector 在当前 model + 已排除集合下选一个可用 endpoint；也接收每次 attempt
 // 的 Verdict 反馈用于 cooldown 决策。
 //
-// **职责包揽**：候选拉取、eligibility 过滤、filter chain、scoring、cooldown
-// 读判定——全部 Selector 内部完成。Dispatcher 不知道 Endpoint 怎么来。
+// **职责范围**：候选拉取由 CandidateSource port 单独负责；Selector 本身只做
+// "已知候选集 → 选一个"——eligibility 过滤 + filter chain + scoring + cooldown
+// 读判定。Dispatcher 调用 Select 之前应当先经过 CandidateSource 拿候选。
 //
 // **Select 返回约定**：
 //
@@ -29,6 +30,19 @@ import (
 type Selector interface {
 	Select(ctx context.Context, q Query) (*domain.Endpoint, error)
 	Report(ctx context.Context, ep *domain.Endpoint, v Verdict)
+}
+
+// =============================================================================
+// CandidateSource port — 按 (model, group) 拉候选 endpoints
+// =============================================================================
+
+// CandidateSource 按 (model, group) 拉候选 endpoints 的 port。
+//
+// **跟 Selector 的关系**：CandidateSource 负责"endpoint 从哪里来"（DB / 缓存 /
+// CDC snapshot 都可），Selector 负责"已知候选集挑一个"。两个职责分开，让 selector
+// 算法不需要知道存储细节。
+type CandidateSource interface {
+	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
 }
 
 // Query Selector.Select 的入参。
@@ -52,19 +66,20 @@ type Query struct {
 // Invoker port — 调一次下游
 // =============================================================================
 
-// InvokerFactory 按 (endpoint, envelope, body, handler) 造一个待执行的 Invoker。
+// InvokerFactory 按 (endpoint, handler, envelope) 造一个待执行的 Invoker。
 //
 // **不是 interface 是约定**：不同实现可以有完全不同的 For 签名（HTTPFactory.For /
 // BatchFactory.For / MockFactory.Pin 等）。Dispatcher 拿到一个 concrete factory
 // 即可——装配点（cmd/gateway）决定用哪个实现。
 //
-// **handler 入参**：请求级端到端协议处理器（dispatcher 已根据 ep + srcProto
-// 从 rc.Handlers 取出）；invoker 用 handler.PrepareCall + handler.NewResponseStream
-// 走 HTTP，不再自己查 adapter / translator。
+// **handler 入参**：请求级端到端协议处理器（dispatcher 已根据 ep + srcProto 从
+// state.Handlers().Get(ep, srcProto) 取出）。
+//
+// **body 从哪来**：env.RawBytes（不再单独传 body 参数；invoker 内部读 env）。
 //
 // 这里给个最小接口，方便 Dispatcher 单测时换 fake 实现。
 type InvokerFactory interface {
-	For(ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte, handler protocol.Handler) Invoker
+	For(ep *domain.Endpoint, handler protocol.Handler, env *domain.RequestEnvelope) Invoker
 }
 
 // Invoker 一次已配置好的下游调用。无参执行。
@@ -85,32 +100,39 @@ type Invoker interface {
 // EndpointQuota port — endpoint 级 ratelimit 前扣 + 后扣
 // =============================================================================
 
+// QuotaVerdict 是 EndpointQuota.Reserve 的拒绝结果——比 Verdict 更窄，只描述
+// "为什么被拒"。Dispatcher 在拿到 QuotaVerdict 后翻成 Verdict 走 retry / Report 流程。
+type QuotaVerdict struct {
+	Class     Class  // 一般 ClassCapacity；依赖故障时仍 ClassCapacity（让 retry 换 ep）
+	BucketKey string // 哪个 bucket 拒了（rl:endpoint:<id>:rpm 等）；空 = 依赖故障
+	Reason    string
+}
+
 // EndpointQuota 是 endpoint 级配额的"前扣 + 后扣"端口——dispatcher 在调 invoker
-// 之前 Reserve（RPM/RPS hold），成功 stream 之后 Charge（实际 token 用量）。
+// 之前 Reserve（RPM/RPS hold），成功 stream 之后 ChargeUsage（实际 token 用量）。
 //
 // **跟用户级 quota 的区别**：用户级 quota 在 M6 middleware（Limit）里做；
 // EndpointQuota 是 endpoint 一侧的硬约束（vendor 自身限制 / 自建 fleet 容量保护），
 // dispatcher 在 attempt 粒度执行。
-//
-// **设计动机**：把 reserve/charge 从 invoker 拆出来——invoker 只管"一次 HTTP
-// 调用"；reserve 是调度时序的一环，归 Dispatcher 编排。
 type EndpointQuota interface {
 	// Reserve 试图给 ep 占用一次 attempt 配额。
-	//   返回 (nil, nil)        ── 没配置 quota 或预扣成功
-	//   返回 (*Verdict, nil)   ── 配额拒绝；verdict 已含 Class=ClassCapacity / Reason
-	//   返回 (_, err)          ── 依赖故障（如 Redis 错）；driver 也按 Verdict 处理
-	Reserve(ctx context.Context, ep *domain.Endpoint) (denied *Verdict, err error)
+	//   返回 (nil, nil)            ── 没配置 quota 或预扣成功
+	//   返回 (*QuotaVerdict, nil)  ── 配额拒绝；Dispatcher 翻成 Verdict 走 retry
+	//   返回 (_, err)              ── 依赖故障（如 Redis 错）；同样按拒绝处理
+	Reserve(ctx context.Context, ep *domain.Endpoint) (denied *QuotaVerdict, err error)
 
-	// Charge 在成功 stream 之后写真实 token 用量到 TPM bucket（fire-and-forget）。
+	// ChargeUsage 在成功 stream 之后写真实 token 用量到 TPM bucket（fire-and-forget）。
 	// usage / ep 任一为 nil 时 no-op；charge 失败只记 metric，不阻塞响应。
-	Charge(ctx context.Context, ep *domain.Endpoint, usage *domain.Usage)
+	ChargeUsage(ctx context.Context, ep *domain.Endpoint, usage *domain.Usage)
 }
 
 // NoopQuota 永不拒绝、永不 charge——给"没配 ratelimit"的部署用。
 type NoopQuota struct{}
 
-func (NoopQuota) Reserve(_ context.Context, _ *domain.Endpoint) (*Verdict, error) { return nil, nil }
-func (NoopQuota) Charge(_ context.Context, _ *domain.Endpoint, _ *domain.Usage)   {}
+func (NoopQuota) Reserve(_ context.Context, _ *domain.Endpoint) (*QuotaVerdict, error) {
+	return nil, nil
+}
+func (NoopQuota) ChargeUsage(_ context.Context, _ *domain.Endpoint, _ *domain.Usage) {}
 
 // Result Invoke 的产出句柄。
 //

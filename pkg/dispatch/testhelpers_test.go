@@ -51,7 +51,7 @@ func newFakeInvokerFactory(results ...*fakeResult) *fakeInvokerFactory {
 	return &fakeInvokerFactory{results: results}
 }
 
-func (f *fakeInvokerFactory) For(ep *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte, _ protocol.Handler) Invoker {
+func (f *fakeInvokerFactory) For(ep *domain.Endpoint, _ protocol.Handler, _ *domain.RequestEnvelope) Invoker {
 	if f.calls >= len(f.results) {
 		panic("fakeInvokerFactory: out of results")
 	}

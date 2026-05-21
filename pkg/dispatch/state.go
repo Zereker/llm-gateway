@@ -116,16 +116,8 @@ func (s *state) Query() Query {
 	}
 }
 
-// Envelope 给 InvokerFactory.For 用。
+// Envelope 给 InvokerFactory.For 用（含 RawBytes）。
 func (s *state) Envelope() *domain.RequestEnvelope { return s.in.Envelope }
-
-// Body 给 InvokerFactory.For 用——原始请求字节。
-func (s *state) Body() []byte {
-	if s.in.Envelope == nil {
-		return nil
-	}
-	return s.in.Envelope.RawBytes
-}
 
 // Handlers 给 dispatcher.step 用——Input 的请求级 Handler 查询端口。
 func (s *state) Handlers() protocol.Lookup { return s.in.Handlers }

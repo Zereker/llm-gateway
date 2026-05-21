@@ -64,7 +64,7 @@ func TestModeration_CheckInputOK_InjectsModeratorInCtx(t *testing.T) {
 		Moderation(WithModerator(mod)),
 	)
 	r.POST("/x", func(c *gin.Context) {
-		ctxMod = moderation.FromCtx(c.Request.Context())
+		ctxMod = moderation.FromContext(c.Request.Context())
 		c.Status(200)
 	})
 
@@ -139,7 +139,7 @@ func TestWrapWithModerator_NoModeratorInCtx_ReturnsInner(t *testing.T) {
 func TestModeratedResponseHandler_Feed_AbortsOnViolation(t *testing.T) {
 	mod := &stubModerator{checkOutputErr: errors.New("hate speech")}
 	inner := &fakeHandler{}
-	ctx := moderation.WithModerator(context.Background(), mod)
+	ctx := moderation.ContextWithModerator(context.Background(), mod)
 	h := moderation.WrapStream(inner, ctx)
 
 	out, err := h.Feed([]byte("bad chunk"))
@@ -163,7 +163,7 @@ func TestModeratedResponseHandler_Feed_AbortsOnViolation(t *testing.T) {
 func TestModeratedResponseHandler_Feed_PassThroughOnOK(t *testing.T) {
 	mod := &stubModerator{}
 	inner := &fakeHandler{}
-	ctx := moderation.WithModerator(context.Background(), mod)
+	ctx := moderation.ContextWithModerator(context.Background(), mod)
 	h := moderation.WrapStream(inner, ctx)
 
 	out, err := h.Feed([]byte("clean"))
@@ -181,7 +181,7 @@ func TestModeratedResponseHandler_Feed_PassThroughOnOK(t *testing.T) {
 func TestModeratedResponseHandler_Flush_RunsCheckOutputOnFinal(t *testing.T) {
 	mod := &stubModerator{}
 	inner := &fakeHandler{flush: []byte("final bytes"), usage: &domain.Usage{Total: 50}}
-	ctx := moderation.WithModerator(context.Background(), mod)
+	ctx := moderation.ContextWithModerator(context.Background(), mod)
 	h := moderation.WrapStream(inner, ctx)
 
 	out, usage, err := h.Flush()
@@ -202,7 +202,7 @@ func TestModeratedResponseHandler_Flush_RunsCheckOutputOnFinal(t *testing.T) {
 func TestModeratedResponseHandler_Flush_ViolatedFromStream_DropsFinal(t *testing.T) {
 	mod := &stubModerator{checkOutputErr: errors.New("violated")}
 	inner := &fakeHandler{flush: []byte("never_sent"), usage: &domain.Usage{Total: 1}}
-	ctx := moderation.WithModerator(context.Background(), mod)
+	ctx := moderation.ContextWithModerator(context.Background(), mod)
 	h := moderation.WrapStream(inner, ctx)
 
 	// 先 Feed 触发 violated
