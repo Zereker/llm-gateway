@@ -29,6 +29,18 @@ type RequestContext struct {
 	// === M3 Envelope 写入 ===
 	Envelope *RequestEnvelope
 
+	// === M3 Envelope 写入默认值；后续 middleware 可覆盖（多租户 / 灰度场景） ===
+	//
+	// 类型 = dispatch.AdapterLookup / dispatch.TranslatorLookup（用 any 是为了避
+	// pkg/domain → pkg/dispatch → pkg/adapter → pkg/domain 循环依赖）。访问走
+	// dispatch.AdaptersFrom(rc) / dispatch.TranslatorsFrom(rc) 类型安全 helper，
+	// 不要直接 type-assert。
+	//
+	// 默认值（DefaultAdapters / DefaultTranslators）包装全局 registry——M3 之后
+	// 不被覆盖时行为与 v0.5 一致。
+	Adapters    any
+	Translators any
+
 	// === M5 ModelService 写入（原始请求 model） ===
 	//
 	// **重要**：M5 不查 active pricing（docs/01 §7、docs/05 §6）。Pricing 匹配由

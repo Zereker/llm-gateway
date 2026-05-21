@@ -5,15 +5,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/selector/eligibility"
 	"github.com/zereker/llm-gateway/pkg/translator"
-	"github.com/zereker/llm-gateway/pkg/invoker"
 )
 
 // =============================================================================
@@ -23,6 +22,7 @@ import (
 // **职责**：
 //   1. ListForModel 拉候选
 //   2. eligibility.Filter（modality / adapter / protocol / translator 资格过滤）
+//      —— 用 q.Lookups（请求级 dispatch.AdapterLookup / TranslatorLookup）
 //   3. 构造 selector.Candidate（EffectiveWeight = ep.Weight）
 //   4. scheduler.Pick（filter chain → scorer → 内部 selector）
 //
@@ -42,7 +42,10 @@ func (s *selectorAdapter) Select(ctx context.Context, q dispatch.Query) (*domain
 	if err != nil {
 		return nil, err
 	}
-	elgRes := eligibility.Filter(raw, q.Envelope, adapterRegistryLookup{}, translatorRegistryLookup{})
+	elgRes := eligibility.Filter(raw, q.Envelope,
+		eligibilityAdapters{l: q.Lookups.Adapters},
+		eligibilityTranslators{l: q.Lookups.Translators},
+	)
 	if len(elgRes.Eligible) == 0 {
 		return nil, nil
 	}
@@ -58,31 +61,49 @@ func (s *selectorAdapter) Select(ctx context.Context, q dispatch.Query) (*domain
 	})
 }
 
-// adapterRegistryLookup / translatorRegistryLookup：复制自 pkg/middleware/selector.go
-// （PR3 时 selector 包 internalize 这两个 lookup，cmd 不再 hold）。
+// eligibilityAdapters 把 dispatch.AdapterLookup 适配成 eligibility.AdapterLookup
+// （后者要 Has / NativeProtocol / SupportedModalities 三个方法，全部从 Factory
+// metadata 派生）。
+type eligibilityAdapters struct{ l dispatch.AdapterLookup }
 
-type adapterRegistryLookup struct{}
+func (a eligibilityAdapters) Has(vendor string) bool {
+	if a.l == nil {
+		return false
+	}
+	return a.l.Get(vendor) != nil
+}
 
-func (adapterRegistryLookup) Has(vendor string) bool { return adapter.Get(vendor) != nil }
-func (adapterRegistryLookup) NativeProtocol(vendor string) domain.Protocol {
-	f := adapter.Get(vendor)
+func (a eligibilityAdapters) NativeProtocol(vendor string) domain.Protocol {
+	if a.l == nil {
+		return domain.ProtoUnknown
+	}
+	f := a.l.Get(vendor)
 	if f == nil {
 		return domain.ProtoUnknown
 	}
 	return f.Metadata().NativeProtocol
 }
-func (adapterRegistryLookup) SupportedModalities(vendor string) []domain.Modality {
-	f := adapter.Get(vendor)
+
+func (a eligibilityAdapters) SupportedModalities(vendor string) []domain.Modality {
+	if a.l == nil {
+		return nil
+	}
+	f := a.l.Get(vendor)
 	if f == nil {
 		return nil
 	}
 	return f.Metadata().SupportedModalities
 }
 
-type translatorRegistryLookup struct{}
+// eligibilityTranslators 把 dispatch.TranslatorLookup 适配成 eligibility.TranslatorLookup
+// （仅需要 Has）。
+type eligibilityTranslators struct{ l dispatch.TranslatorLookup }
 
-func (translatorRegistryLookup) Has(src, tgt domain.Protocol) bool {
-	return translator.Find(src, tgt) != nil
+func (t eligibilityTranslators) Has(src, tgt domain.Protocol) bool {
+	if t.l == nil {
+		return false
+	}
+	return t.l.Find(src, tgt) != nil
 }
 
 // =============================================================================
@@ -91,8 +112,8 @@ func (translatorRegistryLookup) Has(src, tgt domain.Protocol) bool {
 // =============================================================================
 //
 // **职责**：
-//   - For(ep, env, body) → invokerAdapter（一次性句柄）
-//   - Invoke(ctx) 内做：endpoint RPM/RPS reserve → sender.Send → scheduler.Report
+//   - For(ep, env, body, lookups) → invokerAdapter（一次性句柄；lookups 透给 Send）
+//   - Invoke(ctx) 内做：endpoint RPM/RPS reserve → sender.Send(..., lookups) → scheduler.Report
 //   - Result.StreamTo 内做：moderator wrap → sender.Forward → endpoint TPM 后扣
 //   - Result.Close 兜底关 body
 //
@@ -110,11 +131,12 @@ func newInvokerFactoryAdapter(sender *invoker.Sender, sched selector.Scheduler, 
 	return &invokerFactoryAdapter{sender: sender, sched: sched, rateStore: rateStore}
 }
 
-func (f *invokerFactoryAdapter) For(ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte) dispatch.Invoker {
+func (f *invokerFactoryAdapter) For(ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte, lookups dispatch.Lookups) dispatch.Invoker {
 	return &invokerAdapter{
 		ep:        ep,
 		env:       env,
 		body:      body,
+		lookups:   lookups,
 		sender:    f.sender,
 		sched:     f.sched,
 		rateStore: f.rateStore,
@@ -125,6 +147,7 @@ type invokerAdapter struct {
 	ep        *domain.Endpoint
 	env       *domain.RequestEnvelope
 	body      []byte
+	lookups   dispatch.Lookups
 	sender    *invoker.Sender
 	sched     selector.Scheduler
 	rateStore middleware.RateLimitStore
@@ -154,8 +177,9 @@ func (i *invokerAdapter) Invoke(ctx context.Context) (dispatch.Result, error) {
 		}
 	}
 
-	// 2) sender.Send
-	outcome, _ := i.sender.Send(ctx, i.ep, i.env, i.body)
+	// 2) sender.Send —— 请求级 lookup 从 i.lookups 透传，让 vendor / translator
+	//    覆盖（多租户 / 灰度场景）在 Send 内部生效。
+	outcome, _ := i.sender.Send(ctx, i.ep, i.env, i.body, i.lookups.Adapters, i.lookups.Translators)
 
 	// 3) scheduler.Report
 	i.sched.Report(ctx, i.ep, outcome.ToScheduleResult())
@@ -184,8 +208,8 @@ type reserveFailedResult struct {
 	verdict dispatch.Verdict
 }
 
-func (r *reserveFailedResult) Verdict() dispatch.Verdict      { return r.verdict }
-func (r *reserveFailedResult) Endpoint() *domain.Endpoint     { return r.ep }
+func (r *reserveFailedResult) Verdict() dispatch.Verdict  { return r.verdict }
+func (r *reserveFailedResult) Endpoint() *domain.Endpoint { return r.ep }
 func (r *reserveFailedResult) StreamTo(_ context.Context, _ http.ResponseWriter) dispatch.StreamReport {
 	return dispatch.StreamReport{} // 不可能调到（Class != Success）
 }

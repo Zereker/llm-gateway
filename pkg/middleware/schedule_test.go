@@ -36,7 +36,7 @@ func (s stubSelectorReturns) Select(_ context.Context, _ dispatch.Query) (*domai
 
 type stubInvokerFactory struct{ res dispatch.Result }
 
-func (s stubInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte) dispatch.Invoker {
+func (s stubInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte, _ dispatch.Lookups) dispatch.Invoker {
 	return stubInvoker{res: s.res}
 }
 

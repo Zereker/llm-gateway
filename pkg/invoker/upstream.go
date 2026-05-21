@@ -4,18 +4,20 @@
 //
 // **职责边界**：
 //
-//   - 知道：HTTP 调用、找 adapter.Factory / translator.Translator、按 HTTP status +
-//     Adapter Classifier 给 outcome 分类、流式 chunk 拷贝。
+//   - 知道：HTTP 调用、按 caller 传入的 AdapterLookup / TranslatorLookup 查
+//     adapter.Factory / translator.Translator、按 HTTP status + Adapter
+//     Classifier 给 outcome 分类、流式 chunk 拷贝。
 //   - 不知道：retry 策略、cooldown、Selection 状态机、HTTP framework
-//     （gin / echo / chi 都行——只要满足 stdlib http.ResponseWriter 接口）。
+//     （gin / echo / chi 都行——只要满足 stdlib http.ResponseWriter 接口）、
+//     lookup 实现来源（全局 registry / 租户级覆盖均可——caller 决定）。
 //
 // **使用形态**（M7 内部）：
 //
-//	sender := invoker.New()  // 默认 = adapter 全局 registry + http.DefaultClient
+//	sender := invoker.New()
 //	for {
 //	    ep := sel.Pick()
 //	    if ep == nil { break }
-//	    outcome, err := sender.Send(ctx, ep, env, rawBody)
+//	    outcome, err := sender.Send(ctx, ep, env, rawBody, adapters, translators)
 //	    sel.Report(ep, outcome.ToScheduleResult())
 //	    if outcome.Success() {
 //	        sender.Forward(w, outcome.Response, handler)
@@ -31,17 +33,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
-
-// FactoryLookup 抽象 vendor → adapter.Factory 查询。
-//
-// 默认走全局 registry（adapter.Get）；测试可注入 fake 实现避开 init() 注册副作用。
-type FactoryLookup interface {
-	Get(vendor string) adapter.Factory
-}
 
 // HTTPDoer 抽象 HTTP 客户端。*http.Client 自动满足；测试可注入 RoundTripper-like fake。
 type HTTPDoer interface {
@@ -91,8 +85,9 @@ var ErrInvalidRequest = errors.New("upstream: invalid request body")
 // Sender 封装"调一次上游 + 流式 forward"两个动作。
 //
 // 不持有请求级状态；Send / Forward 两个方法都可被多请求并发调用。
+// **不再持 adapter / translator 查询端口**——这些是请求级依赖，每次 Send 由
+// caller（dispatch wiring 层）按 rc 取出后透传。
 type Sender struct {
-	lookup FactoryLookup
 	client HTTPDoer
 	hooks  hookSet
 }
@@ -102,14 +97,8 @@ type Option func(*senderConfig)
 
 // senderConfig New 期间 Option 写入的临时配置；New 收尾后产出 Sender。
 type senderConfig struct {
-	lookup FactoryLookup
 	client HTTPDoer
 	hooks  []Hook
-}
-
-// WithFactoryLookup 注入自定义 vendor → factory 查询；不调 = 走 adapter.Get。
-func WithFactoryLookup(l FactoryLookup) Option {
-	return func(c *senderConfig) { c.lookup = l }
 }
 
 // WithHTTPClient 注入自定义 HTTP 客户端；不调 = http.DefaultClient。
@@ -125,10 +114,12 @@ func WithHooks(hooks ...Hook) Option {
 	return func(c *senderConfig) { c.hooks = append(c.hooks, hooks...) }
 }
 
-// New 构造 Sender；零配置走 stdlib + adapter 全局 registry + 无 hook。
+// New 构造 Sender；零配置走 stdlib + 无 hook。
+//
+// AdapterLookup / TranslatorLookup 在 Send 调用时由 caller 传入；Sender 本身
+// 不持有，以支持多租户 / 灰度场景按请求覆盖。
 func New(opts ...Option) *Sender {
 	cfg := &senderConfig{
-		lookup: defaultFactoryLookup{},
 		client: http.DefaultClient,
 	}
 
@@ -137,13 +128,7 @@ func New(opts ...Option) *Sender {
 	}
 
 	return &Sender{
-		lookup: cfg.lookup,
 		client: cfg.client,
 		hooks:  classifyHooks(cfg.hooks),
 	}
 }
-
-// defaultFactoryLookup 走 adapter 全局 registry。
-type defaultFactoryLookup struct{}
-
-func (defaultFactoryLookup) Get(vendor string) adapter.Factory { return adapter.Get(vendor) }
