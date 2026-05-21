@@ -17,7 +17,7 @@
 //
 // 想接入时在 cmd/gateway/main.go 加 blank import：
 //
-//	import _ "github.com/zereker/llm-gateway/pkg/adapter/anthropic"
+//	import _ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
 package anthropic
 
 import (
@@ -30,14 +30,11 @@ import (
 // Factory 实现 adapter.Factory。
 type Factory struct{}
 
-// Metadata 返回静态元信息。
-//
-// **NativeProtocol = ProtoAnthropic**：M7 据此找 (envelope.SourceProtocol → ProtoAnthropic)
-// 的 Translator，例如 openai_anthropic（客户端用 OpenAI 协议时）。
+// Metadata 返回静态元信息。endpoint.Protocol（admin 配置）决定上游说什么协议；
+// 一般配为 ProtoAnthropic（identity 透传）或 ProtoOpenAI（客户端 OpenAI → openai_anthropic 翻译）。
 func (Factory) Metadata() adapter.Metadata {
 	return adapter.Metadata{
 		Vendor:              "anthropic",
-		NativeProtocol:      domain.ProtoAnthropic,
 		SupportedModalities: []domain.Modality{domain.ModalityChat},
 	}
 }

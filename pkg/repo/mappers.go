@@ -10,6 +10,9 @@ import (
 // 所有 repo 接口返回 *domain.X，consumer 不再看到 SQL tag / 加密细节。
 
 // ToDomainEndpoint 把 repo.Endpoint (SQL row) → *domain.Endpoint。
+//
+// **Protocol 映射**：repo 用 VARCHAR(32) 字符串列；domain 用 typed Protocol。
+// 未知字符串 → ProtoUnknown（DefaultLookup 看到会返 nil → eligibility 剔除该 ep）。
 func ToDomainEndpoint(e *Endpoint) *domain.Endpoint {
 	if e == nil {
 		return nil
@@ -18,6 +21,7 @@ func ToDomainEndpoint(e *Endpoint) *domain.Endpoint {
 		ID:           e.ID,
 		Name:         e.Name,
 		Vendor:       e.Vendor,
+		Protocol:     domain.ParseProtocol(e.Protocol),
 		Model:        e.Model,
 		Group:        e.Group,
 		Weight:       e.Weight,

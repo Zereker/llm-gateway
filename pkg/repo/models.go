@@ -128,13 +128,14 @@ func (AccountModelSubscription) TableName() string { return "account_model_subsc
 //
 // 核心列只放调度选路 hot path 用得到的；vendor-specific 全进 typed JSON。
 type Endpoint struct {
-	ID      int64  `db:"id"         gorm:"column:id;primaryKey;autoIncrement"`
-	Name    string `db:"name"       gorm:"column:name;size:128;not null;uniqueIndex:uk_name"`
-	Vendor  string `db:"vendor"     gorm:"column:vendor;size:32;not null"`
-	Model   string `db:"model"      gorm:"column:model;size:191;not null;index:idx_model_group,priority:1"`
-	Group   string `db:"group_name" gorm:"column:group_name;size:64;not null;default:default;index:idx_model_group,priority:2"`
-	Weight  uint32 `db:"weight"     gorm:"column:weight;not null;default:100"`
-	Enabled bool   `db:"enabled"    gorm:"column:enabled;not null;default:true"`
+	ID       int64  `db:"id"         gorm:"column:id;primaryKey;autoIncrement"`
+	Name     string `db:"name"       gorm:"column:name;size:128;not null;uniqueIndex:uk_name"`
+	Vendor   string `db:"vendor"     gorm:"column:vendor;size:32;not null"`
+	Protocol string `db:"protocol"   gorm:"column:protocol;size:32;not null"` // domain.Protocol.String()——mappers 来回转
+	Model    string `db:"model"      gorm:"column:model;size:191;not null;index:idx_model_group,priority:1"`
+	Group    string `db:"group_name" gorm:"column:group_name;size:64;not null;default:default;index:idx_model_group,priority:2"`
+	Weight   uint32 `db:"weight"     gorm:"column:weight;not null;default:100"`
+	Enabled  bool   `db:"enabled"    gorm:"column:enabled;not null;default:true"`
 
 	// typed JSON 三段；Scanner/Valuer 在各自的文件里
 	Auth         AuthConfig           `db:"auth"         gorm:"column:auth;type:varchar(2048);not null"`

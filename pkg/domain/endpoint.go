@@ -19,6 +19,20 @@ type Endpoint struct {
 	Weight  uint32
 	Enabled bool
 
+	// Protocol 这条 endpoint 上游说的协议（OpenAI / Anthropic / Gemini / Responses）。
+	//
+	// **必填**——零值 ProtoUnknown 会让 DefaultLookup.Get 直接返 nil，eligibility
+	// filter 剔除该 endpoint。admin schema 落库时必须显式配。
+	//
+	// **设计动机**：协议是 endpoint 级属性，不是 vendor 级——同一 vendor 完全可能
+	// 挂多条 endpoint 走不同协议（例如 Anthropic 同时提供原生 Messages API +
+	// OpenAI-compatible API 时，两条 endpoint 分别 Protocol=Anthropic / Protocol=OpenAI）。
+	//
+	// **协议转换判定**：dispatcher 比较 (env.SourceProtocol, ep.Protocol)：
+	//   - 相等 → identity translator 透传（无实际转换）
+	//   - 不等 → translator.Find(src, ep.Protocol) 找跨协议翻译器；缺则 eligibility 剔除
+	Protocol Protocol
+
 	Auth         AuthConfig
 	Routing      RoutingConfig
 	Quota        QuotaConfig

@@ -23,6 +23,9 @@ func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 		ep.Weight = 100
 	}
 	ep.Enabled = true
+	if ep.Protocol == "" {
+		ep.Protocol = "openai" // 默认值；测试不关心协议细节时省略
+	}
 	if ep.Auth.Type == "" {
 		auth, err := EncodePayload(AuthTypeBearer, BearerAuth{APIKey: "sk-test"})
 		if err != nil {
@@ -35,10 +38,10 @@ func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 	}
 	res, err := db.NamedExec(
 		`INSERT INTO endpoints
-		 (name, vendor, model, group_name, weight, enabled,
+		 (name, vendor, protocol, model, group_name, weight, enabled,
 		  auth, routing, quota, capabilities, extra)
 		 VALUES
-		 (:name, :vendor, :model, :group_name, :weight, :enabled,
+		 (:name, :vendor, :protocol, :model, :group_name, :weight, :enabled,
 		  :auth, :routing, :quota, :capabilities, :extra)`,
 		ep,
 	)

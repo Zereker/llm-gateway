@@ -1,5 +1,10 @@
 package domain
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // Protocol 客户端使用的协议族。
 type Protocol int
 
@@ -30,4 +35,46 @@ func (p Protocol) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// ParseProtocol 反 String()——admin DTO / SQL VARCHAR 列读出来转 Protocol。
+// 未知字符串返回 ProtoUnknown（caller 自行决定如何处理）。
+func ParseProtocol(s string) Protocol {
+	switch s {
+	case "openai":
+		return ProtoOpenAI
+	case "anthropic":
+		return ProtoAnthropic
+	case "gemini":
+		return ProtoGemini
+	case "bedrock":
+		return ProtoBedrock
+	case "custom":
+		return ProtoCustom
+	case "responses":
+		return ProtoResponses
+	default:
+		return ProtoUnknown
+	}
+}
+
+// MarshalJSON 把 Protocol 序列化成字符串（admin REST API 给人用）。
+func (p Protocol) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.String())
+}
+
+// UnmarshalJSON 接受字符串形式（"openai" / "anthropic" / ...）。
+//
+// 严格模式：未知值返 error，避免 admin 配置错协议名静默落库。
+func (p *Protocol) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed := ParseProtocol(s)
+	if parsed == ProtoUnknown && s != "" && s != "unknown" {
+		return fmt.Errorf("domain: unknown protocol %q", s)
+	}
+	*p = parsed
+	return nil
 }

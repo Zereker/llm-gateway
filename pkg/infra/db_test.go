@@ -127,9 +127,9 @@ func TestMigrate_TableShape(t *testing.T) {
 	// endpoints：auth 列存任意 VARCHAR 字符串（schema validation 不在 infra 层做，
 	// 真实加密走 pkg/repo Scanner/Valuer）；routing 必须是合法 JSON
 	_, err = db.Exec(
-		`INSERT INTO endpoints (name, vendor, model, group_name, weight, enabled, auth, routing)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		"openai_main", "openai", "gpt-4o", "default", 100, true,
+		`INSERT INTO endpoints (name, vendor, protocol, model, group_name, weight, enabled, auth, routing)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"openai_main", "openai", "openai", "gpt-4o", "default", 100, true,
 		"v1:dummy-ciphertext", `{"url":"https://api.openai.com"}`,
 	)
 	if err != nil {

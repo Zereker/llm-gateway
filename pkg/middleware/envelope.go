@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // WithSourceProtocol 把客户端协议钉在路由注册期。
@@ -82,6 +83,14 @@ func Envelope() gin.HandlerFunc {
 
 		rc.Envelope.RawBytes = raw
 		rc.Envelope.Model = model
+
+		// 请求级 lookup 默认值：包装全局 adapter + translator registry，按
+		// (endpoint, srcProto) 动态组合 Handler。后续 middleware（如多租户 /
+		// 灰度策略）可覆盖 rc.Handlers 走自定义 Handler 集。
+		if rc.Handlers == nil {
+			rc.Handlers = protocol.DefaultLookup{}
+		}
+
 		c.Next()
 	}
 }

@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
     id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     name         VARCHAR(128) NOT NULL,                    -- admin 可见业务名
     vendor       VARCHAR(32)  NOT NULL,                    -- openai|anthropic|gemini|bedrock|vertex|azure-openai|ark
+    protocol     VARCHAR(32)  NOT NULL,                    -- openai|anthropic|gemini|responses|... 上游说什么协议（v0.6 加；endpoint 级属性，不再 vendor 级）
     model        VARCHAR(191) NOT NULL,                    -- M7 选路用
     group_name   VARCHAR(64)  NOT NULL DEFAULT 'default',  -- endpoint 池分组
     weight       INT UNSIGNED NOT NULL DEFAULT 100,

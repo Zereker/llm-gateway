@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // State 给 Policy 看的运行时投影——read-only。
@@ -107,6 +108,7 @@ func (s *state) Query() Query {
 		Envelope: s.rc.Envelope,
 		Identity: s.rc.Identity,
 		Exclude:  s.excluded,
+		Handlers: HandlersFrom(s.rc),
 	}
 }
 
@@ -120,6 +122,10 @@ func (s *state) Body() []byte {
 	}
 	return s.rc.Envelope.RawBytes
 }
+
+// Handlers 给 dispatcher.step 用——从 rc 取的请求级 Handler 查询端口
+// （M3 默认填 protocol.DefaultLookup，可被后续 middleware 覆盖）。
+func (s *state) Handlers() protocol.Lookup { return HandlersFrom(s.rc) }
 
 // Record 记一次 attempt：attempts++ / excluded / lastVerdict / decisions append。
 // Outcome 字段先填 Unknown，finalize 阶段按终态修正。

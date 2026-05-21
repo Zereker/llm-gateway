@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/translator"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // chunkBufPool 复用 stream forward 用的 4KiB read buffer。
@@ -87,7 +87,7 @@ func (s *Sender) Forward(
 	w http.ResponseWriter,
 	ep *domain.Endpoint,
 	resp *http.Response,
-	handler translator.ResponseHandler,
+	stream protocol.ResponseStream,
 ) ForwardResult {
 	defer func() { _ = resp.Body.Close() }()
 
@@ -99,9 +99,9 @@ func (s *Sender) Forward(
 	defer chunkBufPool.Put(bufPtr)
 
 	startTime := requestStartTime(ctx, time.Now())
-	tw := &translatorWriter{
+	tw := &streamWriter{
 		inner:     w,
-		handler:   handler,
+		stream:    stream,
 		ctx:       ctx,
 		ep:        ep,
 		hooks:     s.hooks,
@@ -109,7 +109,7 @@ func (s *Sender) Forward(
 	}
 	_, feedErr := io.CopyBuffer(tw, resp.Body, *bufPtr)
 
-	finalOut, usage, fErr := handler.Flush()
+	finalOut, usage, fErr := stream.Flush()
 	if len(finalOut) > 0 {
 		// 流式过程没输出过任何 chunk（buffer-then-translate），把 Flush 当首包记 TTFT
 		if tw.ttftMs == 0 {
@@ -127,16 +127,16 @@ func (s *Sender) Forward(
 	return ForwardResult{Usage: usage, FeedErr: feedErr, TTFTMs: tw.ttftMs}
 }
 
-// translatorWriter 把上游 chunk 喂给 translator.ResponseHandler.Feed，把 Feed
+// streamWriter 把上游 chunk 喂给 protocol.ResponseStream.Feed，把 Feed
 // 输出 forward 给真正的 ResponseWriter + flush；同时在 Feed 两侧 fan-out hook。
 //
-// 这层包装让 io.CopyBuffer 能驱动整个流式管道（src=resp.Body, dst=translatorWriter）。
+// 这层包装让 io.CopyBuffer 能驱动整个流式管道（src=resp.Body, dst=streamWriter）。
 //
 // **Write 返回值约定**：返回 len(chunk)（原 chunk 长度，不是 Feed 输出长度）——
 // 这是 io.Copy 协议要求的"消费完整个输入"。Feed 出错时返 (0, err) 让 CopyBuffer 立即停。
-type translatorWriter struct {
+type streamWriter struct {
 	inner     http.ResponseWriter
-	handler   translator.ResponseHandler
+	stream    protocol.ResponseStream
 	ctx       context.Context
 	ep        *domain.Endpoint
 	hooks     hookSet
@@ -144,10 +144,10 @@ type translatorWriter struct {
 	ttftMs    int64 // 首个非空客户端 chunk 写出后填；0=未捕获
 }
 
-func (tw *translatorWriter) Write(chunk []byte) (int, error) {
+func (tw *streamWriter) Write(chunk []byte) (int, error) {
 	tw.hooks.fireUpstreamChunk(tw.ctx, tw.ep, chunk)
 
-	out, err := tw.handler.Feed(chunk)
+	out, err := tw.stream.Feed(chunk)
 	if err != nil {
 		return 0, err
 	}

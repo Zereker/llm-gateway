@@ -11,6 +11,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // =============================================================================
@@ -36,7 +37,7 @@ func (s stubSelectorReturns) Select(_ context.Context, _ dispatch.Query) (*domai
 
 type stubInvokerFactory struct{ res dispatch.Result }
 
-func (s stubInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte) dispatch.Invoker {
+func (s stubInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte, _ protocol.Handler) dispatch.Invoker {
 	return stubInvoker{res: s.res}
 }
 
@@ -81,9 +82,25 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 		ms := &domain.ModelService{ID: 1, Model: model}
 		rc.ModelService = ms
 		rc.ModelChain = []*domain.ModelService{ms}
+		// 给 dispatcher 一个 always-OK 的 Handler 查询端口（具体 Handler 也是 stub
+		// 占位——stubInvokerFactory 拿到后忽略不调用）。绕过 protocol.DefaultLookup
+		// 在测试环境没有真 adapter / translator 注册的问题。
+		rc.Handlers = stubHandlerLookup{h: stubHandler{}}
 		c.Next()
 	}
 }
+
+// stubHandlerLookup 测试占位：返回固定 stubHandler。
+type stubHandlerLookup struct{ h protocol.Handler }
+
+func (s stubHandlerLookup) Get(_ *domain.Endpoint, _ domain.Protocol) protocol.Handler { return s.h }
+
+// stubHandler 占位 Handler；本测试集 stubInvokerFactory 不会真调它的方法。
+type stubHandler struct{}
+
+func (stubHandler) Capabilities() protocol.Capabilities                                       { return protocol.Capabilities{} }
+func (stubHandler) PrepareCall(_ context.Context, _ *domain.Endpoint, _ []byte) (*protocol.Call, error) { return nil, nil }
+func (stubHandler) NewResponseStream() protocol.ResponseStream                                { return nil }
 
 func runSchedule(t *testing.T, mw gin.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
