@@ -333,11 +333,11 @@ scoring:
   latency_baseline: 200ms
 ```
 
-Cooldown 时长里 0 = 不冷却；admin 给 invalid / unknown 配 0 是默认推荐。
+Cooldown 时长里 0 = 不冷却；deployer 给 invalid / unknown 配 0 是默认推荐。
 
 ## 14. 演进规则（与 03 §12 对齐 / 简版）
 
-1. 跨 model fallback 只能来自客户端 header，不能由 admin 默认链路隐式降级。
+1. 跨 model fallback 只能来自客户端 header，不能由 gateway 默认链路隐式降级。
 2. 新增 endpoint native protocol / modality 配置时，先扩 eligibility，再让请求落到 retry/cooldown。
 3. 新加 Filter：实现 `selector.Filter` → 在 `cmd/gateway/buildSchedulerFilters` 注册名字 → 加 yaml 字段。
 4. 新加 Scorer / Stats 实现：接口在 `pkg/selector/scorer.go`；多副本一致性需求时把 InMemoryStatsStore 换成 Redis 实现，接口不变。

@@ -1,11 +1,11 @@
 # gateway.yaml — production 模板
 #
 # **不要把真实密钥提交到 git**：所有业务记录（model_services / endpoints /
-# api_keys）由 admin 进程通过 HTTP CRUD 维护，存 DB；本目录只持有 yaml + README。
+# api_keys）由 deployer 直接 SQL 维护；本目录只持有 yaml + README。
 #
 # 部署：
 #   1. 把本 yaml 拷到目标机：/etc/llm-gateway/gateway.yaml
-#   2. 启动 admin（cmd/admin）建表 + 录入 model_services / endpoints / api_keys
+#   2. 启动 gateway 自跑 infra.Migrate 建表，然后 SQL INSERT 录入 model_services / endpoints / api_keys
 #   3. 启动 gateway：llm-gateway -config /etc/llm-gateway/gateway.yaml
 
 server:

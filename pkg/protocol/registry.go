@@ -9,7 +9,7 @@ import (
 // Lookup 请求级 Handler 查询端口——按 (endpoint, sourceProtocol) 动态组合 Handler。
 //
 // **设计动机**：协议组合是 per-请求的事，不是 init() 时穷举的事。
-//   - endpoint 携带 Protocol 字段（admin 配置）——表明这条 endpoint 上游说什么协议
+//   - endpoint 携带 Protocol 字段（deployer 在 SQL INSERT 时配置）——表明这条 endpoint 上游说什么协议
 //   - 客户端进来用 sourceProtocol（M3 Envelope 写入 rc.Envelope.SourceProtocol）
 //   - DefaultLookup.Get(ep, src) 按 (ep.Vendor, src, ep.Protocol) 三元组临时组合：
 //       * adapter.Get(ep.Vendor) → vendor HTTP 实现

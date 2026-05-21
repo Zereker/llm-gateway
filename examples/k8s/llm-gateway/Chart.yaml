@@ -1,6 +1,6 @@
 apiVersion: v2
 name: llm-gateway
-description: llm-gateway data plane (gateway) + control plane (admin) Helm chart
+description: llm-gateway data plane Helm chart (business data managed via SQL)
 type: application
 version: 0.1.0
 appVersion: "1.0.0"

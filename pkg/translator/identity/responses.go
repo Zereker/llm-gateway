@@ -21,7 +21,7 @@ import (
 //	}
 //
 // **identity 用途**：客户端用 Responses SDK，上游也是 OpenAI Responses 端点的纯透传。
-// 当前 OpenAI adapter 按 ep.Routing.URL 走，admin 把 endpoint 的 url 配成
+// 当前 OpenAI adapter 按 ep.Routing.URL 走，deployer 把 endpoint 的 url 配成
 // `https://api.openai.com/v1/responses` 就能用本 translator 路由。
 //
 // **request 端**：透传（Responses 没 stream_options 这种增强字段，不像 Chat Completions

@@ -62,7 +62,7 @@ M7 Schedule → dispatch.Dispatcher.Dispatch(ctx, w, rc):
 
 ## 3. `domain.Endpoint.Protocol`
 
-**必填字段**。admin 创建 endpoint 时显式声明该 endpoint 上游说什么协议
+**必填字段**。deployer 创建 endpoint 时（SQL INSERT）显式声明该 endpoint 上游说什么协议
 （`openai` / `anthropic` / `gemini` / `responses` / ...）；缺失或 `ProtoUnknown`
 时 `DefaultLookup.Get` 返回 nil，eligibility 剔除该 endpoint。
 
@@ -337,7 +337,7 @@ Switch 到下个 model 或 Abort。
    - `_ "github.com/zereker/llm-gateway/pkg/protocol/<vendor>"`
    - `_ "github.com/zereker/llm-gateway/pkg/translator/<pair>"`（identity 已默认导入）
 5. 重新构建并重启 gateway 进程。
-6. admin 侧创建 endpoint：`vendor` 必须与注册名一致；`protocol` 必填，声明该
+6. deployer SQL INSERT 创建 endpoint：`vendor` 必须与注册名一致；`protocol` 必填，声明该
    endpoint 上游说什么协议。
 
 ## 13. 演进规则

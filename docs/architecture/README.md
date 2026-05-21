@@ -21,7 +21,7 @@
 
 - 唯一入口是 `cmd/gateway`（数据面）；本仓库不带控制平面，业务数据走 SQL 直接管理。
 - catalog、endpoint、API key、订阅、quota policy 等都是 SQL schema 表；gateway 启动期跑 `infra.Migrate` 建表 + `repo.CheckSchema` 防御性校验。
-- gateway 依赖 Redis 执行 M6 限流、scheduler cooldown，以及 [CDC stream 消费](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)。
+- gateway 依赖 Redis 执行 M6 限流、scheduler cooldown，以及 [CDC stream 消费](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)。
 - SQL 写入 → gateway 数据传播走 Debezium binlog CDC → Redis Stream → `pkg/cdc.TieredCache`
   （L1 LRU + L3 SQL loader），不直连同库每请求查表。
 - 客户端入口覆盖 OpenAI Chat、Anthropic Messages、OpenAI Responses、Images、Audio、Embeddings 路由；Gemini 当前作为上游协议支持，不暴露 Gemini 客户端入口。

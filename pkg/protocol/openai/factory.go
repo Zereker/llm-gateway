@@ -32,7 +32,7 @@ func (Factory) Metadata() adapter.Metadata {
 		SupportedModalities: []domain.Modality{
 			domain.ModalityChat,
 			domain.ModalityEmbedding,
-			domain.ModalityImage, // /v1/images/generations 等；admin 配 endpoint 时 routing.url 指向 image API
+			domain.ModalityImage, // /v1/images/generations 等；deployer 配 endpoint 时 routing.url 指向 image API
 		},
 	}
 }

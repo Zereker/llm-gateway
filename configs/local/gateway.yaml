@@ -13,7 +13,7 @@ server:
   shutdown_timeout: 30s
 
 database:
-  # ModelService / Endpoint / APIKey 的存储；admin 增删改、gateway 启动期 CheckSchema + 读。
+  # ModelService / Endpoint / APIKey 的存储；gateway 启动跑 infra.Migrate 建表 + CheckSchema 防御性校验；业务数据 SQL 直接维护。
   # docker-compose 起的 MySQL：root 无密码、库名 llm_gateway
   driver: mysql
   dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
@@ -27,7 +27,7 @@ redis:
   password: ""
 
 # data_key: AES-256-GCM 加密 endpoints.auth 列的 KEK（hex-encoded 32 字节）。
-# 必须跟 admin.yaml 的 data_key 一致。生产从 secret manager 注入。
+# deployer 用 SQL 写 endpoints.auth 时必须用同一个 KEK；生产从 secret manager 注入。
 # 本地 dev 用一个固定值方便调试；**绝不能上生产**。
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 

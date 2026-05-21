@@ -1,8 +1,9 @@
 # values.yaml — llm-gateway Helm chart 默认值
 #
-# 部署模式：gateway 多副本 + admin 单副本 + 共享 MySQL + Redis（外部依赖）。
+# 部署模式：gateway 多副本 + 共享 MySQL + Redis（外部依赖）。
 # 不内置 MySQL / Redis / Kafka——生产应该用 cloud managed（RDS / ElastiCache /
 # MSK）或独立 Helm chart 部署，避免本 chart 关心 stateful infra。
+# 不带控制面 binary——业务数据由 deployer 直接 SQL 维护。
 
 image:
   repository: ghcr.io/zereker/llm-gateway
@@ -83,29 +84,6 @@ gateway:
       endpoint: otel-collector:4317
       service_name: llm-gateway
 
-# Admin 控制平面
-admin:
-  enabled: true
-  replicaCount: 1
-
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
-  service:
-    type: ClusterIP
-    port: 8081
-
-  # admin 通常只在内网走，不暴露 ingress
-  config:
-    server:
-      addr: ":8081"
-      read_header_timeout: 10s
-
 # Ingress（gateway 数据面）
 ingress:
   enabled: false  # 默认 off；生产按需开启
@@ -130,10 +108,8 @@ secrets:
   # Redis password（空 = 无密码）
   redisPassword: ""
   redisAddr: "redis:6379"
-  # AES-256-GCM KEK，hex 32 字节
+  # AES-256-GCM KEK，hex 32 字节（deployer 写 endpoints.auth 时必须用同一个 KEK）
   dataKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  # admin token（X-Admin-Token header）
-  adminToken: "CHANGEME-admin-token"
   # OpenAI moderation key（moderation.driver=openai 时需要）
   moderationApiKey: ""
 

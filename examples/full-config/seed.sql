@@ -1,13 +1,11 @@
 -- examples/full-config/seed.sql
 --
--- 示例数据：3 quota policies + 1 account + 3 model services + 4 endpoints + 1 api key
---                     + 3 model subscriptions + 3 pricing versions
+-- 示例数据：3 quota policies + 1 account + 3 model services + 3 subscriptions + 3 pricing
+-- versions。endpoints + api_keys 留空（需要加密 / hash，见末尾 helper）。
 --
--- 先跑 pkg/infra/schema.sql 建表，再跑本文件 seed 数据。
--- gateway 启动后 `curl -H "Authorization: Bearer sk-demo-abc123def456ghi789jkl012mno345pq" \
---                     http://localhost:8080/v1/chat/completions ...` 就能跑通。
---
--- **生产警告**：本 seed 含明文 API key（仅 demo）；真生产 admin POST /admin/v1/apikeys 自动 hash。
+-- 先启 gateway（启动期自跑 infra.Migrate 建表），再跑本文件 seed 业务数据。
+-- 然后用 helper 工具（或自己写 Go 小脚本调 pkg/repo.EncodePayload / HashAPIKey）
+-- 算 endpoints.auth 密文 + api_keys.api_key_hash 再 INSERT 即可。
 
 -- ============================================================================
 -- 1) quota_policies：三种限流档位
@@ -55,32 +53,42 @@ SELECT 'demo-acme', id FROM model_services;
 
 -- ============================================================================
 -- 5) endpoints：上游接入点
---    auth 列在生产由 admin POST 时加密（AES-GCM）；本 seed 直接写明文是为了 demo 简单。
---    生产路径：admin POST /admin/v1/endpoints 自动加密入库。
---    routing.url 是上游 BASE URL（不含 path）；session 拼 path。
 --
--- **本 seed 是示意，直接 INSERT 不会工作**（auth 列 AES 加密）。生产请用：
---   curl -X POST http://localhost:8081/admin/v1/endpoints \
---     -H "X-Admin-Token: $TOKEN" \
---     -d '{"name":"openai-prod","vendor":"openai","model":"gpt-4o", "auth":{"api_key":"sk-..."}, "routing":{"url":"https://api.openai.com"}, ...}'
+-- **auth 列 AES-256-GCM 加密**——直接 INSERT 明文 JSON 不工作。生成密文有两种方式：
+--
+-- (a) Go 工具脚本（推荐）：用 pkg/repo 自己的 helper
+--     repo.SetDataKey(cfg.DataKey)   // 跟 gateway.yaml 里的 data_key 一致
+--     auth, _ := repo.EncodePayload(repo.AuthTypeBearer, repo.BearerAuth{APIKey: "sk-..."})
+--     // auth.Type = "bearer", auth.Payload = "v1:base64ofciphertext"
+--
+-- (b) MySQL 命令行：先用 (a) 算好密文字符串，再贴到下面的 INSERT。
+--
+-- routing.url 是上游 BASE URL（不含 path）；session 自己拼。
+-- protocol 字段：endpoint 上游说什么协议（openai / anthropic / gemini / responses）
 -- ============================================================================
 
--- 占位：admin 生成 auth 密文后这里看起来类似：
---   auth = 'v1:base64ofencryptedAuthConfig'
+-- 占位（请用 (a) 工具生成 v1:... 密文后填入）：
+--   INSERT INTO endpoints (name, vendor, protocol, model, group_name, weight, enabled, auth, routing) VALUES
+--   ('openai_main', 'openai', 'openai', 'gpt-4o', 'default', 100, 1,
+--    'v1:base64ofEncryptedBearerAuth',
+--    JSON_OBJECT('url', 'https://api.openai.com'));
 
 -- ============================================================================
 -- 6) api_keys：客户端凭证
---    api_key_hash = SHA-256(明文 api_key) hex
---    示例明文：sk-demo-abc123def456ghi789jkl012mno345pq
---    SHA-256 = e3b0c44... （示意；真值由 admin 生成时算）
 --
--- **本 seed 只示意结构**；生产用 admin POST /admin/v1/apikeys 让服务端生成 + 入库。
+-- **明文不入库**——只入 SHA-256 hex 的 hash。生成方式：
+--   hash := repo.HashAPIKey(plaintext)   // 已 hex 编码的 SHA-256
+--   prefix := plaintext[:12]              // 前 12 字符做 prefix（运维列表显示用）
+--
+-- 用 Go 脚本 / openssl / sha256sum 算出明文的 hex SHA-256 hash 填入下面。
 -- ============================================================================
 
--- 占位：admin 生成 hash 后这里看起来类似：
---   INSERT INTO api_keys (account_id, api_key_hash, api_key_prefix, api_key_id, sub_account_id, group_name, quota_policy_id)
---     VALUES ('demo-acme', '<sha256-of-sk-demo-abc...>', 'sk-demo', 'ak_demo_alice',
---             'alice@demo-acme', 'default', (SELECT id FROM quota_policies WHERE name='tier1'));
+-- 占位：
+--   INSERT INTO api_keys (account_id, api_key_hash, api_key_prefix, api_key_id,
+--                          sub_account_id, group_name, quota_policy_id, enabled)
+--   VALUES ('demo-acme', '<sha256-hex-of-plaintext>', 'sk-demo', 'ak_demo_alice',
+--           'alice@demo-acme', 'default',
+--           (SELECT id FROM quota_policies WHERE name='tier1'), 1);
 
 -- ============================================================================
 -- 7) pricing_versions：每个 (account, model_service, rule_class) 至少一条 effective_to=NULL 当前价

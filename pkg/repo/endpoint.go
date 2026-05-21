@@ -9,7 +9,7 @@ import (
 // **v0.3 改动**：去 accountID 参数——endpoints 是全局上游池，不再 per-account。
 // 未来 BYOK（account 自带 endpoint）需要时再加 nullable account_id 过滤。
 //
-// 写直接走 SQL（endpoints 表）——本仓库不再带 admin 控制平面。
+// 写直接走 SQL（endpoints 表）——本仓库不带控制平面。
 //
 // Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
 type EndpointReader interface {

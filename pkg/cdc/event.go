@@ -3,7 +3,7 @@
 //
 // 链路：
 //
-//	admin → MySQL binlog → Debezium Server → Redis Stream (key=llm_gateway.<schema>.<table>)
+//	SQL INSERT/UPDATE → MySQL binlog → Debezium Server → Redis Stream (key=llm_gateway.<schema>.<table>)
 //	                                                ↓
 //	                                    gateway StreamConsumer XREAD
 //	                                                ↓

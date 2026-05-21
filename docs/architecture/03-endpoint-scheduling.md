@@ -86,7 +86,7 @@ type Endpoint struct {
 候选查询按 `(model, group)` 匹配 enabled 且未软删的 endpoint，按 weight 降序返回。endpoint 是全局池，不带 account_id；主账号可见性在 M5 subscription 阶段处理。
 
 `EndpointReader` 与 M5 的 `ModelCatalog` 同源，生产实现走
-[06 §8 TieredCache](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)：admin 改
+[06 §8 TieredCache](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)：SQL 改
 `endpoints` 表 → Debezium event → L1 失效；下次 `ListForModel` 走 L3 SQL loader
 拉最新值。当前 v0.4 默认只对 `model_services` 接入，`endpoints` 接入按
 [06 §8.4](./06-pluggable-infra.md#84-适用表) 路径推进；未接入时走 SQL 直查。
@@ -168,7 +168,7 @@ M7 自己维护：
 X-Gateway-Fallback-Models: gpt-4o-mini,deepseek-v3
 ```
 
-网关只按声明顺序尝试这些模型的 endpoint，不做自动模型替换，也不根据 admin 侧默认链路隐式降级。未带该 header 时，即使其它模型有可用 endpoint，也只在当前请求 model 内换 endpoint。
+网关只按声明顺序尝试这些模型的 endpoint，不做自动模型替换，也不根据 默认链路隐式降级。未带该 header 时，即使其它模型有可用 endpoint，也只在当前请求 model 内换 endpoint。
 
 header 解析 + 校验全部在 **M5（`pkg/middleware/model_service.go`）** 完成，结果写到 `rc.ModelChain`。M7 不再读 header、不再调 catalog/subscription。规则：
 
@@ -250,7 +250,7 @@ effective_weight =
 
 约束：
 
-- `base_weight` 来自 admin 配置，保留人工运营控制权。
+- `base_weight` 来自 endpoint 行的 weight 列，保留人工运营控制权。
 - `success_factor` / `latency_factor` 使用滑动窗口或 EMA，避免单次抖动影响过大。
 - `cost_factor` 使用 endpoint 配置中的成本权重或离线下发的倍率，不在调度热路径实时查价或算账。
 - 每个 factor 设置上下限，例如 `[0.1, 2.0]`，避免某个指标把权重打爆。

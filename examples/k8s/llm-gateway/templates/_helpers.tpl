@@ -20,9 +20,3 @@ app.kubernetes.io/name: {{ include "llm-gateway.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: gateway
 {{- end -}}
-
-{{- define "llm-gateway.admin.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "llm-gateway.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: admin
-{{- end -}}

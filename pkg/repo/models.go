@@ -9,7 +9,7 @@ import (
 	"gorm.io/datatypes"
 )
 
-// models.go 定义"业务实体"——同时被 gateway（sqlx Reader）和 admin（gorm CRUD）使用。
+// models.go 定义"业务实体"——gateway（sqlx Reader）使用；写入由 deployer 走 SQL 维护。
 //
 // **schema 真相在 pkg/infra/schema.sql**；这里的 `db:` / `gorm:` tag 只描述列名，
 // 不开 gorm AutoMigrate（gorm 不能改 schema，所有 DDL 演进只走 SQL）。
@@ -59,7 +59,7 @@ func (Account) TableName() string { return "accounts" }
 //	  "per_model": {"gpt-4o":{"rpm":10}, "gpt-4o-mini":{"rpm":100}}
 //	}
 //
-// gateway/admin 都不解析 rule_json；M6 RateLimit 是唯一消费者：
+// gateway 不解析 rule_json；M6 RateLimit 是唯一消费者：
 // 先 per_model[currentModel]，没有 fallback default，都没就该层不限。
 //
 // 可改（不像 pricing_versions 是 append-only；改 quota 不影响计费历史）。
