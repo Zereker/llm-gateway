@@ -28,7 +28,6 @@ import (
 	"github.com/zereker/llm-gateway/pkg/cdc"
 	"github.com/zereker/llm-gateway/pkg/config"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
-	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/health"
 	"github.com/zereker/llm-gateway/pkg/middleware"
@@ -178,17 +177,14 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		Stats:    stats,
 	})
 
-	// Dispatcher 装配（M7 业务编排：Selector + Invoker + Policy）。
-	//
-	// selectorAdapter / invokerFactoryAdapter 在 cmd/gateway/dispatch_wiring.go：
-	//   - selectorAdapter 包揽 EndpointReader + eligibility + selector.Pick
-	//   - invokerFactoryAdapter 包揽 reserve + sender.Send + Report + Forward + charge
-	dispatcher := dispatch.New(
-		dispatch.WithSelector(newSelectorAdapter(adaptEndpoints(repo.NewSQLEndpointReader(sqldb)), sched)),
-		dispatch.WithInvokerFactory(newInvokerFactoryAdapter(sender, sched, rateStore)),
-		dispatch.WithCap(dispatch.HeaderAttemptCap{Default: cfg.Selector.MaxAttempts}),
-		dispatch.WithRetry(dispatch.DefaultRetry{}),
-		dispatch.WithFallback(dispatch.ModelChainFallback{}),
+	// Dispatcher 装配（M7 业务编排：Selector + Invoker + EndpointQuota + Policy）。
+	// 实现在各自的包里；cmd/gateway/dispatch_wiring.go 只做 wiring。
+	dispatcher := buildDispatcher(
+		adaptEndpoints(repo.NewSQLEndpointReader(sqldb)),
+		sched,
+		sender,
+		rateStore,
+		cfg.Selector.MaxAttempts,
 	)
 
 	engine = router.NewEngine(router.Deps{

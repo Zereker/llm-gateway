@@ -17,6 +17,7 @@ import (
 type Dispatcher struct {
 	selector       Selector
 	invokerFactory InvokerFactory
+	quota          EndpointQuota
 	cap            AttemptCap
 	retry          RetryPolicy
 	fallback       FallbackPolicy
@@ -26,6 +27,8 @@ type Dispatcher struct {
 //
 // **必填**：Selector / InvokerFactory / AttemptCap / RetryPolicy / FallbackPolicy
 // 任一缺失 → panic。fail-fast 暴露配置错。
+//
+// **可选**：EndpointQuota（不传 = NoopQuota 永不拒绝）。
 func New(opts ...Option) *Dispatcher {
 	d := &Dispatcher{}
 	for _, opt := range opts {
@@ -45,6 +48,9 @@ func New(opts ...Option) *Dispatcher {
 	}
 	if d.fallback == nil {
 		panic("dispatch.New: WithFallback required")
+	}
+	if d.quota == nil {
+		d.quota = NoopQuota{}
 	}
 	return d
 }
@@ -81,7 +87,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Inp
 	}
 }
 
-// step 跑业务的一次循环：select → handler 查找 → invoke → policy 决策。
+// step 跑业务的一次循环：select → quota.Reserve → handler 查找 → invoke →
+// selector.Report → policy 决策；stream 成功时还会 quota.Charge。
 //
 // **特殊**：Stream 决策时直接在 step 内部完成 StreamTo + ApplyStream
 // （res 资源在 step 栈内 defer Close，不能跨方法返回）；step 返回 Stream{}
@@ -110,12 +117,19 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		return d.fallback.OnExhausted(s)
 	}
 
-	// v0.6 融合：按 (endpoint, srcProto) 动态组合 Handler。
+	// === EndpointQuota.Reserve（前扣）===
+	if denied, qerr := d.quota.Reserve(ctx, ep); denied != nil || qerr != nil {
+		v := denialVerdict(denied, qerr)
+		s.Record(ep, v)
+		d.selector.Report(ctx, ep, v)
+		return d.retry.Decide(s, v)
+	}
+
+	// === Handler 查找 ===
+	// 按 (endpoint, srcProto) 动态组合 Handler。
 	// eligibility filter 已挡掉 handler-missing 的 endpoint，这里再防一手。
 	handler := s.Handlers().Get(ep, s.in.SourceProtocol())
 	if handler == nil {
-		// 极少触达：eligibility 已挡；可能是请求级 lookup 跟 eligibility 看到的
-		// lookup 不一致（middleware 在两者之间换了 rc.Handlers）。
 		v := Verdict{
 			Stage:    StagePrepare,
 			Class:    ClassPermanent,
@@ -123,9 +137,11 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 			Reason:   "no handler for endpoint+srcProto",
 		}
 		s.Record(ep, v)
+		d.selector.Report(ctx, ep, v)
 		return d.retry.Decide(s, v)
 	}
 
+	// === Invoker.Invoke（纯 HTTP）===
 	inv := d.invokerFactory.For(ep, s.Envelope(), s.Body(), handler)
 	res, ierr := inv.Invoke(ctx)
 	if ierr != nil {
@@ -136,16 +152,40 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 			Reason:   "invoke: " + ierr.Error(),
 		}
 	}
-	defer res.Close() // 兜底 close；StreamTo 之后 close 是 no-op
+	defer res.Close()
 
-	s.Record(ep, res.Verdict())
+	verdict := res.Verdict()
+	s.Record(ep, verdict)
+	d.selector.Report(ctx, ep, verdict)
 
-	action := d.retry.Decide(s, res.Verdict())
+	action := d.retry.Decide(s, verdict)
 	if _, ok := action.(Stream); ok {
 		// 成功路径——在 step 内消费 res（资源生命周期不能跨方法）
 		rep := res.StreamTo(ctx, w)
 		s.ApplyStream(rep)
+		// === EndpointQuota.Charge（后扣，fire-and-forget）===
+		d.quota.Charge(ctx, ep, rep.Usage)
 		return Stream{}
 	}
 	return action
+}
+
+// denialVerdict 把 EndpointQuota.Reserve 的拒绝结果归一成 Verdict。
+// quota 返 nil verdict 但有 err（依赖故障）时也按 capacity 处理（让 retry 换 ep）。
+func denialVerdict(denied *Verdict, qerr error) Verdict {
+	if denied != nil {
+		v := *denied
+		if v.Stage == StageInvoke { // 0 = default
+			v.Stage = StageReserve
+		}
+		if v.Class == ClassUnknown {
+			v.Class = ClassCapacity
+		}
+		return v
+	}
+	return Verdict{
+		Stage:  StageReserve,
+		Class:  ClassCapacity,
+		Reason: "endpoint quota: " + qerr.Error(),
+	}
 }

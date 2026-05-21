@@ -31,6 +31,8 @@ type stubSelectorReturns struct {
 	err error
 }
 
+func (s stubSelectorReturns) Report(_ context.Context, _ *domain.Endpoint, _ dispatch.Verdict) {}
+
 func (s stubSelectorReturns) Select(_ context.Context, _ dispatch.Query) (*domain.Endpoint, error) {
 	return s.ep, s.err
 }

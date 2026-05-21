@@ -33,3 +33,11 @@ func WithRetry(r RetryPolicy) Option {
 func WithFallback(f FallbackPolicy) Option {
 	return func(d *Dispatcher) { d.fallback = f }
 }
+
+// WithQuota 注入 EndpointQuota 实现。**可选**——不调 = NoopQuota 永不拒绝。
+//
+// 典型实现见 pkg/ratelimit.EndpointQuota（包装 ratelimit.Store + selector 提供的
+// bucket key 派生 helper）。
+func WithQuota(q EndpointQuota) Option {
+	return func(d *Dispatcher) { d.quota = q }
+}

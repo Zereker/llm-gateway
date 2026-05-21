@@ -38,6 +38,9 @@ func (f *fakeSelector) Select(_ context.Context, _ Query) (*domain.Endpoint, err
 	return r.ep, r.err
 }
 
+// Report 是 noop——单测只看 verdict 流转，不验证 cooldown 反馈。
+func (f *fakeSelector) Report(_ context.Context, _ *domain.Endpoint, _ Verdict) {}
+
 // fakeInvokerFactory 顺序消费 results。
 type fakeInvokerFactory struct {
 	results []*fakeResult

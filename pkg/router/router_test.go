@@ -48,6 +48,8 @@ func (stubSubscriptions) HasModel(_ context.Context, _ string, _ int64) (bool, e
 // 用 panic 保护——一旦被调说明测试预期错了。
 type panicSelector struct{}
 
+func (panicSelector) Report(_ context.Context, _ *domain.Endpoint, _ dispatch.Verdict) {}
+
 func (panicSelector) Select(_ context.Context, _ dispatch.Query) (*domain.Endpoint, error) {
 	panic("router test: Selector.Select should not be reached (M2 Auth must reject first)")
 }
