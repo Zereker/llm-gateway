@@ -15,7 +15,6 @@ configs/
 ├── docker/                 # docker-compose 用的容器版配置（仅供 image 内引用）
 │   └── gateway.yaml
 │
-├── debezium/               # debezium server 配置（CDC：MySQL binlog → Redis Stream）
 └── mysql-init/             # MySQL 容器初始化脚本（默认参数）
 ```
 
@@ -23,7 +22,7 @@ configs/
 
 - SQL DB 保存 accounts / api_keys / model_services / subscriptions / endpoints /
   quota_policies / pricing_versions 等业务表。
-- Redis 承载 M6 rate limit buckets、scheduler cooldown 和 CDC stream 缓存。
+- Redis 承载 M6 rate limit buckets 和 scheduler cooldown 状态。
 - Kafka/Redpanda 仅在 outbox driver 选择 kafka 时必需；file outbox 可用于本地调试。
 
 schema 由 gateway 启动期自跑 `pkg/infra.Migrate` 建表（`schema.sql` 全 `IF NOT EXISTS`

@@ -21,9 +21,9 @@
 
 - 唯一入口是 `cmd/gateway`（数据面）；本仓库不带控制平面，业务数据走 SQL 直接管理。
 - catalog、endpoint、API key、订阅、quota policy 等都是 SQL schema 表；gateway 启动期跑 `infra.Migrate` 建表 + `repo.CheckSchema` 防御性校验。
-- gateway 依赖 Redis 执行 M6 限流、scheduler cooldown，以及 [CDC stream 消费](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)。
-- SQL 写入 → gateway 数据传播走 Debezium binlog CDC → Redis Stream → `pkg/cdc.TieredCache`
-  （L1 LRU + L3 SQL loader），不直连同库每请求查表。
+- gateway 依赖 Redis 执行 M6 限流、scheduler cooldown。
+- SQL 写入 → gateway 数据传播走 [repo 进程内 TTL LRU 缓存](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)
+  （默认 30s），不直连同库每请求查表；data plane 是 100% 只读，TTL 足够。
 - 客户端入口覆盖 OpenAI Chat、Anthropic Messages、OpenAI Responses、Images、Audio、Embeddings 路由；Gemini 当前作为上游协议支持，不暴露 Gemini 客户端入口。
 - adapter 是 HTTP 层工厂；协议 shape 转换和 usage 提取在 `pkg/translator` / `pkg/usage`。
 - 所有 middleware 装配走 interface-Option pattern（对位 otelgin v0.68.0），详见
@@ -34,4 +34,4 @@
 - 修改 `pkg/domain.RequestContext`、middleware 顺序、adapter/translator 接口、schema 或配置项时，同步更新本目录。
 - 示例代码只说明关键契约，不要求逐字复制实现；字段名、组件边界、错误语义必须准确。
 - 不要把未实现的远期蓝图写成已实现能力；未来功能按本目录目标边界逐步实现。
-- 新接 CDC 表 / 新加 middleware Option / 新加 metric 时按 06 / 07 / 08 的对应小节同步登记。
+- 新接 repo cached wrapper / 新加 middleware Option / 新加 metric 时按 06 / 07 / 08 的对应小节同步登记。
