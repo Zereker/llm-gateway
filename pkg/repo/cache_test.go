@@ -1,6 +1,10 @@
 package repo
 
 import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -70,5 +74,110 @@ func TestTTLCache_DefaultCapacityFallback(t *testing.T) {
 	// 26 个 distinct key，全部应该还在
 	if got := c.Len(); got != 26 {
 		t.Errorf("Len=%d, want 26", got)
+	}
+}
+
+// GetOrLoad 测试 ------------------------------------------------------------
+
+func TestTTLCache_GetOrLoad_HitSkipsLoader(t *testing.T) {
+	c := NewTTLCache[string, int](10, time.Minute)
+	c.Set("a", 42)
+
+	called := 0
+	v, err := c.GetOrLoad(context.Background(), "a", func(context.Context) (int, bool, error) {
+		called++
+		return 0, true, nil
+	})
+	if err != nil || v != 42 {
+		t.Fatalf("hit: v=%d err=%v, want 42 nil", v, err)
+	}
+	if called != 0 {
+		t.Errorf("loader called %d times, want 0", called)
+	}
+}
+
+func TestTTLCache_GetOrLoad_MissInvokesLoaderAndCaches(t *testing.T) {
+	c := NewTTLCache[string, int](10, time.Minute)
+	called := 0
+	loader := func(context.Context) (int, bool, error) {
+		called++
+		return 100, true, nil
+	}
+
+	v, _ := c.GetOrLoad(context.Background(), "a", loader)
+	if v != 100 {
+		t.Fatalf("got %d, want 100", v)
+	}
+	// 第二次应该走 cache 不调 loader
+	v, _ = c.GetOrLoad(context.Background(), "a", loader)
+	if v != 100 || called != 1 {
+		t.Errorf("v=%d called=%d, want 100 1", v, called)
+	}
+}
+
+func TestTTLCache_GetOrLoad_NoCacheFlag(t *testing.T) {
+	// loader 返回 cache=false 时不应回写
+	c := NewTTLCache[string, int](10, time.Minute)
+	called := 0
+	loader := func(context.Context) (int, bool, error) {
+		called++
+		return 7, false, nil
+	}
+
+	v, _ := c.GetOrLoad(context.Background(), "a", loader)
+	if v != 7 {
+		t.Fatalf("got %d, want 7", v)
+	}
+	if _, ok := c.Get("a"); ok {
+		t.Error("cache=false 不应回填")
+	}
+	// 第二次还应该调 loader（cache 里没东西）
+	_, _ = c.GetOrLoad(context.Background(), "a", loader)
+	if called != 2 {
+		t.Errorf("loader called %d times, want 2", called)
+	}
+}
+
+func TestTTLCache_GetOrLoad_ErrorNotCached(t *testing.T) {
+	c := NewTTLCache[string, int](10, time.Minute)
+	loaderErr := errors.New("boom")
+	v, err := c.GetOrLoad(context.Background(), "a", func(context.Context) (int, bool, error) {
+		return 0, true, loaderErr
+	})
+	if !errors.Is(err, loaderErr) {
+		t.Fatalf("err=%v, want %v", err, loaderErr)
+	}
+	if v != 0 {
+		t.Errorf("got %d, want zero", v)
+	}
+	if _, ok := c.Get("a"); ok {
+		t.Error("err 不应缓存")
+	}
+}
+
+func TestTTLCache_GetOrLoad_SingleflightCollapsesConcurrent(t *testing.T) {
+	c := NewTTLCache[string, int](10, time.Minute)
+	var calls int32
+	loader := func(context.Context) (int, bool, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(50 * time.Millisecond) // 模拟 SQL
+		return 99, true, nil
+	}
+
+	const N = 20
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			v, err := c.GetOrLoad(context.Background(), "hot", loader)
+			if err != nil || v != 99 {
+				t.Errorf("v=%d err=%v", v, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("loader called %d times, want 1 (singleflight 失效)", got)
 	}
 }

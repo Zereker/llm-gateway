@@ -11,31 +11,25 @@ import (
 //
 // **设计**：
 //   - 每个 cached wrapper 嵌一个 sql reader + 一个 TTLCache
+//   - 所有 hot path 走 TTLCache.GetOrLoad（miss + singleflight 一步搞定）
 //   - cache key 是查询参数（Resolve(creds) 用 api_key_hash；GetByID(id) 用 id；
-//     ListForModel(model,group) 用 "model:group" 复合 string；等等）
-//   - "not found"（loader 返 nil 或没数据）**不**进缓存——让"刚创建的资源"立刻生效，
-//     不被 negative cache 卡 TTL 时长
+//     ListForModel(model,group) 用 "model\x00group" 复合 string；等等）
+//   - "not found"（loader 返 nil 或没数据）**不**进缓存——loader 通过返回
+//     cache=false 显式告诉缓存层。让"刚创建的资源"立即生效，不被 negative cache
+//     卡 TTL 时长
 //   - 默认参数（capacity / ttl）给个 sensible default；cmd 可以按需调整
-//
-// **不做 stale-while-revalidate / refresh-ahead**——简单 TTL 过期即剔除；下次
-// Get miss 再回源。如果需要异步刷新，留给将来 metric 显示 hit rate 低时再做。
 
 // =============================================================================
 // CachedAPIKeyProvider — wraps SQLAPIKeyProvider with per-(hash) TTL LRU
 // =============================================================================
 
 // CachedAPIKeyProvider 用 TTL LRU 缓存 Resolve 结果。cache key = api_key_hash。
-//
-// **不缓存 hash 计算**：SQLAPIKeyProvider.Resolve 内部已用 sha256；cache 只针对
-// "hash → UserIdentity" 一对。
 type CachedAPIKeyProvider struct {
 	inner *SQLAPIKeyProvider
 	cache *TTLCache[string, *UserIdentity]
 }
 
-// NewCachedAPIKeyProvider 构造。
-//
-// 默认 capacity=10240（支持几千个并发活跃 key）/ ttl=30s。
+// NewCachedAPIKeyProvider 默认 capacity=10240（支持几千个并发活跃 key）/ ttl=30s。
 func NewCachedAPIKeyProvider(inner *SQLAPIKeyProvider, capacity int, ttl time.Duration) *CachedAPIKeyProvider {
 	return &CachedAPIKeyProvider{
 		inner: inner,
@@ -43,26 +37,15 @@ func NewCachedAPIKeyProvider(inner *SQLAPIKeyProvider, capacity int, ttl time.Du
 	}
 }
 
-// Resolve 实现 APIKeyProvider.Resolve；cache hit 短路；miss 走 SQL + 回填 cache。
-//
-// 缓存 key = SHA-256(plaintext)——SQLAPIKeyProvider.Resolve 内部 hash；这里
-// 我们也 hash 一遍以便 cache 命中前不接触 SQL。同 plaintext 两次调用第二次命中。
 func (p *CachedAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) (*UserIdentity, error) {
 	if creds == nil || creds.APIKey == "" {
 		return p.inner.Resolve(ctx, creds)
 	}
 	key := HashAPIKey(creds.APIKey)
-	if v, ok := p.cache.Get(key); ok {
-		return v, nil
-	}
-	v, err := p.inner.Resolve(ctx, creds)
-	if err != nil {
-		return nil, err
-	}
-	if v != nil {
-		p.cache.Set(key, v)
-	}
-	return v, nil
+	return p.cache.GetOrLoad(ctx, key, func(ctx context.Context) (*UserIdentity, bool, error) {
+		v, err := p.inner.Resolve(ctx, creds)
+		return v, err == nil && v != nil, err
+	})
 }
 
 // =============================================================================
@@ -83,19 +66,11 @@ func NewCachedModelServiceReader(inner *SQLModelServiceReader, capacity int, ttl
 	}
 }
 
-// GetByModel 实现 ModelServiceReader.GetByModel；cache hit 短路。
 func (r *CachedModelServiceReader) GetByModel(ctx context.Context, model string) (*ModelService, error) {
-	if v, ok := r.cache.Get(model); ok {
-		return v, nil
-	}
-	v, err := r.inner.GetByModel(ctx, model)
-	if err != nil {
-		return nil, err
-	}
-	if v != nil {
-		r.cache.Set(model, v)
-	}
-	return v, nil
+	return r.cache.GetOrLoad(ctx, model, func(ctx context.Context) (*ModelService, bool, error) {
+		v, err := r.inner.GetByModel(ctx, model)
+		return v, err == nil && v != nil, err
+	})
 }
 
 // List 不缓存——调用方一般在启动期 / 巡检用，命中频次低。
@@ -126,26 +101,18 @@ func NewCachedEndpointReader(inner *SQLEndpointReader, listCap, idCap int, ttl t
 	}
 }
 
-// ListForModel 实现 EndpointReader.ListForModel；缓存 (model, group) → []*Endpoint。
 func (r *CachedEndpointReader) ListForModel(ctx context.Context, model, group string) ([]*Endpoint, error) {
 	if group == "" {
 		group = "default"
 	}
 	key := model + "\x00" + group
-	if v, ok := r.listCache.Get(key); ok {
-		return v, nil
-	}
-	v, err := r.inner.ListForModel(ctx, model, group)
-	if err != nil {
-		return nil, err
-	}
-	if len(v) > 0 {
-		r.listCache.Set(key, v)
-	}
-	return v, nil
+	return r.listCache.GetOrLoad(ctx, key, func(ctx context.Context) ([]*Endpoint, bool, error) {
+		v, err := r.inner.ListForModel(ctx, model, group)
+		return v, err == nil && len(v) > 0, err
+	})
 }
 
-// PickForModel 实现 EndpointReader.PickForModel；走 ListForModel 缓存的第一条。
+// PickForModel 走 ListForModel 缓存的第一条。
 func (r *CachedEndpointReader) PickForModel(ctx context.Context, model, group string) (*Endpoint, error) {
 	list, err := r.ListForModel(ctx, model, group)
 	if err != nil {
@@ -158,19 +125,11 @@ func (r *CachedEndpointReader) PickForModel(ctx context.Context, model, group st
 	return list[0], nil
 }
 
-// GetByID 实现 EndpointReader.GetByID；缓存 id → *Endpoint。
 func (r *CachedEndpointReader) GetByID(ctx context.Context, id int64) (*Endpoint, error) {
-	if v, ok := r.idCache.Get(id); ok {
-		return v, nil
-	}
-	v, err := r.inner.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if v != nil {
-		r.idCache.Set(id, v)
-	}
-	return v, nil
+	return r.idCache.GetOrLoad(ctx, id, func(ctx context.Context) (*Endpoint, bool, error) {
+		v, err := r.inner.GetByID(ctx, id)
+		return v, err == nil && v != nil, err
+	})
 }
 
 // List 不缓存——启动期 / health prober 用。
@@ -199,19 +158,11 @@ func NewCachedQuotaPolicyProvider(inner *SQLQuotaPolicyProvider, capacity int, t
 	}
 }
 
-// GetByID 实现 QuotaPolicyProvider.GetByID；cache hit 短路。
 func (p *CachedQuotaPolicyProvider) GetByID(ctx context.Context, id int64) (*QuotaPolicy, error) {
-	if v, ok := p.cache.Get(id); ok {
-		return v, nil
-	}
-	v, err := p.inner.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if v != nil {
-		p.cache.Set(id, v)
-	}
-	return v, nil
+	return p.cache.GetOrLoad(ctx, id, func(ctx context.Context) (*QuotaPolicy, bool, error) {
+		v, err := p.inner.GetByID(ctx, id)
+		return v, err == nil && v != nil, err
+	})
 }
 
 // 编译期断言。
@@ -237,18 +188,11 @@ func NewCachedSubscriptionProvider(inner *SQLSubscriptionProvider, capacity int,
 	}
 }
 
-// Has 实现 SubscriptionProvider.Has；缓存 (accountID, modelServiceID) → bool。
-//
-// 跟其它 cached wrapper 不同：这里 false 也缓存（订阅不存在跟存在一样需要快速判定）。
+// Has 跟其它 cached wrapper 不同：false 也缓存（loader 返 cache=true）。
 func (p *CachedSubscriptionProvider) Has(ctx context.Context, accountID string, modelServiceID int64) (bool, error) {
 	key := accountID + "\x00" + strconv.FormatInt(modelServiceID, 10)
-	if v, ok := p.cache.Get(key); ok {
-		return v, nil
-	}
-	v, err := p.inner.Has(ctx, accountID, modelServiceID)
-	if err != nil {
-		return false, err
-	}
-	p.cache.Set(key, v)
-	return v, nil
+	return p.cache.GetOrLoad(ctx, key, func(ctx context.Context) (bool, bool, error) {
+		v, err := p.inner.Has(ctx, accountID, modelServiceID)
+		return v, err == nil, err
+	})
 }
