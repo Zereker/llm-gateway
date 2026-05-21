@@ -23,3 +23,11 @@ func Get(vendor string) Factory {
 	return registry[vendor]
 }
 
+// Reset 清空 vendor adapter 注册表——**仅供测试**。
+//
+// 生产环境不应调（adapter 注册在 init() 阶段一次性完成；Reset 之后 Get 全返 nil
+// → DefaultLookup 全返 nil → 所有请求 503）。
+func Reset() {
+	registry = map[string]Factory{}
+}
+
