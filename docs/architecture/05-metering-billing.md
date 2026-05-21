@@ -201,7 +201,7 @@ type UsageMeta struct {
 
 `TTFTMs` 当前暂未捕获。
 
-**关于 `ModelServiceID` / `ServiceUpdateTime`**：这是下游 billing aggregator 的 pricing 查询指纹（详见 [09 §6](./09-billing-aggregation.md#6-价格查询pricingresolver)）。M5 拿到 ModelService 后就已经在 `rc.ModelService` 上持有了 ID + UpdatedAt；M10 `fillUsageMeta` 与 `Model / ServiceID` 一道按"routed 优先"拷贝到 Meta，确保 fallback 后 4 个字段描述同一个被计费的模型。**网关侧仍然不查 active pricing**（§6 原则不变），仅透传两个 model_service 字段作为下游查价的稳定指针。
+**关于 `ModelServiceID` / `ServiceUpdateTime`**：这是下游 billing aggregator 的 pricing 查询指纹。M5 拿到 ModelService 后就已经在 `rc.ModelService` 上持有了 ID + UpdatedAt；M10 `fillUsageMeta` 与 `Model / ServiceID` 一道按"routed 优先"拷贝到 Meta，确保 fallback 后 4 个字段描述同一个被计费的模型。**网关侧仍然不查 active pricing**（§6 原则不变），仅透传两个 model_service 字段作为下游查价的稳定指针。
 
 ## 5. Usage Outbox
 
@@ -364,22 +364,23 @@ RPM / RPS 在请求前 reserve；TPM 在 usage 产出后按 `Usage.Total` charge
 - 按最大 body 大小。
 - 按字段脱敏规则。
 
-## 10. 与 CDC 的关系
+## 10. 与 repo 缓存的关系
 
-Usage Event 通道与 SQL → gateway 配置传播的 [CDC（06 §8）](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)
+Usage Event 通道（gateway → 下游计费）与 SQL → gateway 配置传播（repo 进程内
+TTL LRU 缓存，[06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)）
 是**两条独立通道**，不要互相复用：
 
-| 维度 | Usage Event Outbox | CDC |
-|------|--------------------|-----|
+| 维度 | Usage Event Outbox | Repo TTL 缓存 |
+|------|--------------------|---------------|
 | 数据流向 | gateway → 下游计费 | SQL → gateway |
-| 触发源 | 请求完成后 M10 主动 publish | deployer 写 MySQL 后 Debezium 捕获 binlog |
-| 传输 | Kafka topic `billing.usage.recorded.v1` | Redis Stream `llm_gateway.llm_gateway.<table>` |
-| 可靠性 | DLQ + 重试，失败不阻塞响应 | 最终一致 + L3 SQL 兜底，consumer 退避重连 |
-| schema 演进 | `schema_version` + 切新 topic | Debezium 自然兼容 unknown field |
+| 触发源 | 请求完成后 M10 主动 publish | 请求查表 miss 时 SQL 直查 |
+| 传输 | Kafka topic `billing.usage.recorded.v1` | 进程内 LRU；无跨进程通道 |
+| 可靠性 | DLQ + 重试，失败不阻塞响应 | TTL 过期回源；MySQL 故障时直接返回 503 |
+| schema 演进 | `schema_version` + 切新 topic | repo struct 演进 |
 
-CDC 是**配置数据**的传播通道，不承载 usage / 内容。把 usage 写到 CDC stream
-不对（破坏 SQL → gateway 单向数据传播的语义 + Redis Stream 没有 DLQ 语义）；反过来把
-SQL 配置变更走 usage outbox 也不对（计费 consumer 不应该看到 schema 类事件）。
+repo 缓存仅是**配置数据**的读路径优化，不承载 usage / 内容。把 usage 写到
+repo cache 是 mismatch（usage 是事件流不是查表数据）；反过来把 SQL 配置变更走 usage
+outbox 也不对（计费 consumer 不应该看到 schema 类事件）。
 
 ## 11. 演进规则
 
@@ -389,13 +390,14 @@ SQL 配置变更走 usage outbox 也不对（计费 consumer 不应该看到 sch
 - Content Log 不能复用 Usage Event schema；两者必须独立演进。
 - 指标标签不得包含 request / response body 或高基数字段。
 - 网关不得在请求路径上计算金额；价格匹配由下游按请求发生时间完成。
-- 不要把 Usage Event 与 CDC stream 互相复用（§10）。
+- 不要把 Usage Event 与 repo 缓存通道互相复用（§10）。
 
-## 12. 下游消费侧落地参考
+## 12. 下游消费侧
 
-§6 已声明网关不做"账单聚合 / 余额扣费 / 在线价格查询 / 金额生成"。这些下游职责的具体落地（按主账号分批的时间窗口聚合、含子账号 × 模型明细行的批次 schema、price 查询的 LRU + fail 语义、sink 抽象）见 [09 Billing Aggregation](./09-billing-aggregation.md)。
+§6 已声明网关不做"账单聚合 / 余额扣费 / 在线价格查询 / 金额生成"。这些是下游计费
+平台的职责，**不在本仓库范围**——本仓库只产 Kafka `billing.usage.recorded.v1`
+事件，下游 consumer 自己实现聚合 + 查价 + 出账。
 
-本文档与 09 的边界：
-
-- **本文档（05）** 定义 usage event 是什么、网关怎么产出、Outbox driver 与可靠性语义、网关侧的 Pricing 边界（"网关不做"清单）。
-- **09** 定义下游 Flink job 如何按 event-time tumbling window 聚合并查价出账单批次。任何改动到 usage event schema 都要触发 09 同步评估。
+本文档定义 usage event 是什么、网关怎么产出、Outbox driver 与可靠性语义、网关侧
+的 Pricing 边界（"网关不做"清单）。任何改动到 usage event schema 都要触发下游
+consumer 同步评估。

@@ -56,7 +56,7 @@ subscriptions / accounts) is managed by inserting SQL directly into MySQL —
 this repository does not ship a control-plane / management REST API.
 
 ```sh
-# 1. Start the local stack (MySQL + Redis + Redpanda + Debezium) via Docker.
+# 1. Start the local stack (MySQL + Redis + Redpanda) via Docker.
 make stack
 # (or: docker compose up -d)
 
@@ -113,9 +113,9 @@ A single environment directory contains one file:
 - `gateway.yaml` — server / middleware / database / redis / outbox
 
 Business data lives in MySQL. The gateway runs `infra.Migrate` on boot to
-create tables; CRUD is performed by inserting SQL directly. Debezium CDC pushes
-binlog changes into Redis Streams, and the gateway invalidates its L1 cache in
-real time.
+create tables; CRUD is performed by inserting SQL directly. The repo layer
+caches reads in-process with a TTL LRU (default ~30s), so updates become
+visible within the TTL window without an invalidation channel.
 
 Reload of `gateway.yaml` requires restart.
 

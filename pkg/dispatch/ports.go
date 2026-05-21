@@ -42,8 +42,8 @@ type PickQuery struct {
 
 // CandidateSource 按 (model, group) 拉候选 endpoints 的 port。
 //
-// **跟 Selector 的关系**：CandidateSource 负责"endpoint 从哪里来"（DB / 缓存 /
-// CDC snapshot 都可），Selector 负责"已知候选集挑一个"。Dispatcher 串联：
+// **跟 Selector 的关系**：CandidateSource 负责"endpoint 从哪里来"（DB / 缓存
+// 都可），Selector 负责"已知候选集挑一个"。Dispatcher 串联：
 //
 //	candidates := CandidateSource.ListForModel(ctx, model, group)
 //	eligible   := dispatch.filterEligible(candidates, env, handlers)  // 内部 helper

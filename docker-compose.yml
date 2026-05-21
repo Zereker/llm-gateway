@@ -1,8 +1,7 @@
 # 本地开发 stack——只包含 gateway 跑起来需要的底层 infra：
 #   - mysql       业务数据（model_services / endpoints / api_keys / pricing 等）
-#   - redis       L1 cache + ratelimit bucket store
+#   - redis       ratelimit bucket store + scheduler cooldown 状态
 #   - redpanda    usage event Kafka 投递（billing.usage.recorded.v1）
-#   - debezium    MySQL binlog → Redis Stream（gateway L1 cache 失效通路）
 #
 # 命令速查：
 #   docker compose up -d        # 起 stack
@@ -17,10 +16,8 @@
 #   6379  → redis
 #   9092  → redpanda kafka
 #
-# **Debezium CDC 链路**（启动 stack 后自动跑）：
-#   SQL 写入 → MySQL binlog → Debezium → Redis Stream
-#     `llm_gateway.llm_gateway.<table>`
-#   gateway XREAD → 失效 L1 cache（实时拿到最新 endpoint / api_key / pricing）
+# **数据新鲜度**：repo 层用 TTL 缓存（默认 30s）；deployer SQL 改完业务表
+# （endpoints / api_keys / quota_policies 等）后 ~30s 内 gateway 看到新值。
 
 services:
 
@@ -35,13 +32,6 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
       - --default-authentication-plugin=mysql_native_password
-      - --server-id=1
-      - --log-bin=mysql-bin
-      - --binlog-format=ROW
-      - --binlog-row-image=FULL
-      - --gtid-mode=ON
-      - --enforce-gtid-consistency=ON
-      - --expire-logs-days=1
     ports:
       - "3306:3306"
     volumes:
@@ -107,26 +97,7 @@ services:
         echo "topics ready"
     restart: "no"
 
-  debezium:
-    image: debezium/server:2.7.3.Final
-    container_name: llm-gateway-debezium
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./configs/debezium:/debezium/conf:ro
-      - debezium-data:/debezium/data
-    healthcheck:
-      test: ["CMD-SHELL", "ls /debezium/data >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 3s
-      retries: 20
-
 volumes:
   mysql-data:
   redis-data:
   redpanda-data:
-  debezium-data:

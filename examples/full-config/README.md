@@ -13,7 +13,7 @@ Kafka outbox + 多 model + 多 endpoint + 多 quota_policy + pricing_version。
 ## 启动顺序
 
 ```bash
-# 1) 起本地 stack（mysql + redis + redpanda + debezium）
+# 1) 起本地 stack（mysql + redis + redpanda）
 docker compose up -d
 
 # 2) 起 gateway（启动期自跑 infra.Migrate 建表）
@@ -44,7 +44,8 @@ deployer 直接 SQL 插入 / 更新 / 删除维护。
 - **api_keys.api_key_hash**：`repo.HashAPIKey(plaintext)` 算 SHA-256 hex；
   明文不入库，发给用户保管。
 
-数据写入后 Debezium binlog CDC 自动推 Redis Stream，gateway L1 cache 实时失效。
+数据写入后 gateway 通过 repo 层的进程内 TTL LRU 缓存（默认 30s）逐渐看到新值。
+deployer 不需要做任何失效操作；接受这个延迟，因为业务表变更不需要秒级生效。
 
 ## 跟 configs/local 的差别
 

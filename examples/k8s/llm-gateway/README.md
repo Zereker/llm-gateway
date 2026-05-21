@@ -8,7 +8,6 @@
 - envsubst 启动时把 env var 替换进 yaml（避免明文配置文件）
 
 **前置依赖**（chart 不内置）：MySQL 8.0+ / Redis 7+ / Kafka 3+（生产推荐 cloud managed）。
-Debezium Server（如要走 CDC L1 失效）需要单独部署，建议独立 chart 或 sidecar。
 
 ## 镜像约定
 
@@ -107,6 +106,5 @@ kubectl delete secret ai-gw-llm-gateway-secrets
 | MySQL | cloud RDS / bitnami/mysql chart |
 | Redis | cloud ElastiCache / bitnami/redis chart |
 | Kafka | cloud MSK / strimzi / bitnami/kafka chart |
-| Debezium Server | 独立 deployment / sidecar；推 Redis Stream 给 gateway L1 失效用 |
 | OTel collector | opentelemetry-collector chart |
 | Prometheus / Grafana | kube-prometheus-stack |
