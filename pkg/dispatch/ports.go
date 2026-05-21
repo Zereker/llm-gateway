@@ -12,18 +12,23 @@ import (
 // Selector port — 选哪个 endpoint
 // =============================================================================
 
-// Selector 在当前 model + 已排除集合下选一个可用 endpoint。
+// Selector 在当前 model + 已排除集合下选一个可用 endpoint；也接收每次 attempt
+// 的 Verdict 反馈用于 cooldown 决策。
 //
 // **职责包揽**：候选拉取、eligibility 过滤、filter chain、scoring、cooldown
 // 读判定——全部 Selector 内部完成。Dispatcher 不知道 Endpoint 怎么来。
 //
-// **返回约定**：
+// **Select 返回约定**：
 //
 //	(ep, nil)     ── 选到了
 //	(nil, nil)    ── 当前 model 候选耗尽（让 FallbackPolicy 决定切 model 还是 abort）
 //	(nil, err)    ── 依赖故障（如 DB / Redis 调用失败），driver 直接 abort 503
+//
+// **Report**：每次 invoke / reserve 出 verdict 后，Dispatcher 调一次反馈给 Selector
+// 内部的 cooldown 状态机（实现侧把 Verdict.Class 翻成自己的 ErrorClass）。
 type Selector interface {
 	Select(ctx context.Context, q Query) (*domain.Endpoint, error)
+	Report(ctx context.Context, ep *domain.Endpoint, v Verdict)
 }
 
 // Query Selector.Select 的入参。
@@ -64,14 +69,48 @@ type InvokerFactory interface {
 
 // Invoker 一次已配置好的下游调用。无参执行。
 //
-// **职责包揽**：endpoint quota reserve、adapter / translator lookup、HTTP do、
-// classify、Selector.Report 回调（通过 hook 内部触发）。Dispatcher 不知道这些。
+// **职责包揽**：HTTP do、classify、handler.PrepareCall。
+//
+// **不职责**：endpoint quota reserve（由 EndpointQuota 单独负责）、Selector.Report
+// （由 Dispatcher 在 Invoke 返回后调）。这是 v0.6 把 "reserve → send → report"
+// 三件事拆 3 个 port 的结果。
 //
 // **返回约定**：err 仅在"无法构造调用"时非 nil（极少见，如 nil endpoint）；
 // 上游错误归到 Result.Verdict().Class。
 type Invoker interface {
 	Invoke(ctx context.Context) (Result, error)
 }
+
+// =============================================================================
+// EndpointQuota port — endpoint 级 ratelimit 前扣 + 后扣
+// =============================================================================
+
+// EndpointQuota 是 endpoint 级配额的"前扣 + 后扣"端口——dispatcher 在调 invoker
+// 之前 Reserve（RPM/RPS hold），成功 stream 之后 Charge（实际 token 用量）。
+//
+// **跟用户级 quota 的区别**：用户级 quota 在 M6 middleware（Limit）里做；
+// EndpointQuota 是 endpoint 一侧的硬约束（vendor 自身限制 / 自建 fleet 容量保护），
+// dispatcher 在 attempt 粒度执行。
+//
+// **设计动机**：把 reserve/charge 从 invoker 拆出来——invoker 只管"一次 HTTP
+// 调用"；reserve 是调度时序的一环，归 Dispatcher 编排。
+type EndpointQuota interface {
+	// Reserve 试图给 ep 占用一次 attempt 配额。
+	//   返回 (nil, nil)        ── 没配置 quota 或预扣成功
+	//   返回 (*Verdict, nil)   ── 配额拒绝；verdict 已含 Class=ClassCapacity / Reason
+	//   返回 (_, err)          ── 依赖故障（如 Redis 错）；driver 也按 Verdict 处理
+	Reserve(ctx context.Context, ep *domain.Endpoint) (denied *Verdict, err error)
+
+	// Charge 在成功 stream 之后写真实 token 用量到 TPM bucket（fire-and-forget）。
+	// usage / ep 任一为 nil 时 no-op；charge 失败只记 metric，不阻塞响应。
+	Charge(ctx context.Context, ep *domain.Endpoint, usage *domain.Usage)
+}
+
+// NoopQuota 永不拒绝、永不 charge——给"没配 ratelimit"的部署用。
+type NoopQuota struct{}
+
+func (NoopQuota) Reserve(_ context.Context, _ *domain.Endpoint) (*Verdict, error) { return nil, nil }
+func (NoopQuota) Charge(_ context.Context, _ *domain.Endpoint, _ *domain.Usage)   {}
 
 // Result Invoke 的产出句柄。
 //

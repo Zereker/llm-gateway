@@ -124,7 +124,7 @@ func TestLimitReadFilter_FailOpen_OnStoreErr(t *testing.T) {
 
 func TestEndpointReserveBuckets_RPMOnly(t *testing.T) {
 	e := epWithQuota(7, 60, 0)
-	bs := EndpointReserveBuckets(e)
+	bs := ratelimit.EndpointReserveBuckets(e)
 	if len(bs) != 1 || !strings.HasSuffix(bs[0].Key, ":rpm") {
 		t.Errorf("buckets=%+v", bs)
 	}
@@ -136,7 +136,7 @@ func TestEndpointReserveBuckets_RPMOnly(t *testing.T) {
 func TestEndpointReserveBuckets_NoTPMInReserve(t *testing.T) {
 	// docs/04 §10：endpoint TPM 不在 reserve；只在 ChargeBatch 出现
 	e := epWithQuota(7, 0, 100000)
-	bs := EndpointReserveBuckets(e)
+	bs := ratelimit.EndpointReserveBuckets(e)
 	if len(bs) != 0 {
 		t.Errorf("TPM should not appear in reserve buckets, got=%+v", bs)
 	}
@@ -146,7 +146,7 @@ func TestEndpointReserveBuckets_RPS(t *testing.T) {
 	e := ep(7, 100)
 	rps := uint32(10)
 	e.Quota = domain.QuotaConfig{RPS: &rps}
-	bs := EndpointReserveBuckets(e)
+	bs := ratelimit.EndpointReserveBuckets(e)
 	if len(bs) != 1 || !strings.HasSuffix(bs[0].Key, ":rps") {
 		t.Errorf("buckets=%+v", bs)
 	}
@@ -154,14 +154,14 @@ func TestEndpointReserveBuckets_RPS(t *testing.T) {
 
 func TestEndpointTPMChargeBucket_NoTPM_Nil(t *testing.T) {
 	e := ep(1, 100)
-	if got := EndpointTPMChargeBucket(e, 100); got != nil {
+	if got := ratelimit.EndpointTPMChargeBucket(e, 100); got != nil {
 		t.Errorf("got=%+v, want nil", got)
 	}
 }
 
 func TestEndpointTPMChargeBucket_HasTPM(t *testing.T) {
 	e := epWithQuota(42, 0, 100000)
-	got := EndpointTPMChargeBucket(e, 555)
+	got := ratelimit.EndpointTPMChargeBucket(e, 555)
 	if got == nil || got.Key != "rl:endpoint:42:tpm" {
 		t.Errorf("got=%+v", got)
 	}
@@ -172,7 +172,7 @@ func TestEndpointTPMChargeBucket_HasTPM(t *testing.T) {
 
 func TestEndpointTPMChargeBucket_ZeroCost_Nil(t *testing.T) {
 	e := epWithQuota(42, 0, 100000)
-	if got := EndpointTPMChargeBucket(e, 0); got != nil {
+	if got := ratelimit.EndpointTPMChargeBucket(e, 0); got != nil {
 		t.Errorf("cost=0 should return nil, got %+v", got)
 	}
 }

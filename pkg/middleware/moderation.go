@@ -1,24 +1,16 @@
 package middleware
 
 import (
-	"context"
-
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/moderation"
 )
 
-// Moderator M8 Content Moderation middleware 的依赖接口。
-//
-// 默认 nil = NoOp；接入审核服务时实现自定义 Moderator。
-//
-// Implementations MUST be safe for concurrent use。
-// CheckOutput 的 chunk 参数：实现不可保留 slice 引用（caller 复用 buffer）。
-type Moderator interface {
-	CheckInput(c context.Context, env *domain.RequestEnvelope) error
-	CheckOutput(c context.Context, chunk []byte) error
-}
+// Moderator 是 moderation.Moderator 的别名，保留旧 import 路径。
+// 新代码请直接用 pkg/moderation.Moderator。
+type Moderator = moderation.Moderator
 
 // ModerationOption 配置 Moderation middleware（otelgin v0.68.0 同款 interface-Option）。
 type ModerationOption interface {
@@ -38,8 +30,8 @@ func WithModerator(m Moderator) ModerationOption {
 	return moderationOptionFunc(func(c *moderationConfig) { c.moderator = m })
 }
 
-// Moderation 是 M8：对请求 body 做 input 审核 + 把 Moderator 注入 ctx 让 M7
-// pipeline 接 output 审核。
+// Moderation 是 M8：对请求 body 做 input 审核 + 把 Moderator 注入 ctx 让
+// invoker 在构造 response stream 时通过 moderation.WrapStream 接 output 审核。
 //
 // 失败行为：
 //   - Envelope 缺失 → 500（防御性，不应发生）
@@ -75,8 +67,8 @@ func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 			return
 		}
 
-		// 把 Moderator 装进 ctx，让 M7 schedule 包 ResponseHandler 时拿到
-		c.Request = c.Request.WithContext(withModerator(ctx, cfg.moderator))
+		// 把 Moderator 装进 ctx，让 invoker 包 ResponseStream 时拿到。
+		c.Request = c.Request.WithContext(moderation.WithModerator(ctx, cfg.moderator))
 
 		c.Next()
 	}

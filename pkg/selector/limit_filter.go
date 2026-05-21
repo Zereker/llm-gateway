@@ -2,8 +2,6 @@ package selector
 
 import (
 	"context"
-	"fmt"
-	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -38,7 +36,7 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 	var slots []slot
 	var allBuckets []ratelimit.Bucket
 	for i, ep := range candidates {
-		bs := buildEndpointReserveBuckets(ep, 1)
+		bs := ratelimit.EndpointReserveBuckets(ep)
 		for _, b := range bs {
 			allBuckets = append(allBuckets, b)
 			slots = append(slots, slot{epIdx: i})
@@ -70,56 +68,6 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 		}
 	}
 	return out
-}
-
-// =============================================================================
-// Endpoint bucket 构造
-// =============================================================================
-
-// buildEndpointReserveBuckets 把 endpoint quota 展开成 RPM + RPS bucket（前扣用）。
-//
-// **不**包含 TPM——TPM 走 ChargeBatch 后扣（docs/04 §10）。
-func buildEndpointReserveBuckets(ep *domain.Endpoint, rpsCost uint32) []ratelimit.Bucket {
-	var buckets []ratelimit.Bucket
-	q := ep.Quota
-	if q.RPM != nil && *q.RPM > 0 {
-		buckets = append(buckets, ratelimit.Bucket{
-			Key:    fmt.Sprintf("rl:endpoint:%d:rpm", ep.ID),
-			Limit:  *q.RPM,
-			Cost:   1,
-			Window: time.Minute,
-		})
-	}
-	if q.RPS != nil && *q.RPS > 0 {
-		buckets = append(buckets, ratelimit.Bucket{
-			Key:    fmt.Sprintf("rl:endpoint:%d:rps", ep.ID),
-			Limit:  *q.RPS,
-			Cost:   1,
-			Window: time.Second,
-		})
-	}
-	return buckets
-}
-
-// EndpointReserveBuckets 给 M7 用：选中 endpoint 后构造 RPM/RPS reserve buckets（docs/04 §10）。
-func EndpointReserveBuckets(ep *domain.Endpoint) []ratelimit.Bucket {
-	return buildEndpointReserveBuckets(ep, 1)
-}
-
-// EndpointTPMChargeBucket 给 M7 用：成功响应后 charge endpoint TPM bucket。
-//
-// cost 由调用方传入 rc.Usage.Total。endpoint 没配 TPM 时返 nil。
-func EndpointTPMChargeBucket(ep *domain.Endpoint, cost uint32) *ratelimit.Bucket {
-	q := ep.Quota
-	if q.TPM == nil || *q.TPM == 0 || cost == 0 {
-		return nil
-	}
-	return &ratelimit.Bucket{
-		Key:    fmt.Sprintf("rl:endpoint:%d:tpm", ep.ID),
-		Limit:  *q.TPM,
-		Cost:   cost,
-		Window: time.Minute,
-	}
 }
 
 // 编译期断言。

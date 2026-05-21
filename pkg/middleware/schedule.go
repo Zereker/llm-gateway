@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"strconv"
 	"time"
 
@@ -18,15 +17,6 @@ import (
 //
 // 解析在 M5（ModelService middleware）完成；dispatch.Dispatcher 直接消费 rc.ModelChain。
 const MaxFallbackModels = 3
-
-// EndpointReader M7 用：按 (model, group) 拉候选 endpoints。
-//
-// **保留为 middleware-owned 接口**：cmd/gateway 的 selectorAdapter 通过这个 port
-// 拿数据，repo SQL 实现通过 cmd/gateway/middleware_adapters.go 的 adaptEndpoints
-// 桥接。PR3 时把接口归属移到 pkg/selector 包。
-type EndpointReader interface {
-	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
-}
 
 // Schedule 是 M7 middleware——thin adapter：把 gin / RC 转 dispatch.Input，
 // 跑 dispatcher.Dispatch，再把 dispatch.Outcome 映射回 RC + HTTP。

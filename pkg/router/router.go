@@ -8,6 +8,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/middleware"
+	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
 // Deps 是 NewEngine 的依赖集合：直接持有 middleware 各 port 的实现引用 +
@@ -36,7 +37,7 @@ type Deps struct {
 	SubscriptionChecker middleware.SubscriptionChecker
 
 	// M6 Limit（user 侧 RPM/RPS + TPM）
-	RateLimitStore middleware.RateLimitStore
+	RateLimitStore ratelimit.Store
 	QuotaPolicies  middleware.QuotaPolicies
 
 	// M7 Schedule
