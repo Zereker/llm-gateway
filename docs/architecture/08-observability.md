@@ -75,10 +75,10 @@
 | `llm_gateway_outbox_dlq_total` | counter | `driver`, `result` | DLQ 写入结果 |
 | `llm_gateway_endpoint_misconfigured_total` | counter | `vendor`, `reason` | 启动期 endpoint 配置完整性检查 |
 | `llm_gateway_request_aborted_by_shutdown_total` | counter | `route` | shutdown 超时中断请求 |
-| `llm_gateway_repo_cache_total` | counter | `table`, `result` | repo TTL LRU 命中统计；`result` ∈ `hit\|miss` |
+| `llm_gateway_repo_cache_total` | counter | `table`, `result` | repo TTL LRU 命中统计；`result` ∈ `hit\|miss\|error`；`table` ∈ `api_keys\|model_services\|endpoints_list\|endpoints_id\|quota_policies\|subscriptions` |
 | `llm_gateway_repo_sql_load_total` | counter | `table`, `result` | repo SQL 直查统计；`result` ∈ `ok\|error\|not_found` |
 
-注：repo cache metrics 在代码侧待补；上表是 docs 目标契约，落地时按本表命名 + label。
+repo cache metrics 实现：`pkg/repo/cache_metrics.go`（Metrics 接口）+ `cmd/gateway/repo_metrics.go`（Prom counter 适配器）。
 
 指标用于 Runtime Scoring 时，Scheduler 不直接读取 Prometheus；应读取 `EndpointStatsStore` 中的 EMA / 滑窗摘要。Metrics 是观测层，`EndpointStatsStore` 是调度内部状态。
 

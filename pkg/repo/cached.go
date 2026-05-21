@@ -30,10 +30,11 @@ type CachedAPIKeyProvider struct {
 }
 
 // NewCachedAPIKeyProvider 默认 capacity=10240（支持几千个并发活跃 key）/ ttl=30s。
-func NewCachedAPIKeyProvider(inner *SQLAPIKeyProvider, capacity int, ttl time.Duration) *CachedAPIKeyProvider {
+// metrics 为 nil 时不上报。
+func NewCachedAPIKeyProvider(inner *SQLAPIKeyProvider, capacity int, ttl time.Duration, metrics Metrics) *CachedAPIKeyProvider {
 	return &CachedAPIKeyProvider{
 		inner: inner,
-		cache: NewTTLCache[string, *UserIdentity](capacity, ttl),
+		cache: NewTTLCache[string, *UserIdentity](capacity, ttl).WithMetrics("api_keys", metrics),
 	}
 }
 
@@ -59,10 +60,10 @@ type CachedModelServiceReader struct {
 }
 
 // NewCachedModelServiceReader 默认 capacity=256 / ttl=30s。
-func NewCachedModelServiceReader(inner *SQLModelServiceReader, capacity int, ttl time.Duration) *CachedModelServiceReader {
+func NewCachedModelServiceReader(inner *SQLModelServiceReader, capacity int, ttl time.Duration, metrics Metrics) *CachedModelServiceReader {
 	return &CachedModelServiceReader{
 		inner: inner,
-		cache: NewTTLCache[string, *ModelService](capacity, ttl),
+		cache: NewTTLCache[string, *ModelService](capacity, ttl).WithMetrics("model_services", metrics),
 	}
 }
 
@@ -93,11 +94,11 @@ type CachedEndpointReader struct {
 
 // NewCachedEndpointReader 默认 listCapacity=1024（model×group 对数），
 // idCapacity=4096（按 id 查），ttl=30s。
-func NewCachedEndpointReader(inner *SQLEndpointReader, listCap, idCap int, ttl time.Duration) *CachedEndpointReader {
+func NewCachedEndpointReader(inner *SQLEndpointReader, listCap, idCap int, ttl time.Duration, metrics Metrics) *CachedEndpointReader {
 	return &CachedEndpointReader{
 		inner:     inner,
-		listCache: NewTTLCache[string, []*Endpoint](listCap, ttl),
-		idCache:   NewTTLCache[int64, *Endpoint](idCap, ttl),
+		listCache: NewTTLCache[string, []*Endpoint](listCap, ttl).WithMetrics("endpoints_list", metrics),
+		idCache:   NewTTLCache[int64, *Endpoint](idCap, ttl).WithMetrics("endpoints_id", metrics),
 	}
 }
 
@@ -151,10 +152,10 @@ type CachedQuotaPolicyProvider struct {
 }
 
 // NewCachedQuotaPolicyProvider 默认 capacity=128（少量 policy 共享）/ ttl=30s。
-func NewCachedQuotaPolicyProvider(inner *SQLQuotaPolicyProvider, capacity int, ttl time.Duration) *CachedQuotaPolicyProvider {
+func NewCachedQuotaPolicyProvider(inner *SQLQuotaPolicyProvider, capacity int, ttl time.Duration, metrics Metrics) *CachedQuotaPolicyProvider {
 	return &CachedQuotaPolicyProvider{
 		inner: inner,
-		cache: NewTTLCache[int64, *QuotaPolicy](capacity, ttl),
+		cache: NewTTLCache[int64, *QuotaPolicy](capacity, ttl).WithMetrics("quota_policies", metrics),
 	}
 }
 
@@ -181,10 +182,10 @@ type CachedSubscriptionProvider struct {
 }
 
 // NewCachedSubscriptionProvider 默认 capacity=10240（active subscriptions）/ ttl=30s。
-func NewCachedSubscriptionProvider(inner *SQLSubscriptionProvider, capacity int, ttl time.Duration) *CachedSubscriptionProvider {
+func NewCachedSubscriptionProvider(inner *SQLSubscriptionProvider, capacity int, ttl time.Duration, metrics Metrics) *CachedSubscriptionProvider {
 	return &CachedSubscriptionProvider{
 		inner: inner,
-		cache: NewTTLCache[string, bool](capacity, ttl),
+		cache: NewTTLCache[string, bool](capacity, ttl).WithMetrics("subscriptions", metrics),
 	}
 }
 

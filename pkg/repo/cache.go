@@ -28,8 +28,10 @@ import (
 // 保证 gateway 看到新值；接受这个延迟，因为业务表变更（endpoint / api_key 启用 /
 // quota 调整）不需要秒级。
 type TTLCache[K comparable, V any] struct {
-	inner *lru.LRU[K, V]
-	sf    singleflight.Group
+	inner   *lru.LRU[K, V]
+	sf      singleflight.Group
+	metrics Metrics // 可选；nil → 不报
+	table   string  // metrics 上报的 table label
 }
 
 // LoaderFunc 是 GetOrLoad 的 miss 回调。
@@ -49,6 +51,17 @@ func NewTTLCache[K comparable, V any](capacity int, ttl time.Duration) *TTLCache
 	return &TTLCache[K, V]{inner: lru.NewLRU[K, V](capacity, nil, ttl)}
 }
 
+// WithMetrics 给 cache 挂一个 Metrics + table label。链式调用：
+//
+//	c := repo.NewTTLCache[int64, *Endpoint](1024, ttl).WithMetrics("endpoints", m)
+//
+// nil metrics 等价于不设置（cached wrapper 没传指标时用）。
+func (c *TTLCache[K, V]) WithMetrics(table string, m Metrics) *TTLCache[K, V] {
+	c.metrics = m
+	c.table = table
+	return c
+}
+
 func (c *TTLCache[K, V]) Get(key K) (V, bool) { return c.inner.Get(key) }
 func (c *TTLCache[K, V]) Set(key K, val V)    { c.inner.Add(key, val) }
 func (c *TTLCache[K, V]) Delete(key K)        { c.inner.Remove(key) }
@@ -58,8 +71,13 @@ func (c *TTLCache[K, V]) Len() int            { return c.inner.Len() }
 //
 // 同 key 并发 miss 只会调用 loader 一次，其他调用阻塞等同一结果；
 // loader panic / err 透传给所有阻塞者。
+//
+// 报告 Metrics：hit / miss / error 三种结果（hit 在 cache 命中时；miss 在
+// loader 成功时；error 在 loader 返 err 时）。多个 goroutine 同 key 并发 miss
+// 时只报一次 miss（singleflight 只跑一遍 loader）。
 func (c *TTLCache[K, V]) GetOrLoad(ctx context.Context, key K, loader LoaderFunc[V]) (V, error) {
 	if v, ok := c.inner.Get(key); ok {
+		c.record("hit")
 		return v, nil
 	}
 	// singleflight key 是 string；comparable 用 fmt.Sprintf 即可（miss path 不是 hot path）
@@ -71,11 +89,13 @@ func (c *TTLCache[K, V]) GetOrLoad(ctx context.Context, key K, loader LoaderFunc
 		}
 		v, cache, err := loader(ctx)
 		if err != nil {
+			c.record("error")
 			return v, err
 		}
 		if cache {
 			c.inner.Add(key, v)
 		}
+		c.record("miss")
 		return v, nil
 	})
 	if err != nil {
@@ -83,4 +103,10 @@ func (c *TTLCache[K, V]) GetOrLoad(ctx context.Context, key K, loader LoaderFunc
 		return zero, err
 	}
 	return raw.(V), nil
+}
+
+func (c *TTLCache[K, V]) record(result string) {
+	if c.metrics != nil {
+		c.metrics.Record(c.table, result)
+	}
 }

@@ -155,6 +155,54 @@ func TestTTLCache_GetOrLoad_ErrorNotCached(t *testing.T) {
 	}
 }
 
+type recordingMetrics struct {
+	mu      sync.Mutex
+	records []string // "table:result"
+}
+
+func (m *recordingMetrics) Record(table, result string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.records = append(m.records, table+":"+result)
+}
+
+func (m *recordingMetrics) snapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.records))
+	copy(out, m.records)
+	return out
+}
+
+func TestTTLCache_Metrics_Hit_Miss_Error(t *testing.T) {
+	m := &recordingMetrics{}
+	c := NewTTLCache[string, int](10, time.Minute).WithMetrics("widgets", m)
+
+	loader := func(context.Context) (int, bool, error) {
+		return 42, true, nil
+	}
+
+	// 第一次 miss
+	_, _ = c.GetOrLoad(context.Background(), "a", loader)
+	// 第二次 hit
+	_, _ = c.GetOrLoad(context.Background(), "a", loader)
+	// 第三次 error
+	_, _ = c.GetOrLoad(context.Background(), "b", func(context.Context) (int, bool, error) {
+		return 0, false, errors.New("boom")
+	})
+
+	got := m.snapshot()
+	want := []string{"widgets:miss", "widgets:hit", "widgets:error"}
+	if len(got) != len(want) {
+		t.Fatalf("records=%v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("records[%d]=%q, want %q", i, got[i], w)
+		}
+	}
+}
+
 func TestTTLCache_GetOrLoad_SingleflightCollapsesConcurrent(t *testing.T) {
 	c := NewTTLCache[string, int](10, time.Minute)
 	var calls int32
