@@ -53,7 +53,7 @@ const (
 
 // === Upstream (docs/03) ===
 const (
-	InvokerRequestsTotal         = "llm_gateway_invoker_requests_total"          // vendor / endpoint_id / model / native_protocol / result / error_class
+	InvokerRequestsTotal         = "llm_gateway_invoker_requests_total"          // vendor / endpoint_id / model / protocol / result / error_class
 	InvokerDurationSeconds       = "llm_gateway_invoker_duration_seconds"         // vendor / endpoint_id / model / result / error_class
 	AdapterRequestTotal           = "llm_gateway_adapter_request_total"
 	AdapterRequestDurationSeconds = "llm_gateway_adapter_request_duration_seconds"

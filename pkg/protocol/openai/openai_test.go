@@ -33,9 +33,6 @@ func TestFactory_Metadata(t *testing.T) {
 	if m.Vendor != "openai" {
 		t.Errorf("Vendor = %q, want openai", m.Vendor)
 	}
-	if m.NativeProtocol != domain.ProtoOpenAI {
-		t.Errorf("NativeProtocol = %v", m.NativeProtocol)
-	}
 }
 
 func TestAdapter_Registered(t *testing.T) {

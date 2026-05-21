@@ -27,9 +27,6 @@ import (
 
 type openaiGemini struct{}
 
-// Translator (OpenAI → Gemini) 公共构造器——给 pkg/protocol/gemini 用。
-func Translator() translator.Translator { return openaiGemini{} }
-
 func (openaiGemini) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiGemini) Target() domain.Protocol { return domain.ProtoGemini }
 

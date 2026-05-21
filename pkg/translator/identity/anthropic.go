@@ -15,9 +15,6 @@ import (
 // **response 端**：handler 透传 chunk + 走 extractor 旁路提取 usage（v0.5 G6 抽出）。
 type anthropicTranslator struct{}
 
-// AnthropicTranslator (Anthropic → Anthropic) identity translator 公共构造器。
-func AnthropicTranslator() translator.Translator { return anthropicTranslator{} }
-
 func (anthropicTranslator) Source() domain.Protocol { return domain.ProtoAnthropic }
 func (anthropicTranslator) Target() domain.Protocol { return domain.ProtoAnthropic }
 

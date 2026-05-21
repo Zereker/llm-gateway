@@ -28,8 +28,7 @@ type Factory struct{}
 // Metadata 返回静态元信息。
 func (Factory) Metadata() adapter.Metadata {
 	return adapter.Metadata{
-		Vendor:         "openai",
-		NativeProtocol: domain.ProtoOpenAI,
+		Vendor: "openai",
 		SupportedModalities: []domain.Modality{
 			domain.ModalityChat,
 			domain.ModalityEmbedding,

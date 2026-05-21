@@ -27,9 +27,6 @@ func TestFactory_Metadata(t *testing.T) {
 	if m.Vendor != "gemini" {
 		t.Errorf("Vendor=%q", m.Vendor)
 	}
-	if m.NativeProtocol != domain.ProtoGemini {
-		t.Errorf("NativeProtocol=%v", m.NativeProtocol)
-	}
 }
 
 func TestAdapter_Registered(t *testing.T) {
