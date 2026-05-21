@@ -70,10 +70,13 @@ func (s *EndpointStore) List(ctx context.Context) ([]repo.Endpoint, error) {
 
 // Create 插入新 endpoint；成功后回填 e.ID。
 //
-// 必填：name / vendor / model / Auth.Type / Routing。
+// 必填：name / vendor / protocol / model / Auth.Type / Routing。
 func (s *EndpointStore) Create(ctx context.Context, e *repo.Endpoint) error {
 	if e == nil || e.Name == "" || e.Vendor == "" || e.Model == "" {
 		return errors.New("endpoint: name, vendor, model required")
+	}
+	if e.Protocol == "" || e.Protocol == "unknown" {
+		return errors.New("endpoint: protocol required (openai|anthropic|gemini|responses|...)")
 	}
 	if e.Auth.Type == "" {
 		return errors.New("endpoint: auth.type required")
@@ -121,6 +124,7 @@ func (s *EndpointStore) Update(ctx context.Context, e *repo.Endpoint) error {
 		Where("id = ? AND deleted_at IS NULL", e.ID).
 		Updates(map[string]any{
 			"vendor":       e.Vendor,
+			"protocol":     e.Protocol,
 			"model":        e.Model,
 			"group_name":   e.Group,
 			"weight":       e.Weight,
