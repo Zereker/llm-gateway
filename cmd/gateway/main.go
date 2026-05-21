@@ -42,9 +42,9 @@ import (
 	"github.com/zereker/llm-gateway/pkg/usage"
 
 	// adapter blank imports：init() 自动注册到 adapter registry
-	_ "github.com/zereker/llm-gateway/pkg/adapter/anthropic"
-	_ "github.com/zereker/llm-gateway/pkg/adapter/gemini"
-	_ "github.com/zereker/llm-gateway/pkg/adapter/openai"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 
 	// translator blank imports：init() 自动注册到 translator registry
 	_ "github.com/zereker/llm-gateway/pkg/translator/anthropic_openai"

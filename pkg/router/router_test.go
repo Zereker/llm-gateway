@@ -9,6 +9,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // stubIdentity 永远拒（router 这层只关心路由 + middleware 链是否注册，
@@ -53,7 +54,7 @@ func (panicSelector) Select(_ context.Context, _ dispatch.Query) (*domain.Endpoi
 
 type panicInvokerFactory struct{}
 
-func (panicInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte, _ dispatch.Lookups) dispatch.Invoker {
+func (panicInvokerFactory) For(_ *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte, _ protocol.Handler) dispatch.Invoker {
 	panic("router test: InvokerFactory.For should not be reached")
 }
 

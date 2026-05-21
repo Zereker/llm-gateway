@@ -9,10 +9,10 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/middleware"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/selector/eligibility"
-	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
 // =============================================================================
@@ -21,8 +21,7 @@ import (
 //
 // **职责**：
 //   1. ListForModel 拉候选
-//   2. eligibility.Filter（modality / adapter / protocol / translator 资格过滤）
-//      —— 用 q.Lookups（请求级 dispatch.AdapterLookup / TranslatorLookup）
+//   2. eligibility.Filter（按 q.Handlers 一次性过滤 modality / adapter / translator）
 //   3. 构造 selector.Candidate（EffectiveWeight = ep.Weight）
 //   4. scheduler.Pick（filter chain → scorer → 内部 selector）
 //
@@ -42,10 +41,7 @@ func (s *selectorAdapter) Select(ctx context.Context, q dispatch.Query) (*domain
 	if err != nil {
 		return nil, err
 	}
-	elgRes := eligibility.Filter(raw, q.Envelope,
-		eligibilityAdapters{l: q.Lookups.Adapters},
-		eligibilityTranslators{l: q.Lookups.Translators},
-	)
+	elgRes := eligibility.Filter(raw, q.Envelope, q.Handlers)
 	if len(elgRes.Eligible) == 0 {
 		return nil, nil
 	}
@@ -61,59 +57,14 @@ func (s *selectorAdapter) Select(ctx context.Context, q dispatch.Query) (*domain
 	})
 }
 
-// eligibilityAdapters 把 dispatch.AdapterLookup 适配成 eligibility.AdapterLookup
-// （后者要 Has / NativeProtocol / SupportedModalities 三个方法，全部从 Factory
-// metadata 派生）。
-type eligibilityAdapters struct{ l dispatch.AdapterLookup }
-
-func (a eligibilityAdapters) Has(vendor string) bool {
-	if a.l == nil {
-		return false
-	}
-	return a.l.Get(vendor) != nil
-}
-
-func (a eligibilityAdapters) NativeProtocol(vendor string) domain.Protocol {
-	if a.l == nil {
-		return domain.ProtoUnknown
-	}
-	f := a.l.Get(vendor)
-	if f == nil {
-		return domain.ProtoUnknown
-	}
-	return f.Metadata().NativeProtocol
-}
-
-func (a eligibilityAdapters) SupportedModalities(vendor string) []domain.Modality {
-	if a.l == nil {
-		return nil
-	}
-	f := a.l.Get(vendor)
-	if f == nil {
-		return nil
-	}
-	return f.Metadata().SupportedModalities
-}
-
-// eligibilityTranslators 把 dispatch.TranslatorLookup 适配成 eligibility.TranslatorLookup
-// （仅需要 Has）。
-type eligibilityTranslators struct{ l dispatch.TranslatorLookup }
-
-func (t eligibilityTranslators) Has(src, tgt domain.Protocol) bool {
-	if t.l == nil {
-		return false
-	}
-	return t.l.Find(src, tgt) != nil
-}
-
 // =============================================================================
 // InvokerFactory adapter: invoker.Sender + ratelimit.Store + selector.Scheduler
 //                       → dispatch.InvokerFactory + dispatch.Invoker + dispatch.Result
 // =============================================================================
 //
 // **职责**：
-//   - For(ep, env, body, lookups) → invokerAdapter（一次性句柄；lookups 透给 Send）
-//   - Invoke(ctx) 内做：endpoint RPM/RPS reserve → sender.Send(..., lookups) → scheduler.Report
+//   - For(ep, env, body, handler) → invokerAdapter（一次性句柄；handler 透给 Send）
+//   - Invoke(ctx) 内做：endpoint RPM/RPS reserve → sender.Send(..., handler) → scheduler.Report
 //   - Result.StreamTo 内做：moderator wrap → sender.Forward → endpoint TPM 后扣
 //   - Result.Close 兜底关 body
 //
@@ -131,12 +82,12 @@ func newInvokerFactoryAdapter(sender *invoker.Sender, sched selector.Scheduler, 
 	return &invokerFactoryAdapter{sender: sender, sched: sched, rateStore: rateStore}
 }
 
-func (f *invokerFactoryAdapter) For(ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte, lookups dispatch.Lookups) dispatch.Invoker {
+func (f *invokerFactoryAdapter) For(ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte, handler protocol.Handler) dispatch.Invoker {
 	return &invokerAdapter{
 		ep:        ep,
 		env:       env,
 		body:      body,
-		lookups:   lookups,
+		handler:   handler,
 		sender:    f.sender,
 		sched:     f.sched,
 		rateStore: f.rateStore,
@@ -147,7 +98,7 @@ type invokerAdapter struct {
 	ep        *domain.Endpoint
 	env       *domain.RequestEnvelope
 	body      []byte
-	lookups   dispatch.Lookups
+	handler   protocol.Handler
 	sender    *invoker.Sender
 	sched     selector.Scheduler
 	rateStore middleware.RateLimitStore
@@ -160,7 +111,7 @@ func (i *invokerAdapter) Invoke(ctx context.Context) (dispatch.Result, error) {
 			allowed, violated, rerr := i.rateStore.ReserveBatch(ctx, buckets)
 			if rerr != nil {
 				reason := "endpoint reserve: " + rerr.Error()
-				v := dispatch.Verdict{Class: dispatch.ClassCapacity, Reason: reason}
+				v := dispatch.Verdict{Stage: dispatch.StageReserve, Class: dispatch.ClassCapacity, Reason: reason}
 				i.sched.Report(ctx, i.ep, selector.Result{Class: selector.ClassCapacity, Reason: reason})
 				return &reserveFailedResult{ep: i.ep, verdict: v}, nil
 			}
@@ -170,22 +121,28 @@ func (i *invokerAdapter) Invoke(ctx context.Context) (dispatch.Result, error) {
 					key = violated.Key
 				}
 				reason := "endpoint quota exhausted: " + key
-				v := dispatch.Verdict{Class: dispatch.ClassCapacity, Reason: reason}
+				v := dispatch.Verdict{Stage: dispatch.StageReserve, Class: dispatch.ClassCapacity, Reason: reason}
 				i.sched.Report(ctx, i.ep, selector.Result{Class: selector.ClassCapacity, Reason: reason})
 				return &reserveFailedResult{ep: i.ep, verdict: v}, nil
 			}
 		}
 	}
 
-	// 2) sender.Send —— 请求级 lookup 从 i.lookups 透传，让 vendor / translator
-	//    覆盖（多租户 / 灰度场景）在 Send 内部生效。
-	outcome, _ := i.sender.Send(ctx, i.ep, i.env, i.body, i.lookups.Adapters, i.lookups.Translators)
+	// 2) sender.Send —— handler 已由 dispatcher 从 rc.Handlers 取出后透传。
+	outcome, _ := i.sender.Send(ctx, i.ep, i.env, i.body, i.handler)
 
 	// 3) scheduler.Report
 	i.sched.Report(ctx, i.ep, outcome.ToScheduleResult())
 
-	// 4) 转 dispatch.Verdict
+	// 4) 转 dispatch.Verdict —— Stage 按 outcome.Class 推断：
+	//    Permanent + 无 HTTPCode = Prepare 失败（handler.PrepareCall 阶段）；
+	//    其它都是 Invoke 阶段。这是个简化推断；更精确的话 sender 应该返 typed stage。
+	stage := dispatch.StageInvoke
+	if outcome.HTTPCode == 0 && outcome.Class == selector.ClassInvalid {
+		stage = dispatch.StagePrepare // translator 失败（ErrInvalidRequest）
+	}
 	v := dispatch.Verdict{
+		Stage:    stage,
 		Class:    scheduleClassToDispatch(outcome.Class),
 		HTTPCode: outcome.HTTPCode,
 		Reason:   outcome.Reason,
@@ -193,12 +150,12 @@ func (i *invokerAdapter) Invoke(ctx context.Context) (dispatch.Result, error) {
 	}
 
 	return &invocationResult{
-		ep:         i.ep,
-		verdict:    v,
-		response:   outcome.Response,
-		translator: outcome.Translator,
-		sender:     i.sender,
-		rateStore:  i.rateStore,
+		ep:        i.ep,
+		verdict:   v,
+		response:  outcome.Response,
+		handler:   outcome.Handler,
+		sender:    i.sender,
+		rateStore: i.rateStore,
 	}, nil
 }
 
@@ -220,26 +177,26 @@ func (r *reserveFailedResult) Close() error { return nil }
 // 资源生命周期：StreamTo 内部消费 response.Body 并 close；Close 兜底关
 // body（StreamTo 之后 Close 是 no-op）。
 type invocationResult struct {
-	ep         *domain.Endpoint
-	verdict    dispatch.Verdict
-	response   *http.Response
-	translator translator.Translator
-	sender     *invoker.Sender
-	rateStore  middleware.RateLimitStore
-	consumed   bool
+	ep        *domain.Endpoint
+	verdict   dispatch.Verdict
+	response  *http.Response
+	handler   protocol.Handler // 用来构造 ResponseStream
+	sender    *invoker.Sender
+	rateStore middleware.RateLimitStore
+	consumed  bool
 }
 
 func (r *invocationResult) Verdict() dispatch.Verdict  { return r.verdict }
 func (r *invocationResult) Endpoint() *domain.Endpoint { return r.ep }
 
 func (r *invocationResult) StreamTo(ctx context.Context, w http.ResponseWriter) dispatch.StreamReport {
-	if r.consumed || r.response == nil || r.translator == nil {
+	if r.consumed || r.response == nil || r.handler == nil {
 		return dispatch.StreamReport{}
 	}
 	r.consumed = true
 
-	handler := middleware.WrapWithModerator(r.translator.NewResponseHandler(), ctx)
-	fwd := r.sender.Forward(ctx, w, r.ep, r.response, handler)
+	stream := middleware.WrapStreamWithModerator(r.handler.NewResponseStream(), ctx)
+	fwd := r.sender.Forward(ctx, w, r.ep, r.response, stream)
 
 	// endpoint TPM 后扣（docs/04 §10）
 	chargeEndpointTPM(r.rateStore, r.ep, fwd.Usage)
@@ -283,8 +240,6 @@ func scheduleClassToDispatch(c selector.ErrorClass) dispatch.Class {
 
 // chargeEndpointTPM 选中 endpoint 响应成功后，把真实 usage.Total 写到 endpoint
 // TPM bucket（docs/04 §10）。超限只记 metric；不阻塞响应。
-//
-// 用 background ctx（响应已完成，客户端 ctx 可能 cancel）。
 func chargeEndpointTPM(store middleware.RateLimitStore, ep *domain.Endpoint, usage *domain.Usage) {
 	if store == nil || ep == nil || usage == nil || usage.Total <= 0 {
 		return

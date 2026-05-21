@@ -33,6 +33,9 @@ import (
 
 type anthropicOpenAI struct{}
 
+// Translator (Anthropic → OpenAI) 公共构造器——给 pkg/protocol/openai 用。
+func Translator() translator.Translator { return anthropicOpenAI{} }
+
 func (anthropicOpenAI) Source() domain.Protocol { return domain.ProtoAnthropic }
 func (anthropicOpenAI) Target() domain.Protocol { return domain.ProtoOpenAI }
 

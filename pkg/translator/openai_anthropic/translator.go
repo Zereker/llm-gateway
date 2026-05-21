@@ -34,6 +34,9 @@ const defaultAnthropicMaxTokens uint32 = 4096
 
 type openaiAnthropic struct{}
 
+// Translator (OpenAI → Anthropic) 公共构造器——给 pkg/protocol/anthropic 用。
+func Translator() translator.Translator { return openaiAnthropic{} }
+
 func (openaiAnthropic) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiAnthropic) Target() domain.Protocol { return domain.ProtoAnthropic }
 

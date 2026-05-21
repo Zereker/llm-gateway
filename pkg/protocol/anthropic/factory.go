@@ -17,7 +17,7 @@
 //
 // 想接入时在 cmd/gateway/main.go 加 blank import：
 //
-//	import _ "github.com/zereker/llm-gateway/pkg/adapter/anthropic"
+//	import _ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
 package anthropic
 
 import (

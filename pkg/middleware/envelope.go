@@ -8,8 +8,8 @@ import (
 	"github.com/tidwall/gjson"
 	"go.opentelemetry.io/otel"
 
-	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // WithSourceProtocol 把客户端协议钉在路由注册期。
@@ -84,13 +84,11 @@ func Envelope() gin.HandlerFunc {
 		rc.Envelope.RawBytes = raw
 		rc.Envelope.Model = model
 
-		// 请求级 lookup 默认值：全局 registry 包装一层。后续 middleware（如自定义
-		// 多租户 / 灰度策略）可覆盖 rc.Adapters / rc.Translators。
-		if rc.Adapters == nil {
-			rc.Adapters = dispatch.DefaultAdapters{}
-		}
-		if rc.Translators == nil {
-			rc.Translators = dispatch.DefaultTranslators{}
+		// 请求级 lookup 默认值：包装全局 adapter + translator registry，按
+		// (endpoint, srcProto) 动态组合 Handler。后续 middleware（如多租户 /
+		// 灰度策略）可覆盖 rc.Handlers 走自定义 Handler 集。
+		if rc.Handlers == nil {
+			rc.Handlers = protocol.DefaultLookup{}
 		}
 
 		c.Next()

@@ -32,9 +32,9 @@ func TestFactory_Metadata(t *testing.T) {
 	}
 }
 
-func TestFactory_Registered(t *testing.T) {
+func TestAdapter_Registered(t *testing.T) {
 	if f := adapter.Get("gemini"); f == nil {
-		t.Fatal("gemini not registered")
+		t.Fatal("gemini adapter not registered")
 	}
 }
 
