@@ -32,9 +32,11 @@ func TestFactory_Metadata(t *testing.T) {
 	}
 }
 
-func TestFactory_RegisteredInRegistry(t *testing.T) {
+func TestAdapter_Registered(t *testing.T) {
+	// vendor 适配器注册（Handler 由 protocol.DefaultLookup 在请求时动态组合，
+	// 这里只验证 adapter 一侧）
 	if f := adapter.Get("anthropic"); f == nil {
-		t.Fatal("anthropic factory not registered")
+		t.Fatal("anthropic adapter not registered")
 	}
 }
 

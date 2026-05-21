@@ -1,12 +1,18 @@
-// Package openai 是 OpenAI 协议（chat completions）的 Adapter 实现。
+// Package openai 是 OpenAI 协议（chat completions）的 vendor 实现。
 //
-// init() 注册到 adapter registry，vendor 名 "openai"。
+// init() 注册到 protocol registry：(vendor, srcProto) → Handler，覆盖三个 src
+// 协议组合：
+//
+//	(openai, OpenAI)     ── identity 透传
+//	(openai, Anthropic)  ── anthropic_openai translator
+//	(openai, Responses)  ── responses_openai translator
+//
 // 想接入 OpenAI 时在 cmd/gateway/main.go 加 blank import：
 //
-//	import _ "github.com/zereker/llm-gateway/pkg/adapter/openai"
+//	import _ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 //
-// 用作 OpenAI-compatible 上游（Azure / DeepSeek / vLLM-OpenAI / Ollama）也直接复用本 Adapter，
-// 只要 Endpoint.URL 指向各自的 /v1/chat/completions 路径。
+// 用作 OpenAI-compatible 上游（Azure / DeepSeek / vLLM-OpenAI / Ollama）也直接复用本 Factory，
+// 只要 Endpoint.URL 指向各自的 /v1/chat/completions 路径——别名注册见 aliases.go。
 package openai
 
 import (
@@ -16,7 +22,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Factory 实现 adapter.Factory。
+// Factory 实现 adapter.Factory——给 protocol.Combine 内部包成 Handler 用。
 type Factory struct{}
 
 // Metadata 返回静态元信息。

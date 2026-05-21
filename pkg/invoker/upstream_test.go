@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
-	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
@@ -20,22 +20,28 @@ import (
 // fakes
 // =============================================================================
 
-// stubLookup 直接返回固定 factory（避开全局 registry）。
-// 同时满足 dispatch.AdapterLookup（签名一致）。
-type stubLookup struct{ f adapter.Factory }
-
-func (s stubLookup) Get(string) adapter.Factory { return s.f }
-
-// testSender 把 Send 调用所需的请求级 AdapterLookup 提前固化，避免每个
-// 测试都重复写 6 参数。translator 用 dispatch.DefaultTranslators 落到测试已
-// translator.Register 过的全局 registry。
+// testSender 把 Send 调用所需的 protocol.Handler 提前固化，避免每个测试都
+// 重复写 5 参数。handler 可以是 protocol.Combine 出来的真组合，也可以是 nil
+// （测试"handler 缺失"路径）。
 type testSender struct {
 	*Sender
-	adapters dispatch.AdapterLookup
+	handler protocol.Handler
 }
 
 func (ts *testSender) Send(ctx context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte) (Outcome, error) {
-	return ts.Sender.Send(ctx, ep, env, body, ts.adapters, dispatch.DefaultTranslators{})
+	return ts.Sender.Send(ctx, ep, env, body, ts.handler)
+}
+
+// composeHandler 用 fakeFactory + tr 合成 Handler。tr 与 factory 的 NativeProtocol
+// 不匹配时（旧测试 TestSend_NoTranslator 那种）返回 nil。
+func composeHandler(factory adapter.Factory, tr translator.Translator) protocol.Handler {
+	if factory == nil || tr == nil {
+		return nil
+	}
+	if tr.Target() != factory.Metadata().NativeProtocol {
+		return nil
+	}
+	return protocol.Combine(factory, tr)
 }
 
 type fakeFactory struct {
@@ -131,9 +137,18 @@ func registerOpenAITranslator(t *testing.T, tr translator.Translator) {
 	t.Cleanup(translator.Reset)
 }
 
+// newSender 构造 testSender。translator 取全局 registry 第一个匹配 factory
+// NativeProtocol 的（测试已经通过 registerOpenAITranslator / registerXxx 注册）。
+// factory == nil 或匹配不到 translator 时 handler = nil，测试 Send 的"无 handler"分支。
 func newSender(t *testing.T, factory adapter.Factory, opts ...Option) *testSender {
 	t.Helper()
-	return &testSender{Sender: New(opts...), adapters: stubLookup{f: factory}}
+	var h protocol.Handler
+	if factory != nil {
+		// 测试通常先调 registerOpenAITranslator 注册一个 (OpenAI → factory.Native) translator
+		tr := translator.Find(domain.ProtoOpenAI, factory.Metadata().NativeProtocol)
+		h = composeHandler(factory, tr)
+	}
+	return &testSender{Sender: New(opts...), handler: h}
 }
 
 // =============================================================================
@@ -163,8 +178,8 @@ func TestSend_Success(t *testing.T) {
 	if out.HTTPCode != 200 {
 		t.Fatalf("code = %d", out.HTTPCode)
 	}
-	if out.Translator == nil {
-		t.Fatalf("Translator missing on success")
+	if out.Handler == nil {
+		t.Fatalf("Handler missing on success")
 	}
 	_ = out.Response.Body.Close()
 }
@@ -195,7 +210,8 @@ func TestSend_NoTranslator(t *testing.T) {
 	if err != nil || out.Class != selector.ClassPermanent {
 		t.Fatalf("want Permanent / nil err; got class=%v err=%v", out.Class, err)
 	}
-	if !strings.Contains(out.Reason, "no translator") {
+	// v0.6 融合后：translator 缺失 → composeHandler 返 nil → Send 报 "no handler"
+	if !strings.Contains(out.Reason, "no handler") {
 		t.Fatalf("reason = %q", out.Reason)
 	}
 }
@@ -340,9 +356,9 @@ func TestForward_StreamsBodyToWriter(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader("hello world")),
 	}
 	w := httptest.NewRecorder()
-	handler := (&fakeTranslator{}).NewResponseHandler()
+	var stream protocol.ResponseStream = &fakeRespHandler{}
 
-	res := sender.Forward(context.Background(), w, &domain.Endpoint{ID: 99}, resp, handler)
+	res := sender.Forward(context.Background(), w, &domain.Endpoint{ID: 99}, resp, stream)
 
 	if res.FeedErr != nil {
 		t.Fatalf("FeedErr = %v", res.FeedErr)
@@ -371,9 +387,9 @@ func TestForward_StripsContentLength(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader("x")),
 	}
 	w := httptest.NewRecorder()
-	handler := (&fakeTranslator{}).NewResponseHandler()
+	var stream protocol.ResponseStream = &fakeRespHandler{}
 
-	_ = sender.Forward(context.Background(), w, &domain.Endpoint{ID: 99}, resp, handler)
+	_ = sender.Forward(context.Background(), w, &domain.Endpoint{ID: 99}, resp, stream)
 
 	if w.Header().Get("Content-Length") != "" {
 		t.Fatalf("Content-Length should be stripped")
@@ -475,8 +491,8 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 
 	// 走 Forward 拿响应；之后再断言 chunk 类 hook
 	w := httptest.NewRecorder()
-	handlerInner := out.Translator.NewResponseHandler()
-	res := sender.Forward(context.Background(), w, ep, out.Response, handlerInner)
+	stream := out.Handler.NewResponseStream()
+	res := sender.Forward(context.Background(), w, ep, out.Response, stream)
 	if res.FeedErr != nil {
 		t.Fatalf("FeedErr = %v", res.FeedErr)
 	}

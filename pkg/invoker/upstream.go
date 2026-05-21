@@ -1,15 +1,15 @@
 // Package upstream 封装"调一次上游 + 流式回写"两个动作；M7 driver loop
-// 把 retry / fallback / cooldown 编排留给自己，把 HTTP / adapter / translator /
+// 把 retry / fallback / cooldown 编排留给自己，把 HTTP / protocol Handler /
 // classify / 流式 chunk 转发的细节交给本包。
 //
-// **职责边界**：
+// **职责边界（v0.6 融合后）**：
 //
-//   - 知道：HTTP 调用、按 caller 传入的 AdapterLookup / TranslatorLookup 查
-//     adapter.Factory / translator.Translator、按 HTTP status + Adapter
-//     Classifier 给 outcome 分类、流式 chunk 拷贝。
+//   - 知道：HTTP 调用、按 caller 传入的 protocol.Handler 走 PrepareCall /
+//     NewResponseStream、按 HTTP status + Handler.Classify 给 outcome 分类、
+//     流式 chunk 拷贝。
 //   - 不知道：retry 策略、cooldown、Selection 状态机、HTTP framework
-//     （gin / echo / chi 都行——只要满足 stdlib http.ResponseWriter 接口）、
-//     lookup 实现来源（全局 registry / 租户级覆盖均可——caller 决定）。
+//     （gin / echo / chi 都行），protocol.Handler 实现来源（全局 registry /
+//     租户级覆盖均可——caller 决定）。
 //
 // **使用形态**（M7 内部）：
 //
@@ -17,10 +17,11 @@
 //	for {
 //	    ep := sel.Pick()
 //	    if ep == nil { break }
-//	    outcome, err := sender.Send(ctx, ep, env, rawBody, adapters, translators)
+//	    handler := lookups.Get(ep, srcProto)
+//	    outcome, err := sender.Send(ctx, ep, env, rawBody, handler)
 //	    sel.Report(ep, outcome.ToScheduleResult())
 //	    if outcome.Success() {
-//	        sender.Forward(w, outcome.Response, handler)
+//	        sender.Forward(w, outcome.Response, outcome.Handler.NewResponseStream())
 //	        break
 //	    }
 //	}
@@ -33,8 +34,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/selector"
-	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
 // HTTPDoer 抽象 HTTP 客户端。*http.Client 自动满足；测试可注入 RoundTripper-like fake。
@@ -54,9 +55,9 @@ type Outcome struct {
 	Reason   string
 	Latency  time.Duration
 
-	// Translator 成功路径下 Forward 时要用的 translator；失败时无意义。
-	// Send 已经选好（factory + translator 都查过 registry），caller 直接用。
-	Translator translator.Translator
+	// Handler 成功路径下 Forward 时要用的 protocol.Handler；失败时无意义。
+	// caller 用 outcome.Handler.NewResponseStream() 拿响应流处理器传给 Forward。
+	Handler protocol.Handler
 }
 
 // Success outcome 是否成功（HTTP 2xx + 无协议层错）。
@@ -85,8 +86,8 @@ var ErrInvalidRequest = errors.New("upstream: invalid request body")
 // Sender 封装"调一次上游 + 流式 forward"两个动作。
 //
 // 不持有请求级状态；Send / Forward 两个方法都可被多请求并发调用。
-// **不再持 adapter / translator 查询端口**——这些是请求级依赖，每次 Send 由
-// caller（dispatch wiring 层）按 rc 取出后透传。
+// **不持任何 lookup**——adapter / translator / handler 都是请求级依赖，
+// caller 在调用 Send 时透传。
 type Sender struct {
 	client HTTPDoer
 	hooks  hookSet
@@ -116,8 +117,8 @@ func WithHooks(hooks ...Hook) Option {
 
 // New 构造 Sender；零配置走 stdlib + 无 hook。
 //
-// AdapterLookup / TranslatorLookup 在 Send 调用时由 caller 传入；Sender 本身
-// 不持有，以支持多租户 / 灰度场景按请求覆盖。
+// protocol.Handler 在 Send 调用时由 caller 传入；Sender 本身不持有，
+// 支持多租户 / 灰度场景按请求覆盖。
 func New(opts ...Option) *Sender {
 	cfg := &senderConfig{
 		client: http.DefaultClient,

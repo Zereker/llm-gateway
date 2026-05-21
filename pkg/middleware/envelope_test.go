@@ -10,10 +10,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/translator"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // =============================================================================
@@ -78,22 +77,20 @@ func TestEnvelope_HappyPath_ParsesModel(t *testing.T) {
 	}
 }
 
-// TestEnvelope_PopulatesDefaultLookups 证明 M3 给 rc.Adapters / rc.Translators 写
-// 默认值（DefaultAdapters / DefaultTranslators 包装全局 registry），让后续
-// middleware / dispatch / invoker 能通过 dispatch.AdaptersFrom(rc) / TranslatorsFrom(rc)
-// 拿到 nil-safe 的请求级查询端口。
-func TestEnvelope_PopulatesDefaultLookups(t *testing.T) {
+// TestEnvelope_PopulatesDefaultHandlers 证明 M3 给 rc.Handlers 写默认值
+// （protocol.DefaultLookup 包装全局 adapter + translator registry），让后续
+// middleware / dispatch / invoker 能通过 dispatch.HandlersFrom(rc) 拿到 nil-safe
+// 的请求级查询端口。
+func TestEnvelope_PopulatesDefaultHandlers(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
 		Envelope(),
 	)
-	var gotAdapters dispatch.AdapterLookup
-	var gotTranslators dispatch.TranslatorLookup
+	var gotHandlers protocol.Lookup
 	r.POST("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		gotAdapters = dispatch.AdaptersFrom(rc)
-		gotTranslators = dispatch.TranslatorsFrom(rc)
+		gotHandlers = dispatch.HandlersFrom(rc)
 		c.Status(200)
 	})
 
@@ -103,24 +100,19 @@ func TestEnvelope_PopulatesDefaultLookups(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	if _, ok := gotAdapters.(dispatch.DefaultAdapters); !ok {
-		t.Errorf("rc.Adapters not defaulted to DefaultAdapters; got %T", gotAdapters)
-	}
-	if _, ok := gotTranslators.(dispatch.DefaultTranslators); !ok {
-		t.Errorf("rc.Translators not defaulted to DefaultTranslators; got %T", gotTranslators)
+	if _, ok := gotHandlers.(protocol.DefaultLookup); !ok {
+		t.Errorf("rc.Handlers not defaulted to protocol.DefaultLookup; got %T", gotHandlers)
 	}
 }
 
-// TestEnvelope_PreservesPreSetLookups 证明 M3 不覆盖前置 middleware 已写入的
+// TestEnvelope_PreservesPreSetHandlers 证明 M3 不覆盖前置 middleware 已写入的
 // 自定义 lookup（多租户 / 灰度场景：M2 Auth 根据 tenant 装上 custom lookup，
 // M3 不应该把它覆盖回 default）。
-func TestEnvelope_PreservesPreSetLookups(t *testing.T) {
-	custom := &fakeLookups{}
-	// 一个挂在 Envelope 之前的 fake middleware 模拟"M2 Auth 按 tenant 注入"。
+func TestEnvelope_PreservesPreSetHandlers(t *testing.T) {
+	custom := &fakeHandlerLookup{}
 	preSet := func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		rc.Adapters = custom
-		rc.Translators = custom
+		rc.Handlers = custom
 		c.Next()
 	}
 	r := newGinTest(
@@ -129,12 +121,10 @@ func TestEnvelope_PreservesPreSetLookups(t *testing.T) {
 		preSet,
 		Envelope(),
 	)
-	var gotAdapters dispatch.AdapterLookup
-	var gotTranslators dispatch.TranslatorLookup
+	var gotHandlers protocol.Lookup
 	r.POST("/x", func(c *gin.Context) {
 		rc := GetRequestContext(c)
-		gotAdapters = dispatch.AdaptersFrom(rc)
-		gotTranslators = dispatch.TranslatorsFrom(rc)
+		gotHandlers = dispatch.HandlersFrom(rc)
 		c.Status(200)
 	})
 
@@ -144,20 +134,15 @@ func TestEnvelope_PreservesPreSetLookups(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	if gotAdapters != custom {
-		t.Errorf("rc.Adapters overwritten by Envelope; want custom got %v", gotAdapters)
-	}
-	if gotTranslators != custom {
-		t.Errorf("rc.Translators overwritten by Envelope; want custom got %v", gotTranslators)
+	if gotHandlers != custom {
+		t.Errorf("rc.Handlers overwritten by Envelope; want custom got %v", gotHandlers)
 	}
 }
 
-// fakeLookups 同时实现 AdapterLookup + TranslatorLookup（测试用占位，所有方法
-// 返 nil；测试只校验"是不是同一指针"）。
-type fakeLookups struct{}
+// fakeHandlerLookup 测试占位（永远返 nil），仅校验"指针有没有被覆盖"。
+type fakeHandlerLookup struct{}
 
-func (*fakeLookups) Get(string) adapter.Factory                              { return nil }
-func (*fakeLookups) Find(_, _ domain.Protocol) translator.Translator         { return nil }
+func (*fakeHandlerLookup) Get(_ *domain.Endpoint, _ domain.Protocol) protocol.Handler { return nil }
 
 func TestEnvelope_500_WithSourceProtocolMissing(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), Envelope())

@@ -105,7 +105,7 @@ func TestModeration_CheckInputReject_400_Invalid(t *testing.T) {
 }
 
 // =============================================================================
-// moderation_handler 装饰器：wrapWithModerator / moderatedResponseHandler
+// moderation_handler 装饰器：WrapStreamWithModerator / moderatedResponseHandler
 // =============================================================================
 
 // fakeHandler 实现 translator.ResponseHandler，把 Feed 入参原样返回。
@@ -129,7 +129,7 @@ func (h *fakeHandler) Flush() ([]byte, *domain.Usage, error) {
 
 func TestWrapWithModerator_NoModeratorInCtx_ReturnsInner(t *testing.T) {
 	inner := &fakeHandler{}
-	got := wrapWithModerator(inner, nil)
+	got := WrapStreamWithModerator(inner, nil)
 	if got != inner {
 		t.Errorf("expected inner returned when ctx is nil")
 	}
@@ -139,7 +139,7 @@ func TestModeratedResponseHandler_Feed_AbortsOnViolation(t *testing.T) {
 	mod := &stubModerator{checkOutputErr: errors.New("hate speech")}
 	inner := &fakeHandler{}
 	ctx := withModerator(context.Background(), mod)
-	h := wrapWithModerator(inner, ctx)
+	h := WrapStreamWithModerator(inner, ctx)
 
 	out, err := h.Feed([]byte("bad chunk"))
 	if err == nil {
@@ -163,7 +163,7 @@ func TestModeratedResponseHandler_Feed_PassThroughOnOK(t *testing.T) {
 	mod := &stubModerator{}
 	inner := &fakeHandler{}
 	ctx := withModerator(context.Background(), mod)
-	h := wrapWithModerator(inner, ctx)
+	h := WrapStreamWithModerator(inner, ctx)
 
 	out, err := h.Feed([]byte("clean"))
 	if err != nil {
@@ -181,7 +181,7 @@ func TestModeratedResponseHandler_Flush_RunsCheckOutputOnFinal(t *testing.T) {
 	mod := &stubModerator{}
 	inner := &fakeHandler{flush: []byte("final bytes"), usage: &domain.Usage{Total: 50}}
 	ctx := withModerator(context.Background(), mod)
-	h := wrapWithModerator(inner, ctx)
+	h := WrapStreamWithModerator(inner, ctx)
 
 	out, usage, err := h.Flush()
 	if err != nil {
@@ -202,7 +202,7 @@ func TestModeratedResponseHandler_Flush_ViolatedFromStream_DropsFinal(t *testing
 	mod := &stubModerator{checkOutputErr: errors.New("violated")}
 	inner := &fakeHandler{flush: []byte("never_sent"), usage: &domain.Usage{Total: 1}}
 	ctx := withModerator(context.Background(), mod)
-	h := wrapWithModerator(inner, ctx)
+	h := WrapStreamWithModerator(inner, ctx)
 
 	// 先 Feed 触发 violated
 	_, _ = h.Feed([]byte("bad"))

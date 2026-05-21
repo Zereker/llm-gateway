@@ -31,6 +31,10 @@ import (
 
 type responsesOpenAI struct{}
 
+// Translator (Responses → OpenAI) 公共构造器——给 pkg/protocol/openai 用
+// （openai vendor 接 Responses 客户端时降级到 Chat Completions）。
+func Translator() translator.Translator { return responsesOpenAI{} }
+
 func (responsesOpenAI) Source() domain.Protocol { return domain.ProtoResponses }
 func (responsesOpenAI) Target() domain.Protocol { return domain.ProtoOpenAI }
 

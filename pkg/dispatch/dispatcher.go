@@ -82,7 +82,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, rc *do
 	}
 }
 
-// step 跑业务的一次循环：select → invoke → policy 决策。
+// step 跑业务的一次循环：select → handler 查找 → invoke → policy 决策。
 //
 // **特殊**：Stream 决策时直接在 step 内部完成 StreamTo + ApplyStream
 // （res 资源在 step 栈内 defer Close，不能跨方法返回）；step 返回 Stream{}
@@ -111,7 +111,27 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		return d.fallback.OnExhausted(s)
 	}
 
-	inv := d.invokerFactory.For(ep, s.Envelope(), s.Body(), s.Lookups())
+	// v0.6 融合：从 rc.Handlers 按 (endpoint, srcProto) 动态组合 Handler。
+	// eligibility filter 已挡掉 handler-missing 的 endpoint，这里再防一手。
+	srcProto := domain.ProtoUnknown
+	if s.Envelope() != nil {
+		srcProto = s.Envelope().SourceProtocol
+	}
+	handler := s.Handlers().Get(ep, srcProto)
+	if handler == nil {
+		// 极少触达：eligibility 已挡；可能是请求级 lookup 跟 eligibility 看到的
+		// lookup 不一致（middleware 在两者之间换了 rc.Handlers）。
+		v := Verdict{
+			Stage:    StagePrepare,
+			Class:    ClassPermanent,
+			HTTPCode: 502,
+			Reason:   "no handler for endpoint+srcProto",
+		}
+		s.Record(ep, v)
+		return d.retry.Decide(s, v)
+	}
+
+	inv := d.invokerFactory.For(ep, s.Envelope(), s.Body(), handler)
 	res, ierr := inv.Invoke(ctx)
 	if ierr != nil {
 		return Abort{

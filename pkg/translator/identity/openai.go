@@ -26,6 +26,10 @@ import (
 // **response 端**：handler 透传 chunk 给客户端 + 走 extractor 旁路提取 usage。
 type openaiTranslator struct{}
 
+// OpenAITranslator (OpenAI → OpenAI) identity translator 的公共构造器——给
+// pkg/protocol/<vendor> 构造 Handler 用。
+func OpenAITranslator() translator.Translator { return openaiTranslator{} }
+
 func (openaiTranslator) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiTranslator) Target() domain.Protocol { return domain.ProtoOpenAI }
 

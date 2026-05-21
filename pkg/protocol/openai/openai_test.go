@@ -38,9 +38,14 @@ func TestFactory_Metadata(t *testing.T) {
 	}
 }
 
-func TestFactory_RegisteredInRegistry(t *testing.T) {
+func TestAdapter_Registered(t *testing.T) {
+	// vendor 适配器注册（Handler 由 protocol.DefaultLookup 在请求时动态组合）
 	if f := adapter.Get("openai"); f == nil {
-		t.Fatal("openai factory not registered")
+		t.Fatal("openai adapter not registered")
+	}
+	// alias 同样注册
+	if f := adapter.Get("ark"); f == nil {
+		t.Fatal("ark alias adapter not registered")
 	}
 }
 

@@ -18,7 +18,7 @@
 //
 // 想接入时在 cmd/gateway/main.go 加 blank import：
 //
-//	import _ "github.com/zereker/llm-gateway/pkg/adapter/gemini"
+//	import _ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
 package gemini
 
 import (
