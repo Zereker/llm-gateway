@@ -2,7 +2,7 @@
 #
 # host 替换：
 #   mysql → mysql、redis → redis、kafka → redpanda:9092
-#   admin / mockupstream 通过 compose service 名互连
+#   mockupstream 通过 compose service 名互连
 #
 # usage_events 走 file_and_kafka：file 落 /tmp/llm-gateway-usage.jsonl（卷挂出，e2e
 # 用于校验事件落地），Kafka 投递给 billing.usage.recorded.v1 让 Flink 消费。

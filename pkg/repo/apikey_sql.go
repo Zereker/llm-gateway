@@ -101,7 +101,7 @@ func (p *SQLAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) (*U
 	}, nil
 }
 
-// HashAPIKey SHA-256 hex-encode 入参；admin Create 和 gateway Resolve 共用。
+// HashAPIKey SHA-256 hex-encode 入参；deployer SQL INSERT 计算 hash 时 / gateway Resolve 时共用。
 func HashAPIKey(plain string) string {
 	sum := sha256.Sum256([]byte(plain))
 	return hex.EncodeToString(sum[:])

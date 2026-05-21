@@ -8,55 +8,43 @@ Kafka outbox + 多 model + 多 endpoint + 多 quota_policy + pricing_version。
 | 文件 | 用途 |
 |---|---|
 | `gateway.yaml` | 数据面（接 LLM 客户端请求）配置 |
-| `admin.yaml`   | 控制面（admin REST API）配置 |
-| `seed.sql`     | DB 示例数据（quota / account / model / pricing） |
+| `seed.sql`     | DB 示例数据（quota / account / model / pricing 等） |
 
 ## 启动顺序
 
 ```bash
-# 1) 起本地 stack（mysql + redis + redpanda）
+# 1) 起本地 stack（mysql + redis + redpanda + debezium）
 docker compose up -d
 
-# 2) 建表
-docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < pkg/infra/schema.sql
-
-# 3) seed 示例数据（**仅 quota_policies / accounts / model_services / subscriptions / pricing**；
-#    endpoints + api_keys 必须走 admin POST 走加密路径，见下文）
-docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < examples/full-config/seed.sql
-
-# 4) 起 admin
-go run ./cmd/admin -config ./examples/full-config/admin.yaml &
-
-# 5) admin 创建 endpoint（auth 列加密走这里）
-curl -X POST http://localhost:8081/admin/v1/endpoints \
-  -H "X-Admin-Token: CHANGEME-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "openai-prod-1",
-    "vendor": "openai",
-    "model": "gpt-4o",
-    "group_name": "default",
-    "weight": 100,
-    "auth": {"api_key": "sk-..."},
-    "routing": {"url": "https://api.openai.com"}
-  }'
-
-# 6) admin 创建 api_key（hash 走这里）
-curl -X POST http://localhost:8081/admin/v1/apikeys \
-  -H "X-Admin-Token: CHANGEME-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{"account_id": "demo-acme", "sub_account_id": "alice@demo-acme", "name": "alice-prod"}'
-# 响应里会含明文 api_key（仅 Create 响应出现一次）；保存好它
-
-# 7) 起 gateway
+# 2) 起 gateway（启动期自跑 infra.Migrate 建表）
 go run ./cmd/gateway -config ./examples/full-config/gateway.yaml
 
-# 8) 调
+# 3) seed 示例数据（quota_policies / accounts / model_services / subscriptions /
+#    pricing）。endpoints + api_keys 的加密 / hash 列需要自己用脚本算或参考
+#    pkg/repo 里的 EncodePayload / HashAPIKey 自己生成密文 / hash 再 INSERT。
+docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < examples/full-config/seed.sql
+
+# 4) 调
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer <step6 拿到的 api_key>" \
+  -H "Authorization: Bearer <自己 hash + 入库的 api_key 明文>" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+## 数据管理
+
+本项目**只做数据面**——不提供控制面 REST API。业务表（accounts / model_services /
+endpoints / api_keys / quota_policies / subscriptions / pricing_versions）由
+deployer 直接 SQL 插入 / 更新 / 删除维护。
+
+加密 / hash 列的处理：
+
+- **endpoints.auth**：AES-256-GCM 加密的 AuthConfig；用 `repo.EncodePayload` +
+  `repo.SetDataKey(cfg.DataKey)` 算出密文（`v1:base64...`）再 INSERT。
+- **api_keys.api_key_hash**：`repo.HashAPIKey(plaintext)` 算 SHA-256 hex；
+  明文不入库，发给用户保管。
+
+数据写入后 Debezium binlog CDC 自动推 Redis Stream，gateway L1 cache 实时失效。
 
 ## 跟 configs/local 的差别
 
@@ -70,7 +58,10 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ## 排错
 
-- **gateway 启动报 "schema check failed"**：先跑 `pkg/infra/schema.sql`
-- **请求 401**：检查 api_key hash 是否入库（admin POST 路径）
-- **请求 503 "no endpoint succeeded"**：检查 endpoint 的 auth/routing 是否配对
+- **gateway 启动报 "schema check failed"**：gateway 启动期跑 `infra.Migrate`；
+  如果 MySQL 权限不足建不了表，手动跑 `pkg/infra/schema.sql`
+- **请求 401**：检查 `api_keys.api_key_hash` 是否跟客户端 `Authorization` header
+  的 `repo.HashAPIKey()` 一致
+- **请求 503 "no endpoint succeeded"**：检查 endpoint 的 auth/routing 是否配对，
+  endpoint.protocol 是否跟客户端协议匹配（v0.6 加的字段）
 - **没看到 usage event**：检查 Kafka topic 是否存在，或确认是否切回了 file outbox

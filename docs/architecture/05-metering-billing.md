@@ -366,20 +366,20 @@ RPM / RPS 在请求前 reserve；TPM 在 usage 产出后按 `Usage.Total` charge
 
 ## 10. 与 CDC 的关系
 
-Usage Event 通道与 admin → gateway 配置传播的 [CDC（06 §8）](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)
+Usage Event 通道与 SQL → gateway 配置传播的 [CDC（06 §8）](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)
 是**两条独立通道**，不要互相复用：
 
 | 维度 | Usage Event Outbox | CDC |
 |------|--------------------|-----|
-| 数据流向 | gateway → 下游计费 | admin → gateway |
-| 触发源 | 请求完成后 M10 主动 publish | admin 写 MySQL 后 Debezium 捕获 binlog |
+| 数据流向 | gateway → 下游计费 | SQL → gateway |
+| 触发源 | 请求完成后 M10 主动 publish | deployer 写 MySQL 后 Debezium 捕获 binlog |
 | 传输 | Kafka topic `billing.usage.recorded.v1` | Redis Stream `llm_gateway.llm_gateway.<table>` |
 | 可靠性 | DLQ + 重试，失败不阻塞响应 | 最终一致 + L3 SQL 兜底，consumer 退避重连 |
 | schema 演进 | `schema_version` + 切新 topic | Debezium 自然兼容 unknown field |
 
 CDC 是**配置数据**的传播通道，不承载 usage / 内容。把 usage 写到 CDC stream
-不对（破坏 admin → gateway 的单向性 + Redis Stream 没有 DLQ 语义）；反过来把
-admin 配置变更走 usage outbox 也不对（计费 consumer 不应该看到 schema 类事件）。
+不对（破坏 SQL → gateway 单向数据传播的语义 + Redis Stream 没有 DLQ 语义）；反过来把
+SQL 配置变更走 usage outbox 也不对（计费 consumer 不应该看到 schema 类事件）。
 
 ## 11. 演进规则
 

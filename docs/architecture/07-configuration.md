@@ -1,19 +1,20 @@
 # 07. Configuration
 
-本文件定义 gateway / admin 的目标配置契约。代码实现、示例配置和部署模板都应以这里为准。
+本文件定义 gateway 的目标配置契约。代码实现、示例配置和部署模板都应以这里为准。
 
-配置只描述进程启动和基础设施依赖；账号、API key、model service、subscription、endpoint、quota policy 等业务配置由 admin 写入 SQL DB，不放在 `gateway.yaml`。
+配置只描述进程启动和基础设施依赖；账号、API key、model service、subscription、
+endpoint、quota policy 等业务数据由 deployer 直接写 SQL，**不放在 `gateway.yaml`**。
 
 ## 1. 进程配置边界
 
-| 进程 | 配置文件 | 负责内容 |
-|------|----------|----------|
-| gateway | `gateway.yaml` | HTTP server、per-request 默认值、DB/Redis/Kafka/OTel 连接、调度和插件 driver |
-| admin | `admin.yaml` | admin HTTP server、DB 连接、schema migration、data key |
+仓库只有一个 binary：`cmd/gateway`，配置文件 `gateway.yaml`，负责 HTTP server、
+per-request 默认值、DB/Redis/Kafka/OTel 连接、调度和插件 driver。
 
-gateway 启动必需 SQL DB 和 Redis。Kafka 只有在 outbox driver 选择 `kafka` / `async_kafka` 时必需。gateway 启动只执行 `repo.CheckSchema`，不创建表、不迁移 schema。
+gateway 启动必需 SQL DB 和 Redis。Kafka 只有在 outbox driver 选择 `kafka` /
+`async_kafka` / `file_and_kafka` 时必需。gateway 启动期跑 `infra.Migrate` 建表
+（`schema.sql` 全 `IF NOT EXISTS` 幂等）+ `repo.CheckSchema` 防御性校验。
 
-Debezium Server 是独立容器（不在 admin / gateway 进程内）：拉 MySQL binlog 推到
+Debezium Server 是独立容器（不在 gateway 进程内）：拉 MySQL binlog 推到
 Redis Stream，gateway 通过 Redis 连接消费，无需配置 Debezium 地址。Debezium 自身
 配置见 `configs/debezium/application.properties`；启动顺序见 [00 §3](./00-overview.md#3-运行进程)。
 
@@ -157,7 +158,7 @@ trace:
 | `request.timeout` | 是 | per-request 处理总超时；用 gin TimeoutMiddleware 包整条 M1-M10 链的全局兜底（不覆盖上游单独 timeout 时作为默认值） |
 | `database.driver` / `dsn` | 是 | SQL DB 连接；目标 driver 是 MySQL |
 | `redis.addr` | 是 | Redis 连接；M6 rate limit 和 scheduler cooldown 依赖 |
-| `data_key` | 是 | endpoint auth 密文解密用 KEK，必须与 admin 一致 |
+| `data_key` | 是 | endpoint auth 密文解密用 KEK；deployer SQL INSERT 加密时必须用同一个 KEK |
 | `usage_events.driver` | 是 | usage event 输出后端（`file` / `kafka` / `async_kafka` / `file_and_kafka`，生产推荐 `file_and_kafka`） |
 | `scheduler.filters` | 是 | endpoint 选择链；`weighted_random` 必须最后执行 |
 | `scheduler.max_attempts` | 是 | 单次请求同 model 最大 endpoint 尝试次数，可被 header 降低 |
@@ -171,37 +172,15 @@ trace:
 | `cdc.read_block` | 否 | `XREAD` block 超时，超时后退避重连；默认 5s |
 | `trace.*` | 是 | slog / OTel driver 和 trace 基础字段 |
 
-## 3. admin.yaml
+## 3. Schema migration
 
-完整结构：
+gateway 启动期执行 `infra.Migrate` 把 `pkg/infra/schema.sql` 应用到数据库。
+`schema.sql` 全用 `CREATE TABLE IF NOT EXISTS`，幂等可重复跑。
 
-```yaml
-server:
-  addr: ":8081"
-  read_header_timeout: 10s
-  shutdown_timeout: 30s
-
-database:
-  driver: mysql
-  dsn: "user:pass@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
-  max_open_conns: 20
-  max_idle_conns: 5
-  conn_max_lifetime: 30m
-
-data_key: "<hex-encoded-32-byte-key>"
-
-migration:
-  enabled: true
-  lock_key: llm-gateway:schema-migrate
-  lock_ttl: 30s
-
-trace:
-  driver: slog
-  service_name: llm-gateway-admin
-  endpoint: ""
-```
-
-admin 启动期执行 `infra.Migrate`。生产多副本部署时必须通过 DB lock 或外部部署系统保证同一时间只有一个 migration owner。
+生产多副本部署：多个 gateway 实例同时启动时会各自跑 `infra.Migrate`，由于全部
+DDL 都是 `IF NOT EXISTS`，并发跑只有"已存在"的 no-op，不会冲突。如果上线带破坏性
+schema 变更（删字段 / 改类型），应通过外部部署系统保证迁移先在低流量窗口完成，
+再滚动 gateway——参考 [00 §3 部署顺序](./00-overview.md#3-运行进程)。
 
 ## 4. 环境变量覆盖
 
@@ -227,7 +206,7 @@ admin 启动期执行 `infra.Migrate`。生产多副本部署时必须通过 DB 
 
 - `database.driver` / `database.dsn` 为空时拒绝启动。
 - `redis.addr` 为空或 ping 失败时拒绝启动。
-- `data_key` 必须是 hex encoded 32 bytes，且 **gateway 与 admin 必须配置完全一致**；不一致时 gateway 解密 endpoint auth 全部失败，所有 endpoint 不可用。建议通过同一 secret manager 注入，避免分别维护。
+- `data_key` 必须是 hex encoded 32 bytes；deployer 写 endpoints.auth 时必须用同一个 KEK 加密——不一致时 gateway 解密失败，所有 endpoint 不可用。生产用 secret manager 统一注入。
 - `usage_events.driver=kafka|async_kafka` 时，`brokers` 和 `topic` 必填。
 - `usage_events.driver=file_and_kafka` 时，**同时**要求 `file.path` 非空（source of truth）+ `kafka.brokers` 非空 + `kafka.topic` 非空。
 - `usage_events.kafka.compression=zstd` 需要 broker ≥ 2.1；旧 broker 应改为 `lz4` 或 `snappy`，否则 producer 创建失败，启动 fail-fast。

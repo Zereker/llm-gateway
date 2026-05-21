@@ -17,44 +17,51 @@
 
 - 不实现模型推理服务本身。
 - 不实现 RAG、prompt 编排、agent 或业务 BFF 逻辑。
-- 不做管理 UI；管理面是 `cmd/admin` REST API。
+- 不做管理 UI；无独立管理面 binary——业务表由 deployer 直接 SQL 维护。
 - 不在 gateway 进程内做账单聚合；gateway 只产出 usage 事件，计价聚合由下游任务完成。
 
 ## 3. 运行进程
 
 | 进程 | 入口 | 职责 |
 |------|------|------|
-| gateway | `cmd/gateway` | 数据面：鉴权、解析、限流、调度、上游转发、usage outbox |
-| admin | `cmd/admin` | 管理面：维护主账号、API key、model service、endpoint、quota policy、pricing_versions |
-| Debezium Server | 独立容器 `debezium/server` | 拉 MySQL binlog → 推 Redis Stream，admin → gateway 数据传播桥（见 [06 §8 CDC](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)） |
+| gateway | `cmd/gateway` | 数据面：鉴权、解析、限流、调度、上游转发、usage outbox；启动期自跑 `infra.Migrate` 建表 |
+| Debezium Server | 独立容器 `debezium/server` | 拉 MySQL binlog → 推 Redis Stream，SQL → gateway 数据传播桥（见 [06 §8 CDC](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)） |
+
+业务数据（accounts / api_keys / model_services / endpoints / quota_policies /
+subscriptions / pricing_versions）由 deployer 直接 SQL INSERT/UPDATE/DELETE 维护——
+本项目不带控制面 binary。
 
 gateway 启动流程：
 
 1. 加载 `configs/*/gateway.yaml`。
 2. 初始化 endpoint auth 加密 data key。
-3. 打开 **SQL DB（必需）**，执行 `repo.CheckSchema`；缺表直接退出。
+3. 打开 **SQL DB（必需）**，执行 `infra.Migrate` 建表（`schema.sql` 全 `IF NOT EXISTS`，
+   幂等）+ `repo.CheckSchema` 防御性校验；缺表直接退出。
 4. 打开 **Redis（必需）**；M6 限流、scheduler cooldown、CDC stream 消费都依赖 Redis。
 5. 装配 SQL reader/provider、Redis rate limit store、scheduler、outbox、tracer、
    `cdc.TieredCache` + `cdc.StreamConsumer`（订阅 `llm_gateway.llm_gateway.<table>`
-   Stream，详见 [06 §8](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)）。
-6. 扫描 enabled endpoints，校验 vendor adapter 存在、`native_protocol` 合法、必要 translator 已注册；缺失只记 warn 和 metric，不阻塞启动。
+   Stream，详见 [06 §8](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)）。
+6. 扫描 enabled endpoints，校验 vendor adapter 存在、`endpoint.Protocol` 合法、必要 translator 已注册；缺失只记 warn 和 metric，不阻塞启动。
 7. 调用 `router.NewEngine` 注册路由和 middleware。
 8. 交给 `pkg/server` 处理 listen、signal、graceful shutdown 和资源倒序关闭。
 
 部署顺序：
 
 1. docker stack 起 MySQL（binlog `ROW` + GTID） + Redis + Debezium Server。
-2. admin 启动期执行 `infra.Migrate`，负责 schema migration。
-3. admin 写入/维护账号、API key、model service、subscription、endpoint、quota policy 等配置数据。
-4. gateway 启动时只执行 `repo.CheckSchema` 和只读查询；schema 缺失直接失败，
-   不自动建表或迁移。CDC consumer 启动从 `$` 起读（不持久化 stream offset；
+2. 启动 gateway——`infra.Migrate` 自动建表。
+3. deployer SQL INSERT 录入账号、API key、model service、subscription、endpoint、
+   quota policy 等业务数据（endpoint.auth 列要用 `repo.EncodePayload` 加密，
+   api_keys.api_key_hash 列要用 `repo.HashAPIKey` 算 SHA-256 hex）。
+4. CDC consumer 启动从 `$` 起读（不持久化 stream offset；
    见 [06 §8.2](./06-pluggable-infra.md#82-位点策略)）。
 
-admin 与 gateway 数据传播走 Debezium binlog CDC：admin 写 MySQL → Debezium 捕获 →
+SQL → gateway 数据传播走 Debezium binlog CDC：deployer 写 MySQL → Debezium 捕获 →
 Redis Stream → gateway `TieredCache.HandleEvent` 失效 L1。**不直连同库每请求查表**，
 也**不**用 outbox 表方案。L1 cold start / Debezium 不可达时降级到 L3 直查 MySQL。
 
-admin 与 gateway 可以独立部署，但 schema 变更必须保持向后兼容：先部署兼容旧 gateway 的 schema，再滚动 gateway；删除字段或破坏性 schema 变更必须等所有 gateway 升级完成后再执行。
+schema 变更走 `pkg/infra/schema.sql`，gateway 启动期跑 `infra.Migrate` 应用。
+变更必须保持向后兼容：先部署带新 schema 的新 gateway，让它建好新表/新列（旧字段保留）；
+全部 gateway 升级完成后再执行删除字段或破坏性变更。
 
 ## 4. 请求生命周期
 
@@ -121,7 +128,7 @@ pkg/repo + pkg/infra
 
 | 术语 | 目标含义 |
 |------|----------|
-| pin | account 的稳定外部标识符，作为计费主体 ID；不同于数据库自增主键，admin 创建 account 时分配，创建后不可变 |
+| pin | account 的稳定外部标识符，作为计费主体 ID；不同于数据库自增主键，deployer 创建 account 时分配，创建后不可变 |
 | Group | 主账号下的请求分组维度，影响 endpoint 候选过滤；默认 `default`，可用于 `reserved` / `experimental` 等隔离场景 |
 | `RequestContext` | 一次请求的状态对象，挂在 `c.Request.Context()`，通过 middleware helper 获取 |
 | `RequestEnvelope` | M3 产物：raw body、model、source protocol、modality；不再包含 canonical request |

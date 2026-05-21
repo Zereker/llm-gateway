@@ -4,10 +4,10 @@
 #   - 启用 Kafka outbox（生产形态）+ 注释保留 file driver 作回退
 #   - 显式列出所有 selector filter（含 limit_read 用 redis 限流计数）
 #   - cooldown 按 ErrorClass 分维度配
-#   - 多 model + 多 endpoint 的典型配置（数据走 admin SQL，本文件只配运行时）
+#   - 多 model + 多 endpoint 的典型配置（数据由 deployer 写 SQL，本文件只配运行时）
 #
-# 配套 seed：seed.sql（多 account / model_services / endpoints / api_keys / quota_policies）
-# 启动顺序：docker compose up -d → mysql < seed.sql → 启动 admin → 启动 gateway
+# 配套 seed：seed.sql（多 account / model_services / pricing_versions / quota_policies）
+# 启动顺序：docker compose up -d → 启动 gateway（自跑 infra.Migrate）→ mysql < seed.sql
 
 server:
   addr: ":8080"
@@ -31,7 +31,7 @@ redis:
   password: ""    # 生产从 secret manager 注入
 
 # data_key：AES-256-GCM 加密 endpoints.auth 列的 KEK（hex-encoded 32 字节）。
-# 必须跟 admin.yaml 一致。
+# deployer 用 SQL 写 endpoints 时必须用同一个 KEK 加密 auth 列。
 # **生产强约束**：从 secret manager / KMS 注入，绝不 commit 真实值。
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
@@ -54,7 +54,7 @@ usage_events:
   #   path: /var/log/llm-gateway/usage.log
 
 budget:
-  # 生产单实例 demo：用 inmemory + 默认余额 100 USD；要支持 admin 调拨改 SetBalance API。
+  # 生产单实例 demo：用 inmemory + 默认余额 100 USD；要调拨需自行调 SetBalance API。
   # 多副本生产请用 alwayspass + 外部计费系统对接（v0.5 没有 Redis-backed 实现）。
   driver: inmemory
   default_balance: 100

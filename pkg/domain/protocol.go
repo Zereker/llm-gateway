@@ -37,7 +37,7 @@ func (p Protocol) String() string {
 	}
 }
 
-// ParseProtocol 反 String()——admin DTO / SQL VARCHAR 列读出来转 Protocol。
+// ParseProtocol 反 String()——SQL VARCHAR 列读出来转 Protocol。
 // 未知字符串返回 ProtoUnknown（caller 自行决定如何处理）。
 func ParseProtocol(s string) Protocol {
 	switch s {
@@ -58,14 +58,14 @@ func ParseProtocol(s string) Protocol {
 	}
 }
 
-// MarshalJSON 把 Protocol 序列化成字符串（admin REST API 给人用）。
+// MarshalJSON 把 Protocol 序列化成字符串（HTTP / 日志显示给人看）。
 func (p Protocol) MarshalJSON() ([]byte, error) {
 	return json.Marshal(p.String())
 }
 
 // UnmarshalJSON 接受字符串形式（"openai" / "anthropic" / ...）。
 //
-// 严格模式：未知值返 error，避免 admin 配置错协议名静默落库。
+// 严格模式：未知值返 error，避免 配置错协议名静默落库。
 func (p *Protocol) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {

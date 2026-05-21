@@ -31,7 +31,7 @@ import (
 // Factory 实现 adapter.Factory。
 type Factory struct{}
 
-// Metadata 返回静态元信息。endpoint.Protocol（admin 配置）通常 = ProtoGemini，
+// Metadata 返回静态元信息。endpoint.Protocol（deployer 配置）通常 = ProtoGemini，
 // 客户端用 OpenAI SDK 时 dispatcher 自动接入 openai_gemini 翻译。
 func (Factory) Metadata() adapter.Metadata {
 	return adapter.Metadata{

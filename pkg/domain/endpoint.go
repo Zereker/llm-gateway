@@ -22,7 +22,7 @@ type Endpoint struct {
 	// Protocol 这条 endpoint 上游说的协议（OpenAI / Anthropic / Gemini / Responses）。
 	//
 	// **必填**——零值 ProtoUnknown 会让 DefaultLookup.Get 直接返 nil，eligibility
-	// filter 剔除该 endpoint。admin schema 落库时必须显式配。
+	// filter 剔除该 endpoint。deployer 写 endpoint 时必须显式配。
 	//
 	// **设计动机**：协议是 endpoint 级属性，不是 vendor 级——同一 vendor 完全可能
 	// 挂多条 endpoint 走不同协议（例如 Anthropic 同时提供原生 Messages API +
@@ -82,7 +82,7 @@ func (e *Endpoint) Form() EndpointForm {
 // AuthConfig vendor-tagged 鉴权配置。
 //
 // 注意：domain.AuthConfig **不**自带 Scanner/Valuer（生产侧 DB 加密在 repo 层做）。
-// admin DTO / 业务代码统一通过 DecodePayload[T] 取 typed payload。
+// 业务代码统一通过 DecodePayload[T] 取 typed payload。
 type AuthConfig struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
@@ -146,7 +146,7 @@ func DecodePayload[T any](a AuthConfig) (T, error) {
 	return t, nil
 }
 
-// EncodePayload helper：admin 构造 AuthConfig 时把 typed payload 序列化成 RawMessage。
+// EncodePayload helper：构造 AuthConfig 时把 typed payload 序列化成 RawMessage。
 func EncodePayload(authType string, payload any) (AuthConfig, error) {
 	if authType == "" {
 		return AuthConfig{}, errEmptyAuthType

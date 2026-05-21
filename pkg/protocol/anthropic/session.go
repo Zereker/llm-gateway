@@ -11,7 +11,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// **Anthropic API 必需的版本头**：admin 不需要配；adapter 自动加。
+// **Anthropic API 必需的版本头**：deployer 不需要配；adapter 自动加。
 // 升级 API 版本时在这里改。
 const anthropicAPIVersion = "2023-06-01"
 

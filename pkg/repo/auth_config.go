@@ -13,7 +13,7 @@ import (
 // 加密的不仅是 Payload 内的 secret 字段，而是整段 JSON——这样未来加新字段
 // 也自动受保护，无需逐字段标注。
 //
-// **MarshalJSON 屏蔽**：admin GET 响应 / 日志 dump 时整段 payload 显示 "***"。
+// **MarshalJSON 屏蔽**：管理工具 GET 响应 / 日志 dump 时整段 payload 显示 "***"。
 // 想拿到明文必须经 DecodePayload 显式解码（adapter 用）。
 //
 // **Type → Payload schema 对应表**：
@@ -66,7 +66,7 @@ type AWSSigV4Auth struct {
 // OAuth2SAAuth: Service Account JSON 走 OAuth2 access token（Vertex AI）
 //
 // 整 SA JSON 字符串嵌入 payload；AES-GCM 加密在 AuthConfig 列层做。
-// 适合 admin 中心管理的服务账号场景。
+// 适合中心管理的服务账号场景。
 type OAuth2SAAuth struct {
 	ServiceAccountJSON string `json:"service_account_json"`
 }
@@ -142,7 +142,7 @@ func (a AuthConfig) Value() (driver.Value, error) {
 	return string(enc), nil
 }
 
-// MarshalJSON 屏蔽 payload；admin GET / 日志 dump 都不泄漏。
+// MarshalJSON 屏蔽 payload；管理工具 GET / 日志 dump 都不泄漏。
 //
 // 若上层确实想拿明文，必须用 DecodePayload。
 func (a AuthConfig) MarshalJSON() ([]byte, error) {
@@ -172,7 +172,7 @@ func DecodePayload[T any](a AuthConfig) (T, error) {
 	return t, nil
 }
 
-// EncodePayload helper：admin 构造 AuthConfig 时把 typed payload 序列化成 RawMessage。
+// EncodePayload helper：deployer 构造 AuthConfig 时把 typed payload 序列化成 RawMessage。
 func EncodePayload(authType string, payload any) (AuthConfig, error) {
 	if authType == "" {
 		return AuthConfig{}, errors.New("AuthConfig: empty type")

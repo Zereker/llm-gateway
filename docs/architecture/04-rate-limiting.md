@@ -231,16 +231,16 @@ if usage != nil:
 - 默认 TTL 30 秒。
 - 缓存预解析后的 `PolicyRule`。
 - policy 不存在返回 `nil, nil`，表示该层不限。
-- admin 改 policy 后传播方式有两条路径，并存使用：
+- SQL 改 policy 后传播方式有两条路径，并存使用：
   1. **被动 TTL**：默认；缓存项 30s 后自然过期重新加载（兜底，永远可用）。
-  2. **主动 CDC 失效**：`quota_policies` 表接入 [06 §8 CDC](./06-pluggable-infra.md#8-cdcadmin--gateway-数据传播)
+  2. **主动 CDC 失效**：`quota_policies` 表接入 [06 §8 CDC](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)
      后，Debezium event → `pkg/cdc.TieredCache.HandleEvent` → 立即 invalidate；
      秒级生效。当前 v0.4 默认只对 `model_services` 接入，`quota_policies` 接入按
      [06 §8.4](./06-pluggable-infra.md#84-适用表) 路径推进。
 
 ## 12. 演进规则
 
-- 修改 quota JSON schema 时，同步更新 domain/ratelimit quota 类型、repo row/mapper、admin DTO、示例配置和本文档。
+- 修改 quota JSON schema 时，同步更新 domain/ratelimit quota 类型、repo row/mapper、示例配置和本文档。
 - 新增限流维度时，必须定义 bucket key 规则、reserve cost 规则和拒绝语义。
 - 不引入内存 Store 作为生产兜底；多副本 gateway 必须共享 Redis 计数器。
 - endpoint quota 不允许在候选 filter 阶段产生扣减副作用。

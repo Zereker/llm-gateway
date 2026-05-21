@@ -53,7 +53,7 @@ llm-gateway/
 Gateway is one binary that runs `infra.Migrate` on boot to bootstrap the schema.
 Business data (model_services / endpoints / api_keys / pricing / quota_policies /
 subscriptions / accounts) is managed by inserting SQL directly into MySQL —
-this repository does not ship a control-plane / admin REST API.
+this repository does not ship a control-plane / management REST API.
 
 ```sh
 # 1. Start the local stack (MySQL + Redis + Redpanda + Debezium) via Docker.

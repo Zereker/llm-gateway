@@ -30,7 +30,7 @@ import (
 // Factory 实现 adapter.Factory。
 type Factory struct{}
 
-// Metadata 返回静态元信息。endpoint.Protocol（admin 配置）决定上游说什么协议；
+// Metadata 返回静态元信息。endpoint.Protocol（deployer 配置）决定上游说什么协议；
 // 一般配为 ProtoAnthropic（identity 透传）或 ProtoOpenAI（客户端 OpenAI → openai_anthropic 翻译）。
 func (Factory) Metadata() adapter.Metadata {
 	return adapter.Metadata{

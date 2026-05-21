@@ -85,7 +85,7 @@ func (c *TieredCache[T]) Get(ctx context.Context, pk string) (T, error) {
 		return zero, err
 	}
 	if isZero(v) {
-		// not found：不缓存（避免缓存"不存在"；下次请求或许 admin 已创建）
+		// not found：不缓存（避免缓存"不存在"；下次请求或许 deployer 已创建）
 		return zero, nil
 	}
 

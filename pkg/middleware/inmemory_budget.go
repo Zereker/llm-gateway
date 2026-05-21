@@ -58,7 +58,7 @@ func (g *InMemoryBudgetGate) Check(_ context.Context, subAccountID string) (doma
 	return domain.BudgetInactive, nil
 }
 
-// SetBalance 设置 / 覆盖某 user 的余额。admin 调用 / 测试 seed。
+// SetBalance 设置 / 覆盖某 user 的余额。运维 / 测试 seed 用。
 func (g *InMemoryBudgetGate) SetBalance(subAccountID string, balance float64) {
 	g.mu.Lock()
 	g.balances[subAccountID] = balance
@@ -83,7 +83,7 @@ func (g *InMemoryBudgetGate) Deduct(subAccountID string, cost float64) float64 {
 	return balance
 }
 
-// GetBalance 读当前余额（admin / 测试）。
+// GetBalance 读当前余额（运维 / 测试）。
 func (g *InMemoryBudgetGate) GetBalance(subAccountID string) float64 {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
