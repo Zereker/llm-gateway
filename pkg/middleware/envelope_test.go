@@ -10,7 +10,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // =============================================================================
@@ -74,6 +76,73 @@ func TestEnvelope_HappyPath_ParsesModel(t *testing.T) {
 		t.Errorf("raw=%q", string(gotRaw))
 	}
 }
+
+// TestEnvelope_PopulatesDefaultHandlers 证明 M3 给 rc.Handlers 写默认值
+// （protocol.DefaultLookup 包装全局 adapter + translator registry），让后续
+// middleware / dispatch / invoker 能通过 dispatch.HandlersFrom(rc) 拿到 nil-safe
+// 的请求级查询端口。
+func TestEnvelope_PopulatesDefaultHandlers(t *testing.T) {
+	r := newGinTest(
+		TraceContext(), Recover(),
+		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
+		Envelope(),
+	)
+	var gotHandlers protocol.Lookup
+	r.POST("/x", func(c *gin.Context) {
+		rc := GetRequestContext(c)
+		gotHandlers = dispatch.HandlersFrom(rc)
+		c.Status(200)
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", strings.NewReader(`{"model":"x"}`)))
+
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := gotHandlers.(protocol.DefaultLookup); !ok {
+		t.Errorf("rc.Handlers not defaulted to protocol.DefaultLookup; got %T", gotHandlers)
+	}
+}
+
+// TestEnvelope_PreservesPreSetHandlers 证明 M3 不覆盖前置 middleware 已写入的
+// 自定义 lookup（多租户 / 灰度场景：M2 Auth 根据 tenant 装上 custom lookup，
+// M3 不应该把它覆盖回 default）。
+func TestEnvelope_PreservesPreSetHandlers(t *testing.T) {
+	custom := &fakeHandlerLookup{}
+	preSet := func(c *gin.Context) {
+		rc := GetRequestContext(c)
+		rc.Handlers = custom
+		c.Next()
+	}
+	r := newGinTest(
+		TraceContext(), Recover(),
+		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
+		preSet,
+		Envelope(),
+	)
+	var gotHandlers protocol.Lookup
+	r.POST("/x", func(c *gin.Context) {
+		rc := GetRequestContext(c)
+		gotHandlers = dispatch.HandlersFrom(rc)
+		c.Status(200)
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", strings.NewReader(`{"model":"x"}`)))
+
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotHandlers != custom {
+		t.Errorf("rc.Handlers overwritten by Envelope; want custom got %v", gotHandlers)
+	}
+}
+
+// fakeHandlerLookup 测试占位（永远返 nil），仅校验"指针有没有被覆盖"。
+type fakeHandlerLookup struct{}
+
+func (*fakeHandlerLookup) Get(_ *domain.Endpoint, _ domain.Protocol) protocol.Handler { return nil }
 
 func TestEnvelope_500_WithSourceProtocolMissing(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), Envelope())

@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/datatypes"
 
+	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
@@ -168,14 +169,19 @@ func dtoToMS(d modelServiceDTO) *repo.ModelService {
 // **auth 字段语义**：
 //   - 入站（POST/PUT body）：明文 {"type":"bearer", "payload":{"api_key":"sk-..."}}
 //   - 出站（GET 响应）：repo.AuthConfig.MarshalJSON 屏蔽成 {"type":"bearer","payload":"***"}
+//
+// **protocol 字段**（v0.6 新加）：必填字符串，对应 domain.Protocol——表明这条
+// endpoint 上游说什么协议。dispatcher 用 (env.SourceProtocol, ep.Protocol) 决定
+// 走 identity 透传还是跨协议 translator。同 vendor 多协议时配多条 endpoint。
 type endpointDTO struct {
-	ID      int64  `json:"id,omitempty"`
-	Name    string `json:"name"`
-	Vendor  string `json:"vendor"`
-	Model   string `json:"model"`
-	Group   string `json:"group"`
-	Weight  uint32 `json:"weight"`
-	Enabled bool   `json:"enabled"`
+	ID       int64           `json:"id,omitempty"`
+	Name     string          `json:"name"`
+	Vendor   string          `json:"vendor"`
+	Protocol domain.Protocol `json:"protocol"` // openai|anthropic|gemini|responses|...
+	Model    string          `json:"model"`
+	Group    string          `json:"group"`
+	Weight   uint32          `json:"weight"`
+	Enabled  bool            `json:"enabled"`
 
 	Auth         repo.AuthConfig           `json:"auth"`
 	Routing      repo.RoutingConfig        `json:"routing"`
@@ -193,6 +199,7 @@ func epToDTO(e *repo.Endpoint) endpointDTO {
 		ID:           e.ID,
 		Name:         e.Name,
 		Vendor:       e.Vendor,
+		Protocol:     domain.ParseProtocol(e.Protocol),
 		Model:        e.Model,
 		Group:        e.Group,
 		Weight:       e.Weight,
@@ -213,6 +220,7 @@ func dtoToEp(d endpointDTO) *repo.Endpoint {
 		ID:           d.ID,
 		Name:         d.Name,
 		Vendor:       d.Vendor,
+		Protocol:     d.Protocol.String(),
 		Model:        d.Model,
 		Group:        d.Group,
 		Weight:       d.Weight,

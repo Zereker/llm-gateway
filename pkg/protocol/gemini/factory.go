@@ -18,7 +18,7 @@
 //
 // 想接入时在 cmd/gateway/main.go 加 blank import：
 //
-//	import _ "github.com/zereker/llm-gateway/pkg/adapter/gemini"
+//	import _ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
 package gemini
 
 import (
@@ -31,14 +31,11 @@ import (
 // Factory 实现 adapter.Factory。
 type Factory struct{}
 
-// Metadata 返回静态元信息。
-//
-// **NativeProtocol = ProtoGemini**：M7 据此找 (envelope.SourceProtocol → ProtoGemini)
-// 的 Translator，例如 openai_gemini（客户端用 OpenAI 协议时）。
+// Metadata 返回静态元信息。endpoint.Protocol（admin 配置）通常 = ProtoGemini，
+// 客户端用 OpenAI SDK 时 dispatcher 自动接入 openai_gemini 翻译。
 func (Factory) Metadata() adapter.Metadata {
 	return adapter.Metadata{
 		Vendor:              "gemini",
-		NativeProtocol:      domain.ProtoGemini,
 		SupportedModalities: []domain.Modality{domain.ModalityChat},
 	}
 }

@@ -1,190 +1,353 @@
 # 02 — Protocol Translation
 
-本文记录协议转换边界：`pkg/adapter` 只处理厂商 HTTP 细节，`pkg/translator`
-处理请求/响应 shape 转换和 usage 提取，`pkg/invoker` 把两者串起来。
+本文记录协议转换的抽象与组合：客户端协议进、上游协议出（pre-call），上游
+响应回、客户端协议出（post-call）。两阶段封装在 `pkg/protocol.Handler` facade
+之下；内部仍由 `pkg/adapter`（vendor HTTP 层）+ `pkg/translator`（body shape 层）
+两个独立子抽象组成，但消费侧只看 Handler。
 
-核心原则：保留协议转换扩展能力，但不追求补齐任意 `source × target` 矩阵。
-一个 vendor / endpoint 如果原生支持某个协议，就按该原生协议接入；不支持时只有在已存在
-明确 translator 的情况下才转换，否则放弃该 endpoint。
+核心原则：
 
-## 1. 目标边界
+- 协议归属是 **endpoint 级**属性（`Endpoint.Protocol`），不是 vendor 级。
+- Handler 是 (endpoint, sourceProtocol) 二元组的端到端处理器；按请求**动态组合**，
+  不在 init() 静态注册矩阵。
+- 不追求补齐任意 `source × target` 协议矩阵——没有注册的组合直接视为不支持，
+  eligibility 过滤剔除该 endpoint，请求要么走 fallback 要么 503。
+
+## 1. 抽象关系
+
+```text
+┌──────────────────────────────────────────────────────────────────┐
+│ pkg/protocol.Handler  (facade，消费侧只看它)                       │
+│                                                                  │
+│   ┌──────────────────────────┐  ┌────────────────────────────┐   │
+│   │ pkg/adapter.Factory      │  │ pkg/translator.Translator  │   │
+│   │ (vendor HTTP 层)         │  │ (body shape 转换 + usage)   │   │
+│   │  - Metadata              │  │  - Source / Target          │   │
+│   │  - NewSession            │  │  - TranslateRequest         │   │
+│   │  - Session.BuildRequest  │  │  - NewResponseHandler       │   │
+│   └──────────────────────────┘  └────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────┘
+                 ▲
+                 │ Combine(ad, tr) → Handler
+                 │
+        DefaultLookup.Get(ep, srcProto) 在请求时动态组合
+```
+
+## 2. 端到端请求流水线
 
 ```text
 Client request
-  -> M3 RequestEnvelope(raw body + source protocol + modality)
-  -> M7 Schedule 选 endpoint
-  -> invoker.Sender.Send
-       -> adapter.Factory.NewSession(endpoint, envelope)
-       -> translator.Get(source protocol, endpoint native protocol, modality)
-       -> translator.TranslateRequest(raw body)
-       -> adapter.Session.BuildRequest(translated body)
-       -> http.Client.Do
-  -> invoker.Sender.Forward
-       -> translator.ResponseHandler.Feed chunks
-       -> write client response
-       -> finalize Usage
+  ↓
+M3 Envelope: 写 rc.Envelope (RawBytes / SourceProtocol / Modality)
+            + rc.Handlers = protocol.DefaultLookup{}
+  ↓
+M5 ModelService: 解析 model + fallback chain
+  ↓
+M7 Schedule → dispatch.Dispatcher.Dispatch(ctx, w, rc):
+  loop {
+    ep := Selector.Select(query)                                    // StageSelect
+    handler := rc.Handlers.Get(ep, env.SourceProtocol)               // 动态组合 Handler
+    if handler == nil { record StagePrepare; retry / fallback }
+    
+    invocation := InvokerFactory.For(ep, env, body, handler)
+    res := invocation.Invoke(ctx)
+      └─ reserve quota                                              // StageReserve
+      └─ handler.PrepareCall(ep, srcBody) → Call{Request, UpstreamBody}  // StagePrepare
+      └─ client.Do(req)                                             // StageInvoke
+    
+    if success: res.StreamTo(ctx, w)
+      └─ handler.NewResponseStream().Feed/Flush — chunk-by-chunk 翻译回客户端协议
+  }
 ```
 
-## 2. `RequestEnvelope`
+## 3. `domain.Endpoint.Protocol`
 
-M3 不再产出 `CanonicalRequest`。当前 envelope 是轻量路由信封：
+**必填字段**。admin 创建 endpoint 时显式声明该 endpoint 上游说什么协议
+（`openai` / `anthropic` / `gemini` / `responses` / ...）；缺失或 `ProtoUnknown`
+时 `DefaultLookup.Get` 返回 nil，eligibility 剔除该 endpoint。
 
 ```go
-type RequestEnvelope struct {
-    RawBytes       []byte
-    Model          string
-    SourceProtocol domain.Protocol
-    Modality       domain.Modality
+type Endpoint struct {
+    ...
+    Vendor   string             // openai|anthropic|gemini|ark|... — vendor 适配器选择
+    Protocol domain.Protocol    // openai|anthropic|gemini|responses|... — 协议归属
+    ...
 }
 ```
 
-协议细节全部保留在 `RawBytes` 中，translator 直接基于 raw body 做转换。这样避免内部 canonical schema 覆盖不全导致字段丢失。
+**为什么协议是 endpoint 级而不是 vendor 级**：同一 vendor 可以同时挂多条不同协议
+的 endpoint。例：
 
-## 3. 协议能力归属
+| vendor | endpoint.Protocol | translator 需要 |
+|---|---|---|
+| anthropic | anthropic | (Anthropic → Anthropic) identity |
+| anthropic | openai     | (OpenAI → Anthropic) cross |
+| openai | openai | (OpenAI → OpenAI) identity |
+| openai | responses | (OpenAI → Responses) — n/a 实际倒过来 |
+| openai | anthropic | (Anthropic → Anthropic 仅在 vendor 跑 anthropic 兼容 API 时) |
 
-协议能力应尽量归属到 endpoint，而不是只归属到 vendor。
+vendor adapter 不再声明 `NativeProtocol`——它只知道 HTTP 层细节（auth header /
+URL / TLS）；协议归属交给 endpoint。
 
-原因是同一个 vendor 可能同时提供多种原生协议。例如 Azure OpenAI 可以同时有
-Chat Completions endpoint 和 Responses endpoint；这时应该建两类 endpoint：
+## 4. `pkg/protocol.Handler` — facade
 
-- `native_protocol = openai`：接 `/chat/completions`。
-- `native_protocol = responses`：接 `/responses`。
+```go
+type Handler interface {
+    Capabilities() Capabilities
 
-调度选择 endpoint 时应满足：
+    // pre-call：translate srcBody + 套 vendor HTTP 信封
+    PrepareCall(ctx, ep, srcBody) (*Call, error)
 
-1. endpoint 支持当前请求的 modality。
-2. endpoint 的 `native_protocol` 等于客户端 `source_protocol`，或存在已注册 translator。
-3. 不存在原生协议或 translator 时，该 endpoint 不参与本次请求。
+    // post-call：chunk-by-chunk 翻译响应给客户端
+    NewResponseStream() ResponseStream
+}
 
-这条规则避免为了“理论兼容”去实现没有业务需求的协议互转。例如 vendor 只有
-Chat Completions 能力时，不需要强行支持 Responses；vendor 同时具备 Chat 和
-Responses 能力时，通过 endpoint 声明分别支持即可。
+type Call struct {
+    Request      *http.Request  // 已准备好发往上游的 HTTP 请求
+    UpstreamBody []byte         // 翻译后的字节副本（给 audit/hook 看）
+}
 
-`native_protocol` 必须来自 endpoint 配置或 endpoint capabilities。admin 创建 endpoint 时必须校验该字段非空；缺失时 endpoint 不能保存。adapter 可以提供默认 metadata 作为文档/测试辅助，但调度和 translator lookup 不得 fallback 到 vendor/factory 级静态值。
+type Capabilities struct {
+    SourceProtocol      domain.Protocol   // = translator.Source()
+    UpstreamProtocol    domain.Protocol   // = translator.Target() == ep.Protocol
+    SupportedModalities []domain.Modality // = adapter.Metadata().SupportedModalities
+}
+```
 
-## 4. Adapter：slim HTTP 层
+**Capabilities 不带 Vendor**——Vendor 是 endpoint 的属性，不是 Handler 的；
+Handler 是 (adapter, translator) 动态组合，跟 specific endpoint 在 `PrepareCall`
+入参时才挂钩。
 
-`pkg/adapter/factory.go` 目标契约：
+## 5. PrepareCall 失败分类
+
+```go
+type PreparePhase int
+const (
+    PhaseTranslate PreparePhase = iota  // translator.TranslateRequest 失败
+    PhaseBuild                          // adapter session BuildRequest / NewSession 失败
+)
+
+type PrepareError struct {
+    Phase PreparePhase
+    Err   error
+}
+```
+
+- **PhaseTranslate**：`srcBody` 不符合 `SourceProtocol` 的 schema → `dispatch.ClassInvalid`
+  → caller 应直接 abort 400（同请求换 endpoint 也会失败）
+- **PhaseBuild**：vendor HTTP 构造失败（极少；通常是 endpoint 配置非法如 URL
+  不可解析）→ `dispatch.ClassPermanent`
+
+`invoker.Sender.Send` 用 `errors.As(*PrepareError)` 分流到不同 `Outcome.Class`
+和返回值；wiring 层把两种都标 `Verdict.Stage = StagePrepare`，让 Policy 跟
+"上游调用失败" 区分开。
+
+## 6. Lookup：动态组合
+
+```go
+type Lookup interface {
+    Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler
+}
+
+type DefaultLookup struct{}
+
+func (DefaultLookup) Get(ep *Endpoint, src Protocol) Handler {
+    if ep == nil || ep.Protocol == ProtoUnknown {
+        return nil
+    }
+    ad := adapter.Get(ep.Vendor)
+    if ad == nil {
+        return nil
+    }
+    tr := translator.Find(src, ep.Protocol)
+    if tr == nil {
+        return nil
+    }
+    return Combine(ad, tr)
+}
+```
+
+**请求级注入**：M3 Envelope 给 `rc.Handlers` 填默认值 `DefaultLookup{}`；
+多租户 / 灰度场景下后续 middleware（如 M2 Auth）可按 tenant 覆盖
+`rc.Handlers` 走自定义 Lookup 实现（限定可用 vendor / 自定义 translator
+chain）。
+
+dispatcher / invoker / eligibility 一律走 `dispatch.HandlersFrom(rc)` 取
+typed Lookup，不直接消费 adapter / translator registry。
+
+## 7. `pkg/adapter` — vendor HTTP 层（facade 内部细节）
 
 ```go
 type Metadata struct {
-    Vendor              string
-    NativeProtocol      domain.Protocol
-    SupportedModalities []domain.Modality
+    Vendor              string            // openai|anthropic|gemini|ark|...
+    SupportedModalities []domain.Modality // chat|embedding|image|...
 }
 
 type Factory interface {
     Metadata() Metadata
-    NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (Session, error)
+    NewSession(ctx, ep, env) (Session, error)
 }
 
 type Session interface {
-    BuildRequest(body []byte) (*http.Request, error)
+    BuildRequest(body []byte) (*http.Request, error) // body = translator 已翻译过的字节
     Close() error
 }
+
+type Classifier interface {  // 可选
+    Classify(status int, body []byte) *domain.AdapterError
+}
 ```
 
-adapter 负责：
+**adapter 不再声明 NativeProtocol**——v0.5 把它写在 Metadata 上做 vendor 默认
+协议，v0.6 删除，协议归属转移到 `Endpoint.Protocol`。
 
-- vendor 名和默认 native protocol 声明。
-- endpoint auth/routing/extra 解析。
-- 上游 URL、HTTP method、认证 header、content type、厂商特定 header。
-- session 生命周期清理。
+`Classifier` 实现自动透出到 `protocol.Handler` 接口：vendor adapter 实现 Classifier
+时，`Combine(ad, tr)` 出来的 Handler 自动满足 `protocol.Classifier`，invoker 在
+HTTP 非 2xx 时 type-assert 调用。
 
-adapter 不负责：
+vendor 子包：
 
-- 客户端协议到上游协议的 JSON shape 转换。
-- SSE / chunk 响应解析。
-- usage 提取。
-- retry/cooldown/endpoint 选择。
-- 决定一个 endpoint 是否应该被强行跨协议转换。
+- `pkg/protocol/openai/` — vendor=openai + alias=ark
+- `pkg/protocol/anthropic/`
+- `pkg/protocol/gemini/`
 
-## 5. Registry
+每个 vendor 子包的 `init()` 只调 `adapter.Register("<vendor>", Factory{})`；
+Handler 由 `DefaultLookup` 在请求时动态合成，不在 init() 注册矩阵。
 
-adapter 通过 `init()` 注册：
-
-```go
-func Register(vendor string, f Factory)
-func Get(vendor string) Factory
-func Vendors() []string
-```
-
-注册表运行期无锁读，约定所有 `Register` 都发生在 init 阶段。重复 vendor 直接 panic。
-
-因此新增 vendor adapter 是构建期能力变更：需要新增包、在 `cmd/gateway` 中 blank import，并重启 gateway 进程。网关不支持运行期动态注册 adapter。
-
-`cmd/gateway` 目标 blank import：
-
-- `pkg/adapter/openai`
-- `pkg/adapter/anthropic`
-- `pkg/adapter/gemini`
-
-## 6. Translator
-
-translator 是协议 shape 层，按 source protocol、target native protocol 和 modality
-选择。translator 是显式能力，不是兜底机制：没有注册对应 translator 就说明该转换不支持。
-
-目标内置 translator：
-
-- `translator/identity`：同协议透传，覆盖 OpenAI、Anthropic、Responses 等 identity 场景。
-- `translator/openai_anthropic`：OpenAI Chat 客户端 → Anthropic 上游。
-- `translator/anthropic_openai`：Anthropic Messages 客户端 → OpenAI 上游。
-- `translator/openai_gemini`：OpenAI Chat 客户端 → Gemini 上游。
-- `translator/responses_openai`：OpenAI Responses 客户端 → OpenAI ChatCompletions 上游
-  （Responses 入口接到只支持 Chat Completions 的 endpoint 时用）。
-
-Gemini 当前是上游协议支持：客户端仍从 OpenAI/Anthropic/Responses 路由进入，M7 根据 endpoint vendor/native protocol 找到 translator 后转给 Gemini 上游。
-
-不要求补齐所有组合。优先级是：
-
-1. 同协议 identity：客户端协议和 endpoint native protocol 一致，尽量透传。
-2. 明确需要的跨协议 translator：例如 OpenAI Chat → Anthropic、OpenAI Chat → Gemini。
-3. 未注册的组合直接视为不支持，不作为调度候选或返回明确错误。
-
-## 7. invoker.Sender
-
-`pkg/invoker` 封装一次上游调用和响应转发：
+## 8. `pkg/translator` — body shape 层（facade 内部细节）
 
 ```go
-type Sender struct {
-    lookup FactoryLookup
-    client HTTPDoer
+type Translator interface {
+    Source() domain.Protocol // 接受的客户端协议
+    Target() domain.Protocol // 翻译到的上游协议（match Endpoint.Protocol）
+
+    TranslateRequest(srcBody []byte) ([]byte, error)
+    NewResponseHandler() ResponseHandler
 }
 
-func (s *Sender) Send(ctx context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope, raw []byte) (Outcome, error)
-func (s *Sender) Forward(ctx context.Context, w http.ResponseWriter, ep *domain.Endpoint, resp *http.Response, h translator.ResponseHandler) ForwardResult
+type ResponseHandler interface {
+    Feed(chunk []byte) (clientBytes []byte, err error)
+    Flush() (clientBytes []byte, usage *domain.Usage, err error)
+}
 ```
 
-`Outcome` 包含 HTTP response、调度错误分类、HTTP status、reason、latency 和 translator。M7 将 `Outcome.ToScheduleResult()` 反馈给 scheduler。
+**注册**：每个 translator 子包 `init()` 调 `translator.Register(...)`；启动期
+全局表填好；`translator.Find(src, tgt)` 运行期查询。`DefaultLookup.Get` 据此
+动态拿 translator。
 
-请求体转换失败返回 `upstream.ErrInvalidRequest`，M7 直接 400，不重试其它 endpoint。
+内置 translator：
 
-## 8. 协议与模态
+| src → tgt | 包 | 用途 |
+|---|---|---|
+| OpenAI → OpenAI | `translator/identity` | identity 透传（注 stream_options.include_usage） |
+| Anthropic → Anthropic | `translator/identity` | identity 透传 |
+| Responses → Responses | `translator/identity` | identity 透传 |
+| OpenAI → Anthropic | `translator/openai_anthropic` | 客户端 OpenAI SDK → Anthropic 上游 |
+| Anthropic → OpenAI | `translator/anthropic_openai` | 客户端 Anthropic SDK → OpenAI 上游 |
+| OpenAI → Gemini | `translator/openai_gemini` | 客户端 OpenAI SDK → Gemini 上游 |
+| Responses → OpenAI | `translator/responses_openai` | Responses 入口接到 Chat Completions endpoint |
 
-`domain.Protocol` / `domain.Modality` 是路由、endpoint 能力、adapter metadata 和
-translator lookup 的共同语言。当前路由侧只暴露项目已注册的 `/v1/...` 入口；
-新增客户端协议需要同时补：
+**不要求补齐所有组合**。优先级：
 
-1. router 路由和 `WithSourceProtocol` 标记。
-2. M3 对该协议顶层 `model` 字段的提取逻辑。
-3. translator 注册。
-4. 对应测试。
+1. 同协议 identity：客户端协议和 `ep.Protocol` 一致，尽量透传。
+2. 已明确业务需求的跨协议组合：上表中列出的。
+3. 未注册的组合 → `DefaultLookup.Get` 返 nil → eligibility 剔除 → 该 endpoint
+   不参与本次请求。
 
-## 9. 新增 vendor / endpoint 步骤
+## 9. eligibility 过滤
 
-1. 在 `pkg/adapter/<vendor>` 实现 `Factory` 和 `Session`。
-2. `init()` 中调用 `adapter.Register("<vendor>", factory)`。
-3. 在 endpoint 配置里声明该 endpoint 的 native protocol / modality 能力。
-4. 如果 native protocol 不是客户端源协议，且业务确实需要跨协议调用，新增或复用 `pkg/translator/<src>_<dst>`。
-5. 如果 vendor 已经原生支持目标客户端协议，优先新增对应 native endpoint，而不是新增 translator。
-6. 在 `cmd/gateway/main.go` 加 blank import。
-7. 重新构建并重启 gateway 进程。
-8. 在 admin 侧创建 endpoint，`endpoints.vendor` 必须与注册名一致。
+`pkg/selector/eligibility.Filter` 按 endpoint 候选 + `protocol.Lookup` 单一参数
+过滤：
 
-## 10. 演进规则
+```go
+for ep in candidates {
+    h := handlers.Get(ep, env.SourceProtocol)
+    if h == nil:
+        removed (handler_missing)
+    if !contains(h.Capabilities().SupportedModalities, env.Modality):
+        removed (modality_unsupported)
+    eligible
+}
+```
 
-- 不把协议转换逻辑回塞 adapter。
+v0.5 的两次 lookup（AdapterLookup + TranslatorLookup）+ match check 合并到一次
+Handler 查找。
+
+## 10. invoker 流程
+
+```go
+func (s *Sender) Send(ctx, ep, env, srcBody, handler) (Outcome, error) {
+    fire hook(ClientRequest)
+    
+    if handler == nil {
+        return Outcome{Stage: StagePrepare, Class: ClassPermanent}
+    }
+    
+    call, err := handler.PrepareCall(ctx, ep, srcBody)
+    if err != nil {
+        return Outcome{Stage: StagePrepare, Class: <PhaseTranslate→Invalid | PhaseBuild→Permanent>}
+    }
+    
+    fire hook(UpstreamRequest, call.UpstreamBody)
+    
+    resp := client.Do(call.Request)
+    class := classifyHTTPStatus(resp.StatusCode)
+    if h, ok := handler.(protocol.Classifier); ok {
+        class = h.Classify(resp.StatusCode, peekBody(resp))  // 细化
+    }
+    
+    return Outcome{Stage: StageInvoke, Response: resp, Handler: handler, Class: class}
+}
+
+func (s *Sender) Forward(ctx, w, ep, resp, stream protocol.ResponseStream) ForwardResult {
+    for chunk := resp.Body.Read():
+        out := stream.Feed(chunk)
+        w.Write(out); flush
+    final := stream.Flush()
+    w.Write(final)
+}
+```
+
+`Outcome` 不再带 `Translator` 字段；改为 `Handler`，caller 用
+`outcome.Handler.NewResponseStream()` 拿 ResponseStream 传给 Forward。
+
+## 11. dispatch.Verdict.Stage
+
+```go
+type Stage int
+const (
+    StageInvoke   Stage = iota // HTTP 调用（默认）
+    StageSelect               // 选 endpoint 失败
+    StagePrepare              // 协议转换 / HTTP 构造失败
+    StageReserve              // ratelimit 前扣失败
+)
+```
+
+Policy.Decide 可以按 Stage 做更细粒度的决策——例：StagePrepare 失败说明
+`ep.Protocol` 跟 srcProto 不匹配；继续 retry 同 endpoint 没意义，可以直接
+Switch 到下个 model 或 Abort。
+
+## 12. 新增 vendor / endpoint 步骤
+
+1. 在 `pkg/protocol/<vendor>/` 实现 `adapter.Factory` 和 `adapter.Session`。
+2. `init()` 中 `adapter.Register("<vendor>", Factory{})`。
+3. 如果客户端要走的协议跟 vendor 的上游协议不一致，且 `pkg/translator/<src>_<dst>/`
+   还没注册——新增 translator 实现并 `init()` 注册。
+4. 在 `cmd/gateway/main.go` 加 blank import：
+   - `_ "github.com/zereker/llm-gateway/pkg/protocol/<vendor>"`
+   - `_ "github.com/zereker/llm-gateway/pkg/translator/<pair>"`（identity 已默认导入）
+5. 重新构建并重启 gateway 进程。
+6. admin 侧创建 endpoint：`vendor` 必须与注册名一致；`protocol` 必填，声明该
+   endpoint 上游说什么协议。
+
+## 13. 演进规则
+
+- 协议归属永远是 endpoint 级；不要在 vendor adapter 上恢复 NativeProtocol。
+- 不在 init() 静态注册 (vendor, srcProto) Handler 矩阵——保留运行期动态组合，
+  让 rc.Handlers 覆盖能影响所有路径。
+- 同一 vendor 多协议能力 → 多条 endpoint 行，分别设 Protocol。
+- 不为"矩阵完整性"新增 translator；只在业务需要且没有 endpoint 走原生协议时
+  才新增。
+- 不把协议转换逻辑回塞 adapter——adapter 始终只管 HTTP 层。
+- 新增 translator 必须覆盖请求转换、响应 handler、usage 提取和错误路径测试。
 - 不恢复全局 canonical request，除非有明确消费者和字段保真策略。
-- 新增 translator 时必须覆盖请求转换、响应 handler、usage 提取和错误路径测试。
-- 不为“矩阵完整性”新增 translator；只有业务需要且目标 vendor 没有原生协议能力时才新增。
-- 同一 vendor 多协议能力应优先通过多个 endpoint/native protocol 表达。

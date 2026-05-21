@@ -238,19 +238,20 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("encode bearer: %v", err)
 	}
 	ep := &repo.Endpoint{
-		Name:    "openai_main",
-		Vendor:  "openai",
-		Model:   "gpt-4o",
-		Group:   "default",
-		Weight:  100,
-		Enabled: true,
-		Auth:    auth,
-		Routing: repo.RoutingConfig{URL: upstreamURL},
+		Name:     "openai_main",
+		Vendor:   "openai",
+		Protocol: "openai",
+		Model:    "gpt-4o",
+		Group:    "default",
+		Weight:   100,
+		Enabled:  true,
+		Auth:     auth,
+		Routing:  repo.RoutingConfig{URL: upstreamURL},
 	}
 	if _, err := db.NamedExecContext(ctx,
 		`INSERT INTO endpoints
-		 (name, vendor, model, group_name, weight, enabled, auth, routing, quota, capabilities, extra)
-		 VALUES (:name, :vendor, :model, :group_name, :weight, :enabled, :auth, :routing, :quota, :capabilities, :extra)`,
+		 (name, vendor, protocol, model, group_name, weight, enabled, auth, routing, quota, capabilities, extra)
+		 VALUES (:name, :vendor, :protocol, :model, :group_name, :weight, :enabled, :auth, :routing, :quota, :capabilities, :extra)`,
 		ep,
 	); err != nil {
 		t.Fatalf("seed endpoint: %v", err)

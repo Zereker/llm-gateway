@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // =============================================================================
@@ -47,7 +48,7 @@ func newFakeInvokerFactory(results ...*fakeResult) *fakeInvokerFactory {
 	return &fakeInvokerFactory{results: results}
 }
 
-func (f *fakeInvokerFactory) For(ep *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte) Invoker {
+func (f *fakeInvokerFactory) For(ep *domain.Endpoint, _ *domain.RequestEnvelope, _ []byte, _ protocol.Handler) Invoker {
 	if f.calls >= len(f.results) {
 		panic("fakeInvokerFactory: out of results")
 	}
@@ -136,6 +137,10 @@ func newTestRC(models ...string) *domain.RequestContext {
 		StartTime: time.Now(),
 		Identity:  domain.UserIdentity{AccountID: "acc-1", Group: "free", APIKeyID: "ak-1"},
 		Envelope:  &domain.RequestEnvelope{RawBytes: []byte(`{}`)},
+		// 给 dispatcher.step 一个 always-OK 的 Handler 查询端口；fakeInvokerFactory
+		// 不会真调它（只看 verdict），但 dispatcher 在调 fakeInvokerFactory 之前需要
+		// 拿到一个 non-nil handler。
+		Handlers: stubHandlers{},
 	}
 	rc.ModelChain = make([]*domain.ModelService, len(models))
 	for i, m := range models {
@@ -146,6 +151,21 @@ func newTestRC(models ...string) *domain.RequestContext {
 	}
 	return rc
 }
+
+// stubHandlers 永远返回 stubHandlerOK；fakeInvokerFactory.For 拿到后忽略不调用。
+type stubHandlers struct{}
+
+func (stubHandlers) Get(_ *domain.Endpoint, _ domain.Protocol) protocol.Handler {
+	return stubHandlerOK{}
+}
+
+type stubHandlerOK struct{}
+
+func (stubHandlerOK) Capabilities() protocol.Capabilities { return protocol.Capabilities{} }
+func (stubHandlerOK) PrepareCall(_ context.Context, _ *domain.Endpoint, _ []byte) (*protocol.Call, error) {
+	return nil, nil
+}
+func (stubHandlerOK) NewResponseStream() protocol.ResponseStream { return nil }
 
 // =============================================================================
 // sentinel

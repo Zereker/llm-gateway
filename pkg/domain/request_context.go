@@ -29,6 +29,19 @@ type RequestContext struct {
 	// === M3 Envelope 写入 ===
 	Envelope *RequestEnvelope
 
+	// === M3 Envelope 写入默认值；后续 middleware 可覆盖（多租户 / 灰度场景） ===
+	//
+	// 类型 = protocol.Lookup（用 any 是为了避 pkg/domain → pkg/dispatch →
+	// pkg/protocol → pkg/adapter → pkg/domain 循环依赖）。访问走
+	// dispatch.HandlersFrom(rc) 类型安全 helper，不要直接 type-assert。
+	//
+	// **v0.6 融合**：原 v0.5 把 adapter / translator 两个独立 lookup 挂在 RC 上
+	// （rc.Adapters + rc.Translators），消费侧两次查找；v0.6 融合成单一
+	// protocol.Lookup，consumer 只需要 (endpoint, srcProto) → Handler 一次。
+	//
+	// 默认值 protocol.DefaultLookup 包装全局 adapter + translator registry。
+	Handlers any
+
 	// === M5 ModelService 写入（原始请求 model） ===
 	//
 	// **重要**：M5 不查 active pricing（docs/01 §7、docs/05 §6）。Pricing 匹配由

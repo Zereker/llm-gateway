@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // =============================================================================
@@ -33,26 +34,32 @@ type Selector interface {
 //	Envelope ── 给 eligibility filter 用（modality / protocol 资格判定）
 //	Identity ── 给 group-aware filter 用
 //	Exclude  ── 本请求里已尝试过的 endpoint ID 集合（跨 model 累加）
+//	Handlers ── 请求级 Handler 查询端口（给 eligibility filter 用）
 type Query struct {
 	Model    string
 	Envelope *domain.RequestEnvelope
 	Identity domain.UserIdentity
 	Exclude  map[int64]struct{}
+	Handlers protocol.Lookup
 }
 
 // =============================================================================
 // Invoker port — 调一次下游
 // =============================================================================
 
-// InvokerFactory 按 (endpoint, envelope, body) 造一个待执行的 Invoker。
+// InvokerFactory 按 (endpoint, envelope, body, handler) 造一个待执行的 Invoker。
 //
 // **不是 interface 是约定**：不同实现可以有完全不同的 For 签名（HTTPFactory.For /
 // BatchFactory.For / MockFactory.Pin 等）。Dispatcher 拿到一个 concrete factory
 // 即可——装配点（cmd/gateway）决定用哪个实现。
 //
+// **handler 入参**：请求级端到端协议处理器（dispatcher 已根据 ep + srcProto
+// 从 rc.Handlers 取出）；invoker 用 handler.PrepareCall + handler.NewResponseStream
+// 走 HTTP，不再自己查 adapter / translator。
+//
 // 这里给个最小接口，方便 Dispatcher 单测时换 fake 实现。
 type InvokerFactory interface {
-	For(ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte) Invoker
+	For(ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte, handler protocol.Handler) Invoker
 }
 
 // Invoker 一次已配置好的下游调用。无参执行。

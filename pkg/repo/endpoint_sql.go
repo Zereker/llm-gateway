@@ -21,7 +21,7 @@ func NewSQLEndpointReader(db *sqlx.DB) *SQLEndpointReader {
 	return &SQLEndpointReader{db: db}
 }
 
-const epColumns = `id, name, vendor, model, group_name, weight, enabled,
+const epColumns = `id, name, vendor, protocol, model, group_name, weight, enabled,
 	auth, routing, quota, capabilities, extra,
 	created_at, updated_at, deleted_at`
 
