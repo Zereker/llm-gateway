@@ -121,7 +121,13 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		return nil, nil, fmt.Errorf("infra.OpenRedis: %w", err)
 	}
 
-	apikeyProvider := repo.NewSQLAPIKeyProvider(sqldb)
+	// repo TTL LRU 缓存的 Prom counter（hit / miss / error per table）。
+	// 5 个 cached wrapper 共享同一个 metrics 实例；nil 时不上报。
+	cacheMetrics := newRepoCacheMetrics()
+
+	apikeyProvider := repo.NewCachedAPIKeyProvider(
+		repo.NewSQLAPIKeyProvider(sqldb), 10240, 30*time.Second, cacheMetrics,
+	)
 
 	outbox, err := buildOutbox(srv, cfg.UsageEvents)
 	if err != nil {
@@ -146,14 +152,22 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 
 	// 进程内 TTL LRU 缓存——repo 唯一的缓存策略。
 	// deployer SQL 改完业务表后 ≤ TTL（默认 30s）gateway 看到新值。
+	// 每个 cached wrapper 自带 metrics → llm_gateway_repo_cache_total{table,result}。
 	cacheTTL := 30 * time.Second
 	catalog := adaptCatalog(repo.NewCachedModelServiceReader(
-		repo.NewSQLModelServiceReader(sqldb), 256, cacheTTL,
+		repo.NewSQLModelServiceReader(sqldb), 256, cacheTTL, cacheMetrics,
 	))
 
 	subs := adaptSubscriptions(repo.NewCachedSubscriptionProvider(
-		repo.NewSQLSubscriptionProvider(sqldb), 10240, cacheTTL,
+		repo.NewSQLSubscriptionProvider(sqldb), 10240, cacheTTL, cacheMetrics,
 	))
+
+	endpointReader := repo.NewCachedEndpointReader(
+		repo.NewSQLEndpointReader(sqldb), 1024, 4096, cacheTTL, cacheMetrics,
+	)
+	quotaPolicyReader := repo.NewCachedQuotaPolicyProvider(
+		repo.NewSQLQuotaPolicyProvider(sqldb), 128, cacheTTL, cacheMetrics,
+	)
 	rateStore := ratelimit.NewRedisStore(rdb)
 	cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{
 		Transient: cfg.Selector.Cooldown.Transient,
@@ -173,7 +187,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	// Dispatcher 装配（M7 业务编排：Selector + Invoker + EndpointQuota + Policy）。
 	// 实现在各自的包里；cmd/gateway/dispatch_wiring.go 只做 wiring。
 	dispatcher := buildDispatcher(
-		adaptEndpoints(repo.NewSQLEndpointReader(sqldb)),
+		adaptEndpoints(endpointReader),
 		sched,
 		sender,
 		rateStore,
@@ -196,7 +210,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 
 		// M6 Limit
 		RateLimitStore: rateStore,
-		QuotaPolicies:  ratelimit.NewPolicyCache(repo.NewSQLQuotaPolicyProvider(sqldb), 0),
+		QuotaPolicies:  ratelimit.NewPolicyCache(quotaPolicyReader, 0),
 
 		// M7 Schedule (Dispatcher 编排：fallback / retry / streaming 在 pkg/dispatch 内)
 		Dispatcher: dispatcher,
