@@ -29,6 +29,12 @@ run-gateway:            ## 跑 gateway（默认配置；启动期自跑 infra.Mi
 run-mockupstream:       ## 跑 mock 上游（监听 :9090）
 	MOCK_ADDR=:9090 go run ./cmd/mockupstream
 
+.PHONY: smoke smoke-clean
+smoke:                  ## e2e 烟测（起 stack + gateway + mockupstream + seed + curl）
+	./scripts/e2e-smoke.sh
+smoke-clean:            ## 同 smoke 但跑完 docker compose down -v
+	./scripts/e2e-smoke.sh --teardown
+
 .PHONY: help
 help:                   ## 列出所有目标
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
