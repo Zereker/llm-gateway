@@ -25,7 +25,6 @@
 | 进程 | 入口 | 职责 |
 |------|------|------|
 | gateway | `cmd/gateway` | 数据面：鉴权、解析、限流、调度、上游转发、usage outbox；启动期自跑 `infra.Migrate` 建表 |
-| Debezium Server | 独立容器 `debezium/server` | 拉 MySQL binlog → 推 Redis Stream，SQL → gateway 数据传播桥（见 [06 §8 CDC](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)） |
 
 业务数据（accounts / api_keys / model_services / endpoints / quota_policies /
 subscriptions / pricing_versions）由 deployer 直接 SQL INSERT/UPDATE/DELETE 维护——
@@ -37,27 +36,27 @@ gateway 启动流程：
 2. 初始化 endpoint auth 加密 data key。
 3. 打开 **SQL DB（必需）**，执行 `infra.Migrate` 建表（`schema.sql` 全 `IF NOT EXISTS`，
    幂等）+ `repo.CheckSchema` 防御性校验；缺表直接退出。
-4. 打开 **Redis（必需）**；M6 限流、scheduler cooldown、CDC stream 消费都依赖 Redis。
-5. 装配 SQL reader/provider、Redis rate limit store、scheduler、outbox、tracer、
-   `cdc.TieredCache` + `cdc.StreamConsumer`（订阅 `llm_gateway.llm_gateway.<table>`
-   Stream，详见 [06 §8](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)）。
+4. 打开 **Redis（必需）**；M6 限流、scheduler cooldown 都依赖 Redis。
+5. 装配 SQL reader/provider（外面包一层 `repo.CachedXxxReader` TTL LRU，详见
+   [06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)）、
+   Redis rate limit store、scheduler、outbox、tracer。
 6. 扫描 enabled endpoints，校验 vendor adapter 存在、`endpoint.Protocol` 合法、必要 translator 已注册；缺失只记 warn 和 metric，不阻塞启动。
 7. 调用 `router.NewEngine` 注册路由和 middleware。
 8. 交给 `pkg/server` 处理 listen、signal、graceful shutdown 和资源倒序关闭。
 
 部署顺序：
 
-1. docker stack 起 MySQL（binlog `ROW` + GTID） + Redis + Debezium Server。
+1. docker stack 起 MySQL + Redis（+ Kafka/Redpanda 如果走 kafka outbox driver）。
 2. 启动 gateway——`infra.Migrate` 自动建表。
 3. deployer SQL INSERT 录入账号、API key、model service、subscription、endpoint、
    quota policy 等业务数据（endpoint.auth 列要用 `repo.EncodePayload` 加密，
    api_keys.api_key_hash 列要用 `repo.HashAPIKey` 算 SHA-256 hex）。
-4. CDC consumer 启动从 `$` 起读（不持久化 stream offset；
-   见 [06 §8.2](./06-pluggable-infra.md#82-位点策略)）。
 
-SQL → gateway 数据传播走 Debezium binlog CDC：deployer 写 MySQL → Debezium 捕获 →
-Redis Stream → gateway `TieredCache.HandleEvent` 失效 L1。**不直连同库每请求查表**，
-也**不**用 outbox 表方案。L1 cold start / Debezium 不可达时降级到 L3 直查 MySQL。
+SQL → gateway 数据传播走 **repo 层进程内 TTL LRU 缓存**（默认 30s）：deployer 写
+MySQL → gateway repo cache 自然过期后 miss 走 SQL 直查取到新值。**不直连同库每请求
+查表**（QPS 起来 MySQL 是瓶颈），也**不**做 push-based 失效（data plane 是 100% 只读，
+TTL 已经足够；业务表变更不需要秒级生效）。详见
+[06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)。
 
 schema 变更走 `pkg/infra/schema.sql`，gateway 启动期跑 `infra.Migrate` 应用。
 变更必须保持向后兼容：先部署带新 schema 的新 gateway，让它建好新表/新列（旧字段保留）；
@@ -104,9 +103,9 @@ pkg/middleware
   -> 请求生命周期、RequestContext 读写、错误 abort
   -> 每个 middleware 自定义 Option (interface) + WithXxxTracerProvider，对齐 otelgin v0.68.0
 
-pkg/cdc
-  -> Debezium binlog event 解析 + Redis Stream XREAD + TieredCache[T]（L1 LRU + L3 loader）
-  -> ModelCatalog 等 middleware-owned reader 通过 TieredCache 适配
+pkg/repo (cached)
+  -> SQL Reader/Provider 外面包一层 TTL LRU (repo.TTLCache[K,V] + CachedXxx wrapper)
+  -> ModelCatalog / EndpointReader / APIKeyProvider 等 middleware-owned reader 直接用 cached 版本
 
 pkg/selector
   -> 对一批候选 endpoint 做 filter / pick / report；不持有 repo，不切 fallback model
@@ -140,13 +139,13 @@ pkg/repo + pkg/infra
 | `Scheduler` | M7 的批内 endpoint 选择器，暴露 Pick/Report，不负责跨 model fallback |
 | `RateLimitState` | M6/M7 写入的限流状态，供 TPM 后扣和排障使用；不作为客户端 header 契约 |
 | `Usage` | 单次请求资源消耗和 meta，M10 发布到 outbox |
-| `TieredCache` | gateway 端本地缓存，L1 LRU + L3 SQL loader；由 CDC event 触发失效 |
-| `CDC` | Change Data Capture；Debezium 读 MySQL binlog → Redis Stream → `pkg/cdc` 消费 |
-| `Debezium Stream Key` | Redis Stream 命名 `llm_gateway.llm_gateway.<table>`（Debezium 默认 `<db_server>.<schema>.<table>`） |
+| `TTLCache` | gateway 端进程内 LRU + TTL 缓存（`pkg/repo/cache.go`），repo 唯一缓存策略 |
+| `CachedXxxReader` | repo 层的 cached wrapper，把 SQL Reader 包一层 TTL LRU；default 30s |
 
 ## 7. 文档版本
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v0.3-target | 2026-05-16 | 对齐目标边界：协议能力下沉 endpoint、简化 scheduler、RPM/RPS 前扣、TPM 后扣、下游计费 |
-| v0.4-target | 2026-05-17 | CDC 数据传播（Debezium binlog → Redis Stream → TieredCache）；middleware Option 对齐 otelgin v0.68.0；domain/repo 彻底解耦 |
+| v0.4-target | 2026-05-17 | middleware Option 对齐 otelgin v0.68.0；domain/repo 彻底解耦 |
+| v0.6-target | 2026-05-21 | 删 `cmd/admin` + Flink + Debezium CDC：data plane 是 100% 只读 MySQL，repo 用 TTL LRU 缓存替代实时失效 |
