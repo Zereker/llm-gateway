@@ -15,6 +15,7 @@ import (
 // **生命周期**：单实例（startup wiring），并发安全（无 per-request state；
 // state 是每请求 new 出来的）。
 type Dispatcher struct {
+	candidates     CandidateSource
 	selector       Selector
 	invokerFactory InvokerFactory
 	quota          EndpointQuota
@@ -25,14 +26,17 @@ type Dispatcher struct {
 
 // New 装配一个 Dispatcher。
 //
-// **必填**：Selector / InvokerFactory / AttemptCap / RetryPolicy / FallbackPolicy
-// 任一缺失 → panic。fail-fast 暴露配置错。
+// **必填**：CandidateSource / Selector / InvokerFactory / AttemptCap / RetryPolicy /
+// FallbackPolicy 任一缺失 → panic。fail-fast 暴露配置错。
 //
 // **可选**：EndpointQuota（不传 = NoopQuota 永不拒绝）。
 func New(opts ...Option) *Dispatcher {
 	d := &Dispatcher{}
 	for _, opt := range opts {
 		opt(d)
+	}
+	if d.candidates == nil {
+		panic("dispatch.New: WithCandidates required")
 	}
 	if d.selector == nil {
 		panic("dispatch.New: WithSelector required")
@@ -103,7 +107,21 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		}
 	}
 
-	ep, err := d.selector.Select(ctx, s.Query())
+	// === CandidateSource → filter → Selector.Pick：三个步骤分立 ===
+	candidates, err := d.candidates.ListForModel(ctx, s.CurrentModelName(), s.Group())
+	if err != nil {
+		return Abort{
+			Result:   OutcomeDepFail,
+			Class:    ClassTransient,
+			HTTPCode: 503,
+			Reason:   "candidates: " + err.Error(),
+		}
+	}
+	eligible := filterEligible(candidates, s.Envelope(), s.Handlers())
+	if len(eligible) == 0 {
+		return d.fallback.OnExhausted(s)
+	}
+	ep, err := d.selector.Pick(ctx, eligible, s.PickQuery())
 	if err != nil {
 		return Abort{
 			Result:   OutcomeDepFail,
@@ -113,7 +131,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		}
 	}
 	if ep == nil {
-		// 当前 model 候选耗尽——交给 FallbackPolicy
+		// 候选有 eligible，但 picker 因 cooldown 等原因全 skip——交给 FallbackPolicy
 		return d.fallback.OnExhausted(s)
 	}
 

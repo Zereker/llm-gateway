@@ -3,10 +3,11 @@
 // **零业务逻辑**——所有 dispatch port 实现都集中在 pkg/dispatch/adapters
 // （primitive 包不反向依赖 dispatch，由 adapters 层做组合）：
 //
-//	dispatch.Selector       ← adapters.SelectorAdapter (CandidateSource + Scheduler + eligibility)
-//	dispatch.InvokerFactory ← adapters.InvokerFactoryAdapter (invoker.Sender)
-//	dispatch.EndpointQuota  ← adapters.EndpointQuotaAdapter (ratelimit.Store + bucket helpers)
-//	Policies                ← pkg/dispatch 内置默认（HeaderAttemptCap / DefaultRetry / ModelChainFallback）
+//	dispatch.CandidateSource ← cmd middleware_adapters.go adaptEndpoints (repo bridge)
+//	dispatch.Selector        ← adapters.PickerAdapter (selector.Scheduler)
+//	dispatch.InvokerFactory  ← adapters.InvokerFactoryAdapter (invoker.Sender)
+//	dispatch.EndpointQuota   ← adapters.EndpointQuotaAdapter (ratelimit.Store + bucket helpers)
+//	Policies                 ← pkg/dispatch 内置默认（HeaderAttemptCap / DefaultRetry / ModelChainFallback）
 //
 // cmd 只做"按依赖图把 type new 出来塞进 dispatch.New"。
 package main
@@ -35,7 +36,8 @@ func buildDispatcher(
 	maxAttempts int,
 ) *dispatch.Dispatcher {
 	return dispatch.New(
-		dispatch.WithSelector(adapters.NewSelector(candidates, sched)),
+		dispatch.WithCandidates(candidates),
+		dispatch.WithSelector(adapters.NewSelector(sched)),
 		dispatch.WithInvokerFactory(adapters.NewInvokerFactory(sender)),
 		dispatch.WithQuota(adapters.NewEndpointQuota(rateStore)),
 		dispatch.WithCap(dispatch.HeaderAttemptCap{Default: maxAttempts}),

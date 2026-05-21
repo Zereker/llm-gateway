@@ -33,8 +33,18 @@ type stubSelectorReturns struct {
 
 func (s stubSelectorReturns) Report(_ context.Context, _ *domain.Endpoint, _ dispatch.Verdict) {}
 
-func (s stubSelectorReturns) Select(_ context.Context, _ dispatch.Query) (*domain.Endpoint, error) {
+func (s stubSelectorReturns) Pick(_ context.Context, _ []*domain.Endpoint, _ dispatch.PickQuery) (*domain.Endpoint, error) {
 	return s.ep, s.err
+}
+
+// stubCandidates 永远返一个 dummy 候选——让 dispatcher.step 过 CandidateSource 阶段。
+type stubCandidates struct{ ep *domain.Endpoint }
+
+func (s stubCandidates) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
+	if s.ep == nil {
+		return nil, nil
+	}
+	return []*domain.Endpoint{s.ep}, nil
 }
 
 type stubInvokerFactory struct{ res dispatch.Result }
@@ -63,6 +73,7 @@ func (r stubResult) Close() error { return nil }
 
 func newTestDispatcher(ep *domain.Endpoint, v dispatch.Verdict) *dispatch.Dispatcher {
 	return dispatch.New(
+		dispatch.WithCandidates(stubCandidates{ep: ep}),
 		dispatch.WithSelector(stubSelectorReturns{ep: ep}),
 		dispatch.WithInvokerFactory(stubInvokerFactory{res: stubResult{verdict: v, ep: ep}}),
 		dispatch.WithCap(dispatch.HeaderAttemptCap{Default: 3}),
