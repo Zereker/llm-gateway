@@ -7,7 +7,7 @@ import (
 
 // Endpoint 上游接入点的业务模型（docs/06 §3）。
 //
-// 跟 repo.Endpoint 平行存在：repo.Endpoint 带 db:/gorm: tag + Scanner/Valuer 处理 DB；
+// 跟 repo.Endpoint 平行存在：repo.Endpoint 带 db: tag + Scanner/Valuer 处理 DB；
 // domain.Endpoint 是 middleware/schedule/adapter 用的纯结构（无 SQL 依赖）。
 // repo 通过 ToDomainEndpoint() 在 SQL 边界转换。
 type Endpoint struct {
