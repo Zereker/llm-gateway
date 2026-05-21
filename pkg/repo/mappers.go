@@ -4,7 +4,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// mappers.go: 把 SQL-layer struct（带 db/gorm tag + Scanner/Valuer）映射为 domain
+// mappers.go: 把 SQL-layer struct（带 db tag + Scanner/Valuer）映射为 domain
 // 业务结构（docs/06 §3 — domain 不引用 repo，repo 在边界做转换）。
 //
 // 所有 repo 接口返回 *domain.X，consumer 不再看到 SQL tag / 加密细节。

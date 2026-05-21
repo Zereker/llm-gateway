@@ -2,10 +2,10 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
-	"gorm.io/datatypes"
 )
 
 // seedEndpoint 用 NamedExec 插测试 endpoint。
@@ -63,7 +63,7 @@ func TestSQLEndpointReader_PickForModel(t *testing.T) {
 		Weight:       100,
 		Routing:      RoutingConfig{URL: "https://api.openai.com/v1/chat/completions"},
 		Capabilities: EndpointCapabilities{SelfHosted: false, PrefixCacheEnabled: true},
-		Extra:        datatypes.JSON(`{"region":"us-east-1"}`),
+		Extra:        json.RawMessage(`{"region":"us-east-1"}`),
 	}
 	auth, _ := EncodePayload(AuthTypeBearer, BearerAuth{APIKey: "sk-xxx"})
 	ep.Auth = auth

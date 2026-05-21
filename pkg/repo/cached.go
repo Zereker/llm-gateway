@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"strconv"
 	"time"
 )
 
@@ -228,8 +229,6 @@ type CachedSubscriptionProvider struct {
 	cache *TTLCache[string, bool]
 }
 
-type subsCacheValue bool
-
 // NewCachedSubscriptionProvider 默认 capacity=10240（active subscriptions）/ ttl=30s。
 func NewCachedSubscriptionProvider(inner *SQLSubscriptionProvider, capacity int, ttl time.Duration) *CachedSubscriptionProvider {
 	return &CachedSubscriptionProvider{
@@ -242,7 +241,7 @@ func NewCachedSubscriptionProvider(inner *SQLSubscriptionProvider, capacity int,
 //
 // 跟其它 cached wrapper 不同：这里 false 也缓存（订阅不存在跟存在一样需要快速判定）。
 func (p *CachedSubscriptionProvider) Has(ctx context.Context, accountID string, modelServiceID int64) (bool, error) {
-	key := accountID + "\x00" + itoa(modelServiceID)
+	key := accountID + "\x00" + strconv.FormatInt(modelServiceID, 10)
 	if v, ok := p.cache.Get(key); ok {
 		return v, nil
 	}
@@ -252,27 +251,4 @@ func (p *CachedSubscriptionProvider) Has(ctx context.Context, accountID string, 
 	}
 	p.cache.Set(key, v)
 	return v, nil
-}
-
-// itoa 避免 strconv 在 hot path 上额外 import；够小的 int64 用串拼接。
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
