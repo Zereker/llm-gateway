@@ -68,7 +68,7 @@ func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 		}
 
 		// 把 Moderator 装进 ctx，让 invoker 包 ResponseStream 时拿到。
-		c.Request = c.Request.WithContext(moderation.WithModerator(ctx, cfg.moderator))
+		c.Request = c.Request.WithContext(moderation.ContextWithModerator(ctx, cfg.moderator))
 
 		c.Next()
 	}

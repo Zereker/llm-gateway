@@ -7,7 +7,7 @@
 // **使用形态**：
 //
 //	M8 middleware:
-//	  ctx = moderation.WithModerator(ctx, mod)   // 装进 ctx
+//	  ctx = moderation.ContextWithModerator(ctx, mod)   // 装进 ctx
 //	  c.Request = c.Request.WithContext(ctx)
 //	  c.Next()
 //
@@ -44,17 +44,20 @@ type Moderator interface {
 
 type ctxKey struct{}
 
-// WithModerator 把 Moderator 注入 ctx。M8 调；下游 WrapStream 读出。
+// ContextWithModerator 把 Moderator 注入 ctx。M8 调；下游 WrapStream 读出。
 // mod 为 nil 时返回原 ctx（caller 无须判 nil）。
-func WithModerator(ctx context.Context, mod Moderator) context.Context {
+//
+// **命名**：跟标准库 context.WithValue 风格对齐——明确"返回新 ctx"语义；
+// 避免跟 pkg/middleware 的 gin-style "Option" 接口（也常用 WithX 模式）混淆。
+func ContextWithModerator(ctx context.Context, mod Moderator) context.Context {
 	if mod == nil {
 		return ctx
 	}
 	return context.WithValue(ctx, ctxKey{}, mod)
 }
 
-// FromCtx 提取 ctx 里的 Moderator；没注入返 nil。
-func FromCtx(ctx context.Context) Moderator {
+// FromContext 提取 ctx 里的 Moderator；没注入返 nil。
+func FromContext(ctx context.Context) Moderator {
 	if ctx == nil {
 		return nil
 	}
@@ -75,7 +78,7 @@ func FromCtx(ctx context.Context) Moderator {
 //	stream := moderation.WrapStream(handler.NewResponseStream(), ctx)
 //	sender.Forward(ctx, w, ep, resp, stream)
 func WrapStream(inner protocol.ResponseStream, ctx context.Context) protocol.ResponseStream {
-	mod := FromCtx(ctx)
+	mod := FromContext(ctx)
 	if mod == nil {
 		return inner
 	}

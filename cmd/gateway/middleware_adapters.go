@@ -10,10 +10,10 @@ package main
 import (
 	"context"
 
+	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/repo"
-	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
 // adaptCatalog 把 SQL 行型 ModelServiceReader 适配为 middleware.ModelCatalog。
@@ -42,8 +42,8 @@ func (a repoSubsAdapter) HasModel(ctx context.Context, accountID string, modelSe
 	return a.p.Has(ctx, accountID, modelServiceID)
 }
 
-// adaptEndpoints 把 SQL 行型 EndpointReader 适配为 selector.EndpointReader。
-func adaptEndpoints(p repo.EndpointReader) selector.EndpointReader {
+// adaptEndpoints 把 SQL 行型 EndpointReader 适配为 dispatch.CandidateSource。
+func adaptEndpoints(p repo.EndpointReader) dispatch.CandidateSource {
 	return repoEndpointAdapter{p: p}
 }
 

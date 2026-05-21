@@ -119,7 +119,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 
 	// === EndpointQuota.Reserve（前扣）===
 	if denied, qerr := d.quota.Reserve(ctx, ep); denied != nil || qerr != nil {
-		v := denialVerdict(denied, qerr)
+		v := quotaVerdictToAttempt(denied, qerr)
 		s.Record(ep, v)
 		d.selector.Report(ctx, ep, v)
 		return d.retry.Decide(s, v)
@@ -142,7 +142,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 	}
 
 	// === Invoker.Invoke（纯 HTTP）===
-	inv := d.invokerFactory.For(ep, s.Envelope(), s.Body(), handler)
+	inv := d.invokerFactory.For(ep, handler, s.Envelope())
 	res, ierr := inv.Invoke(ctx)
 	if ierr != nil {
 		return Abort{
@@ -163,25 +163,27 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		// 成功路径——在 step 内消费 res（资源生命周期不能跨方法）
 		rep := res.StreamTo(ctx, w)
 		s.ApplyStream(rep)
-		// === EndpointQuota.Charge（后扣，fire-and-forget）===
-		d.quota.Charge(ctx, ep, rep.Usage)
+		// === EndpointQuota.ChargeUsage（后扣，fire-and-forget）===
+		d.quota.ChargeUsage(ctx, ep, rep.Usage)
 		return Stream{}
 	}
 	return action
 }
 
-// denialVerdict 把 EndpointQuota.Reserve 的拒绝结果归一成 Verdict。
+// quotaVerdictToAttempt 把 EndpointQuota.Reserve 的拒绝结果（QuotaVerdict）翻成
+// dispatch.Verdict（attempt-level 报告，用于 retry / Selector.Report）。
 // quota 返 nil verdict 但有 err（依赖故障）时也按 capacity 处理（让 retry 换 ep）。
-func denialVerdict(denied *Verdict, qerr error) Verdict {
+func quotaVerdictToAttempt(denied *QuotaVerdict, qerr error) Verdict {
 	if denied != nil {
-		v := *denied
-		if v.Stage == StageInvoke { // 0 = default
-			v.Stage = StageReserve
+		class := denied.Class
+		if class == ClassUnknown {
+			class = ClassCapacity
 		}
-		if v.Class == ClassUnknown {
-			v.Class = ClassCapacity
+		reason := denied.Reason
+		if denied.BucketKey != "" && reason == "" {
+			reason = "endpoint quota exhausted: " + denied.BucketKey
 		}
-		return v
+		return Verdict{Stage: StageReserve, Class: class, Reason: reason}
 	}
 	return Verdict{
 		Stage:  StageReserve,
