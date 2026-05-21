@@ -14,7 +14,7 @@ llm-gateway 是一个 Go 实现的 LLM 推理网关：对外提供 OpenAI / Anth
 - 处理 `/v1/*` 流量；middleware 链 M1-M10
 - 业务数据（model_services / endpoints / api_keys / pricing / quota_policies /
   subscriptions / accounts）**直接 SQL 插入维护**——本仓库不带控制平面。
-  Debezium CDC 自动把 binlog 推 Redis Stream，gateway 实时失效 L1 cache。
+  repo 层用进程内 TTL LRU 缓存（默认 30s），SQL 改完 ≤ TTL 看到新值。
 
 启动顺序：**docker stack → gateway**。`data_key`（endpoints.auth 列加密 KEK）
 要跟 SQL 插入时用的加密一致。
@@ -22,7 +22,7 @@ llm-gateway 是一个 Go 实现的 LLM 推理网关：对外提供 OpenAI / Anth
 ## 常用命令
 
 ```sh
-make stack              # 起 mysql + redis + redpanda + debezium 容器
+make stack              # 起 mysql + redis + redpanda 容器
 make stack-clean        # 停容器并删数据卷（彻底重置）
 
 make test               # 单元测试；SQL 测试在没设 MYSQL_DSN 时 skip

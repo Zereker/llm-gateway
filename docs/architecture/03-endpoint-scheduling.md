@@ -86,10 +86,10 @@ type Endpoint struct {
 候选查询按 `(model, group)` 匹配 enabled 且未软删的 endpoint，按 weight 降序返回。endpoint 是全局池，不带 account_id；主账号可见性在 M5 subscription 阶段处理。
 
 `EndpointReader` 与 M5 的 `ModelCatalog` 同源，生产实现走
-[06 §8 TieredCache](./06-pluggable-infra.md#8-cdcsql--gateway-数据传播)：SQL 改
-`endpoints` 表 → Debezium event → L1 失效；下次 `ListForModel` 走 L3 SQL loader
-拉最新值。当前 v0.4 默认只对 `model_services` 接入，`endpoints` 接入按
-[06 §8.4](./06-pluggable-infra.md#84-适用表) 路径推进；未接入时走 SQL 直查。
+[06 §8 repo 缓存](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)：
+SQL 改 `endpoints` 表 → gateway repo 进程内 TTL LRU（默认 30s）自然过期后
+miss 走 SQL 直查取到新值。`CachedEndpointReader` 同时维护 list cache
+（`"model\x00group"` key）和 id cache，参数见 [06 §8.2](./06-pluggable-infra.md#82-适用表与默认参数)。
 
 `EndpointCapabilities.SelfHosted` 决定 `FormSelfHosted`，不是从 vendor 名推断。
 

@@ -75,14 +75,10 @@
 | `llm_gateway_outbox_dlq_total` | counter | `driver`, `result` | DLQ 写入结果 |
 | `llm_gateway_endpoint_misconfigured_total` | counter | `vendor`, `reason` | 启动期 endpoint 配置完整性检查 |
 | `llm_gateway_request_aborted_by_shutdown_total` | counter | `route` | shutdown 超时中断请求 |
-| `llm_gateway_cdc_events_total` | counter | `table`, `op`, `result` | CDC 收到并处理的 Debezium event 数；`op` ∈ `c\|u\|d\|r`、`result` ∈ `ok\|error` |
-| `llm_gateway_cdc_stream_lag_ms` | gauge | `table` | 从 Debezium 时间戳到 gateway 处理完的延迟；启动期为 0 |
-| `llm_gateway_cdc_consumer_reconnects_total` | counter | `reason` | XREAD 错误后退避重连次数 |
-| `llm_gateway_cache_l1_total` | counter | `table`, `result` | TieredCache L1 命中统计；`result` ∈ `hit\|miss` |
-| `llm_gateway_cache_l3_load_total` | counter | `table`, `result` | L3 SQL loader 调用统计；`result` ∈ `ok\|error\|not_found` |
+| `llm_gateway_repo_cache_total` | counter | `table`, `result` | repo TTL LRU 命中统计；`result` ∈ `hit\|miss` |
+| `llm_gateway_repo_sql_load_total` | counter | `table`, `result` | repo SQL 直查统计；`result` ∈ `ok\|error\|not_found` |
 
-注：CDC / Cache metrics 在代码侧待补；上表是 docs 目标契约，落地时按本表命名 +
-label。
+注：repo cache metrics 在代码侧待补；上表是 docs 目标契约，落地时按本表命名 + label。
 
 指标用于 Runtime Scoring 时，Scheduler 不直接读取 Prometheus；应读取 `EndpointStatsStore` 中的 EMA / 滑窗摘要。Metrics 是观测层，`EndpointStatsStore` 是调度内部状态。
 

@@ -24,9 +24,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 
-	"github.com/zereker/llm-gateway/pkg/cdc"
 	"github.com/zereker/llm-gateway/pkg/config"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
 	"github.com/zereker/llm-gateway/pkg/domain"
@@ -146,27 +144,16 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	}
 	sender := invoker.New(senderOpts...)
 
-	// 三层缓存的 ModelCatalog：L1 进程内 LRU + L3 MySQL fallback。
-	// L2 由 Debezium → Redis Streams 推送驱动 invalidation（不主动 SET Redis cache key）。
-	rawCatalog := adaptCatalog(repo.NewSQLModelServiceReader(sqldb))
-	msCache := cdc.NewTieredCache[*domain.ModelService](
-		cdc.TieredConfig{Table: "model_services"},
-		cdc.NewLRU[*domain.ModelService](1024),
-		func(ms *domain.ModelService) string {
-			if ms == nil {
-				return ""
-			}
-			return ms.Model
-		},
-		func(ctx context.Context, pk string) (*domain.ModelService, error) {
-			return rawCatalog.GetByModel(ctx, pk)
-		},
-	)
-	catalog := cdcModelCatalog{cache: msCache}
-	// 启动 Redis Stream consumer：监听 Debezium 推送的 model_services 表变更
-	startCDCConsumer(srv, rdb, msCache)
+	// 进程内 TTL LRU 缓存——repo 唯一的缓存策略。
+	// deployer SQL 改完业务表后 ≤ TTL（默认 30s）gateway 看到新值。
+	cacheTTL := 30 * time.Second
+	catalog := adaptCatalog(repo.NewCachedModelServiceReader(
+		repo.NewSQLModelServiceReader(sqldb), 256, cacheTTL,
+	))
 
-	subs := adaptSubscriptions(repo.NewSQLSubscriptionProvider(sqldb))
+	subs := adaptSubscriptions(repo.NewCachedSubscriptionProvider(
+		repo.NewSQLSubscriptionProvider(sqldb), 10240, cacheTTL,
+	))
 	rateStore := ratelimit.NewRedisStore(rdb)
 	cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{
 		Transient: cfg.Selector.Cooldown.Transient,
@@ -307,47 +294,6 @@ func (a healthListerAdapter) List(ctx context.Context) ([]*domain.Endpoint, erro
 		return nil, err
 	}
 	return repo.ToDomainEndpoints(rows), nil
-}
-
-// cdcModelCatalog 把 cdc.TieredCache 适配为 middleware.ModelCatalog。
-type cdcModelCatalog struct {
-	cache *cdc.TieredCache[*domain.ModelService]
-}
-
-func (c cdcModelCatalog) GetByModel(ctx context.Context, model string) (*domain.ModelService, error) {
-	return c.cache.Get(ctx, model)
-}
-
-// startCDCConsumer 启 Debezium → Redis Streams 消费者，把变更事件推给本进程
-// 所有 TieredCache（目前只有 ModelService；后续 EndpointReader 等接入时同理添加）。
-//
-// Redis Stream key 命名（跟 configs/debezium/application.properties 对齐）：
-//
-//	llm_gateway.llm_gateway.model_services
-//
-// 第一个 llm_gateway 是 topic prefix；第二个是 schema 名；第三个是 table 名。
-func startCDCConsumer(srv *server.Server, rdb *redis.Client, msCache *cdc.TieredCache[*domain.ModelService]) {
-	consumer := cdc.NewStreamConsumer(cdc.ConsumerConfig{
-		Redis: rdb,
-		Streams: map[string]string{
-			"llm_gateway.llm_gateway.model_services": "model_services",
-			// 未来加：endpoints / account_model_subscriptions / api_keys / quota_policies / accounts
-		},
-		Handler: func(ctx context.Context, table string, e *cdc.Event) error {
-			switch table {
-			case "model_services":
-				return msCache.HandleEvent(ctx, table, e)
-			}
-			return nil
-		},
-	})
-	ctx, cancel := context.WithCancel(context.Background())
-	consumer.Run(ctx)
-	srv.AddCloser("cdc-consumer", func() error {
-		cancel()
-		consumer.Stop()
-		return nil
-	})
 }
 
 // startHealthProber 按 cfg 启动 Health Prober（docs/03 §10）。
