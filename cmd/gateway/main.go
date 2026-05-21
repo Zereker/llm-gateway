@@ -186,12 +186,16 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 
 	// Dispatcher 装配（M7 业务编排：Selector + Invoker + EndpointQuota + Policy）。
 	// 实现在各自的包里；cmd/gateway/dispatch_wiring.go 只做 wiring。
+	// dispatchTracer 跟 middleware AuditTracer 共用同一个 trace.Tracer，保证
+	// dispatch.request / dispatch.attempt span 跟 M10 audit 在同一棵 trace 树下。
+	dispatchTracer := buildTracer(srv, cfg.Trace)
 	dispatcher := buildDispatcher(
 		adaptEndpoints(endpointReader),
 		sched,
 		sender,
 		rateStore,
 		cfg.Selector.MaxAttempts,
+		dispatchTracer,
 	)
 
 	engine = router.NewEngine(router.Deps{
@@ -220,7 +224,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 
 		// M10 Tracing
 		UsageOutbox: outbox,
-		AuditTracer: buildTracer(srv, cfg.Trace),
+		AuditTracer: dispatchTracer,
 	})
 
 	return engine, srv, nil

@@ -143,14 +143,26 @@ gateway.request                     (M1, span name = "POST /v1/chat/completions"
   catalog.resolve                    (M5)
   moderation.check                   (M8, optional)
   ratelimit.reserve                  (M6 pre-side)
-  schedule.pick                      (M7)
-    upstream.call                    (pkg/invoker)
-    usage.extract                    (translator 内)
+  dispatch.request                   (M7, pkg/dispatch)
+    dispatch.attempt                 (per attempt; attrs: model / endpoint / verdict)
+      upstream.call                  (pkg/invoker)
+      usage.extract                  (translator 内)
+    dispatch.fallback (event)        (Switch action 触发)
   ratelimit.charge_tpm               (M6 post-side, 跑在 c.Next() 之后)
   tracing.commit                     (M10)
     usage.publish
     content_log.publish
 ```
+
+`dispatch.request` 是 dispatcher 的根 span，attrs 含 `dispatch.model` /
+`dispatch.group` / `dispatch.attempt_cap` / `dispatch.outcome` /
+`dispatch.routed_model` / `dispatch.attempts` / `dispatch.http_code`。
+每次 attempt 开一个 `dispatch.attempt` 子 span，attrs 含 `attempt.model` /
+`attempt.index` / `attempt.candidates` / `attempt.eligible` /
+`endpoint.id` / `endpoint.vendor` / `endpoint.protocol` /
+`verdict.stage` / `verdict.class` / `verdict.http_code` / `verdict.reason`。
+fallback 切 model 通过 `dispatch.fallback` event 标在 `dispatch.request` 上
+（payload: `{from, to}`）。
 
 上列 span 名是 `gateway.request` 下按时间顺序的子 span 集合（兄弟关系），不强制嵌套层级；实现可按实际作用域决定哪些 span 互为父子。例如 `usage.extract` 实际包裹在 `upstream.call` 内时，把它作为子 span 即可，但不要为了"看起来整齐"人为嵌套。`ratelimit.charge_tpm` / `usage.publish` 发生在 `c.Next()` 之后（M6 post-side / M10），应是 `gateway.request` 直接子节点而非 `upstream.call` 的子节点。
 

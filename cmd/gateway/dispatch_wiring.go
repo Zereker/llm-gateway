@@ -18,6 +18,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/selector"
+	"github.com/zereker/llm-gateway/pkg/trace"
 )
 
 // buildDispatcher 装配 dispatch.Dispatcher。
@@ -28,12 +29,14 @@ import (
 //   - sender      invoker.Sender（HTTP 调用 + forward）
 //   - rateStore   ratelimit.Store；nil = endpoint-quota noop
 //   - maxAttempts AttemptCap default 值
+//   - tracer      trace.Tracer；nil = SlogTracer NoOp（dispatch 内部兜底）
 func buildDispatcher(
 	candidates dispatch.CandidateSource,
 	sched selector.Scheduler,
 	sender *invoker.Sender,
 	rateStore ratelimit.Store,
 	maxAttempts int,
+	tracer trace.Tracer,
 ) *dispatch.Dispatcher {
 	return dispatch.New(
 		dispatch.WithCandidates(candidates),
@@ -43,5 +46,6 @@ func buildDispatcher(
 		dispatch.WithCap(dispatch.HeaderAttemptCap{Default: maxAttempts}),
 		dispatch.WithRetry(dispatch.DefaultRetry{}),
 		dispatch.WithFallback(dispatch.ModelChainFallback{}),
+		dispatch.WithTracer(tracer),
 	)
 }
