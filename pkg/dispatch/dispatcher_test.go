@@ -3,10 +3,61 @@ package dispatch
 import (
 	"context"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/trace"
 )
+
+// captureTracer 把 StartSpan / SetAttribute / End / Log 全记录下来供断言用。
+type captureTracer struct {
+	mu     sync.Mutex
+	spans  []*captureSpan
+	events []captureEvent
+}
+
+type captureSpan struct {
+	name  string
+	attrs map[string]any
+	ended bool
+}
+
+type captureEvent struct {
+	name    string
+	payload any
+}
+
+func (t *captureTracer) StartSpan(ctx context.Context, name string) (context.Context, trace.Span) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sp := &captureSpan{name: name, attrs: map[string]any{}}
+	t.spans = append(t.spans, sp)
+	return ctx, &captureSpanHandle{t: t, sp: sp}
+}
+
+func (t *captureTracer) Log(ctx context.Context, name string, payload any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.events = append(t.events, captureEvent{name: name, payload: payload})
+}
+
+type captureSpanHandle struct {
+	t  *captureTracer
+	sp *captureSpan
+}
+
+func (h *captureSpanHandle) SetAttribute(k string, v any) {
+	h.t.mu.Lock()
+	defer h.t.mu.Unlock()
+	h.sp.attrs[k] = v
+}
+
+func (h *captureSpanHandle) End() {
+	h.t.mu.Lock()
+	defer h.t.mu.Unlock()
+	h.sp.ended = true
+}
 
 // =============================================================================
 // Dispatcher 端到端行为测试
@@ -288,5 +339,47 @@ func TestDispatcher_PanicsOnMissingDeps(t *testing.T) {
 			}()
 			New(tc.opts...)
 		})
+	}
+}
+
+// TestDispatcher_TracerSpansHappyPath: WithTracer 注入时 happy path 生成
+// dispatch.request + dispatch.attempt 两个 span，attrs 含 model / endpoint / verdict。
+func TestDispatcher_TracerSpansHappyPath(t *testing.T) {
+	ep := newTestEP(1)
+	tr := &captureTracer{}
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(newFakeSelector(selResp{ep: ep})),
+		WithInvokerFactory(newFakeInvokerFactory(successResult(&domain.Usage{Total: 100}, 50))),
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+		WithTracer(tr),
+	)
+
+	d.Dispatch(context.Background(), httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if len(tr.spans) != 2 {
+		t.Fatalf("want 2 spans (request+attempt), got %d", len(tr.spans))
+	}
+	if tr.spans[0].name != "dispatch.request" {
+		t.Errorf("spans[0].name=%q", tr.spans[0].name)
+	}
+	if tr.spans[1].name != "dispatch.attempt" {
+		t.Errorf("spans[1].name=%q", tr.spans[1].name)
+	}
+	for i, sp := range tr.spans {
+		if !sp.ended {
+			t.Errorf("span[%d] %q not ended", i, sp.name)
+		}
+	}
+	if got := tr.spans[1].attrs["endpoint.id"]; got != "1" {
+		t.Errorf("attempt span endpoint.id=%v, want \"1\"", got)
+	}
+	if got := tr.spans[1].attrs["verdict.stage"]; got != "invoke" {
+		t.Errorf("attempt span verdict.stage=%v, want \"invoke\"", got)
+	}
+	if got := tr.spans[0].attrs["dispatch.outcome"]; got != "streamed" {
+		t.Errorf("request span outcome=%v, want \"streamed\"", got)
 	}
 }

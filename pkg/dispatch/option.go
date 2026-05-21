@@ -1,5 +1,7 @@
 package dispatch
 
+import "github.com/zereker/llm-gateway/pkg/trace"
+
 // Option 装配 Dispatcher 的可选项。
 type Option func(*Dispatcher)
 
@@ -50,4 +52,13 @@ func WithFallback(f FallbackPolicy) Option {
 // ratelimit 自带的 endpoint bucket key 派生 helper，pkg/ratelimit/endpoint_buckets.go）。
 func WithQuota(q EndpointQuota) Option {
 	return func(d *Dispatcher) { d.quota = q }
+}
+
+// WithTracer 注入 trace.Tracer。可选——不调 = NewSlogTracer(nil) NoOp span。
+//
+// 接入 OTel：cmd/gateway 把 trace.NewOtelTracer 喂进来，dispatcher 会在每次
+// Dispatch / attempt 上开 span（dispatch.request → dispatch.attempt 子 span），
+// span attribute 含 model / endpoint / verdict / outcome，事件含 fallback 切换。
+func WithTracer(t trace.Tracer) Option {
+	return func(d *Dispatcher) { d.tracer = t }
 }

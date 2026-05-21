@@ -3,6 +3,10 @@ package dispatch
 import (
 	"context"
 	"net/http"
+	"strconv"
+
+	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/trace"
 )
 
 // Dispatcher 协调 Selector + Invoker + Policy，把一次请求路由到合适的 endpoint
@@ -22,6 +26,7 @@ type Dispatcher struct {
 	cap            AttemptCap
 	retry          RetryPolicy
 	fallback       FallbackPolicy
+	tracer         trace.Tracer // 可选；nil → 不开 span（与 SlogTracer NoOp 等价）
 }
 
 // New 装配一个 Dispatcher。
@@ -56,6 +61,9 @@ func New(opts ...Option) *Dispatcher {
 	if d.quota == nil {
 		d.quota = NoopQuota{}
 	}
+	if d.tracer == nil {
+		d.tracer = trace.NewSlogTracer(nil) // NoOp span，hot path 零开销
+	}
 	return d
 }
 
@@ -75,18 +83,36 @@ func New(opts ...Option) *Dispatcher {
 func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Input) Outcome {
 	s := newState(in, d.cap.Resolve(in))
 
+	ctx, span := d.tracer.StartSpan(ctx, "dispatch.request")
+	span.SetAttribute("dispatch.model", s.CurrentModelName())
+	span.SetAttribute("dispatch.group", s.Group())
+	span.SetAttribute("dispatch.attempt_cap", s.AttemptsCap())
+	defer span.End()
+
 	for {
 		switch a := d.step(ctx, w, s).(type) {
 		case Continue:
 			// 同 model 再选一个；Record 已 exclude，直接进下一轮 Select
 		case Switch:
+			prev := s.CurrentModelName()
 			s.SetModel(a.Next)
+			d.tracer.Log(ctx, "dispatch.fallback", map[string]string{
+				"from": prev, "to": modelName(a.Next),
+			})
 		case Stream:
 			// step 内部已完成 ApplyStream；Stream{} 仅作"已处理"信号
-			return s.Outcome()
+			out := s.Outcome()
+			span.SetAttribute("dispatch.outcome", out.Result.String())
+			span.SetAttribute("dispatch.routed_model", modelName(out.RoutedModel))
+			span.SetAttribute("dispatch.attempts", s.Attempts())
+			return out
 		case Abort:
 			s.SetAbort(a)
-			return s.Outcome()
+			out := s.Outcome()
+			span.SetAttribute("dispatch.outcome", out.Result.String())
+			span.SetAttribute("dispatch.http_code", a.HTTPCode)
+			span.SetAttribute("dispatch.attempts", s.Attempts())
+			return out
 		}
 	}
 }
@@ -107,6 +133,11 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		}
 	}
 
+	ctx, span := d.tracer.StartSpan(ctx, "dispatch.attempt")
+	span.SetAttribute("attempt.model", s.CurrentModelName())
+	span.SetAttribute("attempt.index", s.Attempts())
+	defer span.End()
+
 	// === CandidateSource → filter → Selector.Pick：三个步骤分立 ===
 	candidates, err := d.candidates.ListForModel(ctx, s.CurrentModelName(), s.Group())
 	if err != nil {
@@ -117,8 +148,11 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 			Reason:   "candidates: " + err.Error(),
 		}
 	}
+	span.SetAttribute("attempt.candidates", len(candidates))
 	eligible := filterEligible(candidates, s.Envelope(), s.Handlers())
+	span.SetAttribute("attempt.eligible", len(eligible))
 	if len(eligible) == 0 {
+		span.SetAttribute("attempt.exit", "no_eligible")
 		return d.fallback.OnExhausted(s)
 	}
 	ep, err := d.selector.Pick(ctx, eligible, s.PickQuery())
@@ -132,12 +166,15 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 	}
 	if ep == nil {
 		// 候选有 eligible，但 picker 因 cooldown 等原因全 skip——交给 FallbackPolicy
+		span.SetAttribute("attempt.exit", "picker_skipped_all")
 		return d.fallback.OnExhausted(s)
 	}
+	annotateEndpoint(span, ep)
 
 	// === EndpointQuota.Reserve（前扣）===
 	if denied, qerr := d.quota.Reserve(ctx, ep); denied != nil || qerr != nil {
 		v := quotaVerdictToAttempt(denied, qerr)
+		annotateVerdict(span, v)
 		s.Record(ep, v)
 		d.selector.Report(ctx, ep, v)
 		return d.retry.Decide(s, v)
@@ -154,6 +191,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 			HTTPCode: 502,
 			Reason:   "no handler for endpoint+srcProto",
 		}
+		annotateVerdict(span, v)
 		s.Record(ep, v)
 		d.selector.Report(ctx, ep, v)
 		return d.retry.Decide(s, v)
@@ -173,6 +211,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 	defer res.Close()
 
 	verdict := res.Verdict()
+	annotateVerdict(span, verdict)
 	s.Record(ep, verdict)
 	d.selector.Report(ctx, ep, verdict)
 
@@ -186,6 +225,36 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		return Stream{}
 	}
 	return action
+}
+
+// modelName 安全取 *domain.ModelService 的 Model（防 nil）。
+func modelName(m *domain.ModelService) string {
+	if m == nil {
+		return ""
+	}
+	return m.Model
+}
+
+// annotateEndpoint 给当前 span 打 endpoint 选中后的标签。
+func annotateEndpoint(span trace.Span, ep *domain.Endpoint) {
+	if ep == nil {
+		return
+	}
+	span.SetAttribute("endpoint.id", strconv.FormatInt(ep.ID, 10))
+	span.SetAttribute("endpoint.vendor", ep.Vendor)
+	span.SetAttribute("endpoint.protocol", ep.Protocol.String())
+}
+
+// annotateVerdict 给 span 打 attempt 结果。
+func annotateVerdict(span trace.Span, v Verdict) {
+	span.SetAttribute("verdict.stage", v.Stage.String())
+	span.SetAttribute("verdict.class", v.Class.String())
+	if v.HTTPCode != 0 {
+		span.SetAttribute("verdict.http_code", v.HTTPCode)
+	}
+	if v.Reason != "" {
+		span.SetAttribute("verdict.reason", v.Reason)
+	}
 }
 
 // quotaVerdictToAttempt 把 EndpointQuota.Reserve 的拒绝结果（QuotaVerdict）翻成
