@@ -1,5 +1,10 @@
 package domain
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // Modality 请求模态。
 type Modality int
 
@@ -31,4 +36,45 @@ func (m Modality) String() string {
 		return "task"
 	}
 	return "unknown"
+}
+
+// ParseModality 反向：字符串 → Modality；未知 → 0 (ModalityChat) + error。
+func ParseModality(s string) (Modality, error) {
+	switch s {
+	case "chat":
+		return ModalityChat, nil
+	case "embedding":
+		return ModalityEmbedding, nil
+	case "image":
+		return ModalityImage, nil
+	case "rerank":
+		return ModalityRerank, nil
+	case "tts":
+		return ModalityTTS, nil
+	case "asr":
+		return ModalityASR, nil
+	case "task":
+		return ModalityTask, nil
+	}
+	return 0, fmt.Errorf("unknown modality %q", s)
+}
+
+// MarshalJSON 让 endpoint capabilities JSON 里 modality 以 "chat" / "embedding"
+// 这种 deployer 友好的字符串落库，而不是 enum 数字。
+func (m Modality) MarshalJSON() ([]byte, error) {
+	return json.Marshal(m.String())
+}
+
+// UnmarshalJSON 反向；未知值返 error 让启动期 / mapper 直接看到。
+func (m *Modality) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed, err := ParseModality(s)
+	if err != nil {
+		return err
+	}
+	*m = parsed
+	return nil
 }

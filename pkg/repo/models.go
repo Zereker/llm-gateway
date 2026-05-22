@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // models.go 定义"业务实体"——gateway（sqlx Reader）使用；写入由 deployer 走 SQL 维护。
@@ -140,11 +142,21 @@ type Endpoint struct {
 }
 
 // EndpointCapabilities 已知结构的能力标记；JSON 序列化进 endpoints.capabilities 列。
+//
+// 跟 domain.EndpointCapabilities 同形（mapper 用 type conversion 平移）。
+// 新增字段时两边同步加。
 type EndpointCapabilities struct {
-	SelfHosted          bool   `json:"self_hosted,omitempty"`
-	KVMetricEndpoint    string `json:"kv_metric_endpoint,omitempty"`
-	HealthProbeEndpoint string `json:"health_probe_endpoint,omitempty"`
-	PrefixCacheEnabled  bool   `json:"prefix_cache_enabled,omitempty"`
+	Modalities          []domain.Modality `json:"modalities,omitempty"`
+	SelfHosted          bool              `json:"self_hosted,omitempty"`
+	KVMetricEndpoint    string            `json:"kv_metric_endpoint,omitempty"`
+	HealthProbeEndpoint string            `json:"health_probe_endpoint,omitempty"`
+	PrefixCacheEnabled  bool              `json:"prefix_cache_enabled,omitempty"`
+}
+
+// isEmpty 替代 == 比较（带 slice 的 struct 不可 ==）。
+func (c EndpointCapabilities) isEmpty() bool {
+	return len(c.Modalities) == 0 && !c.SelfHosted &&
+		c.KVMetricEndpoint == "" && c.HealthProbeEndpoint == "" && !c.PrefixCacheEnabled
 }
 
 // Scan 实现 sql.Scanner：从 DB JSON 字节反序列化。
@@ -166,7 +178,7 @@ func (c *EndpointCapabilities) Scan(value any) error {
 
 // Value 实现 driver.Valuer：marshal 到 JSON；零值写 NULL。
 func (c EndpointCapabilities) Value() (driver.Value, error) {
-	if (c == EndpointCapabilities{}) {
+	if c.isEmpty() {
 		return nil, nil
 	}
 	return json.Marshal(c)
