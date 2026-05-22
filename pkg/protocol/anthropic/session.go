@@ -36,7 +36,7 @@ func newSession(c context.Context, ep *domain.Endpoint) *session {
 //   - body: translator 已翻好（OpenAI ChatCompletion → Anthropic Messages）
 //
 // **vendor 校验**：本 Adapter 用 x-api-key auth；不是这个 type 直接拒（指引到正确 vendor）。
-func (s *session) BuildRequest(body []byte) (*http.Request, error) {
+func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("anthropic: ep.routing.url empty")
 	}
@@ -55,6 +55,13 @@ func (s *session) BuildRequest(body []byte) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 先 quirks header
+	for k, vs := range extraHeaders {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	// 再协议必需 header（覆盖）
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apikey.APIKey)
 	req.Header.Set("anthropic-version", anthropicAPIVersion)

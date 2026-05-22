@@ -62,7 +62,7 @@ type fakeSession struct {
 	ep       *domain.Endpoint
 }
 
-func (s *fakeSession) BuildRequest(body []byte) (*http.Request, error) {
+func (s *fakeSession) BuildRequest(body []byte, _ http.Header) (*http.Request, error) {
 	if s.buildErr != nil {
 		return nil, s.buildErr
 	}

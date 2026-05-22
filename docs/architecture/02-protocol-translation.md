@@ -139,16 +139,20 @@ deployer 直接 SQL 配置**——不在代码里 init() 注册任何 vendor 规
   让上游收到自己认的 header 名
 - vendor 私有 header（如 `X-API-Version`）在 endpoint 上配死
 
-插在 translator 与 adapter 之间（body）+ adapter 之后（header）：
+插在 translator 与 adapter 之间——body 和 header 一起跑完，再交给 adapter 组装一次：
 
 ```text
 client body
-  → translator.TranslateRequest   （客户端协议 → 上游协议 shape）
-  → ep.Quirks.RewriteBody         （endpoint 配置的 body 微调）   ← 4a
-  → adapter.BuildRequest          （HTTP 信封：URL / auth / Content-Type）
-  → ep.Quirks.RewriteHeader       （endpoint 配置的 header 微调） ← 4a
+  → translator.TranslateRequest          （客户端协议 → 上游协议 shape）
+  → ep.Quirks.RewriteBody  + RewriteHeader  ← 4a（一次跑完两段）
+  → adapter.BuildRequest(body, headers)   （HTTP 信封 + 合并 quirks header）
   → upstream
 ```
+
+**adapter 合并规则**：拷贝 quirks 的 header 进 req.Header 后，再写自己的协议必需
+header（Auth / Content-Type / vendor 版本头等）——**后写覆盖**。这样：
+- deployer 可以加任意 vendor 私有 header（X-Vendor-Tag 等）
+- deployer 误把 Authorization 写成别的不会把请求打挂（adapter 兜底覆盖回去）
 
 **DSL**（存 `endpoints.quirks` JSON 列）：
 

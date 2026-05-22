@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"net/http"
 	"sync"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
@@ -58,16 +59,18 @@ type combined struct {
 func (c *combined) Capabilities() Capabilities { return c.caps }
 
 func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody []byte) (*Call, error) {
-	// pre-call phase 1: 协议 body 转换
+	// phase 1: translator——客户端协议 → 上游协议 shape
 	upstreamBody, err := c.tr.TranslateRequest(srcBody)
 	if err != nil {
 		return nil, NewPrepareError(PhaseTranslate, err)
 	}
 
-	// pre-call phase 2: endpoint 配置的 body 微调（quirks）
-	var rw quirks.Rewriter
+	// phase 2: quirks——endpoint 配置的 body + header 微调。
+	// **body 和 header 一起跑完再交 adapter**，保持 quirks → adapter 单向管道，
+	// adapter 不需要知道 quirks 的存在。
+	var extraHeaders http.Header
 	if len(ep.Quirks) > 0 {
-		rw, err = c.quirksFor(ep.Quirks)
+		rw, err := c.quirksFor(ep.Quirks)
 		if err != nil {
 			return nil, NewPrepareError(PhaseQuirks, err)
 		}
@@ -75,9 +78,13 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 		if err != nil {
 			return nil, NewPrepareError(PhaseQuirks, err)
 		}
+		extraHeaders = make(http.Header)
+		rw.RewriteHeader(extraHeaders) // 对空 header 跑 spec：set / set_default 生效
 	}
 
-	// pre-call phase 3: vendor HTTP 信封（URL / auth / headers）
+	// phase 3: adapter——HTTP 信封（URL / Auth / Content-Type），合并 extraHeaders。
+	// adapter 内部约定：先拷贝 extraHeaders，再写自己的协议必需 header（后写覆盖
+	// quirks），防止 deployer 误改 Authorization / Content-Type 把请求打挂。
 	sess, err := c.ad.NewSession(ctx, ep, &domain.RequestEnvelope{
 		SourceProtocol: c.caps.SourceProtocol,
 		RawBytes:       srcBody, // 备份给可能引用原 body 的 session 实现
@@ -85,19 +92,13 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 	if err != nil {
 		return nil, NewPrepareError(PhaseBuild, err)
 	}
-	req, err := sess.BuildRequest(upstreamBody)
+	req, err := sess.BuildRequest(upstreamBody, extraHeaders)
 	if err != nil {
 		_ = sess.Close()
 		return nil, NewPrepareError(PhaseBuild, err)
 	}
 	// v0.5 slim session 没有流式状态——构造完即关。
 	_ = sess.Close()
-
-	// pre-call phase 4: endpoint 配置的 header 微调（quirks）
-	// 在 adapter 设完 Auth / Content-Type 后做，deployer 可覆盖或追加 vendor 私有 header。
-	if rw != nil {
-		rw.RewriteHeader(req.Header)
-	}
 
 	return &Call{Request: req, UpstreamBody: upstreamBody}, nil
 }

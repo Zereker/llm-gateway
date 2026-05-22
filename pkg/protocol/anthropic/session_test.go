@@ -42,7 +42,7 @@ func TestSession_BuildRequest_SetsXAPIKeyAndVersion(t *testing.T) {
 	s := newSession(context.Background(), ep)
 
 	body := []byte(`{"model":"claude-3","messages":[]}`)
-	req, err := s.BuildRequest(body)
+	req, err := s.BuildRequest(body, nil)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestSession_BuildRequest_SetsXAPIKeyAndVersion(t *testing.T) {
 func TestSession_BuildRequest_EmptyURL_Error(t *testing.T) {
 	ep := mkXAPIKeyEP("", "k")
 	s := newSession(context.Background(), ep)
-	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
+	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Fatal("expected err for empty URL")
 	}
 }
@@ -76,7 +76,7 @@ func TestSession_BuildRequest_WrongAuthType_Error(t *testing.T) {
 	auth, _ := domain.EncodePayload(domain.AuthTypeBearer, domain.BearerAuth{APIKey: "k"})
 	ep := &domain.Endpoint{Auth: auth, Routing: domain.RoutingConfig{URL: "u"}}
 	s := newSession(context.Background(), ep)
-	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
+	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Fatal("expected err for wrong auth type")
 	}
 }
@@ -84,7 +84,7 @@ func TestSession_BuildRequest_WrongAuthType_Error(t *testing.T) {
 func TestSession_BuildRequest_EmptyAPIKey_Error(t *testing.T) {
 	ep := mkXAPIKeyEP("u", "")
 	s := newSession(context.Background(), ep)
-	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
+	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Fatal("expected err for empty API key")
 	}
 }
@@ -99,7 +99,7 @@ func TestSession_BuildRequest_BadPayload_Error(t *testing.T) {
 		Routing: domain.RoutingConfig{URL: "u"},
 	}
 	s := newSession(context.Background(), ep)
-	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
+	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Fatal("expected decode error")
 	}
 }

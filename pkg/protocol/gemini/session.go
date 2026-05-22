@@ -35,7 +35,7 @@ func newSession(c context.Context, ep *domain.Endpoint, tp tokenProvider) *sessi
 //
 // **流式**：v0.5 不支持。客户端发 stream=true 时 openai_gemini translator 在
 // TranslateRequest 阶段会返错（adapter 不会被调到）。
-func (s *session) BuildRequest(body []byte) (*http.Request, error) {
+func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("gemini: ep.routing.url empty")
 	}
@@ -43,6 +43,13 @@ func (s *session) BuildRequest(body []byte) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 先 quirks header
+	for k, vs := range extraHeaders {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	// 再协议必需 header（覆盖）
 	req.Header.Set("Content-Type", "application/json")
 
 	hdrName, hdrValue, err := s.tp.AuthHeader(s.ctx)

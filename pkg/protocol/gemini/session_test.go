@@ -43,7 +43,7 @@ func TestSession_BuildRequest_StaticAPIKey(t *testing.T) {
 	s := newSession(context.Background(), ep, tp)
 
 	body := []byte(`{"contents":[]}`)
-	req, err := s.BuildRequest(body)
+	req, err := s.BuildRequest(body, nil)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestSession_BuildRequest_OAuthBearer(t *testing.T) {
 	tp := fakeTokenProvider{hdrName: "Authorization", hdrValue: "Bearer ya29.xxxx"}
 	s := newSession(context.Background(), ep, tp)
 
-	req, err := s.BuildRequest([]byte(`{}`))
+	req, err := s.BuildRequest([]byte(`{}`), nil)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestSession_BuildRequest_OAuthBearer(t *testing.T) {
 func TestSession_BuildRequest_EmptyURL_Error(t *testing.T) {
 	ep := &domain.Endpoint{Routing: domain.RoutingConfig{URL: ""}}
 	s := newSession(context.Background(), ep, fakeTokenProvider{hdrName: "x", hdrValue: "y"})
-	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
+	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Fatal("expected err for empty URL")
 	}
 }
@@ -88,7 +88,7 @@ func TestSession_BuildRequest_TokenProviderErr(t *testing.T) {
 	ep := &domain.Endpoint{Routing: domain.RoutingConfig{URL: "u"}}
 	tp := fakeTokenProvider{err: errors.New("oauth failed")}
 	s := newSession(context.Background(), ep, tp)
-	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
+	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Fatal("expected err from token provider")
 	}
 }
