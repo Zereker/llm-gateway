@@ -21,7 +21,7 @@ type Filter interface {
 	Name() string
 
 	// Apply 输入候选 + 请求上下文 → 输出筛后候选。
-	// 返回空切片 = 全过滤掉（M7 driver loop 会 abort 503）。
+	// 返回空切片 = 全过滤掉（dispatch 走 FallbackPolicy.OnExhausted；最终 abort 503）。
 	Apply(ctx context.Context, candidates []*domain.Endpoint, req *Request) []*domain.Endpoint
 }
 

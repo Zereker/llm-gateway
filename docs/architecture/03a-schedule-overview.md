@@ -300,17 +300,17 @@ model / endpoint.id / vendor / verdict.{stage,class,http_code,reason} / dispatch
 
 完整 metric 契约见 [08-observability.md §3](./08-observability.md#3-metrics)。
 
-## 12. 装配点（cmd/gateway/main.go）
+## 12. 装配点（cmd/gateway/main.go + cmd/gateway/dispatch_wiring.go）
+
+实际装配分两层：先把 selector / invoker / ratelimit 各自的 primitives 拼出来，
+再喂给 `buildDispatcher` 组合成 `dispatch.Dispatcher`，最后把 Dispatcher（**而不是**
+selector / sender）注入到 M7 middleware。
 
 ```go
+// === main.go 准备 primitives ===
+
 // 1. Cooldown manager
-cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{
-    Transient: cfg.Selector.Cooldown.Transient,
-    Capacity:  cfg.Selector.Cooldown.Capacity,
-    Permanent: cfg.Selector.Cooldown.Permanent,
-    Invalid:   cfg.Selector.Cooldown.Invalid,
-    Unknown:   cfg.Selector.Cooldown.Unknown,
-})
+cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{...})
 
 // 2. Filter chain（按 cfg.Selector.Filters 顺序）
 filters := buildSchedulerFilters(cfg.Selector.Filters, rateStore, cooldown)
@@ -318,22 +318,40 @@ filters := buildSchedulerFilters(cfg.Selector.Filters, rateStore, cooldown)
 // 3. Scorer + Stats（可选）
 stats, scorer := buildScoring(cfg.Scoring)
 
-// 4. Scheduler 本体
-sched := selector.New(schedule.Config{
-    Filters:  filters,
-    Selector: selector.NewWeightedRandomSelector(),
-    Cooldown: cooldown,
-    Scorer:   scorer,    // nil = 不打分
-    Stats:    stats,     // nil = 不写 stats
+// 4. Scheduler primitives（selector.Scheduler 接口；纯批内 Pick + Report）
+sched := selector.New(selector.Config{
+    Filters: filters, Picker: selector.NewWeightedRandomPicker(),
+    Cooldown: cooldown, Scorer: scorer, Stats: stats,
 })
 
-// 5. 注入到 router.Deps（M7 middleware 装配）
-EndpointReader:              adaptEndpoints(repo.NewSQLEndpointReader(sqldb)),
-FallbackCatalog:             catalog,
-FallbackSubscriptionChecker: subs,
-Scheduler:                   sched,
-Sender:                      sender,
-MaxAttempts:                 cfg.Selector.MaxAttempts,
+// 5. Sender primitives（invoker.Sender；纯 HTTP Do + forward）
+sender := invoker.New(senderOpts...)
+
+// === dispatch_wiring.go 把 primitives 组合成 Dispatcher ===
+
+dispatcher := buildDispatcher(
+    adaptEndpoints(endpointReader),  // CandidateSource 桥接 repo.EndpointReader
+    sched,                            // Selector 桥（pkg/dispatch/adapters/SelectorAdapter）
+    sender,                           // InvokerFactory 桥（adapters/InvokerFactoryAdapter）
+    rateStore,                        // EndpointQuota 桥（adapters/EndpointQuotaAdapter；ratelimit.Store）
+    cfg.Selector.MaxAttempts,         // AttemptCap.Default
+    dispatchTracer,                   // OTel tracer，spans dispatch.request / dispatch.attempt
+)
+
+// buildDispatcher 内部：
+//   dispatch.New(
+//       dispatch.WithCandidates(candidates),
+//       dispatch.WithSelector(adapters.NewSelector(sched)),
+//       dispatch.WithInvokerFactory(adapters.NewInvokerFactory(sender)),
+//       dispatch.WithQuota(adapters.NewEndpointQuota(rateStore)),
+//       dispatch.WithCap(dispatch.HeaderAttemptCap{Default: maxAttempts}),
+//       dispatch.WithRetry(dispatch.DefaultRetry{}),
+//       dispatch.WithFallback(dispatch.ModelChainFallback{}),
+//       dispatch.WithTracer(tracer),
+//   )
+
+// === 注入到 router.Deps；M7 middleware 只看 Dispatcher，不看 selector / sender ===
+Dispatcher: dispatcher,
 ```
 
 `buildSchedulerFilters` 把 yaml 里的字符串名映射到 Filter 实例：

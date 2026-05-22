@@ -10,7 +10,7 @@ import (
 // 设计精神（docs/03 §4 §8）：
 //   - WeightedRandom 必须基于 Candidate.EffectiveWeight 而非 Endpoint.Weight
 //   - 候选只剩 1 时 trivially 返回该候选
-//   - 全部 EffectiveWeight=0 或空 → 返回 nil（M7 abort 503）
+//   - 全部 EffectiveWeight=0 或空 → 返回 nil（dispatch.FallbackPolicy.OnExhausted 兜底）
 //
 // 实现 MUST be safe for concurrent use。
 type Picker interface {

@@ -12,7 +12,7 @@ import (
 // 检查每个候选 endpoint 的 quota 是否还有余量；超限的剔除。
 //
 // **关键约束**：filter 阶段**不**做 ReserveBatch（不能在所有候选 endpoint 上扣减）；
-// 真正的 reserve 在 M7 选中 endpoint 之后单独做（避免不被选中的 endpoint 被多扣）。
+// 真正的 reserve 在 dispatcher Pick 之后通过 EndpointQuota.Reserve 做（避免不被选中的 endpoint 被多扣）。
 //
 // **Fail-open on Redis error**（docs/04 §8）：endpoint quota read-only filter 不能
 // 因 Redis 故障变成硬依赖；故障时保留所有候选，让请求继续 try。

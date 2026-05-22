@@ -1,20 +1,28 @@
-// Package schedule M7 端点选路。
+// Package selector 端点选择 primitives——filter chain + scorer + picker。
 //
 // **设计精神**（docs/architecture/03-endpoint-scheduling.md §4）：
 //
-//   - Scheduler 是**无状态**的批内选择器：Pick + Report 两个方法
-//   - 不持有 repo / per-request 状态机；M7 维护 attempts / ExcludeIDs / decisions
-//   - 跨 model fallback 由 M7 外层循环负责，scheduler 不知道 fallback
+//   - 本包是**纯 selection primitives**：对一批候选跑 filter / scorer / picker
+//     选 1 个 endpoint，无 per-request 状态
+//   - 不持有 repo；不知道 protocol / handler / fallback / attempts 概念
+//   - 跨 model fallback、attempts / excluded / decisions 状态、retry / abort
+//     决策全在 `pkg/dispatch.Dispatcher` 维护——selector 永远只看一批候选
 //
-// **依赖**：
+// **调用关系**（v0.6 起 dispatch 拥有调度时序，selector 退到 primitives 层）：
 //
-//	pkg/middleware/selector.go (M7)
+//	pkg/dispatch.Dispatcher.step (调度时序所有者)
+//	    │  candidates = CandidateSource.ListForModel(ctx, model, group)
+//	    │  eligible   = filterEligible(candidates, env, handlers)  // dispatch 内部 helper
+//	    │  ep         = Selector.Pick(ctx, eligible, query)  ──→  selector.Scheduler.Pick
+//	    │  ... Invoker.Invoke / Quota.Reserve / RetryPolicy.Decide ...
+//	    │  Selector.Report(ctx, ep, verdict)              ──→    selector.Scheduler.Report
 //	    │
-//	    ├─→ selector.Scheduler.Pick(ctx, req) → *Endpoint
-//	    ├─→ Sender.Send(ctx, ep, env, body) → Outcome
-//	    └─→ selector.Scheduler.Report(ctx, ep, result)
+//	    └─ adapter: pkg/dispatch/adapters/SelectorAdapter
+//	       把 selector.Scheduler 桥成 dispatch.Selector（Pick 接受 eligible + PickQuery）
 //
-// 详见 docs/architecture/03-endpoint-scheduling.md。
+// **不应该出现在本包**：repo 依赖、http.Request、protocol.Handler、fallback 切 model 等。
+//
+// 详见 docs/architecture/03-endpoint-scheduling.md §4 + docs/architecture/03a-schedule-overview.md §0-§2。
 package selector
 
 import (
@@ -27,7 +35,7 @@ import (
 // Candidate 单个 endpoint 候选 + 有效权重。
 //
 // EffectiveWeight 是 Runtime Scoring（docs/03 §8）调整后的权重——
-// 未启用 scoring 时由 M7 简单填 = Endpoint.Weight。
+// 未启用 scoring 时由 dispatcher 简单填 = Endpoint.Weight。
 type Candidate struct {
 	Endpoint        *domain.Endpoint
 	EffectiveWeight float64
@@ -76,7 +84,7 @@ func (c ErrorClass) String() string {
 	}
 }
 
-// IsRetryable 决定 M7 driver loop 是否继续 Pick 下一个候选。
+// IsRetryable 决定 dispatch.RetryPolicy 是否继续 Pick 下一个候选。
 //
 //	Transient / Capacity / Permanent / Unknown → 重试
 //	Success / Invalid                          → 停止
@@ -89,7 +97,7 @@ func (c ErrorClass) IsRetryable() bool {
 	}
 }
 
-// Result 一次调用的结果，由 M7 调用方传给 Scheduler.Report。
+// Result 一次调用的结果，由 dispatcher（通过 SelectorAdapter）传给 Scheduler.Report。
 type Result struct {
 	Class    ErrorClass
 	HTTPCode int           // 上游 status；0 = 没拿到 response（网络错 / timeout）
@@ -97,14 +105,14 @@ type Result struct {
 	Latency  time.Duration // 本次调用耗时（含上游 + 流式）
 }
 
-// Scheduler M7 调用入口。无状态（docs/03 §4）。
+// Scheduler dispatch 通过 SelectorAdapter 调用的入口。无状态（docs/03 §4）。
 type Scheduler interface {
 	// Pick 输入当前 model 的候选 + 排除集，输出一个 endpoint。
 	//
-	// 返回 nil 表示候选全部过滤掉了（M7 自己决定 abort 503 还是切下一个 model）。
+	// 返回 nil 表示候选全部过滤掉了（dispatch.FallbackPolicy.OnExhausted 决定 abort 503 还是切下一个 model）。
 	Pick(ctx context.Context, req *Request) (*domain.Endpoint, error)
 
 	// Report 把本次 Send 结果反馈给 cooldown / metric / stats store。
-	// 不决定下一步控制流——M7 自己看 result.Class 决定继续 / 停止。
+	// 不决定下一步控制流——dispatch.RetryPolicy.Decide 看 result.Class 决定继续 / 停止。
 	Report(ctx context.Context, ep *domain.Endpoint, result Result)
 }
