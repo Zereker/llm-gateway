@@ -50,8 +50,26 @@ type Endpoint struct {
 	DeletedAt *time.Time
 }
 
-// EndpointCapabilities endpoint 能力标记（self-hosted 子领域）。
+// EndpointCapabilities endpoint 能力标记（modality + self-hosted 子领域）。
+//
+// **JSON 形态**（落 endpoints.capabilities 列；deployer SQL 写）：
+//
+//	{
+//	  "modalities":         ["chat", "embedding"],
+//	  "self_hosted":        false,
+//	  "prefix_cache_enabled": true
+//	}
 type EndpointCapabilities struct {
+	// Modalities 这条 endpoint 能承接的模态白名单（subset of vendor 能力）。
+	//
+	// **优先级**：非空时 eligibility 用本字段判断；为空时 fall back 到 vendor
+	// Factory.Metadata().SupportedModalities（vendor 级"上限"）。
+	//
+	// **典型用法**：OpenAI vendor 同时声明 chat / embedding / image / audio，
+	// 但 deployer 给一条 endpoint 只买了 gpt-4o chat quota，就 `["chat"]` 锁死，
+	// 不让该 endpoint 误接 /v1/embeddings 之类请求。
+	Modalities []Modality `json:"modalities,omitempty"`
+
 	SelfHosted          bool   `json:"self_hosted,omitempty"`
 	KVMetricEndpoint    string `json:"kv_metric_endpoint,omitempty"`
 	HealthProbeEndpoint string `json:"health_probe_endpoint,omitempty"`

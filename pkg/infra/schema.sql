@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
     auth         VARCHAR(2048) NOT NULL,                   -- AuthConfig 密文 (Scanner/Valuer 在 Go 端 encrypt/decrypt)
     routing      JSON          NOT NULL,                   -- RoutingConfig (url/region/project/...)
     quota        JSON          DEFAULT NULL,               -- 上游硬约束 quota（区别于 quota_policies；这个是 vendor-side 限制）
-    capabilities JSON          DEFAULT NULL,
+    capabilities JSON          DEFAULT NULL,               -- EndpointCapabilities: modalities + self_hosted + prefix_cache_enabled 等
     quirks       JSON          DEFAULT NULL,               -- 端点级 body / header 微调 DSL（pkg/protocol/quirks）
     extra        JSON          DEFAULT NULL,
 
