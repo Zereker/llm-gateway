@@ -11,6 +11,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/protocol"
+	"github.com/zereker/llm-gateway/pkg/protocol/quirks"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
@@ -467,4 +468,85 @@ func resetGlobalRegistries(t *testing.T) {
 		adapter.Reset()
 		translator.Reset()
 	})
+}
+
+// =============================================================================
+// Quirks integration（PhaseQuirks 在 PhaseTranslate 与 PhaseBuild 之间）
+// =============================================================================
+
+func TestCombine_QuirksAppliedAfterTranslateBeforeBuild(t *testing.T) {
+	quirks.Reset()
+	t.Cleanup(quirks.Reset)
+
+	// translator 输出 upstream-shape body；quirks 在此基础上追加 marker
+	upBody := []byte(`{"upstream":"yes"}`)
+	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: upBody}
+	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "ark"}}
+
+	quirks.Register("ark", quirks.RewriterFunc(func(body []byte) ([]byte, error) {
+		// 简单 marker：把 translator 输出后面接个 ":quirked"
+		if string(body) != string(upBody) {
+			t.Errorf("quirks 收到的 body 不是 translator 输出: got %q want %q", body, upBody)
+		}
+		return []byte(`{"upstream":"yes","quirked":true}`), nil
+	}))
+
+	h := protocol.Combine(ad, tr)
+	call, err := h.PrepareCall(context.Background(),
+		&domain.Endpoint{Vendor: "ark", Protocol: domain.ProtoOpenAI}, []byte(`{"client":"req"}`))
+	if err != nil {
+		t.Fatalf("PrepareCall: %v", err)
+	}
+	if string(call.UpstreamBody) != `{"upstream":"yes","quirked":true}` {
+		t.Errorf("UpstreamBody = %q, want quirked", call.UpstreamBody)
+	}
+	gotBody, _ := io.ReadAll(call.Request.Body)
+	if string(gotBody) != `{"upstream":"yes","quirked":true}` {
+		t.Errorf("Request.Body = %q, want quirked", gotBody)
+	}
+}
+
+func TestCombine_NoQuirkRegisteredIsNoop(t *testing.T) {
+	quirks.Reset()
+	t.Cleanup(quirks.Reset)
+
+	upBody := []byte(`{"upstream":"plain"}`)
+	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: upBody}
+	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "unknown-vendor"}}
+
+	h := protocol.Combine(ad, tr)
+	call, err := h.PrepareCall(context.Background(),
+		&domain.Endpoint{Vendor: "unknown-vendor", Protocol: domain.ProtoOpenAI}, []byte(`{"client":"req"}`))
+	if err != nil {
+		t.Fatalf("PrepareCall: %v", err)
+	}
+	if string(call.UpstreamBody) != string(upBody) {
+		t.Errorf("UpstreamBody = %q, want %q (no quirks should be no-op)", call.UpstreamBody, upBody)
+	}
+}
+
+func TestCombine_QuirksError_ReturnsPrepareErrorPhaseQuirks(t *testing.T) {
+	quirks.Reset()
+	t.Cleanup(quirks.Reset)
+
+	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: []byte(`{}`)}
+	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
+
+	quirks.Register("openai", quirks.RewriterFunc(func(body []byte) ([]byte, error) {
+		return nil, errors.New("quirks boom")
+	}))
+
+	h := protocol.Combine(ad, tr)
+	_, err := h.PrepareCall(context.Background(),
+		&domain.Endpoint{Vendor: "openai", Protocol: domain.ProtoOpenAI}, []byte(`{}`))
+	var pe *protocol.PrepareError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want PrepareError, got %T", err)
+	}
+	if pe.Phase != protocol.PhaseQuirks {
+		t.Errorf("Phase = %v, want PhaseQuirks", pe.Phase)
+	}
+	if pe.Err.Error() != "quirks boom" {
+		t.Errorf("inner err = %v, want \"quirks boom\"", pe.Err)
+	}
 }
