@@ -1,4 +1,4 @@
-// Package anthropic 是 Anthropic Messages 协议的 Adapter。
+// Package anthropic 是 Anthropic Messages 协议的 vendor Factory 实现。
 //
 // init() 注册到 protocol vendor registry，vendor 名 "anthropic"。
 //

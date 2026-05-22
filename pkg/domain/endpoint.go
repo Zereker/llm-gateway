@@ -62,8 +62,10 @@ type Endpoint struct {
 type EndpointCapabilities struct {
 	// Modalities 这条 endpoint 能承接的模态白名单（subset of vendor 能力）。
 	//
-	// **优先级**：非空时 eligibility 用本字段判断；为空时 fall back 到 vendor
-	// Factory.Metadata().SupportedModalities（vendor 级"上限"）。
+	// **语义**：narrow 不能 widen——eligibility 要求 endpoint 列出 AND vendor
+	// Factory 声明的 SupportedModalities **都包含** 当前请求模态。空时退到
+	// vendor 上限。这样 deployer 误配 `["tts"]` 在 chat-only vendor 上时不会
+	// 让请求偷溜进 selector（详见 pkg/dispatch/eligibility.go）。
 	//
 	// **典型用法**：OpenAI vendor 同时声明 chat / embedding / image / audio，
 	// 但 deployer 给一条 endpoint 只买了 gpt-4o chat quota，就 `["chat"]` 锁死，
