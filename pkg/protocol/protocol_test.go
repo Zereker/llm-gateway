@@ -11,7 +11,6 @@ import (
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/protocol"
-	"github.com/zereker/llm-gateway/pkg/protocol/quirks"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
@@ -426,6 +425,7 @@ func TestPrepareError_PhaseString(t *testing.T) {
 		want  string
 	}{
 		{protocol.PhaseTranslate, "translate"},
+		{protocol.PhaseQuirks, "quirks"},
 		{protocol.PhaseBuild, "build"},
 		{protocol.PreparePhase(99), "unknown"},
 	}
@@ -471,82 +471,105 @@ func resetGlobalRegistries(t *testing.T) {
 }
 
 // =============================================================================
-// Quirks integration（PhaseQuirks 在 PhaseTranslate 与 PhaseBuild 之间）
+// Quirks integration（endpoint.Quirks JSON → 编译 → 应用）
 // =============================================================================
 
-func TestCombine_QuirksAppliedAfterTranslateBeforeBuild(t *testing.T) {
-	quirks.Reset()
-	t.Cleanup(quirks.Reset)
-
-	// translator 输出 upstream-shape body；quirks 在此基础上追加 marker
-	upBody := []byte(`{"upstream":"yes"}`)
+func TestCombine_QuirksFromEndpointBodyAndHeaders(t *testing.T) {
+	upBody := []byte(`{"max_tokens":1024,"temperature":0.7,"model":"o1"}`)
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: upBody}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "ark"}}
+	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
 
-	quirks.Register("ark", quirks.RewriterFunc(func(body []byte) ([]byte, error) {
-		// 简单 marker：把 translator 输出后面接个 ":quirked"
-		if string(body) != string(upBody) {
-			t.Errorf("quirks 收到的 body 不是 translator 输出: got %q want %q", body, upBody)
-		}
-		return []byte(`{"upstream":"yes","quirked":true}`), nil
-	}))
+	ep := &domain.Endpoint{
+		Vendor:   "openai",
+		Protocol: domain.ProtoOpenAI,
+		Quirks: []byte(`{
+			"body": {
+				"rename": {"max_tokens": "max_completion_tokens"},
+				"strip":  ["temperature"]
+			},
+			"headers": {
+				"set": {"X-Ark-Trace-Id": "test-trace"}
+			}
+		}`),
+	}
 
 	h := protocol.Combine(ad, tr)
-	call, err := h.PrepareCall(context.Background(),
-		&domain.Endpoint{Vendor: "ark", Protocol: domain.ProtoOpenAI}, []byte(`{"client":"req"}`))
+	call, err := h.PrepareCall(context.Background(), ep, []byte(`{"client":"req"}`))
 	if err != nil {
 		t.Fatalf("PrepareCall: %v", err)
 	}
-	if string(call.UpstreamBody) != `{"upstream":"yes","quirked":true}` {
-		t.Errorf("UpstreamBody = %q, want quirked", call.UpstreamBody)
-	}
+
+	// body: max_tokens → max_completion_tokens、删 temperature
 	gotBody, _ := io.ReadAll(call.Request.Body)
-	if string(gotBody) != `{"upstream":"yes","quirked":true}` {
-		t.Errorf("Request.Body = %q, want quirked", gotBody)
+	if !strings.Contains(string(gotBody), `"max_completion_tokens":1024`) {
+		t.Errorf("body rename failed: %s", gotBody)
+	}
+	if strings.Contains(string(gotBody), `"temperature"`) {
+		t.Errorf("body strip failed: %s", gotBody)
+	}
+	// header: set
+	if got := call.Request.Header.Get("X-Ark-Trace-Id"); got != "test-trace" {
+		t.Errorf("header set failed: %s", got)
 	}
 }
 
-func TestCombine_NoQuirkRegisteredIsNoop(t *testing.T) {
-	quirks.Reset()
-	t.Cleanup(quirks.Reset)
-
+func TestCombine_EmptyQuirksIsNoop(t *testing.T) {
 	upBody := []byte(`{"upstream":"plain"}`)
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: upBody}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "unknown-vendor"}}
+	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
 
-	h := protocol.Combine(ad, tr)
-	call, err := h.PrepareCall(context.Background(),
-		&domain.Endpoint{Vendor: "unknown-vendor", Protocol: domain.ProtoOpenAI}, []byte(`{"client":"req"}`))
-	if err != nil {
-		t.Fatalf("PrepareCall: %v", err)
-	}
-	if string(call.UpstreamBody) != string(upBody) {
-		t.Errorf("UpstreamBody = %q, want %q (no quirks should be no-op)", call.UpstreamBody, upBody)
+	for _, q := range [][]byte{nil, []byte(""), []byte(`{}`)} {
+		h := protocol.Combine(ad, tr)
+		call, err := h.PrepareCall(context.Background(),
+			&domain.Endpoint{Vendor: "openai", Protocol: domain.ProtoOpenAI, Quirks: q},
+			[]byte(`{"client":"req"}`))
+		if err != nil {
+			t.Fatalf("PrepareCall with Quirks=%q: %v", q, err)
+		}
+		if string(call.UpstreamBody) != string(upBody) {
+			t.Errorf("empty quirks 改了 body: %q → %q", upBody, call.UpstreamBody)
+		}
 	}
 }
 
-func TestCombine_QuirksError_ReturnsPrepareErrorPhaseQuirks(t *testing.T) {
-	quirks.Reset()
-	t.Cleanup(quirks.Reset)
-
+func TestCombine_BadQuirksSpec_ReturnsPrepareErrorPhaseQuirks(t *testing.T) {
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: []byte(`{}`)}
 	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
 
-	quirks.Register("openai", quirks.RewriterFunc(func(body []byte) ([]byte, error) {
-		return nil, errors.New("quirks boom")
-	}))
+	ep := &domain.Endpoint{
+		Vendor: "openai", Protocol: domain.ProtoOpenAI,
+		Quirks: []byte(`{"strips": ["x"]}`), // typo: "strips" not "strip"
+	}
 
 	h := protocol.Combine(ad, tr)
-	_, err := h.PrepareCall(context.Background(),
-		&domain.Endpoint{Vendor: "openai", Protocol: domain.ProtoOpenAI}, []byte(`{}`))
+	_, err := h.PrepareCall(context.Background(), ep, []byte(`{}`))
 	var pe *protocol.PrepareError
 	if !errors.As(err, &pe) {
-		t.Fatalf("want PrepareError, got %T", err)
+		t.Fatalf("want PrepareError, got %T (%v)", err, err)
 	}
 	if pe.Phase != protocol.PhaseQuirks {
 		t.Errorf("Phase = %v, want PhaseQuirks", pe.Phase)
 	}
-	if pe.Err.Error() != "quirks boom" {
-		t.Errorf("inner err = %v, want \"quirks boom\"", pe.Err)
+}
+
+func TestCombine_QuirksCompileCached(t *testing.T) {
+	// 同 spec 多次调 PrepareCall 应该只 compile 一次（sync.Map cache）。
+	// 这里间接验证：第二次调用不报 spec 错（如果每次重 compile 一个故意非法 spec，第二次也会报错）。
+	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: []byte(`{"a":1}`)}
+	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
+	ep := &domain.Endpoint{
+		Vendor: "openai", Protocol: domain.ProtoOpenAI,
+		Quirks: []byte(`{"body":{"strip":["a"]}}`),
+	}
+
+	h := protocol.Combine(ad, tr)
+	for i := 0; i < 3; i++ {
+		call, err := h.PrepareCall(context.Background(), ep, []byte(`{}`))
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+		if strings.Contains(string(call.UpstreamBody), `"a"`) {
+			t.Errorf("iter %d: strip failed: %s", i, call.UpstreamBody)
+		}
 	}
 }

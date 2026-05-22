@@ -118,45 +118,80 @@ type Capabilities struct {
 Handler 是 (adapter, translator) 动态组合，跟 specific endpoint 在 `PrepareCall`
 入参时才挂钩。
 
-## 4a. Quirks — vendor / 模型级 body 微调（`pkg/protocol/quirks`）
+## 4a. Quirks — endpoint 级 request 微调（`pkg/protocol/quirks`）
 
 `translator` 只负责"客户端协议 → 上游协议"的形状转换；同一上游协议内不同 vendor /
-模型仍有细微差异：
+模型仍有细微差异。**所有 quirks 都是 deployment 知识，存在 `endpoints.quirks` JSON 列，
+deployer 直接 SQL 配置**——不在代码里 init() 注册任何 vendor 规则。
 
-- OpenAI o1 / o3 / o4 推理模型：`max_tokens` → `max_completion_tokens`；拒绝
-  `temperature` / `top_p` / `presence_penalty` / `frequency_penalty` 等字段
-- DeepSeek `deepseek-reasoner`：类似 o1 的字段限制
-- Anthropic Claude 3.7+ extended_thinking：需要插 `thinking` 块 + 强制 `temperature=1`
-- vLLM / Ollama 自部署：可能需要 strip 某些 OpenAI 特有字段
+两类典型差异：
 
-这些都属于"翻译后的最终修正"，由独立的 `pkg/protocol/quirks` 包承载，插在
-translator 与 adapter 之间：
+**body 字段**
+- OpenAI o1/o3/o4 推理模型：`max_tokens` → `max_completion_tokens`；strip
+  `temperature` / `top_p` / `presence_penalty` / `frequency_penalty`
+- DeepSeek `deepseek-reasoner`：类似限制
+- Anthropic Claude 3.7+ extended_thinking：插 `thinking` 块 + 强制 `temperature=1`
+- vLLM / Ollama：strip 某些 OpenAI 特有字段
+
+**header 字段**
+- 不同 vendor 的 trace-id header 名不一样（`X-Request-Id` / `X-Ark-Request-Id` /
+  `x-ds-request-id` 等）——gateway 统一用 `X-Request-Id`，deployer 配 rename
+  让上游收到自己认的 header 名
+- vendor 私有 header（如 `X-API-Version`）在 endpoint 上配死
+
+插在 translator 与 adapter 之间（body）+ adapter 之后（header）：
 
 ```text
 client body
   → translator.TranslateRequest   （客户端协议 → 上游协议 shape）
-  → quirks.Get(ep.Vendor).Rewrite （vendor / 模型级最终微调）  ← 本节
-  → adapter.BuildRequest          （HTTP 信封：URL / auth / headers）
+  → ep.Quirks.RewriteBody         （endpoint 配置的 body 微调）   ← 4a
+  → adapter.BuildRequest          （HTTP 信封：URL / auth / Content-Type）
+  → ep.Quirks.RewriteHeader       （endpoint 配置的 header 微调） ← 4a
   → upstream
 ```
+
+**DSL**（存 `endpoints.quirks` JSON 列）：
+
+```json
+{
+  "body": {
+    "rename":      {"max_tokens": "max_completion_tokens"},
+    "strip":       ["temperature", "top_p"],
+    "set":         {"reasoning_effort": "high"},
+    "set_default": {"max_completion_tokens": 4096}
+  },
+  "headers": {
+    "rename":      {"X-Request-Id": "X-Ark-Trace-Id"},
+    "strip":       ["X-Internal-Debug"],
+    "set":         {"X-Custom-Tag": "prod"},
+    "set_default": {"User-Agent": "llm-gateway/1.0"}
+  }
+}
+```
+
+应用顺序在 body / headers 子段内固定：`rename → strip → set → set_default`
+（先腾位置、再清理、再覆写、最后兜底）。
 
 接口（`pkg/protocol/quirks/quirks.go`）：
 
 ```go
 type Rewriter interface {
-    Rewrite(body []byte) ([]byte, error)
+    RewriteBody(body []byte) ([]byte, error)
+    RewriteHeader(h http.Header)
 }
 
-func Register(vendor string, r Rewriter)
-func Get(vendor string) Rewriter  // 未注册返回 nil
+// 编译 endpoint.Quirks JSON → Rewriter；strict mode（typo 字段直接报错）。
+func CompileJSON(specJSON []byte) (Rewriter, error)
 ```
 
-vendor 多个 Rewriter 注册会自动按注册顺序 Chain，任一失败立即中止。
-没有 quirks 的 vendor 不注册，`combine.go` 检测 `Get` 返回 nil 后跳过该 phase
-（零开销）。
+**combine.go 缓存**：同 spec 字面量（`string(ep.Quirks)`）只 compile 一次，
+跨请求共享同一个 Rewriter；不同 endpoint 配置相同 quirks 时也共享。
 
-具体 vendor 规则在 `pkg/protocol/<vendor>/quirks.go` 里写，跟 adapter / translator
-共子包，`init()` 注册。
+**列 NULL / 空 JSON / `{}`** → no-op Rewriter，零开销。
+
+**deployer 错配处理**：spec JSON 解析失败（或未知字段 typo）会让该 endpoint
+的请求返 `PhaseQuirks` PrepareError（`dispatch.ClassInvalid`），dispatcher 直接
+abort 不重试。配错的 endpoint 永远报错，pin 到 metric / log 即可定位。
 
 ## 5. PrepareCall 失败分类
 

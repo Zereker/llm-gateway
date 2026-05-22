@@ -30,6 +30,7 @@ func ToDomainEndpoint(e *Endpoint) *domain.Endpoint {
 		Routing:      domain.RoutingConfig(e.Routing),
 		Quota:        domain.QuotaConfig(e.Quota),
 		Capabilities: domain.EndpointCapabilities(e.Capabilities),
+		Quirks:       []byte(e.Quirks),
 		Extra:        []byte(e.Extra),
 		CreatedAt:    e.CreatedAt,
 		UpdatedAt:    e.UpdatedAt,
