@@ -62,14 +62,19 @@ type Factory interface {
 //
 // **契约**：
 //   - 单 goroutine 使用（与 gin handler 同协程）；实现无需自加锁
-//   - BuildRequest 调一次；body 是 Translator 已经翻译好的"上游协议"字节
+//   - BuildRequest 调一次；body / extraHeaders 都是 caller（pkg/protocol.combine）
+//     已经跑完 translator + quirks 之后的最终产物
 //   - Close 必须在所有路径上 defer 调用；幂等
 type Session interface {
 	// BuildRequest 构造发往上游的 HTTP request。
 	//
-	// body 是 translator 已经翻译过的字节（直接塞进 request body）。
-	// adapter 的工作：URL / auth header / Content-Type / 其它 vendor 特定 header。
-	BuildRequest(body []byte) (*http.Request, error)
+	// **参数**：
+	//   - body：translator + quirks.RewriteBody 跑完后的字节（直接塞进 req.Body）
+	//   - extraHeaders：quirks.RewriteHeader 跑完后的最终 header；nil 表示无额外
+	//     header。adapter 应先把 extraHeaders 拷贝到 req.Header，再写自己协议
+	//     必需的 Auth / Content-Type 等（adapter 的协议头**最后写，覆盖** quirks
+	//     ——避免 deployer 误改 Authorization 把请求打挂）
+	BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error)
 
 	// Close 释放 Session 持有的资源；必须由 dispatch defer 调用；幂等。
 	Close() error

@@ -29,13 +29,15 @@ func newSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvel
 
 // BuildRequest 构造 *http.Request：
 //   - URL: ep.Routing.URL（约定填完整 chat completions 端点）
-//   - Authorization: Bearer <api_key>，从 ep.Auth.Payload (BearerAuth) 解码
-//   - Body: translator 已翻好（identity 透传 / 其它 translator 转协议）
+//   - 先拷贝 extraHeaders（quirks 输出的最终 header）
+//   - 再写 Authorization / Content-Type——协议必需 header **后写、可覆盖** quirks，
+//     避免 deployer 误改 Authorization 把请求打挂
+//   - Body: translator + quirks 已跑完
 //
 // **vendor 校验**：本 Adapter 复用给所有 OpenAI-compatible vendor（openai/ark/
 // deepseek/...），它们都用 Bearer 鉴权。所以 ep.Auth.Type 必须是 AuthTypeBearer；
 // 其他类型（x-api-key 给 anthropic / aws-sigv4 给 bedrock）应该走对应专属 adapter。
-func (s *session) BuildRequest(body []byte) (*http.Request, error) {
+func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("openai: ep.routing.url empty")
 	}
@@ -51,6 +53,13 @@ func (s *session) BuildRequest(body []byte) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 先 quirks header
+	for k, vs := range extraHeaders {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	// 再协议必需 header（覆盖）
 	req.Header.Set("Content-Type", "application/json")
 	if bearer.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer.APIKey)

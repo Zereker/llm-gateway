@@ -55,11 +55,20 @@ type fakeSession struct {
 	closed   bool
 }
 
-func (s *fakeSession) BuildRequest(body []byte) (*http.Request, error) {
+func (s *fakeSession) BuildRequest(body []byte, extra http.Header) (*http.Request, error) {
 	if s.buildErr != nil {
 		return nil, s.buildErr
 	}
-	return http.NewRequest("POST", "http://upstream.test/v1/chat", strings.NewReader(string(body)))
+	req, err := http.NewRequest("POST", "http://upstream.test/v1/chat", strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	for k, vs := range extra {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	return req, nil
 }
 
 func (s *fakeSession) Close() error {

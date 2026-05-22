@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
@@ -51,7 +52,7 @@ func TestSession_BuildRequest(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","stream":false,"messages":[]}`)
 	s := newSession(context.Background(), ep, &domain.RequestEnvelope{})
 
-	req, err := s.BuildRequest(body)
+	req, err := s.BuildRequest(body, nil)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestSession_BuildRequest(t *testing.T) {
 func TestSession_NoAPIKeyOmitsHeader(t *testing.T) {
 	ep := bearerEP("u", "")
 	s := newSession(context.Background(), ep, &domain.RequestEnvelope{})
-	req, err := s.BuildRequest([]byte(`{}`))
+	req, err := s.BuildRequest([]byte(`{}`), nil)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestSession_RejectsNonBearerAuth(t *testing.T) {
 		Routing: domain.RoutingConfig{URL: "u"},
 	}
 	s := newSession(context.Background(), ep, &domain.RequestEnvelope{})
-	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
+	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Error("expected error for non-bearer auth")
 	}
 }
@@ -95,7 +96,7 @@ func TestSession_RejectsNonBearerAuth(t *testing.T) {
 func TestSession_RejectsEmptyURL(t *testing.T) {
 	ep := bearerEP("", "k")
 	s := newSession(context.Background(), ep, &domain.RequestEnvelope{})
-	if _, err := s.BuildRequest([]byte(`{}`)); err == nil {
+	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Error("expected error for empty URL")
 	}
 }
@@ -107,5 +108,32 @@ func TestSession_CloseIdempotent(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// TestSession_ExtraHeaders 验证：
+//   - extraHeaders 拷进 req.Header
+//   - 协议必需 header（Content-Type / Authorization）adapter 写在最后，覆盖 quirks
+func TestSession_ExtraHeaders(t *testing.T) {
+	s := newSession(context.Background(), bearerEP("https://api.example.com/v1/chat/completions", "real-key"), &domain.RequestEnvelope{})
+
+	extra := http.Header{}
+	extra.Set("X-Custom-Tag", "prod")
+	// 故意让 quirks 写一个 Authorization——adapter 必须覆盖回 real-key
+	extra.Set("Authorization", "Bearer attacker-key")
+
+	req, err := s.BuildRequest([]byte(`{}`), extra)
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+
+	if got := req.Header.Get("X-Custom-Tag"); got != "prod" {
+		t.Errorf("X-Custom-Tag=%q, want \"prod\"", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer real-key" {
+		t.Errorf("Authorization=%q, want adapter 覆盖回 real-key", got)
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type=%q, want adapter 强制 application/json", got)
 	}
 }
