@@ -96,7 +96,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 
 // Report 反馈 Send 结果给 cooldown + stats store + metric。
 //
-// 不决定控制流——M7 调 Report 后自己看 result.Class.IsRetryable 决定继续 / 停止。
+// 不决定控制流——dispatch.RetryPolicy.Decide 看 result.Class.IsRetryable 决定继续 / 停止。
 //
 // **路由**：
 //   - Success / Invalid → 不冷却（无价值；Invalid 是客户端错误，cooldown 会误伤其它请求）
