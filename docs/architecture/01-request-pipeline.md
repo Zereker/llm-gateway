@@ -133,9 +133,9 @@ M5 使用 middleware-owned interfaces，由 `pkg/repo` 的 cached wrapper 注入
 
 M5 不查询 active pricing，也不向 `RequestContext` 写 pricing snapshot。价格匹配和金额计算由下游计费平台根据 Usage Event 的请求发生时间完成。
 
-跨 model fallback 校验也在 M5 完成：解析 `X-Gateway-Fallback-Models` header（详见 [03 §5](./03-endpoint-scheduling.md#5-重试模型)），对每个 fallback model 重新走 catalog + subscription，把已校验过的 `*ModelService` 一并写入 `rc.ModelChain`（primary 在 `[0]`，fallback 顺序追加）。fallback 不存在或未订阅时静默剔除——只要 primary 成功，请求继续。M7 直接遍历 `rc.ModelChain`，不再重做 catalog/subscription。成功选中某个 model 后 M7 写 `rc.RoutedModelService`，usage meta 和 attempt 记录都使用实际路由 model。
+跨 model fallback 校验也在 M5 完成：解析 `X-Gateway-Fallback-Models` header（详见 [03 §5](./03-endpoint-scheduling.md#5-重试模型)），对每个 fallback model 重新走 catalog + subscription，把已校验过的 `*ModelService` 一并写入 `rc.ModelChain`（primary 在 `[0]`，fallback 顺序追加）。fallback 不存在或未订阅时静默剔除——只要 primary 成功，请求继续。M7 thin adapter 把 `rc.ModelChain` 投影进 `dispatch.Input`，由 `dispatch.Dispatcher` 消费并决定是否切到 fallback model；M7 只把 `dispatch.Outcome` 写回 `rc.RoutedModelService` / `rc.Usage` / `rc.SchedulingDecision`。usage meta 和 attempt 记录都使用实际路由 model。
 
-SQL 查询失败统一按依赖故障处理：M2 IdentityResolver、M5 ModelCatalog、SubscriptionChecker、M7 EndpointReader 返回 DB error 时 fail-closed，响应 503 和 `Retry-After`，不得伪装成 401/403/404。PolicyCache 的显式 TTL 缓存是例外；缓存命中时可继续使用缓存值，cache miss 后 DB 失败仍返回 503。
+SQL 查询失败统一按依赖故障处理：M2 IdentityResolver、M5 ModelCatalog、SubscriptionChecker、dispatch `CandidateSource`（生产上桥接 repo EndpointReader）返回 DB error 时 fail-closed，响应 503 和 `Retry-After`，不得伪装成 401/403/404。PolicyCache 的显式 TTL 缓存是例外；缓存命中时可继续使用缓存值，cache miss 后 DB 失败仍返回 503。
 
 ## 8. 错误出口
 

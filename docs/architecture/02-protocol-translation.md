@@ -346,13 +346,17 @@ for ep in candidates {
     h := handlers.Get(ep, env.SourceProtocol)
     if h == nil:
         removed (handler_missing)
-    if !contains(h.Capabilities().SupportedModalities, env.Modality):
+    if !endpointSupportsModality(ep.Capabilities.Modalities, h.Capabilities().SupportedModalities, env.Modality):
         removed (modality_unsupported)
     eligible
 }
 ```
 
-v0.5 的两次 lookup（VendorLookup + TranslatorLookup）+ match check 合并到一次
+endpoint `Capabilities.Modalities` 是 endpoint 级白名单，只能 narrow vendor
+`SupportedModalities`，不能 widen；具体 intersection 语义见
+[03 §3](./03-endpoint-scheduling.md#3-候选资格过滤)。
+
+v0.5 旧形态里的 vendor / translator 两次查找 + match check，v0.6+ 已合并到一次
 Handler 查找。
 
 ## 10. invoker 流程
