@@ -146,7 +146,7 @@ type Scheduler interface {
 **Request 故意不带** `attempts` / `fallbackModels` / `LoadFallback`——这些都是
 dispatch.Dispatcher 外层 reducer 的职责，scheduler 只看一批候选。
 
-## 4. ErrorClass 五分类速查
+## 4. ErrorClass 六分类速查
 
 | Class | 触发场景 | IsRetryable | Cooldown |
 |-------|----------|-------------|----------|
