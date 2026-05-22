@@ -383,3 +383,42 @@ func TestDispatcher_TracerSpansHappyPath(t *testing.T) {
 		t.Errorf("request span outcome=%v, want \"streamed\"", got)
 	}
 }
+
+// TestDispatcher_DecisionAlwaysFilled_NoAttempts 验证 Outcome.Decision 契约：
+// **即使一次 attempt 都没跑**（无 eligible / 无 candidate / cap=0），Decision 也
+// 必须填出来，方便审计 / log / metric 不用对 nil 特判。
+//
+// 之前的 bug：state.finalize() 在 len(decisions)==0 时直接 return，留 nil Decision。
+func TestDispatcher_DecisionAlwaysFilled_NoAttempts(t *testing.T) {
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(newFakeSelector(selResp{ep: nil})), // 直接 picker 返 nil
+		WithInvokerFactory(newFakeInvokerFactory()),
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+
+	in := newTestInput("gpt-4") // 单 model；fallback 也没；直接 NoEndpoint
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
+
+	if out.Result != OutcomeNoEndpoint {
+		t.Fatalf("want OutcomeNoEndpoint, got %s", out.Result)
+	}
+	if out.Decision == nil {
+		t.Fatal("Decision should always be filled, got nil")
+	}
+	if out.Decision.Model != "gpt-4" {
+		t.Errorf("Decision.Model = %q, want gpt-4", out.Decision.Model)
+	}
+	if out.Decision.RoutedModel != "gpt-4" {
+		// 没成功路由时审计 routed 兜底成 primary，方便下游 join
+		t.Errorf("Decision.RoutedModel = %q, want primary fallback gpt-4", out.Decision.RoutedModel)
+	}
+	if len(out.Decision.Attempts) != 0 {
+		t.Errorf("Decision.Attempts = %d, want 0 (no attempts ran)", len(out.Decision.Attempts))
+	}
+	if out.Decision.DurationMs < 0 {
+		t.Errorf("Decision.DurationMs = %d, want >= 0", out.Decision.DurationMs)
+	}
+}

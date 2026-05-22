@@ -149,13 +149,25 @@ func TestState_FinalizeAbortFillsLastAsFail(t *testing.T) {
 	}
 }
 
-func TestState_NoAttemptsNoDecision(t *testing.T) {
+// TestState_NoAttemptsStillProducesDecision 验证 Outcome.Decision **永远填**的
+// 契约（即使 0 attempt）。下游审计 / log / metric 不需要对 nil 特判。
+func TestState_NoAttemptsStillProducesDecision(t *testing.T) {
 	in := newTestInput("gpt-4")
 	s := newState(in, 3)
 	s.SetAbort(Abort{Result: OutcomeDepFail, HTTPCode: 503})
 
-	if s.Outcome().Decision != nil {
-		t.Fatalf("expected no SchedulingDecision when no attempts; got %+v", s.Outcome().Decision)
+	d := s.Outcome().Decision
+	if d == nil {
+		t.Fatal("Decision should always be filled, got nil")
+	}
+	if d.Model != "gpt-4" {
+		t.Errorf("Decision.Model = %q, want gpt-4", d.Model)
+	}
+	if d.RoutedModel != "gpt-4" {
+		t.Errorf("Decision.RoutedModel = %q, want primary fallback gpt-4", d.RoutedModel)
+	}
+	if len(d.Attempts) != 0 {
+		t.Errorf("Decision.Attempts = %d, want 0", len(d.Attempts))
 	}
 }
 

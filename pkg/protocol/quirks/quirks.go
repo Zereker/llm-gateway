@@ -4,11 +4,14 @@
 //
 //	pkg/protocol/combine.go PrepareCall:
 //	  client body
-//	    → translator.TranslateRequest  （客户端协议 → 上游协议的 shape 转换）
-//	    → ep.Quirks.RewriteBody        （endpoint 配置的 body 微调）  ← 本包
-//	    → protocol.Session.BuildRequest         （HTTP 信封：URL / auth / Content-Type）
-//	    → ep.Quirks.RewriteHeader      （endpoint 配置的 header 微调）  ← 本包
+//	    → translator.TranslateRequest                  （客户端协议 → 上游协议 shape）
+//	    → ep.Quirks.RewriteBody + RewriteHeader        ← 本包（body + header 一次跑完）
+//	    → protocol.Session.BuildRequest(body, headers) （HTTP 信封 + 合并 quirks header）
 //	    → upstream
+//
+// **adapter 合并规则**：adapter 拷贝 quirks header 进 req.Header 后，**再写**协议
+// 必需 header（Auth / Content-Type / vendor 版本头）——后写覆盖。这样 deployer
+// 误改 Authorization 不会把请求打挂；想加 vendor 私有 header 又畅通。
 //
 // **为什么需要**：translator 只负责"客户端协议 → 上游协议"的形状转换；同一上游
 // 协议内不同 vendor / 模型仍有细微差异。两类典型差异：
@@ -67,9 +70,10 @@ import (
 // **生命周期**：Compile / CompileJSON 一次，多请求共享（无 per-call state，
 // 并发安全）。
 //
-// **使用**：combine.go 在 translator 之后、adapter 之前调 RewriteBody；
-// 在 adapter 之后调 RewriteHeader。两步可独立 no-op（spec.Body 或 spec.Headers
-// 单独为空时对应方法直接 short-circuit）。
+// **使用**：combine.go 在 translator 之后、adapter BuildRequest 之前调 RewriteBody +
+// RewriteHeader 两个方法（header 跑在 fresh http.Header{} 上），把 final body +
+// header 传给 adapter.Session.BuildRequest。两步可独立 no-op（spec.Body 或
+// spec.Headers 单独为空时对应方法直接 short-circuit）。
 type Rewriter interface {
 	// RewriteBody 改 body JSON 字段。返回 new body（可能跟入参同 slice）。
 	RewriteBody(body []byte) ([]byte, error)
