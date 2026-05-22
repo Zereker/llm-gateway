@@ -466,14 +466,16 @@ func TestIsPrepareError(t *testing.T) {
 // helpers
 // =============================================================================
 
-// resetGlobalRegistries 清空两个全局 registry（adapter + translator）；
-// 测试 setup + cleanup 用。
+// resetGlobalRegistries 清空 vendor + translator registry + Handler cache；
+// 测试 setup + cleanup 用。三者必须配套清，否则 handlerCache 留着对已删 Factory 的引用。
 func resetGlobalRegistries(t *testing.T) {
 	t.Helper()
 	protocol.ResetFactories()
+	protocol.ResetHandlerCache()
 	translator.Reset()
 	t.Cleanup(func() {
 		protocol.ResetFactories()
+		protocol.ResetHandlerCache()
 		translator.Reset()
 	})
 }
@@ -579,5 +581,39 @@ func TestCombine_QuirksCompileCached(t *testing.T) {
 		if strings.Contains(string(call.UpstreamBody), `"a"`) {
 			t.Errorf("iter %d: strip failed: %s", i, call.UpstreamBody)
 		}
+	}
+}
+
+// TestDefaultLookup_CachesHandlerAcrossRequests 验证：DefaultLookup 多次 Get 同
+// (vendor, src, target) 返回**同一个** Handler 实例——这样 combined 内部的
+// quirksCache 才能跨请求复用，否则 deployer 配的 quirks JSON 每个请求都重 compile。
+//
+// 之前的 bug：DefaultLookup.Get 每次都 new combined{}，sync.Map 缓存随实例丢失。
+// 修复后：handlerCache 在 package 级，按 "vendor|src|tgt" key 命中。
+func TestDefaultLookup_CachesHandlerAcrossRequests(t *testing.T) {
+	resetGlobalRegistries(t)
+
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "cachev"}}
+	protocol.RegisterFactory("cachev", ad)
+	translator.Register(&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
+
+	ep := &domain.Endpoint{Vendor: "cachev", Protocol: domain.ProtoOpenAI}
+	lookup := protocol.DefaultLookup{}
+
+	h1 := lookup.Get(ep, domain.ProtoOpenAI)
+	h2 := lookup.Get(ep, domain.ProtoOpenAI)
+
+	if h1 == nil || h2 == nil {
+		t.Fatalf("lookup returned nil; h1=%v h2=%v", h1, h2)
+	}
+	if h1 != h2 {
+		t.Errorf("DefaultLookup.Get 多次调用返回不同 Handler 实例（缓存失效）")
+	}
+
+	// 另一个 DefaultLookup 实例也应该命中同一个 Handler（包级缓存）
+	otherLookup := protocol.DefaultLookup{}
+	h3 := otherLookup.Get(ep, domain.ProtoOpenAI)
+	if h3 != h1 {
+		t.Errorf("跨 DefaultLookup 实例没命中包级缓存")
 	}
 }

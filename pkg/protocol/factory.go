@@ -17,12 +17,25 @@ import (
 //	Handler = Combine(Factory, translator.Translator)
 //
 // Factory 管 vendor HTTP 层（URL / auth headers / TLS / proxy）；body shape
-// 翻译走 pkg/translator；端到端协议处理走 Handler facade。消费侧（dispatcher /
-// invoker）只看 Handler，不直接接触 Factory——Factory 是 facade 内部细节。
+// 翻译走 pkg/translator；端到端协议处理走 Handler facade。
+//
+// **facade 边界**（重要——v0.7 合并 pkg/adapter 进 pkg/protocol 之后的纪律）：
+//
+//   允许直接消费 Factory / Session / RegisterFactory / LookupFactory：
+//     - 本包内部（combine.go / registry.go）
+//     - pkg/protocol/<vendor>/ 子包（init() 注册自己）
+//     - cmd/gateway（composition root，目前没用，留出口给未来 cli 自检）
+//
+//   **禁止** 在 pkg/dispatch / pkg/middleware / pkg/invoker / pkg/selector /
+//   pkg/router 等数据面里 type-assert 或直接调 Factory / LookupFactory。它们
+//   只通过 protocol.Handler / protocol.Lookup 两个 facade 类型跟协议层交互。
+//
+//   反例：dispatch 里 LookupFactory(ep.Vendor) 拿出来 type-assert 判 vendor 走
+//   不同逻辑——这等于把 vendor 知识扩散到调度层，废掉了 facade 的价值。
 //
 // **新增 vendor 步骤**：
 //  1. 在 pkg/protocol/<vendor>/ 写一个实现 Factory + Session 的 struct
-//  2. init() 调 protocol.RegisterFactory(yourFactory)
+//  2. init() 调 protocol.RegisterFactory("<vendor>", yourFactory)
 //  3. 如果客户端协议跟 endpoint.Protocol 之间没覆盖：在
 //     pkg/translator/<src>_<tgt>/ 加 Translator
 //  4. cmd/gateway 加 blank import 触发 init()

@@ -39,7 +39,8 @@ type Endpoint struct {
 	Capabilities EndpointCapabilities
 
 	// Quirks endpoint 级 body / header 微调 DSL（pkg/protocol/quirks）。
-	// 空 = no-op。combine.go 在 translator 之后、adapter 之后两处分别应用。
+	// 空 = no-op。combine.go 在 translator 之后、adapter BuildRequest 之前把 body
+	// 和 header 一起跑完，再把 final body + headers 一次交给 adapter 组装。
 	Quirks json.RawMessage
 
 	Extra json.RawMessage

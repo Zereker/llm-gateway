@@ -227,17 +227,17 @@ func (s *state) Outcome() Outcome { return s.outcome }
 // =============================================================================
 
 func (s *state) finalize() {
-	if len(s.decisions) == 0 {
-		return
-	}
-	last := len(s.decisions) - 1
-	for i := 0; i < last; i++ {
-		s.decisions[i].Outcome = domain.AttemptFallback
-	}
-	if s.outcome.Result == OutcomeStreamed {
-		s.decisions[last].Outcome = domain.AttemptSuccess
-	} else {
-		s.decisions[last].Outcome = domain.AttemptFail
+	// attempt 标签只有在有 attempt 时才能补；空 attempts（无候选 / 无 eligible /
+	// AttemptCap=0）跳过这一步，Decision 仍然下方填出来。
+	if n := len(s.decisions); n > 0 {
+		for i := 0; i < n-1; i++ {
+			s.decisions[i].Outcome = domain.AttemptFallback
+		}
+		if s.outcome.Result == OutcomeStreamed {
+			s.decisions[n-1].Outcome = domain.AttemptSuccess
+		} else {
+			s.decisions[n-1].Outcome = domain.AttemptFail
+		}
 	}
 
 	primary := s.in.PrimaryModel()
@@ -249,14 +249,18 @@ func (s *state) finalize() {
 	if s.outcome.RoutedModel != nil {
 		routedName = s.outcome.RoutedModel.Model
 	} else if primary != nil {
+		// 没成功路由时审计 routed 兜底成 primary，方便下游 join。
 		routedName = primary.Model
 	}
 
+	// **永远填 Decision**（即使 attempts 为空）——契约见 Outcome.Decision 注释。
+	// 无候选 / 无 eligible / 初始 attempts exhausted 这类调度失败也有审计结构，
+	// 下游审计 / log / metric 不需要对 nil Decision 特判。
 	s.outcome.Decision = &domain.SchedulingDecision{
 		Model:       model,
 		RoutedModel: routedName,
 		UserGroup:   s.in.Identity.Group,
-		Attempts:    s.decisions,
+		Attempts:    s.decisions, // 可能是 nil/empty slice
 		DurationMs:  time.Since(s.startTime).Milliseconds(),
 	}
 }
