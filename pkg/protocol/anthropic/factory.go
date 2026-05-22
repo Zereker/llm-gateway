@@ -1,6 +1,6 @@
 // Package anthropic 是 Anthropic Messages 协议的 Adapter。
 //
-// init() 注册到 adapter registry，vendor 名 "anthropic"。
+// init() 注册到 protocol vendor registry，vendor 名 "anthropic"。
 //
 // **Auth**：anthropic 用 `x-api-key` 头（不是 Authorization Bearer）。schema 用
 // AuthTypeXAPIKey。配合公司账号或 Bedrock 转发等多种方式都靠 x-api-key。

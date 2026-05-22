@@ -95,22 +95,29 @@ miss 走 SQL 直查取到新值。`CachedEndpointReader` 同时维护 list cache
 
 endpoint 必须显式声明：
 
-- `native_protocol`：该 endpoint 原生使用的上游协议，例如 `openai` 或 `responses`。
-- `supported_modalities`：该 endpoint 能承接的模态，例如 chat、embedding、image。
+- `Protocol`：该 endpoint 上游使用的协议，例如 `openai` / `anthropic` / `gemini` / `responses`
+  （核心列，必填）。
+- `Capabilities.Modalities`（JSON 列子字段）：该 endpoint 能承接的模态白名单，
+  例如 `["chat"]` / `["embedding", "rerank"]`。空 = fall back 到 vendor Factory.Metadata()
+  声明的上限模态集合。
 
 ## 3. 候选资格过滤
 
 候选资格过滤应在进入 `pkg/selector` 之前完成。规则：
 
-1. endpoint 必须支持 `env.Modality`。
-2. endpoint 的 `native_protocol` 等于 `env.SourceProtocol`，或存在 `(env.SourceProtocol, endpoint.native_protocol)` translator。
-3. endpoint 缺少 adapter、native protocol 配置非法、translator 未注册时，不进入本次 selection。
+1. `protocol.Lookup.Get(ep, env.SourceProtocol)` 返 nil → 没有可用 Handler（缺
+   vendor Factory、缺 translator、或 `ep.Protocol == ProtoUnknown`）→ 剔除。
+2. 模态不支持 → 剔除：endpoint 显式声明 `Capabilities.Modalities` 时**它 authoritative**；
+   否则 fall back 到 vendor `Handler.Capabilities().SupportedModalities`；都空 = 不限模态。
 
 这些问题不是上游失败，不应该进入 `Scheduler.Report`，也不应该触发 cooldown。否则会把“不支持当前请求”的 endpoint 误标成坏 endpoint。
 
-资格过滤是 M7 driver loop 的硬前置。缺 adapter、缺 native protocol、缺 translator 都是“不具备承接能力”，不能进入 retry/cooldown。
+资格过滤是 dispatcher driver loop 的硬前置。缺 Factory、协议不匹配、缺 translator、模态不
+匹配都是“不具备承接能力”，不能进入 retry/cooldown。
 
-实现上放在 `pkg/dispatch/eligibility.go`（dispatch 内部 helper，不是独立 package），保持纯函数形态，输入 `RequestEnvelope`、candidate endpoints、adapter registry reader、translator registry reader，输出 eligible endpoints 和被剔除原因。M7 只调用它并记录 trace/metric，不内联复杂判断。
+实现在 `pkg/dispatch/eligibility.go`（dispatch 内部 helper，不是独立 package），纯函数；
+输入 `*domain.RequestEnvelope`、candidate endpoints、`protocol.Lookup`，输出 eligible
+endpoints。dispatcher 在 `step()` 内调用，不内联复杂判断。
 
 ## 4. Scheduler 只做批内选择
 
