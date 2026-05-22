@@ -5,6 +5,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol/quirks"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
@@ -53,7 +54,15 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 		return nil, NewPrepareError(PhaseTranslate, err)
 	}
 
-	// pre-call phase 2: vendor HTTP 信封（URL / auth / headers）
+	// pre-call phase 2: vendor / 模型级 body 微调（reasoning model 字段映射等）
+	if r := quirks.Get(ep.Vendor); r != nil {
+		upstreamBody, err = r.Rewrite(upstreamBody)
+		if err != nil {
+			return nil, NewPrepareError(PhaseQuirks, err)
+		}
+	}
+
+	// pre-call phase 3: vendor HTTP 信封（URL / auth / headers）
 	sess, err := c.ad.NewSession(ctx, ep, &domain.RequestEnvelope{
 		SourceProtocol: c.caps.SourceProtocol,
 		RawBytes:       srcBody, // 备份给可能引用原 body 的 session 实现

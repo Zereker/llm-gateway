@@ -118,12 +118,53 @@ type Capabilities struct {
 Handler 是 (adapter, translator) 动态组合，跟 specific endpoint 在 `PrepareCall`
 入参时才挂钩。
 
+## 4a. Quirks — vendor / 模型级 body 微调（`pkg/protocol/quirks`）
+
+`translator` 只负责"客户端协议 → 上游协议"的形状转换；同一上游协议内不同 vendor /
+模型仍有细微差异：
+
+- OpenAI o1 / o3 / o4 推理模型：`max_tokens` → `max_completion_tokens`；拒绝
+  `temperature` / `top_p` / `presence_penalty` / `frequency_penalty` 等字段
+- DeepSeek `deepseek-reasoner`：类似 o1 的字段限制
+- Anthropic Claude 3.7+ extended_thinking：需要插 `thinking` 块 + 强制 `temperature=1`
+- vLLM / Ollama 自部署：可能需要 strip 某些 OpenAI 特有字段
+
+这些都属于"翻译后的最终修正"，由独立的 `pkg/protocol/quirks` 包承载，插在
+translator 与 adapter 之间：
+
+```text
+client body
+  → translator.TranslateRequest   （客户端协议 → 上游协议 shape）
+  → quirks.Get(ep.Vendor).Rewrite （vendor / 模型级最终微调）  ← 本节
+  → adapter.BuildRequest          （HTTP 信封：URL / auth / headers）
+  → upstream
+```
+
+接口（`pkg/protocol/quirks/quirks.go`）：
+
+```go
+type Rewriter interface {
+    Rewrite(body []byte) ([]byte, error)
+}
+
+func Register(vendor string, r Rewriter)
+func Get(vendor string) Rewriter  // 未注册返回 nil
+```
+
+vendor 多个 Rewriter 注册会自动按注册顺序 Chain，任一失败立即中止。
+没有 quirks 的 vendor 不注册，`combine.go` 检测 `Get` 返回 nil 后跳过该 phase
+（零开销）。
+
+具体 vendor 规则在 `pkg/protocol/<vendor>/quirks.go` 里写，跟 adapter / translator
+共子包，`init()` 注册。
+
 ## 5. PrepareCall 失败分类
 
 ```go
 type PreparePhase int
 const (
     PhaseTranslate PreparePhase = iota  // translator.TranslateRequest 失败
+    PhaseQuirks                         // quirks.Rewrite 失败（vendor / 模型级 body 微调）
     PhaseBuild                          // adapter session BuildRequest / NewSession 失败
 )
 
@@ -135,6 +176,8 @@ type PrepareError struct {
 
 - **PhaseTranslate**：`srcBody` 不符合 `SourceProtocol` 的 schema → `dispatch.ClassInvalid`
   → caller 应直接 abort 400（同请求换 endpoint 也会失败）
+- **PhaseQuirks**：vendor / 模型级 body Rewriter 失败（详见 §4a）→ `dispatch.ClassInvalid`
+  → caller 应直接 abort（同请求重试也会同样失败）
 - **PhaseBuild**：vendor HTTP 构造失败（极少；通常是 endpoint 配置非法如 URL
   不可解析）→ `dispatch.ClassPermanent`
 

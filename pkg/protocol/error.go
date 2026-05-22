@@ -13,6 +13,10 @@ const (
 	// PhaseTranslate translator.TranslateRequest 失败（srcBody 不符合 SourceProtocol schema）。
 	// 对应 dispatch.ClassInvalid——同请求换 endpoint 也会失败，应直接 abort。
 	PhaseTranslate PreparePhase = iota
+	// PhaseQuirks vendor / 模型级 body rewriter 失败（pkg/protocol/quirks）。
+	// 通常是 quirks 实现 bug 或上游 body schema 跟规则错配；对应 dispatch.ClassInvalid，
+	// 直接 abort（同请求重试也会同样失败）。
+	PhaseQuirks
 	// PhaseBuild adapter session BuildRequest 失败（vendor HTTP 构造错；极少见，
 	// 通常是 endpoint 配置非法如 URL 不可解析）。
 	// 对应 dispatch.ClassPermanent。
@@ -23,6 +27,8 @@ func (p PreparePhase) String() string {
 	switch p {
 	case PhaseTranslate:
 		return "translate"
+	case PhaseQuirks:
+		return "quirks"
 	case PhaseBuild:
 		return "build"
 	default:
