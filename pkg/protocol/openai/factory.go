@@ -18,16 +18,16 @@ package openai
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Factory 实现 adapter.Factory——给 protocol.Combine 内部包成 Handler 用。
+// Factory 实现 protocol.Factory——给 protocol.Combine 内部包成 Handler 用。
 type Factory struct{}
 
 // Metadata 返回静态元信息。
-func (Factory) Metadata() adapter.Metadata {
-	return adapter.Metadata{
+func (Factory) Metadata() protocol.Metadata {
+	return protocol.Metadata{
 		Vendor: "openai",
 		SupportedModalities: []domain.Modality{
 			domain.ModalityChat,
@@ -38,10 +38,10 @@ func (Factory) Metadata() adapter.Metadata {
 }
 
 // NewSession 为本次请求构造 Session。
-func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (adapter.Session, error) {
+func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	return newSession(c, ep, env), nil
 }
 
 func init() {
-	adapter.Register("openai", Factory{})
+	protocol.RegisterFactory("openai", Factory{})
 }

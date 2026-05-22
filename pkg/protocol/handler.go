@@ -16,13 +16,13 @@
 // **跟 v0.5 (split adapter + translator) 的差异**：
 //
 //	v0.5: 两个独立抽象（adapter + translator），消费侧两次 lookup + match 检查；
-//	      adapter.Metadata.NativeProtocol 写死 vendor → 上游协议绑死。
+//	      protocol.Metadata.NativeProtocol 写死 vendor → 上游协议绑死。
 //	v0.6: 一个 Handler 抽象（facade），由 DefaultLookup 按 (endpoint, srcProto)
 //	      动态组合 adapter + translator。endpoint 携带 Protocol 字段——同 vendor
 //	      可以挂多条不同协议的 endpoint。
 //
 // **组合时机**：请求级，不是 init()。DefaultLookup.Get(ep, srcProto) 调用：
-//   1. adapter.Get(ep.Vendor) → adapter.Factory（vendor HTTP 实现）
+//   1. protocol.LookupFactory(ep.Vendor) → protocol.Factory（vendor HTTP 实现）
 //   2. translator.Find(srcProto, ep.Protocol) → translator.Translator（body 转换）
 //   3. Combine(ad, tr) → Handler
 //
@@ -108,6 +108,40 @@ type ResponseStream interface {
 //
 // invoker 在 HTTP 非 2xx 时通过 type-assert 调用：例 OpenAI 区分 insufficient_quota
 // （permanent）vs 真 rate-limit（capacity）；Anthropic 529 overloaded_error → capacity。
+//
+// **典型用途**：HTTP status 单维度不够细分时
+//   - 同样的 429：OpenAI 区分 insufficient_quota（permanent）vs 真 rate-limit（capacity）
+//   - 200 + 错误 body：少数厂商把错误塞 200 响应里，HTTP-only 看不出来
+//   - 5xx 细分：Anthropic 的 529 overloaded_error 应当走 capacity 而非 transient
+//
+// **契约**：
+//   - 实现 MUST be safe for concurrent use（多 goroutine 同时分类）
+//   - body 入参：实现不可保留 slice 引用——如要存进返回的 AdapterError 必须 string(body) / 拷贝
+//   - body 可能是部分（M7 limit-read 1KiB），实现要 tolerant of truncated JSON
 type Classifier interface {
 	Classify(status int, body []byte) *domain.AdapterError
+}
+
+// DefaultClassifier 仅按 HTTP 状态分类。Factory 不实现 Classifier 时的 fallback。
+type DefaultClassifier struct{}
+
+// Classify 按 HTTP 状态映射到 ErrorClass。
+func (DefaultClassifier) Classify(httpStatus int, body []byte) *domain.AdapterError {
+	e := &domain.AdapterError{
+		HTTPStatus:      httpStatus,
+		UpstreamMessage: string(body),
+	}
+	switch {
+	case httpStatus == 429:
+		e.Class = domain.ErrRateLimit
+	case httpStatus == 401, httpStatus == 403:
+		e.Class = domain.ErrPermanent
+	case httpStatus >= 400 && httpStatus < 500:
+		e.Class = domain.ErrInvalid
+	case httpStatus >= 500:
+		e.Class = domain.ErrTransient
+	default:
+		e.Class = domain.ErrUnknown
+	}
+	return e
 }

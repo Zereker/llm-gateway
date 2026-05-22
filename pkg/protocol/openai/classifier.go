@@ -3,11 +3,11 @@ package openai
 import (
 	"encoding/json"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Classify 实现 adapter.Classifier，覆盖 DefaultClassifier 给 OpenAI 协议族细化分类。
+// Classify 实现 protocol.Classifier，覆盖 DefaultClassifier 给 OpenAI 协议族细化分类。
 //
 // **OpenAI error JSON shape**：
 //
@@ -24,7 +24,7 @@ import (
 //
 // **body 解析失败时**（不合法 JSON / 截断）：fallback 到 DefaultClassifier，不报错。
 func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
-	base := adapter.DefaultClassifier{}.Classify(httpStatus, body)
+	base := protocol.DefaultClassifier{}.Classify(httpStatus, body)
 
 	if len(body) == 0 {
 		return base
@@ -60,5 +60,5 @@ func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	return base
 }
 
-// 编译期断言 Factory 实现 adapter.Classifier。
-var _ adapter.Classifier = Factory{}
+// 编译期断言 Factory 实现 protocol.Classifier。
+var _ protocol.Classifier = Factory{}

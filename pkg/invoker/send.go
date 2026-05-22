@@ -88,7 +88,7 @@ func (s *Sender) Send(
 
 	class := classifyHTTPStatus(resp.StatusCode)
 	// 可选 Classifier 接管：handler 自定义看 error body 细化 class。
-	// combined Handler 自动透传到底层 adapter.Classifier；vendor 直接实现 Classifier 也 OK。
+	// combined Handler 自动透传到底层 protocol.Classifier；vendor 直接实现 Classifier 也 OK。
 	if class != selector.ClassSuccess {
 		if cls, ok := handler.(protocol.Classifier); ok {
 			peeked := peekBodyForClassify(resp)

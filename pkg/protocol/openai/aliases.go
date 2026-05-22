@@ -1,6 +1,6 @@
 package openai
 
-import "github.com/zereker/llm-gateway/pkg/adapter"
+import "github.com/zereker/llm-gateway/pkg/protocol"
 
 // init 注册一组 OpenAI-compatible 的 vendor 别名。
 //
@@ -19,6 +19,6 @@ func init() {
 		// 后续可加：moonshot（月之暗面）/ zhipu（智谱）/ qwen（阿里）/ doubao（豆包）等
 	}
 	for _, v := range aliases {
-		adapter.Register(v, Factory{})
+		protocol.RegisterFactory(v, Factory{})
 	}
 }

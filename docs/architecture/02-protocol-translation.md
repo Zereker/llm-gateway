@@ -2,7 +2,7 @@
 
 本文记录协议转换的抽象与组合：客户端协议进、上游协议出（pre-call），上游
 响应回、客户端协议出（post-call）。两阶段封装在 `pkg/protocol.Handler` facade
-之下；内部仍由 `pkg/adapter`（vendor HTTP 层）+ `pkg/translator`（body shape 层）
+之下；内部仍由 `pkg/protocol`（vendor HTTP 层）+ `pkg/translator`（body shape 层）
 两个独立子抽象组成，但消费侧只看 Handler。
 
 核心原则：
@@ -20,7 +20,7 @@
 │ pkg/protocol.Handler  (facade，消费侧只看它)                       │
 │                                                                  │
 │   ┌──────────────────────────┐  ┌────────────────────────────┐   │
-│   │ pkg/adapter.Factory      │  │ pkg/translator.Translator  │   │
+│   │ pkg/protocol.Factory      │  │ pkg/translator.Translator  │   │
 │   │ (vendor HTTP 层)         │  │ (body shape 转换 + usage)   │   │
 │   │  - Metadata              │  │  - Source / Target          │   │
 │   │  - NewSession            │  │  - TranslateRequest         │   │
@@ -110,7 +110,7 @@ type Call struct {
 type Capabilities struct {
     SourceProtocol      domain.Protocol   // = translator.Source()
     UpstreamProtocol    domain.Protocol   // = translator.Target() == ep.Protocol
-    SupportedModalities []domain.Modality // = adapter.Metadata().SupportedModalities
+    SupportedModalities []domain.Modality // = protocol.Metadata().SupportedModalities
 }
 ```
 
@@ -145,7 +145,7 @@ deployer 直接 SQL 配置**——不在代码里 init() 注册任何 vendor 规
 client body
   → translator.TranslateRequest          （客户端协议 → 上游协议 shape）
   → ep.Quirks.RewriteBody  + RewriteHeader  ← 4a（一次跑完两段）
-  → adapter.BuildRequest(body, headers)   （HTTP 信封 + 合并 quirks header）
+  → protocol.Session.BuildRequest(body, headers)   （HTTP 信封 + 合并 quirks header）
   → upstream
 ```
 
@@ -237,7 +237,7 @@ func (DefaultLookup) Get(ep *Endpoint, src Protocol) Handler {
     if ep == nil || ep.Protocol == ProtoUnknown {
         return nil
     }
-    ad := adapter.Get(ep.Vendor)
+    ad := protocol.LookupFactory(ep.Vendor)
     if ad == nil {
         return nil
     }
@@ -257,7 +257,7 @@ chain）。
 dispatcher / invoker / eligibility 一律走 `dispatch.HandlersFrom(rc)` 取
 typed Lookup，不直接消费 adapter / translator registry。
 
-## 7. `pkg/adapter` — vendor HTTP 层（facade 内部细节）
+## 7. `pkg/protocol` — vendor HTTP 层（facade 内部细节）
 
 ```go
 type Metadata struct {
@@ -293,7 +293,7 @@ vendor 子包：
 - `pkg/protocol/anthropic/`
 - `pkg/protocol/gemini/`
 
-每个 vendor 子包的 `init()` 只调 `adapter.Register("<vendor>", Factory{})`；
+每个 vendor 子包的 `init()` 只调 `protocol.RegisterFactory("<vendor>", Factory{})`；
 Handler 由 `DefaultLookup` 在请求时动态合成，不在 init() 注册矩阵。
 
 ## 8. `pkg/translator` — body shape 层（facade 内部细节）
@@ -352,7 +352,7 @@ for ep in candidates {
 }
 ```
 
-v0.5 的两次 lookup（AdapterLookup + TranslatorLookup）+ match check 合并到一次
+v0.5 的两次 lookup（VendorLookup + TranslatorLookup）+ match check 合并到一次
 Handler 查找。
 
 ## 10. invoker 流程
@@ -411,8 +411,8 @@ Switch 到下个 model 或 Abort。
 
 ## 12. 新增 vendor / endpoint 步骤
 
-1. 在 `pkg/protocol/<vendor>/` 实现 `adapter.Factory` 和 `adapter.Session`。
-2. `init()` 中 `adapter.Register("<vendor>", Factory{})`。
+1. 在 `pkg/protocol/<vendor>/` 实现 `protocol.Factory` 和 `protocol.Session`。
+2. `init()` 中 `protocol.RegisterFactory("<vendor>", Factory{})`。
 3. 如果客户端要走的协议跟 vendor 的上游协议不一致，且 `pkg/translator/<src>_<dst>/`
    还没注册——新增 translator 实现并 `init()` 注册。
 4. 在 `cmd/gateway/main.go` 加 blank import：

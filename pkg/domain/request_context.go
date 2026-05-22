@@ -32,7 +32,7 @@ type RequestContext struct {
 	// === M3 Envelope 写入默认值；后续 middleware 可覆盖（多租户 / 灰度场景） ===
 	//
 	// 类型 = protocol.Lookup（用 any 是为了避 pkg/domain → pkg/dispatch →
-	// pkg/protocol → pkg/adapter → pkg/domain 循环依赖）。访问走
+	// pkg/protocol → pkg/protocol → pkg/domain 循环依赖）。访问走
 	// middleware.HandlersFrom(rc) 类型安全 helper，不要直接 type-assert。
 	//
 	// **v0.6 融合**：原 v0.5 把 adapter / translator 两个独立 lookup 挂在 RC 上

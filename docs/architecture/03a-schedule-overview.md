@@ -57,7 +57,7 @@ pkg/selector/
 
 pkg/selector/eligibility/
     eligibility.go             纯函数 Filter()：modality / adapter / native protocol / translator 资格过滤
-                               + AdapterLookup / TranslatorLookup 抽象（避免直接依赖 pkg/adapter）
+                               + VendorLookup / TranslatorLookup 抽象（避免直接依赖 pkg/protocol）
 
 cmd/gateway/main.go            装配点：
                                - selector.NewRedisCooldownManager(rdb, durations)

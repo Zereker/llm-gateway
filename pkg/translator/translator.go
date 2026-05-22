@@ -2,9 +2,9 @@
 //
 // **架构定位**（v0.6 facade）：
 //
-//	pkg/protocol.Handler = Combine(adapter.Factory, translator.Translator)
+//	pkg/protocol.Handler = Combine(protocol.Factory, translator.Translator)
 //
-// translator 只管 body shape；HTTP 层走 pkg/adapter；端到端 Handler 由
+// translator 只管 body shape；HTTP 层走 pkg/protocol；端到端 Handler 由
 // pkg/protocol.Combine 在请求时按 (srcProto, ep.Protocol) 动态组合。消费侧
 // 只看 protocol.Handler，不直接消费 Translator。
 //

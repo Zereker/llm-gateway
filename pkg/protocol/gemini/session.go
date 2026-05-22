@@ -6,7 +6,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -67,4 +67,4 @@ func (s *session) Close() error {
 }
 
 // 编译期断言。
-var _ adapter.Session = (*session)(nil)
+var _ protocol.Session = (*session)(nil)

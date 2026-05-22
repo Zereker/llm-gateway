@@ -24,17 +24,17 @@ package gemini
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Factory 实现 adapter.Factory。
+// Factory 实现 protocol.Factory。
 type Factory struct{}
 
 // Metadata 返回静态元信息。endpoint.Protocol（deployer 配置）通常 = ProtoGemini，
 // 客户端用 OpenAI SDK 时 dispatcher 自动接入 openai_gemini 翻译。
-func (Factory) Metadata() adapter.Metadata {
-	return adapter.Metadata{
+func (Factory) Metadata() protocol.Metadata {
+	return protocol.Metadata{
 		Vendor:              "gemini",
 		SupportedModalities: []domain.Modality{domain.ModalityChat},
 	}
@@ -43,8 +43,8 @@ func (Factory) Metadata() adapter.Metadata {
 // NewSession 为本次请求构造 Session。
 //
 // envelope 在 slim adapter 模型里不需要——translator 已经吃 raw body 翻译完。
-// 保留参数为了 adapter.Factory 接口兼容；session 不存它。
-func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.RequestEnvelope) (adapter.Session, error) {
+// 保留参数为了 protocol.Factory 接口兼容；session 不存它。
+func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.RequestEnvelope) (protocol.Session, error) {
 	tp, err := newTokenProvider(c, ep.Auth)
 	if err != nil {
 		return nil, err
@@ -53,5 +53,5 @@ func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.Requ
 }
 
 func init() {
-	adapter.Register("gemini", Factory{})
+	protocol.RegisterFactory("gemini", Factory{})
 }

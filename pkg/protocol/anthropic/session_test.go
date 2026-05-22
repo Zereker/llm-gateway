@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -32,7 +32,7 @@ func TestFactory_Metadata(t *testing.T) {
 func TestAdapter_Registered(t *testing.T) {
 	// vendor 适配器注册（Handler 由 protocol.DefaultLookup 在请求时动态组合，
 	// 这里只验证 adapter 一侧）
-	if f := adapter.Get("anthropic"); f == nil {
+	if f := protocol.LookupFactory("anthropic"); f == nil {
 		t.Fatal("anthropic adapter not registered")
 	}
 }
