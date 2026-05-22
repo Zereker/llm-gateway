@@ -34,9 +34,10 @@ if denied:
 
 c.Next()
 
-if rc.Usage != nil:
+usage = rc.Usage  # M7 thin adapter 从 dispatch.Outcome 写回；nil 表示未提取到 usage
+if usage != nil:
     build user TPM buckets by additive policy
-    ChargeBatch(TPM buckets with cost = rc.Usage.Total)
+    ChargeBatch(TPM buckets with cost = usage.Total)
 ```
 
 RPM / RPS 是前扣：cost 固定为 1，请求开始前已知，用于挡住请求洪峰。
@@ -148,14 +149,15 @@ endpoint quota 不暴露给客户端，只用于保护上游容量。
 - 不做 `input_chars / 4 + max_tokens` 预扣。
 - 不因为估算过大而提前拒绝请求。
 
-M7 成功拿到上游响应并提取 usage 后，M6 post-side 按真实值写入用户侧 TPM：
+M7 thin adapter 把 `dispatch.Outcome.Usage` 写回 `rc.Usage` 后，M6 post-side 按真实值写入用户侧 TPM：
 
 ```text
-cost = rc.Usage.Total
+usage = rc.Usage
+cost = usage.Total
 ChargeBatch(TPM buckets, cost)
 ```
 
-如果 `rc.Usage == nil`，本次请求不扣 TPM bucket。该情况应通过 usage extractor / translator 覆盖率逐步减少。
+如果 `usage == nil`，本次请求不扣 TPM bucket。该情况应通过 usage extractor / translator 覆盖率逐步减少。
 
 TPM 后扣的取舍：
 

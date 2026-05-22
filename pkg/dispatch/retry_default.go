@@ -1,6 +1,7 @@
 package dispatch
 
-// DefaultRetry 复现现状（pkg/middleware/selector.go driver loop）的 verdict → action 映射。
+// DefaultRetry 是当前默认 retry 策略：把一次 attempt 的 Verdict 翻译成
+// Dispatcher outer reducer 能消费的 Action。
 //
 // 映射规则：
 //

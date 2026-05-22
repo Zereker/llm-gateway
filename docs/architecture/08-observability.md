@@ -21,7 +21,7 @@
 | `vendor` | endpoint vendor |
 | `endpoint_id` | 实际 endpoint |
 | `protocol` | client protocol |
-| `native_protocol` | upstream protocol |
+| `endpoint_protocol` | endpoint upstream protocol |
 | `error_code` | 稳定机器码 |
 | `error_class` | 行为分类 |
 | `attempt_role` | `primary` 或 `fallback`，用于统计跨 model fallback |
@@ -55,7 +55,7 @@
 |------|------|--------|------|
 | `llm_gateway_http_requests_total` | counter | `method`, `route`, `status`, `error_class` | HTTP 请求总量 |
 | `llm_gateway_http_request_duration_seconds` | histogram | `method`, `route`, `status`, `model`, `routed_model` | 网关端到端延迟 |
-| `llm_gateway_invoker_requests_total` | counter | `vendor`, `endpoint_id`, `model`, `native_protocol`, `result`, `error_class` | 上游请求总量 |
+| `llm_gateway_invoker_requests_total` | counter | `vendor`, `endpoint_id`, `model`, `endpoint_protocol`, `result`, `error_class` | 上游请求总量 |
 | `llm_gateway_invoker_duration_seconds` | histogram | `vendor`, `endpoint_id`, `model`, `result`, `error_class` | 上游调用延迟 |
 | `llm_gateway_selector_attempts_total` | counter | `model`, `routed_model`, `vendor`, `endpoint_id`, `attempt_role`, `result`, `error_class` | endpoint attempt 统计 |
 | `llm_gateway_selector_candidates` | histogram | `model`, `stage` | 候选数量，stage 为 list/eligible/cooldown/quota |
