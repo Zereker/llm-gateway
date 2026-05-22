@@ -159,8 +159,9 @@ dispatch.Dispatcher 外层 reducer 的职责，scheduler 只看一批候选。
 
 注意两个特殊点：
 
-- `invalid` 命中时 M7 直接 `abort 400`，**既不**换 ep **也不**切 fallback model（参考
-  `outcome.Class.IsRetryable()` + `errors.Is(callErr, upstream.ErrInvalidRequest)`）。
+- `invalid` 命中时 `dispatch.DefaultRetry.Decide` 直接返 `Abort{HTTPCode: 400}`，
+  outer reducer 收到后 `state.SetAbort` + 退出循环——**既不**换 ep **也不**切
+  fallback model（PrepareError{Phase:PhaseTranslate|PhaseQuirks} 也走这条）。
 - `unknown` 虽 retryable 但 `Scheduler.Report` 里特判**不写 cooldown**（避免分类盲区污染冷却）。
 
 ## 5. 重试模型（两层，互补）
@@ -211,15 +212,17 @@ CooldownFilter 走 MGET 批量查；**Redis 错时 fail-open**（保留所有候
 | 时机 | 操作 | Bucket Key |
 |------|------|------------|
 | eligibility 之后 / Pick filter 链内 | `LimitReadFilter` 用 `SnapshotBatch` **只读**剔除已耗尽 | `rl:endpoint:<id>:rpm`、`...:rps` |
-| Pick 选中 ep 后 / Send 之前 | M7 用 `ReserveBatch` 前扣 RPM/RPS；超限 → 反馈 capacity + 排除 ep + 继续 Pick | 同上 |
-| Forward 完成（响应已结束） | M7 用 `ChargeBatch` 后扣 TPM（cost = `rc.Usage.Total`） | `rl:endpoint:<id>:tpm` |
+| Pick 选中 ep 后 / Invoke 之前 | `dispatch.Dispatcher.step` 调 `EndpointQuota.Reserve(ctx, ep)`（`adapters/EndpointQuotaAdapter` 包 `ratelimit.Store.ReserveBatch` 做 RPM/RPS 前扣）；超限 → `QuotaVerdict` 翻成 `Verdict{Class: ClassCapacity}` → `RetryPolicy.Decide` 一般返 `Continue` 换 ep | 同上 |
+| StreamTo 完成（响应已结束） | dispatcher 拿到 `StreamReport.Usage` 后调 `EndpointQuota.ChargeUsage(ctx, ep, usage)`（`adapters/EndpointQuotaAdapter` 包 `ratelimit.Store.ChargeBatch`，`cost = usage.Total`，fire-and-forget） | `rl:endpoint:<id>:tpm` |
 
 **为什么前扣不在 filter 阶段做**：filter 输入是"候选集"，如果在那里 reserve，未被选中
 的候选也被扣了 quota，会显著放大错误。所以 filter **永远只能 SnapshotBatch 只读**；
-Reserve 只发生在已选中之后。
+Reserve 只发生在 dispatcher Pick 之后。
 
-**TPM 必须后扣**：因为请求时不知道 usage.Total（要等 stream 结束 / 上游响应）。
-TPM 超限只发 metric，不阻塞**本次**响应；下次请求才被 read filter 屏蔽。
+**TPM 必须后扣**：因为请求时不知道 usage.Total（要等 stream 结束）。dispatcher
+拿到 `StreamReport.Usage` 后才知道真实 token 用量，再去 `ChargeUsage`。
+TPM 超限只发 metric，不阻塞**本次**响应（已经 stream 出去了）；下次请求才被
+`LimitReadFilter` 屏蔽。
 
 ## 8. Runtime Scoring（可选层）
 
