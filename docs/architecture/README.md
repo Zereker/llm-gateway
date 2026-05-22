@@ -8,7 +8,7 @@
 |---|------|------|
 | 00 | [overview](00-overview.md) | 目标系统边界、组件分层、请求生命周期 |
 | 01 | [request-pipeline](01-request-pipeline.md) | `domain.RequestContext` 与 middleware 链路 |
-| 02 | [protocol-translation](02-protocol-translation.md) | slim adapter、translator、上游转发边界 |
+| 02 | [protocol-translation](02-protocol-translation.md) | Handler facade、Factory / Translator / Quirks、上游转发边界 |
 | 03 | [endpoint-scheduling](03-endpoint-scheduling.md) | endpoint 候选、批内选择、显式 fallback、runtime scoring |
 | 03a | [schedule-overview](03a-schedule-overview.md) | schedule 模块速查 / 上手伴读（数据流、各包职责、装配点） |
 | 04 | [rate-limiting](04-rate-limiting.md) | 用户侧 RPM/RPS 前扣、TPM 后扣、endpoint quota |
@@ -25,7 +25,7 @@
 - SQL 写入 → gateway 数据传播走 [repo 进程内 TTL LRU 缓存](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)
   （默认 30s），不直连同库每请求查表；data plane 是 100% 只读，TTL 足够。
 - 客户端入口覆盖 OpenAI Chat、Anthropic Messages、OpenAI Responses、Images、Audio、Embeddings 路由；Gemini 当前作为上游协议支持，不暴露 Gemini 客户端入口。
-- adapter 是 HTTP 层工厂；协议 shape 转换和 usage 提取在 `pkg/translator` / `pkg/usage`。
+- `pkg/protocol` 整包既是 Handler facade，也持有 vendor Factory / Session（HTTP 层工厂）+ endpoint-level quirks DSL；协议 shape 转换在 `pkg/translator`，usage 提取在 `pkg/usage`。消费侧只看 `protocol.Handler` / `protocol.Lookup`，不 type-assert Factory。
 - 所有 middleware 装配走 interface-Option pattern（对位 otelgin v0.68.0），详见
   [06 §6](./06-pluggable-infra.md#6-middleware-options) 与 [01 §10](./01-request-pipeline.md#10-middleware-装配契约otelgin-v0680-对齐)。
 

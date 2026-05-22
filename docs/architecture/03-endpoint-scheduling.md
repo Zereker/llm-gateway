@@ -14,7 +14,7 @@
 | `pkg/middleware/model_service.go` (M5) | 解析 `X-Gateway-Fallback-Models`、逐 model 走 catalog + subscription、把已校验序列写到 `rc.ModelChain` |
 | `pkg/middleware/schedule.go` (M7) | 遍历 `rc.ModelChain`、拉候选、调用资格过滤、driver loop、写 RC |
 | `pkg/selector` | 对一批候选做 filter / pick / report / decision 记录 |
-| `pkg/selector/eligibility` | 纯函数资格过滤：modality / native protocol / adapter / translator 可用性 |
+| `pkg/dispatch/eligibility.go`（dispatch 内部 helper，不是独立 package） | 纯函数资格过滤：modality / native protocol / adapter / translator 可用性 |
 | `pkg/invoker` | adapter / translator lookup、HTTP Do、响应 forward、错误分类 |
 | `pkg/repo` | SQL endpoint reader |
 
@@ -110,7 +110,7 @@ endpoint 必须显式声明：
 
 资格过滤是 M7 driver loop 的硬前置。缺 adapter、缺 native protocol、缺 translator 都是“不具备承接能力”，不能进入 retry/cooldown。
 
-实现上放在 `pkg/selector/eligibility`，保持纯函数形态，输入 `RequestEnvelope`、candidate endpoints、adapter registry reader、translator registry reader，输出 eligible endpoints 和被剔除原因。M7 只调用它并记录 trace/metric，不内联复杂判断。
+实现上放在 `pkg/dispatch/eligibility.go`（dispatch 内部 helper，不是独立 package），保持纯函数形态，输入 `RequestEnvelope`、candidate endpoints、adapter registry reader、translator registry reader，输出 eligible endpoints 和被剔除原因。M7 只调用它并记录 trace/metric，不内联复杂判断。
 
 ## 4. Scheduler 只做批内选择
 

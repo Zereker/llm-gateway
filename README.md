@@ -9,43 +9,51 @@ one OpenAI-compatible interface.
 **v0.1 MVP.** Interfaces are settling but not yet API-stable. Architecture
 targets are tracked in [`docs/architecture`](docs/architecture/).
 
-## Layout
+## Data plane shape
 
 ```
-llm-gateway/
-├── cmd/
-│   ├── gateway/           data plane: serves /v1/* LLM requests, reads DB,
-│   │                      runs infra.Migrate on boot to bootstrap schema
-│   └── mockupstream/      dev/test helper: fake upstream that returns canned
-│                          usage; used for local smoke testing
-├── pkg/
-│   ├── config/            gateway.yaml loader (boot config)
-│   ├── domain/            shared domain types (RequestContext, Endpoint, ...)
-│   ├── infra/             infra adapters + schema.sql + Migrate
-│   ├── server/            process lifecycle: open infra, run http, close in LIFO
-│   ├── repo/              data-access layer: Reader interfaces + sqlx impls
-│   ├── middleware/        M1-M10 + helpers + default impls
-│   ├── router/            gin engine + per-modality route registration
-│   │                      (chat / image / audio / embedding files)
-│   ├── dispatch/          调度执行：Dispatcher + Policies +
-│   │                      Selector / InvokerFactory / EndpointQuota /
-│   │                      CandidateSource ports
-│   │   └── adapters/      默认 port 实现（组合 selector / invoker / ratelimit primitives）
-│   ├── selector/          primitives：filters / scorer / picker / cooldown / Scheduler
-│   ├── invoker/           primitives：HTTP call + forward stream
-│   ├── protocol/          facade：Handler = Combine(adapter, translator)
-│   │   ├── openai/        OpenAI vendor + ark alias
-│   │   ├── anthropic/     Anthropic vendor
-│   │   └── gemini/        Google Gemini vendor
-│   ├── adapter/           internal contract（被 protocol.Combine 包成 Handler）
-│   ├── translator/        body shape 转换：identity + 跨协议 pairs
-│   ├── moderation/        Moderator + 响应流装饰器 + ctx helpers
-│   ├── ratelimit/         primitives：Store + Bucket + endpoint bucket helpers
-│   ├── usage/             Usage extraction + outbox (file | kafka) + pricing
-│   ├── trace/             Tracer abstraction + SlogTracer default
-│   └── metric/            Prometheus metric name constants
-├── docs/architecture/     design docs (00-overview through 08-observability)
-└── configs/               per-environment configurations (local / prod / docker)
+HTTP request
+  │
+  ▼
+pkg/middleware        ── 请求生命周期（M1-M10）：auth / envelope / budget /
+                         catalog / ratelimit / moderation / **M7 → dispatch** /
+                         tracing。每个 middleware 单一职责，配 OTel option。
+  │
+  ▼  (M7 是 dispatch.Dispatcher 的 thin adapter)
+pkg/dispatch          ── 调度执行时序的**唯一**所有者：
+                         CandidateSource → filterEligible → Selector.Pick →
+                         EndpointQuota.Reserve → Handler lookup → Invoker →
+                         Selector.Report → RetryPolicy → Stream / Charge
+                         （pkg/dispatch/adapters/ 桥接 selector / invoker /
+                         ratelimit / repo primitives → dispatch ports）
+  │
+  ├── pkg/selector    ── primitives：filters / scorer / picker / cooldown。
+  │                      只做选择算法，不知道 protocol / handler / middleware
+  ├── pkg/invoker     ── primitives：一次 HTTP 调用 + 响应 forward，不做调度
+  ├── pkg/ratelimit   ── primitives：Store / Bucket / endpoint bucket helpers
+  └── pkg/protocol    ── facade：Handler = Factory + Translator + Quirks
+                         消费侧只看 Handler / Lookup；Factory / Session 是内部
+       ├── protocol/<vendor>/  OpenAI(+ark alias) / Anthropic / Gemini Factory + Session
+       ├── protocol/quirks/    endpoint 级 body+header 微调 DSL（rename/strip/set/set_default）
+       └── translator (pkg/)   body shape 转换：identity + 跨协议 pairs（init() 注册）
+
+pkg/moderation        ── Moderator + 响应流装饰器 + ctx helpers
+pkg/usage             ── usage 提取 + outbox（file | kafka）+ pricing
+pkg/trace / metric    ── Tracer 抽象（slog / OTel）+ Prom metric name 常量
+
+pkg/repo              ── data access：sqlx Reader/Provider + TTL LRU cache wrapper
+                         （5 个 cached wrapper：APIKey / ModelService / Endpoint /
+                         QuotaPolicy / Subscription；llm_gateway_repo_cache_total
+                         metric 上报 hit/miss）
+pkg/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
+pkg/domain            ── 跨包共享 typed structs（RequestContext / Endpoint / ...）
+pkg/config            ── gateway.yaml loader
+
+cmd/gateway           ── composition root：buildEngine 装配所有 deps，无业务逻辑
+cmd/mockupstream      ── dev/test 假上游
+scripts/{e2e-smoke,seed-e2e}  端到端烟测
+docs/architecture/    设计文档（00-overview 至 08-observability）
+configs/              per-environment 配置（local / prod / docker）
 ```
 
 ## Quick start

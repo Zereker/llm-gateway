@@ -338,7 +338,7 @@ type ResponseHandler interface {
 
 ## 9. eligibility 过滤
 
-`pkg/selector/eligibility.Filter` 按 endpoint 候选 + `protocol.Lookup` 单一参数
+`pkg/dispatch.filterEligible` 内部 helper 按 endpoint 候选 + `protocol.Lookup` 单一参数
 过滤：
 
 ```go

@@ -57,12 +57,15 @@ M1 TraceContext → M9 Recover → M2 Auth        （pre-Envelope，挂在 group
 
 跨 middleware 的请求级状态走 `*domain.RequestContext` typed struct，通过 `gin.Context.Set/Get` 传递。用 `middleware.GetRequestContext(c)` 取，**禁止**散落的 `c.Set("foo", ...)`。
 
-### Adapter / Translator (P3 / P4)
+### Protocol facade (P3 / P4)
 
-- 客户端协议（OpenAI Chat / Anthropic Messages / OpenAI Responses）→ `Envelope.Canonical`（OpenAI 兼容内部 schema）由 M3 完成。
-- `Canonical → 上游协议` 由 `pkg/adapter/<vendor>/` 的 `Adapter.TransformRequest` 完成。
-- 跨协议翻译（如 Anthropic ↔ OpenAI、OpenAI ↔ Gemini）走 `pkg/translator/<src>_<dst>/`，独立于 Adapter。
+- 端到端协议处理走 `pkg/protocol.Handler` facade；消费侧（dispatch / middleware / invoker）只看 `Handler` / `Lookup` 两个接口，**不直接接触** `Factory` / `Session` / `LookupFactory`。
+- Handler 内部 = `Combine(Factory, translator.Translator)` + endpoint 级 `quirks.Rewriter`：
+    - `pkg/protocol/<vendor>/`：vendor HTTP 层（URL / auth header / Content-Type）—— Factory + Session 实现，`init()` 调 `protocol.RegisterFactory("<vendor>", Factory{})`。
+    - `pkg/translator/<src>_<dst>/`：协议 shape 转换（OpenAI ↔ Anthropic / OpenAI ↔ Gemini / identity 等），`init()` 调 `translator.Register(...)`。
+    - `pkg/protocol/quirks`：endpoint 级 body + header 微调 DSL（存 `endpoints.quirks` JSON 列）；deployer 配置驱动，不在代码注册。
 - 新增 vendor / translator：在子包 `init()` 里注册到 registry；`cmd/gateway/main.go` 用 blank import (`_ "..."`) 触发注册。**不要改主链路**。
+- v0.7 起 `pkg/adapter` 已并入 `pkg/protocol`；老文档里的 `pkg/adapter/<vendor>/` 都是历史路径，现在在 `pkg/protocol/<vendor>/`。
 
 ### 客户端协议范围
 
