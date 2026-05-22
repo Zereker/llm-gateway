@@ -133,10 +133,10 @@ func seed(ctx context.Context, db *sqlx.DB, upstreamURL, apiKey, model string) e
 	if _, err := db.NamedExecContext(ctx, `
 		INSERT INTO endpoints
 		  (name, vendor, protocol, model, group_name, weight, enabled,
-		   auth, routing, quota, capabilities, extra)
+		   auth, routing, quota, capabilities, quirks, extra)
 		VALUES
 		  (:name, :vendor, :protocol, :model, :group_name, :weight, :enabled,
-		   :auth, :routing, :quota, :capabilities, :extra)
+		   :auth, :routing, :quota, :capabilities, :quirks, :extra)
 		ON DUPLICATE KEY UPDATE name=name`, ep); err != nil {
 		return fmt.Errorf("endpoints: %w", err)
 	}

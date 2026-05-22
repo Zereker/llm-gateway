@@ -22,7 +22,7 @@ func NewSQLEndpointReader(db *sqlx.DB) *SQLEndpointReader {
 }
 
 const epColumns = `id, name, vendor, protocol, model, group_name, weight, enabled,
-	auth, routing, quota, capabilities, extra,
+	auth, routing, quota, capabilities, quirks, extra,
 	created_at, updated_at, deleted_at`
 
 // ListForModel 实现 EndpointReader.ListForModel。

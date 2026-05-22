@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
     routing      JSON          NOT NULL,                   -- RoutingConfig (url/region/project/...)
     quota        JSON          DEFAULT NULL,               -- 上游硬约束 quota（区别于 quota_policies；这个是 vendor-side 限制）
     capabilities JSON          DEFAULT NULL,
+    quirks       JSON          DEFAULT NULL,               -- 端点级 body / header 微调 DSL（pkg/protocol/quirks）
     extra        JSON          DEFAULT NULL,
 
     created_at   TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -162,6 +163,11 @@ CREATE TABLE IF NOT EXISTS endpoints (
     INDEX idx_model_group (model, group_name),
     INDEX idx_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- v0.7：给已存在 endpoints 表加 quirks 列（pkg/protocol/quirks 配置存这）。
+-- MySQL 8.0.29+ 支持 ADD COLUMN IF NOT EXISTS，让 schema 演进幂等。
+-- 老库重启 gateway 时自动加列；新库 CREATE TABLE 时已带，ADD 是 no-op。
+ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS quirks JSON DEFAULT NULL;
 
 -- =====================================================================
 -- api_keys：M2 Auth middleware 凭证查表

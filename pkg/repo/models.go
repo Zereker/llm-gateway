@@ -131,6 +131,7 @@ type Endpoint struct {
 	Routing      RoutingConfig        `db:"routing"`
 	Quota        QuotaConfig          `db:"quota"`
 	Capabilities EndpointCapabilities `db:"capabilities"`
+	Quirks       json.RawMessage      `db:"quirks"`  // v0.7: pkg/protocol/quirks DSL；NULL → no-op
 	Extra        json.RawMessage      `db:"extra"`
 
 	CreatedAt time.Time  `db:"created_at"`

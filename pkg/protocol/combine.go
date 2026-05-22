@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"sync"
 
 	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
@@ -39,10 +40,19 @@ func Combine(ad adapter.Factory, tr translator.Translator) Handler {
 }
 
 // combined 是 Combine 出来的 Handler 实现——facade 内部仍调原 adapter / translator。
+//
+// **quirksCache**：endpoint.Quirks JSON 在第一次见时 compile 成 Rewriter；
+// 后续同 spec（即 string(rawJSON)）请求直接命中。
+//   - key   = string(endpoint.Quirks) — JSON 字面量；同 spec 不同 endpoint 共享
+//   - value = quirks.Rewriter
+//
+// 没主动失效逻辑——deployer 改 SQL 后新 spec 的字符串自然不同，会新增 entry；老
+// entry 没 evict（量级一般 < 100，可接受）。需要严格 eviction 时改用 hashicorp lru。
 type combined struct {
-	ad   adapter.Factory
-	tr   translator.Translator
-	caps Capabilities
+	ad          adapter.Factory
+	tr          translator.Translator
+	caps        Capabilities
+	quirksCache sync.Map // string(ep.Quirks) → quirks.Rewriter
 }
 
 func (c *combined) Capabilities() Capabilities { return c.caps }
@@ -54,9 +64,14 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 		return nil, NewPrepareError(PhaseTranslate, err)
 	}
 
-	// pre-call phase 2: vendor / 模型级 body 微调（reasoning model 字段映射等）
-	if r := quirks.Get(ep.Vendor); r != nil {
-		upstreamBody, err = r.Rewrite(upstreamBody)
+	// pre-call phase 2: endpoint 配置的 body 微调（quirks）
+	var rw quirks.Rewriter
+	if len(ep.Quirks) > 0 {
+		rw, err = c.quirksFor(ep.Quirks)
+		if err != nil {
+			return nil, NewPrepareError(PhaseQuirks, err)
+		}
+		upstreamBody, err = rw.RewriteBody(upstreamBody)
 		if err != nil {
 			return nil, NewPrepareError(PhaseQuirks, err)
 		}
@@ -77,7 +92,34 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 	}
 	// v0.5 slim session 没有流式状态——构造完即关。
 	_ = sess.Close()
+
+	// pre-call phase 4: endpoint 配置的 header 微调（quirks）
+	// 在 adapter 设完 Auth / Content-Type 后做，deployer 可覆盖或追加 vendor 私有 header。
+	if rw != nil {
+		rw.RewriteHeader(req.Header)
+	}
+
 	return &Call{Request: req, UpstreamBody: upstreamBody}, nil
+}
+
+// quirksFor 拿（或构造）endpoint.Quirks 对应的 Rewriter，sync.Map 缓存。
+//
+// **key**：string(rawSpec)——同字符串字面量同 Rewriter；不同 endpoint 配置相同
+// quirks 时共享同一个编译产物。
+//
+// **error 不缓存**：compile 失败时不存进 cache，每次重试 compile（让 deployer
+// 改了 SQL 之后能立即看到新 spec 生效；缓存错误规则反而难调试）。
+func (c *combined) quirksFor(rawSpec []byte) (quirks.Rewriter, error) {
+	key := string(rawSpec)
+	if cached, ok := c.quirksCache.Load(key); ok {
+		return cached.(quirks.Rewriter), nil
+	}
+	rw, err := quirks.CompileJSON(rawSpec)
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := c.quirksCache.LoadOrStore(key, rw)
+	return actual.(quirks.Rewriter), nil
 }
 
 func (c *combined) NewResponseStream() ResponseStream {
@@ -101,5 +143,5 @@ type combinedStream struct {
 	inner translator.ResponseHandler
 }
 
-func (s *combinedStream) Feed(chunk []byte) ([]byte, error)      { return s.inner.Feed(chunk) }
+func (s *combinedStream) Feed(chunk []byte) ([]byte, error)     { return s.inner.Feed(chunk) }
 func (s *combinedStream) Flush() ([]byte, *domain.Usage, error) { return s.inner.Flush() }

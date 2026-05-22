@@ -39,10 +39,10 @@ func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 	res, err := db.NamedExec(
 		`INSERT INTO endpoints
 		 (name, vendor, protocol, model, group_name, weight, enabled,
-		  auth, routing, quota, capabilities, extra)
+		  auth, routing, quota, capabilities, quirks, extra)
 		 VALUES
 		 (:name, :vendor, :protocol, :model, :group_name, :weight, :enabled,
-		  :auth, :routing, :quota, :capabilities, :extra)`,
+		  :auth, :routing, :quota, :capabilities, :quirks, :extra)`,
 		ep,
 	)
 	if err != nil {

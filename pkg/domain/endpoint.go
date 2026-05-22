@@ -37,7 +37,12 @@ type Endpoint struct {
 	Routing      RoutingConfig
 	Quota        QuotaConfig
 	Capabilities EndpointCapabilities
-	Extra        json.RawMessage
+
+	// Quirks endpoint 级 body / header 微调 DSL（pkg/protocol/quirks）。
+	// 空 = no-op。combine.go 在 translator 之后、adapter 之后两处分别应用。
+	Quirks json.RawMessage
+
+	Extra json.RawMessage
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
