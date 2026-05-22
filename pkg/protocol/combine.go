@@ -5,25 +5,23 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/protocol/quirks"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
-// Combine 把 adapter.Factory（HTTP 层）+ translator.Translator（body 转换）组装
-// 成一个 Handler。**facade 融合的核心 helper**——内部仍是 v0.5 的两个抽象，
-// 外部只暴露 Handler。
+// Combine 把 Factory（vendor HTTP 层）+ translator.Translator（body 转换）组装
+// 成一个 Handler。**facade 融合的核心 helper**。
 //
 // **使用形态**：DefaultLookup.Get(ep, srcProto) 在请求时调用 Combine 把当前
-// endpoint 的 adapter + 选中的 translator 组合成 Handler；不在 init() 时静态
+// endpoint 的 Factory + 选中的 translator 组合成 Handler；不在 init() 时静态
 // 注册。这是 v0.6 把"协议归属"从 vendor 级移到 endpoint 级的体现。
 //
 // **约束**：translator.Target() 必须 == ep.Protocol；Combine 不验证（运行期
 // 高频路径），由 DefaultLookup 在按 translator.Find(src, ep.Protocol) 挑选时保证。
-func Combine(ad adapter.Factory, tr translator.Translator) Handler {
+func Combine(ad Factory, tr translator.Translator) Handler {
 	if ad == nil {
-		panic("protocol.Combine: nil adapter.Factory")
+		panic("protocol.Combine: nil Factory")
 	}
 	if tr == nil {
 		panic("protocol.Combine: nil translator.Translator")
@@ -50,7 +48,7 @@ func Combine(ad adapter.Factory, tr translator.Translator) Handler {
 // 没主动失效逻辑——deployer 改 SQL 后新 spec 的字符串自然不同，会新增 entry；老
 // entry 没 evict（量级一般 < 100，可接受）。需要严格 eviction 时改用 hashicorp lru。
 type combined struct {
-	ad          adapter.Factory
+	ad          Factory
 	tr          translator.Translator
 	caps        Capabilities
 	quirksCache sync.Map // string(ep.Quirks) → quirks.Rewriter
@@ -127,12 +125,12 @@ func (c *combined) NewResponseStream() ResponseStream {
 	return &combinedStream{inner: c.tr.NewResponseHandler()}
 }
 
-// Classify 透传到 adapter 的 Classifier（如果实现了）。
+// Classify 透传到 Factory 的 Classifier（如果实现了）。
 //
-// **接口提升**：原本 adapter.Classifier 是单独 type-assert；现在 combined 自动
-// 把这能力透出去，让上层只 type-assert protocol.Classifier。
+// **接口提升**：Factory 的 Classifier 是可选实现；combined 自动把这能力透出，
+// 让上层只 type-assert protocol.Classifier。
 func (c *combined) Classify(status int, body []byte) *domain.AdapterError {
-	if cls, ok := c.ad.(adapter.Classifier); ok {
+	if cls, ok := c.ad.(Classifier); ok {
 		return cls.Classify(status, body)
 	}
 	return nil

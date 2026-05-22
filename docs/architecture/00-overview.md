@@ -111,10 +111,12 @@ pkg/selector
   -> 对一批候选 endpoint 做 filter / pick / report；不持有 repo，不切 fallback model
 
 pkg/invoker
-  -> adapter lookup、translator lookup、HTTP Do、响应 forward
+  -> Handler lookup、HTTP Do、响应 forward
 
-pkg/adapter
-  -> 厂商 HTTP 层：URL、认证 header、request 构造
+pkg/protocol
+  -> Handler facade（PrepareCall → NewResponseStream）
+  -> Factory / Session：厂商 HTTP 层（URL、认证 header、request 构造）
+  -> protocol/quirks：endpoint 级 body / header 微调 DSL（rename / strip / set / set_default）
 
 pkg/translator
   -> 客户端协议与上游协议的请求/响应转换，usage 提取
@@ -149,3 +151,4 @@ pkg/repo + pkg/infra
 | v0.3-target | 2026-05-16 | 对齐目标边界：协议能力下沉 endpoint、简化 scheduler、RPM/RPS 前扣、TPM 后扣、下游计费 |
 | v0.4-target | 2026-05-17 | middleware Option 对齐 otelgin v0.68.0；domain/repo 彻底解耦 |
 | v0.6-target | 2026-05-21 | 删 `cmd/admin` + Flink + Debezium CDC：data plane 是 100% 只读 MySQL，repo 用 TTL LRU 缓存替代实时失效 |
+| v0.7-target | 2026-05-22 | 合并 `pkg/adapter` 进 `pkg/protocol`（vendor Factory / Session / Classifier 都在 protocol 包内）；endpoint.quirks JSON 列 + DSL；dispatch / repo cache 接入 OTel & Prom |

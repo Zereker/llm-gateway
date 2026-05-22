@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/translator"
@@ -19,24 +18,24 @@ import (
 // =============================================================================
 
 type fakeAdapter struct {
-	meta         adapter.Metadata
+	meta         protocol.Metadata
 	sessionErr   error
 	buildErr     error
 	classifyImpl func(int, []byte) *domain.AdapterError
 }
 
-func (f *fakeAdapter) Metadata() adapter.Metadata { return f.meta }
+func (f *fakeAdapter) Metadata() protocol.Metadata { return f.meta }
 
-func (f *fakeAdapter) NewSession(_ context.Context, _ *domain.Endpoint, env *domain.RequestEnvelope) (adapter.Session, error) {
+func (f *fakeAdapter) NewSession(_ context.Context, _ *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	if f.sessionErr != nil {
 		return nil, f.sessionErr
 	}
 	return &fakeSession{buildErr: f.buildErr, gotEnv: env}, nil
 }
 
-// Classify makes fakeAdapter satisfy adapter.Classifier *iff* classifyImpl is set；
+// Classify makes fakeAdapter satisfy protocol.Classifier *iff* classifyImpl is set；
 // 通过 wrapper 类型避免无意 satisfy（让 TestCombine_Classify_NonClassifier 拿到一个"不实现 Classifier"的 fakeAdapter）。
-func newClassifierFakeAdapter(meta adapter.Metadata, classifyImpl func(int, []byte) *domain.AdapterError) *classifierFakeAdapter {
+func newClassifierFakeAdapter(meta protocol.Metadata, classifyImpl func(int, []byte) *domain.AdapterError) *classifierFakeAdapter {
 	return &classifierFakeAdapter{fakeAdapter: fakeAdapter{meta: meta, classifyImpl: classifyImpl}}
 }
 
@@ -132,7 +131,7 @@ func (h *fakeRespHandler) Flush() ([]byte, *domain.Usage, error) {
 func TestCombine_HappyPath_BuildsCallWithBothPhases(t *testing.T) {
 	upBody := []byte(`{"upstream":"yes"}`)
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoAnthropic, upstreamBody: upBody}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "anthropic", SupportedModalities: []domain.Modality{domain.ModalityChat}}}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "anthropic", SupportedModalities: []domain.Modality{domain.ModalityChat}}}
 
 	h := protocol.Combine(ad, tr)
 	if h == nil {
@@ -175,7 +174,7 @@ func TestCombine_TranslateError_ReturnsPrepareErrorPhaseTranslate(t *testing.T) 
 		src: domain.ProtoOpenAI, tgt: domain.ProtoAnthropic,
 		translateErr: errors.New("bad json"),
 	}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "anthropic"}}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "anthropic"}}
 	h := protocol.Combine(ad, tr)
 
 	_, err := h.PrepareCall(context.Background(), &domain.Endpoint{Vendor: "anthropic"}, []byte("{"))
@@ -196,7 +195,7 @@ func TestCombine_TranslateError_ReturnsPrepareErrorPhaseTranslate(t *testing.T) 
 
 func TestCombine_NewSessionError_ReturnsPrepareErrorPhaseBuild(t *testing.T) {
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}, sessionErr: errors.New("session init failed")}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}, sessionErr: errors.New("session init failed")}
 	h := protocol.Combine(ad, tr)
 
 	_, err := h.PrepareCall(context.Background(), &domain.Endpoint{Vendor: "openai"}, []byte("{}"))
@@ -208,7 +207,7 @@ func TestCombine_NewSessionError_ReturnsPrepareErrorPhaseBuild(t *testing.T) {
 
 func TestCombine_BuildRequestError_ReturnsPrepareErrorPhaseBuild(t *testing.T) {
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}, buildErr: errors.New("bad routing url")}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}, buildErr: errors.New("bad routing url")}
 	h := protocol.Combine(ad, tr)
 
 	_, err := h.PrepareCall(context.Background(), &domain.Endpoint{Vendor: "openai"}, []byte("{}"))
@@ -223,7 +222,7 @@ func TestCombine_PassesEnvelopeToSession(t *testing.T) {
 	// 包一层观察 NewSession 收到的 envelope
 	var gotEnv *domain.RequestEnvelope
 	ad := &observingAdapter{
-		meta: adapter.Metadata{Vendor: "anthropic"},
+		meta: protocol.Metadata{Vendor: "anthropic"},
 		onNewSession: func(env *domain.RequestEnvelope) {
 			gotEnv = env
 		},
@@ -247,12 +246,12 @@ func TestCombine_PassesEnvelopeToSession(t *testing.T) {
 
 // observingAdapter 观察 NewSession 收到的 envelope 参数。
 type observingAdapter struct {
-	meta         adapter.Metadata
+	meta         protocol.Metadata
 	onNewSession func(env *domain.RequestEnvelope)
 }
 
-func (a *observingAdapter) Metadata() adapter.Metadata { return a.meta }
-func (a *observingAdapter) NewSession(_ context.Context, _ *domain.Endpoint, env *domain.RequestEnvelope) (adapter.Session, error) {
+func (a *observingAdapter) Metadata() protocol.Metadata { return a.meta }
+func (a *observingAdapter) NewSession(_ context.Context, _ *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	if a.onNewSession != nil {
 		a.onNewSession(env)
 	}
@@ -262,7 +261,7 @@ func (a *observingAdapter) NewSession(_ context.Context, _ *domain.Endpoint, env
 func TestCombine_Classify_PassthroughToAdapter(t *testing.T) {
 	want := &domain.AdapterError{Class: domain.ErrPermanent, Code: domain.ErrCodeUpstreamError}
 	ad := newClassifierFakeAdapter(
-		adapter.Metadata{Vendor: "openai"},
+		protocol.Metadata{Vendor: "openai"},
 		func(_ int, _ []byte) *domain.AdapterError { return want },
 	)
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI}
@@ -280,7 +279,7 @@ func TestCombine_Classify_PassthroughToAdapter(t *testing.T) {
 
 func TestCombine_Classify_NonClassifierAdapter_ReturnsNil(t *testing.T) {
 	// fakeAdapter (no Classify method) → Handler.Classify 返回 nil
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}}
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI}
 	h := protocol.Combine(ad, tr)
 
@@ -324,7 +323,7 @@ func TestCombine_NewResponseStream_ForwardsFeedAndFlush(t *testing.T) {
 		src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI,
 		respHandlerFn: func() translator.ResponseHandler { return inner },
 	}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}}
 	h := protocol.Combine(ad, tr)
 
 	stream := h.NewResponseStream()
@@ -360,8 +359,8 @@ func TestCombine_NewResponseStream_ForwardsFeedAndFlush(t *testing.T) {
 func TestDefaultLookup_Get_Composes_AdapterPlusTranslator(t *testing.T) {
 	resetGlobalRegistries(t)
 
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "myv"}}
-	adapter.Register("myv", ad)
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}}
+	protocol.RegisterFactory("myv", ad)
 	translator.Register(&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoAnthropic})
 
 	ep := &domain.Endpoint{Vendor: "myv", Protocol: domain.ProtoAnthropic}
@@ -383,7 +382,7 @@ func TestDefaultLookup_Get_NilEndpoint_ReturnsNil(t *testing.T) {
 
 func TestDefaultLookup_Get_ProtoUnknown_ReturnsNil(t *testing.T) {
 	resetGlobalRegistries(t)
-	adapter.Register("myv", &fakeAdapter{meta: adapter.Metadata{Vendor: "myv"}})
+	protocol.RegisterFactory("myv", &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}})
 
 	ep := &domain.Endpoint{Vendor: "myv"} // Protocol 零值 = ProtoUnknown
 	if h := (protocol.DefaultLookup{}).Get(ep, domain.ProtoOpenAI); h != nil {
@@ -403,7 +402,7 @@ func TestDefaultLookup_Get_NoAdapter_ReturnsNil(t *testing.T) {
 
 func TestDefaultLookup_Get_NoTranslator_ReturnsNil(t *testing.T) {
 	resetGlobalRegistries(t)
-	adapter.Register("myv", &fakeAdapter{meta: adapter.Metadata{Vendor: "myv"}})
+	protocol.RegisterFactory("myv", &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}})
 	// 注册一个 (Anthropic → Anthropic) translator，但 caller 找 (OpenAI → Anthropic)
 	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoAnthropic})
 
@@ -471,10 +470,10 @@ func TestIsPrepareError(t *testing.T) {
 // 测试 setup + cleanup 用。
 func resetGlobalRegistries(t *testing.T) {
 	t.Helper()
-	adapter.Reset()
+	protocol.ResetFactories()
 	translator.Reset()
 	t.Cleanup(func() {
-		adapter.Reset()
+		protocol.ResetFactories()
 		translator.Reset()
 	})
 }
@@ -486,7 +485,7 @@ func resetGlobalRegistries(t *testing.T) {
 func TestCombine_QuirksFromEndpointBodyAndHeaders(t *testing.T) {
 	upBody := []byte(`{"max_tokens":1024,"temperature":0.7,"model":"o1"}`)
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: upBody}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}}
 
 	ep := &domain.Endpoint{
 		Vendor:   "openai",
@@ -525,7 +524,7 @@ func TestCombine_QuirksFromEndpointBodyAndHeaders(t *testing.T) {
 func TestCombine_EmptyQuirksIsNoop(t *testing.T) {
 	upBody := []byte(`{"upstream":"plain"}`)
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: upBody}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}}
 
 	for _, q := range [][]byte{nil, []byte(""), []byte(`{}`)} {
 		h := protocol.Combine(ad, tr)
@@ -543,7 +542,7 @@ func TestCombine_EmptyQuirksIsNoop(t *testing.T) {
 
 func TestCombine_BadQuirksSpec_ReturnsPrepareErrorPhaseQuirks(t *testing.T) {
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: []byte(`{}`)}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}}
 
 	ep := &domain.Endpoint{
 		Vendor: "openai", Protocol: domain.ProtoOpenAI,
@@ -565,7 +564,7 @@ func TestCombine_QuirksCompileCached(t *testing.T) {
 	// 同 spec 多次调 PrepareCall 应该只 compile 一次（sync.Map cache）。
 	// 这里间接验证：第二次调用不报 spec 错（如果每次重 compile 一个故意非法 spec，第二次也会报错）。
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: []byte(`{"a":1}`)}
-	ad := &fakeAdapter{meta: adapter.Metadata{Vendor: "openai"}}
+	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}}
 	ep := &domain.Endpoint{
 		Vendor: "openai", Protocol: domain.ProtoOpenAI,
 		Quirks: []byte(`{"body":{"strip":["a"]}}`),

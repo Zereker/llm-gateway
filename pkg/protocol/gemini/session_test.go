@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -30,7 +30,7 @@ func TestFactory_Metadata(t *testing.T) {
 }
 
 func TestAdapter_Registered(t *testing.T) {
-	if f := adapter.Get("gemini"); f == nil {
+	if f := protocol.LookupFactory("gemini"); f == nil {
 		t.Fatal("gemini adapter not registered")
 	}
 }

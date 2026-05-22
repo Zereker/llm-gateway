@@ -23,27 +23,27 @@ package anthropic
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Factory 实现 adapter.Factory。
+// Factory 实现 protocol.Factory。
 type Factory struct{}
 
 // Metadata 返回静态元信息。endpoint.Protocol（deployer 配置）决定上游说什么协议；
 // 一般配为 ProtoAnthropic（identity 透传）或 ProtoOpenAI（客户端 OpenAI → openai_anthropic 翻译）。
-func (Factory) Metadata() adapter.Metadata {
-	return adapter.Metadata{
+func (Factory) Metadata() protocol.Metadata {
+	return protocol.Metadata{
 		Vendor:              "anthropic",
 		SupportedModalities: []domain.Modality{domain.ModalityChat},
 	}
 }
 
 // NewSession 为本次请求构造 Session。
-func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.RequestEnvelope) (adapter.Session, error) {
+func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.RequestEnvelope) (protocol.Session, error) {
 	return newSession(c, ep), nil
 }
 
 func init() {
-	adapter.Register("anthropic", Factory{})
+	protocol.RegisterFactory("anthropic", Factory{})
 }

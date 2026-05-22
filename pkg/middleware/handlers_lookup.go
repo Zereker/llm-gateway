@@ -9,7 +9,7 @@ import (
 // protocol.DefaultLookup。
 //
 // **类型安全 helper**：rc.Handlers 声明为 any 是为了避 pkg/domain → pkg/protocol
-// → pkg/adapter → pkg/domain 循环依赖；所有消费者都走这个 helper，不直接 type-assert。
+// → pkg/protocol → pkg/domain 循环依赖；所有消费者都走这个 helper，不直接 type-assert。
 //
 // **归属在 middleware**：dispatch 已完全脱离 RequestContext；只有 middleware 层
 // 才接触 RC，所以这个 RC ↔ typed lookup 桥接函数住在 middleware 里。

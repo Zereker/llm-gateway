@@ -6,7 +6,7 @@
 //	  client body
 //	    → translator.TranslateRequest  （客户端协议 → 上游协议的 shape 转换）
 //	    → ep.Quirks.RewriteBody        （endpoint 配置的 body 微调）  ← 本包
-//	    → adapter.BuildRequest         （HTTP 信封：URL / auth / Content-Type）
+//	    → protocol.Session.BuildRequest         （HTTP 信封：URL / auth / Content-Type）
 //	    → ep.Quirks.RewriteHeader      （endpoint 配置的 header 微调）  ← 本包
 //	    → upstream
 //

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/adapter"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -38,11 +38,11 @@ func TestFactory_Metadata(t *testing.T) {
 
 func TestAdapter_Registered(t *testing.T) {
 	// vendor 适配器注册（Handler 由 protocol.DefaultLookup 在请求时动态组合）
-	if f := adapter.Get("openai"); f == nil {
+	if f := protocol.LookupFactory("openai"); f == nil {
 		t.Fatal("openai adapter not registered")
 	}
 	// alias 同样注册
-	if f := adapter.Get("ark"); f == nil {
+	if f := protocol.LookupFactory("ark"); f == nil {
 		t.Fatal("ark alias adapter not registered")
 	}
 }
