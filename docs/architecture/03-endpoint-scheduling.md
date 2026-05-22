@@ -93,13 +93,16 @@ miss 走 SQL 直查取到新值。`CachedEndpointReader` 同时维护 list cache
 
 `EndpointCapabilities.SelfHosted` 决定 `FormSelfHosted`，不是从 vendor 名推断。
 
-endpoint 必须显式声明：
+endpoint 字段约束：
 
-- `Protocol`：该 endpoint 上游使用的协议，例如 `openai` / `anthropic` / `gemini` / `responses`
-  （核心列，必填）。
-- `Capabilities.Modalities`（JSON 列子字段）：该 endpoint 能承接的模态白名单，
-  例如 `["chat"]` / `["embedding", "rerank"]`。空 = fall back 到 vendor Factory.Metadata()
-  声明的上限模态集合。
+- `Protocol`（核心列，**必填**）：该 endpoint 上游使用的协议，例如 `openai` /
+  `anthropic` / `gemini` / `responses`。零值（ProtoUnknown）会让 `DefaultLookup.Get`
+  返 nil → eligibility 剔除。
+- `Capabilities.Modalities`（JSON 列子字段，**推荐显式声明**，可空）：该 endpoint
+  实际承接的模态白名单，例如 `["chat"]` / `["embedding", "rerank"]`。
+  - 非空：narrow vendor 上限，eligibility 要求**本字段 + vendor `SupportedModalities`
+    都包含**当前请求模态（intersection；防 deployer widen vendor 实际能力）
+  - 空：兼容旧数据 / 不想声明的场景，eligibility fall back 到 vendor `SupportedModalities`
 
 ## 3. 候选资格过滤
 
