@@ -71,8 +71,9 @@ func TestFilterEligible_VendorFallback_When_EndpointEmpty(t *testing.T) {
 	}
 }
 
-// endpoint 显式声明 ["chat"] → vendor 即使支持 embedding 也剔除 embedding 请求
-func TestFilterEligible_EndpointModalitiesAuthoritative(t *testing.T) {
+// endpoint 显式声明 ["chat"] + vendor 支持 [chat, embedding, image]：
+// 只有 chat 通过（endpoint narrow 子集生效）
+func TestFilterEligible_EndpointNarrowsVendor(t *testing.T) {
 	ep := &domain.Endpoint{
 		ID: 1,
 		Capabilities: domain.EndpointCapabilities{
@@ -84,13 +85,36 @@ func TestFilterEligible_EndpointModalitiesAuthoritative(t *testing.T) {
 		domain.ModalityChat, domain.ModalityEmbedding, domain.ModalityImage,
 	}}
 
-	// chat：endpoint 声明支持 → 通过
+	// chat：endpoint 和 vendor 都支持 → 通过
 	if got := filterEligible(candidates, &domain.RequestEnvelope{Modality: domain.ModalityChat}, lookup); len(got) != 1 {
-		t.Errorf("endpoint 声明 chat 但被剔除")
+		t.Errorf("endpoint+vendor 都支持 chat 但被剔除")
 	}
-	// embedding：vendor 支持但 endpoint 没声明 → 剔除（endpoint authoritative）
+	// embedding：vendor 支持但 endpoint 没声明 → 剔除
 	if got := filterEligible(candidates, &domain.RequestEnvelope{Modality: domain.ModalityEmbedding}, lookup); len(got) != 0 {
-		t.Errorf("endpoint 没声明 embedding 但被通过——vendor metadata 不该 fallback")
+		t.Errorf("endpoint 没声明 embedding 但被通过——deployer 应能 narrow vendor 上限")
+	}
+}
+
+// **关键安全检查**：endpoint 配 ["tts"] 但 vendor 只声明 chat → tts 请求剔除。
+// 防止 deployer 误配 widen vendor 实际能力，让请求偷溜进 selector 之后才崩。
+func TestFilterEligible_EndpointCannotWidenVendor(t *testing.T) {
+	ep := &domain.Endpoint{
+		ID: 1,
+		Capabilities: domain.EndpointCapabilities{
+			Modalities: []domain.Modality{domain.ModalityTTS}, // deployer 误配
+		},
+	}
+	candidates := []*domain.Endpoint{ep}
+	// vendor 实际只支持 chat（例：OpenAI Chat Completions adapter）
+	lookup := modalityLookup{vendorMods: []domain.Modality{domain.ModalityChat}}
+
+	// tts：endpoint 声明但 vendor 不支持 → **必须剔除**（防 widen）
+	if got := filterEligible(candidates, &domain.RequestEnvelope{Modality: domain.ModalityTTS}, lookup); len(got) != 0 {
+		t.Errorf("endpoint widen vendor 能力的 tts 请求应该被剔除，got %d eps", len(got))
+	}
+	// chat：endpoint 没声明 → endpoint 白名单未匹配 → 剔除
+	if got := filterEligible(candidates, &domain.RequestEnvelope{Modality: domain.ModalityChat}, lookup); len(got) != 0 {
+		t.Errorf("endpoint 只声明 tts、不含 chat 时 chat 请求应剔除")
 	}
 }
 

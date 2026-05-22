@@ -1,4 +1,4 @@
-// Package gemini 是 Google Gemini 协议的 Adapter。
+// Package gemini 是 Google Gemini 协议的 vendor Factory 实现。
 //
 // init() 注册到 protocol vendor registry，vendor 名 "gemini"。
 //
