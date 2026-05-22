@@ -40,7 +40,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/usage"
 
-	// adapter blank imports：init() 自动注册到 adapter registry
+	// vendor Factory blank imports：init() 自动注册到 protocol vendor registry
 	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"

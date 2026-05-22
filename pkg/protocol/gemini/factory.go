@@ -1,6 +1,6 @@
 // Package gemini 是 Google Gemini 协议的 Adapter。
 //
-// init() 注册到 adapter registry，vendor 名 "gemini"。
+// init() 注册到 protocol vendor registry，vendor 名 "gemini"。
 //
 // 支持两条 auth 路径（adapter 内按 ep.Auth.Type 自动选）：
 //   - AI Studio：auth.type = "gemini-key"，公共 API key（x-goog-api-key 头）
