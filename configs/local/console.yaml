@@ -1,0 +1,26 @@
+# 控制面（Admin API）本地配置。
+#
+# 与 gateway.yaml 的关系：**data_key 必须与 gateway 完全一致**——控制面用它加密
+# endpoints.auth，数据面用它解密。database 指向同一个 MySQL。
+#
+# 生产：data_key / admin.tokens / database.dsn 从 secret manager 注入，不 commit
+# 真实值（走 LLM_GATEWAY_DATA_KEY / LLM_GATEWAY_CONSOLE_TOKENS / LLM_GATEWAY_DATABASE_DSN）。
+server:
+  addr: ":8081"
+  read_header_timeout: 10s
+  shutdown_timeout: 15s
+
+database:
+  driver: mysql
+  dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 30m
+
+# 必须与 gateway.yaml 的 data_key 一致（本地 dev 值；生产改）
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+admin:
+  # Phase 0 静态 bearer token；生产走 LLM_GATEWAY_CONSOLE_TOKENS 注入 + 未来换 OIDC/RBAC
+  tokens:
+    - "dev-admin-token-change-me"
