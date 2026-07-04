@@ -60,7 +60,7 @@
 
 <script>
 "use strict";
-const TABS = ["Endpoints","API Keys","Accounts","Models","Usage"];
+const TABS = ["Endpoints","API Keys","Accounts","Models"];
 let TOKEN = sessionStorage.getItem("tok") || "";
 let active = "Endpoints";
 
@@ -99,7 +99,7 @@ function renderNav(){
 function show(tab){
   active=tab; renderNav();
   const v=$("#view"); v.innerHTML="<div class='empty'>loading…</div>";
-  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Usage":viewUsage})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
+  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
 }
 
 function table(cols,rows,rowFn){
@@ -197,35 +197,6 @@ async function viewModels(){
   card.append(table(["ID","Service ID","Model","Created"],model_services,m=>el("tr",{},
     el("td",{class:"mono"},String(m.id)),el("td",{},m.service_id),el("td",{},m.model),el("td",{class:"mono"},(m.created_at||"").slice(0,19)))));
   v.append(card);
-}
-
-// ---- Usage ----
-async function viewUsage(){
-  const v=$("#view"); v.innerHTML="";
-  const from=el("input",{type:"date"}), to=el("input",{type:"date"}), acct=el("input",{placeholder:"account_id (optional)"});
-  const bar=el("div",{class:"card"},el("h2",{},"Usage"),el("div",{class:"row"},
-    el("label",{},"from",from),el("label",{},"to",to),el("label",{},"account",acct),
-    el("button",{class:"primary",onclick:load},"Query")));
-  v.append(bar);
-  const out=el("div",{class:"card"}); v.append(out);
-  async function load(){
-    const q=new URLSearchParams(); if(from.value)q.set("from",from.value); if(to.value)q.set("to",to.value); if(acct.value)q.set("account_id",acct.value);
-    try{
-      const d=await api("GET","/admin/usage?"+q.toString());
-      out.innerHTML="";
-      const t=d.totals||{};
-      out.append(el("div",{class:"totals"},
-        el("div",{},el("b",{},String(t.requests||0)),el("span",{},"requests")),
-        el("div",{},el("b",{},String(t.total_tokens||0)),el("span",{},"total tokens")),
-        el("div",{},el("b",{},String(t.input_tokens||0)),el("span",{},"input")),
-        el("div",{},el("b",{},String(t.output_tokens||0)),el("span",{},"output"))));
-      out.append(el("div",{class:"hint"},"range "+d.from+" → "+d.to+" · derived from usage outbox, not the billing source of truth"));
-      out.append(table(["Day","Account","Model","Input","Output","Total","Requests"],d.usage,u=>el("tr",{},
-        el("td",{class:"mono"},(u.day||"").slice(0,10)),el("td",{class:"mono"},u.account_id),el("td",{},u.model),
-        el("td",{},String(u.input_tokens)),el("td",{},String(u.output_tokens)),el("td",{},String(u.total_tokens)),el("td",{},String(u.requests)))));
-    }catch(e){toast(e.message,"bad")}
-  }
-  load();
 }
 
 if(TOKEN){$("#token").value=TOKEN; connect();}

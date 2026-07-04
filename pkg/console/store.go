@@ -408,44 +408,6 @@ func (s *Store) RevokeAPIKey(ctx context.Context, accountID, apiKeyID string) er
 }
 
 // =============================================================================
-// Usage（Phase 2：dashboard 读派生聚合表 usage_daily）
-// =============================================================================
-
-// UsageDailyView usage_daily 一行（派生聚合，非计费真源）。
-type UsageDailyView struct {
-	AccountID    string    `db:"account_id" json:"account_id"`
-	Model        string    `db:"model" json:"model"`
-	Day          time.Time `db:"day" json:"day"`
-	InputTokens  int64     `db:"input_tokens" json:"input_tokens"`
-	OutputTokens int64     `db:"output_tokens" json:"output_tokens"`
-	TotalTokens  int64     `db:"total_tokens" json:"total_tokens"`
-	Requests     int64     `db:"requests" json:"requests"`
-}
-
-// UsageQuery 用量查询过滤。AccountID 空 = 全部主账号。
-type UsageQuery struct {
-	AccountID string
-	From      time.Time
-	To        time.Time
-}
-
-// UsageDaily 按 (account, model, day) 拉聚合行（day 升序）。
-func (s *Store) UsageDaily(ctx context.Context, q UsageQuery) ([]UsageDailyView, error) {
-	sqlStr := `SELECT account_id, model, day, input_tokens, output_tokens, total_tokens, requests
-	           FROM usage_daily WHERE day >= ? AND day <= ?`
-	args := []any{q.From.Format("2006-01-02"), q.To.Format("2006-01-02")}
-	if q.AccountID != "" {
-		sqlStr += ` AND account_id = ?`
-		args = append(args, q.AccountID)
-	}
-	sqlStr += ` ORDER BY day, account_id, model`
-
-	var rows []UsageDailyView
-	err := s.db.SelectContext(ctx, &rows, sqlStr, args...)
-	return rows, err
-}
-
-// =============================================================================
 // helpers
 // =============================================================================
 

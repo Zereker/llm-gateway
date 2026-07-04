@@ -23,7 +23,6 @@ build:                  ## 编译 cmd/gateway / cmd/console / cmd/mockupstream �
 	mkdir -p bin
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway              ./cmd/gateway
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-console      ./cmd/console
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-usage-rollup ./cmd/usage-rollup
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-mockup       ./cmd/mockupstream
 
 run-gateway:            ## 跑 gateway（默认配置；启动期自跑 infra.Migrate 建表）

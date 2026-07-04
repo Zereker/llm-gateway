@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -31,7 +30,6 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/endpoints", api.listEndpoints)
 		admin.GET("/endpoints/:id", api.getEndpoint)
 		admin.GET("/accounts/:pin/api-keys", api.listAPIKeys)
-		admin.GET("/usage", api.getUsage)
 
 		// 写：只有 admin
 		admin.POST("/accounts", requireAdmin, api.createAccount)
@@ -44,6 +42,10 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 	}
 	return engine
 }
+
+// 注：用量/计量刻意不在控制面里聚合——网关只负责把 usage 事件经 outbox
+// （file source-of-truth + Kafka 广播）产出，下游 metering/billing 系统消费。
+// 控制面做成 usage 聚合会把"计费"这个独立复杂域拉进来，边界就破了。
 
 type api struct {
 	store *Store
@@ -219,52 +221,6 @@ func (a *api) revokeAPIKey(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "revoked"})
-}
-
-// =============================================================================
-// Usage（dashboard 读）
-// =============================================================================
-
-// getUsage GET /admin/usage?account_id=&from=YYYY-MM-DD&to=YYYY-MM-DD
-// from/to 缺省 = 最近 30 天。返回聚合行 + 合计。
-func (a *api) getUsage(c *gin.Context) {
-	q := UsageQuery{AccountID: c.Query("account_id")}
-	now := time.Now().UTC()
-	q.To = parseDay(c.Query("to"), now)
-	q.From = parseDay(c.Query("from"), q.To.AddDate(0, 0, -30))
-
-	rows, err := a.store.UsageDaily(c.Request.Context(), q)
-	if err != nil {
-		writeStoreErr(c, err)
-		return
-	}
-	var tin, tout, ttot, treq int64
-	for _, r := range rows {
-		tin += r.InputTokens
-		tout += r.OutputTokens
-		ttot += r.TotalTokens
-		treq += r.Requests
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"from":  q.From.Format("2006-01-02"),
-		"to":    q.To.Format("2006-01-02"),
-		"usage": rows,
-		"totals": gin.H{
-			"input_tokens": tin, "output_tokens": tout,
-			"total_tokens": ttot, "requests": treq,
-		},
-	})
-}
-
-func parseDay(s string, def time.Time) time.Time {
-	if s == "" {
-		return def
-	}
-	t, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		return def
-	}
-	return t
 }
 
 // =============================================================================
