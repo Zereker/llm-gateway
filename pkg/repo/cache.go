@@ -67,10 +67,23 @@ func (c *TTLCache[K, V]) Set(key K, val V)    { c.inner.Add(key, val) }
 func (c *TTLCache[K, V]) Delete(key K)        { c.inner.Remove(key) }
 func (c *TTLCache[K, V]) Len() int            { return c.inner.Len() }
 
+// loaderTimeout 是 loader（一次 SQL 点查/短列表查询）的硬上限。
+//
+// 因为 loader 用的是**跟 leader 请求解耦**的 ctx（见 GetOrLoad），必须自带
+// deadline，否则 DB 挂死时 singleflight 的所有 waiter 会无限阻塞。
+const loaderTimeout = 5 * time.Second
+
 // GetOrLoad cache hit 直接返回；miss 时 singleflight 调 loader 加载。
 //
 // 同 key 并发 miss 只会调用 loader 一次，其他调用阻塞等同一结果；
 // loader panic / err 透传给所有阻塞者。
+//
+// **loader ctx 与 leader 解耦**：singleflight 的结果被所有 waiter 共享，但
+// loader 闭包只会拿到"第一个到达的 goroutine"的 ctx——如果直接用它，leader 的
+// 客户端断连（ctx cancel）会让 SQL 报 context.Canceled，**毒化全部 waiter**
+// （N 个无辜请求一起失败）。所以 loader 跑在 context.WithoutCancel(ctx) 上：
+// 保留 trace / baggage values，剥离 cancellation 与 deadline，再套 loaderTimeout
+// 作为兜底。代价是断连请求的那次 SQL 会跑完——正好回填缓存，是我们想要的。
 //
 // 报告 Metrics：hit / miss / error 三种结果（hit 在 cache 命中时；miss 在
 // loader 成功时；error 在 loader 返 err 时）。多个 goroutine 同 key 并发 miss
@@ -87,7 +100,9 @@ func (c *TTLCache[K, V]) GetOrLoad(ctx context.Context, key K, loader LoaderFunc
 		if v, ok := c.inner.Get(key); ok {
 			return v, nil
 		}
-		v, cache, err := loader(ctx)
+		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loaderTimeout)
+		defer cancel()
+		v, cache, err := loader(loadCtx)
 		if err != nil {
 			c.record("error")
 			return v, err

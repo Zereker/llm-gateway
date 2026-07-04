@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // SQLAPIKeyProvider 是 IdentityProvider 的 MySQL 实现：
@@ -56,7 +58,7 @@ type resolveRow struct {
 // 后续可改异步 batch update 走单独 goroutine。
 func (p *SQLAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) (*UserIdentity, error) {
 	if creds == nil || creds.APIKey == "" {
-		return nil, errors.New("apikey: missing api key")
+		return nil, fmt.Errorf("apikey: missing api key: %w", domain.ErrInvalidCredentials)
 	}
 
 	hashed := HashAPIKey(creds.APIKey)
@@ -85,8 +87,11 @@ func (p *SQLAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) (*U
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errors.New("apikey: unknown / disabled / expired / revoked / account disabled")
+			// unknown / disabled / expired / revoked / account disabled 统一走
+			// ErrInvalidCredentials sentinel（M2 → 401）；不细分防枚举。
+			return nil, fmt.Errorf("apikey: %w", domain.ErrInvalidCredentials)
 		}
+		// SQL 层故障（连接 / 超时 / schema 等）——不 wrap sentinel，M2 fail-closed → 503。
 		return nil, fmt.Errorf("apikey: lookup: %w", err)
 	}
 

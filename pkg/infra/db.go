@@ -99,6 +99,49 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 			return fmt.Errorf("infra: apply schema: %w\n--- stmt ---\n%s", err, stmt)
 		}
 	}
+
+	// 列级演进：CREATE TABLE IF NOT EXISTS 对已存在的表是 no-op，schema.sql 里
+	// 新加的列不会落到老库。MySQL 又不支持 ADD COLUMN IF NOT EXISTS（MariaDB
+	// 才有），所以这里用 information_schema 判断后再 ALTER。
+	//
+	// 新列在这里登记一行；老列稳定后可清理。
+	for _, m := range []columnMigration{
+		{"endpoints", "quirks", "ALTER TABLE endpoints ADD COLUMN quirks JSON DEFAULT NULL"},
+	} {
+		if err := ensureColumn(ctx, db, m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// columnMigration 一条"表缺列则补"的迁移。
+type columnMigration struct {
+	table, column, ddl string
+}
+
+// ensureColumn 列不存在时执行 DDL；存在则 no-op。
+//
+// **多副本竞态**：两个副本同时判断"列不存在"、同时 ALTER 时，后到的会收到
+// "Duplicate column name"（MySQL errno 1060）——此时列已就位，视为成功。
+func ensureColumn(ctx context.Context, db *sqlx.DB, m columnMigration) error {
+	var n int
+	err := db.GetContext(ctx, &n,
+		`SELECT COUNT(*) FROM information_schema.columns
+		 WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+		m.table, m.column)
+	if err != nil {
+		return fmt.Errorf("infra: check column %s.%s: %w", m.table, m.column, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, m.ddl); err != nil {
+		if strings.Contains(err.Error(), "Duplicate column name") {
+			return nil // 并发副本抢先加了；目标状态已达成
+		}
+		return fmt.Errorf("infra: add column %s.%s: %w", m.table, m.column, err)
+	}
 	return nil
 }
 
