@@ -8,19 +8,46 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// adminAuth 是控制面的 bearer-token 鉴权中间件。
+// Role 是控制面 operator 的粗粒度权限（Phase 4 的 RBAC 基元）。
 //
-// **跟数据面完全两套**：数据面 M2 认的是 end-user 的 api_key（DB 查表）；控制面认
-// 的是 operator 的 admin token（配置注入）。两个面不同端口、不同凭证、不同信任域——
-// 这正是为什么控制面该独立进程、跑内网。
+// Phase 4 只做两档；真正的多租户自助 + 细粒度 RBAC（per-tenant scoping / OIDC）
+// 是更大的产品决策，留作后续。
+type Role string
+
+const (
+	// RoleAdmin 全权：读 + 写（建/删/发 key/吊销）。
+	RoleAdmin Role = "admin"
+	// RoleViewer 只读：只能 GET。
+	RoleViewer Role = "viewer"
+)
+
+// Token 一个 admin 凭证 + 它的角色。
+type Token struct {
+	Value string `yaml:"token"`
+	Role  Role   `yaml:"role"`
+}
+
+// ctxRoleKey gin.Context 里存角色的键。
+const ctxRoleKey = "console_role"
+
+// adminAuth 鉴权 bearer token，解析出角色写进 context。
 //
-// **常量时间比较**：先把两边都 SHA-256 成定长再 subtle.ConstantTimeCompare，
-// 避免长度 / 前缀的时序侧信道。Phase 4 换 OIDC / 真 RBAC 时替换本文件即可。
-func adminAuth(tokens []string) gin.HandlerFunc {
-	hashed := make([][32]byte, len(tokens))
-	for i, t := range tokens {
-		hashed[i] = sha256.Sum256([]byte(t))
+// **常量时间**：把入参和每个已配 token 都 SHA-256 成定长再 ConstantTimeCompare，
+// 且**遍历所有条目不早退**——不泄漏"匹配了哪个 token / 长度前缀"的时序信息。
+func adminAuth(tokens []Token) gin.HandlerFunc {
+	type entry struct {
+		sum  [32]byte
+		role Role
 	}
+	entries := make([]entry, len(tokens))
+	for i, t := range tokens {
+		role := t.Role
+		if role == "" {
+			role = RoleAdmin
+		}
+		entries[i] = entry{sum: sha256.Sum256([]byte(t.Value)), role: role}
+	}
+
 	return func(c *gin.Context) {
 		got := bearerToken(c)
 		if got == "" {
@@ -28,18 +55,31 @@ func adminAuth(tokens []string) gin.HandlerFunc {
 			return
 		}
 		gotSum := sha256.Sum256([]byte(got))
-		ok := false
-		for i := range hashed {
-			if subtle.ConstantTimeCompare(gotSum[:], hashed[i][:]) == 1 {
-				ok = true
+		matched := false
+		var role Role
+		for _, e := range entries {
+			if subtle.ConstantTimeCompare(gotSum[:], e.sum[:]) == 1 {
+				matched = true
+				role = e.role
 			}
 		}
-		if !ok {
+		if !matched {
 			abortError(c, 401, "unauthorized", "invalid admin token")
 			return
 		}
+		c.Set(ctxRoleKey, string(role))
 		c.Next()
 	}
+}
+
+// requireAdmin 是写操作的守卫：非 admin 角色 → 403。挂在 POST/DELETE 路由上，
+// 让 viewer token 只能读。
+func requireAdmin(c *gin.Context) {
+	if c.GetString(ctxRoleKey) != string(RoleAdmin) {
+		abortError(c, 403, "forbidden", "admin role required for this operation")
+		return
+	}
+	c.Next()
 }
 
 // bearerToken 从 Authorization: Bearer <t> 抽 token（不区分大小写的 scheme）。
