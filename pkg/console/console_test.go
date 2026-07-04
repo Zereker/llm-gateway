@@ -314,6 +314,57 @@ func TestConsole_ViewerRoleReadOnly(t *testing.T) {
 	}
 }
 
+// TestConsole_QuotaPolicyCRUD：建（校验 rule_json）+ 列 + 删。
+func TestConsole_QuotaPolicyCRUD(t *testing.T) {
+	engine, _ := newTestEngine(t)
+
+	// 缺 name → 400
+	if code, _ := do(t, engine, "POST", "/admin/quota-policies",
+		QuotaPolicyInput{Rule: json.RawMessage(`{"default":{"rpm":60}}`)}, true); code != 400 {
+		t.Errorf("缺 name = %d, want 400", code)
+	}
+	// 空策略（无 default/per_model）→ 400
+	if code, _ := do(t, engine, "POST", "/admin/quota-policies",
+		QuotaPolicyInput{Name: "empty", Rule: json.RawMessage(`{}`)}, true); code != 400 {
+		t.Errorf("空 rule = %d, want 400", code)
+	}
+	// 合法 → 201
+	code, resp := do(t, engine, "POST", "/admin/quota-policies",
+		QuotaPolicyInput{Name: "tier1", Description: "60rpm", Rule: json.RawMessage(`{"default":{"rpm":60,"tpm":100000},"per_model":{"gpt-4o":{"rpm":10}}}`)}, true)
+	if code != 201 {
+		t.Fatalf("create policy = %d resp=%v", code, resp)
+	}
+	id := int64(resp["id"].(float64))
+
+	// list 含 tier1
+	code, list := do(t, engine, "GET", "/admin/quota-policies", nil, true)
+	if code != 200 {
+		t.Fatalf("list = %d", code)
+	}
+	if !bytes.Contains([]byte(toJSON(list)), []byte(`"tier1"`)) {
+		t.Errorf("list 未含 tier1: %v", list)
+	}
+
+	// delete
+	if code, _ := do(t, engine, "DELETE", "/admin/quota-policies/"+itoa(id), nil, true); code != 200 {
+		t.Errorf("delete = %d, want 200", code)
+	}
+}
+
+func itoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}
+
 // doOn 跟 do 一样但对指定 engine 发请求。
 func doOn(t *testing.T, engine *gin.Engine, method, path string, body any, withAuth bool) (int, map[string]any) {
 	t.Helper()

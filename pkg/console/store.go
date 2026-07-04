@@ -15,6 +15,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/cachebus"
 	"github.com/zereker/llm-gateway/pkg/endpointcheck"
+	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
@@ -403,6 +404,81 @@ func (s *Store) RevokeAPIKey(ctx context.Context, accountID, apiKeyID string) er
 		if perr := s.pub.Invalidate(ctx, cachebus.Invalidation{Kind: cachebus.KindAPIKey, Key: hash}); perr != nil {
 			slog.WarnContext(ctx, "cachebus invalidate failed; data plane will fall back to TTL", "err", perr, "api_key_id", apiKeyID)
 		}
+	}
+	return nil
+}
+
+// =============================================================================
+// Quota policies（限流策略库；被 accounts / api_keys 引用）
+// =============================================================================
+
+// QuotaPolicyInput 建限流策略入参。Rule 是 ratelimit.PolicyRule 形态
+// （{default:{rpm,tpm,rps,...}, per_model:{...}}），写前校验能解析。
+type QuotaPolicyInput struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Rule        json.RawMessage `json:"rule"`
+}
+
+// InvalidPolicyError rule_json 校验失败。
+type InvalidPolicyError struct{ Reason string }
+
+func (e *InvalidPolicyError) Error() string { return "quota policy invalid: " + e.Reason }
+
+// CreateQuotaPolicy 校验 rule_json 形态后插入，返回自增 id。
+func (s *Store) CreateQuotaPolicy(ctx context.Context, in QuotaPolicyInput) (int64, error) {
+	if in.Name == "" {
+		return 0, &InvalidPolicyError{Reason: "name required"}
+	}
+	if len(in.Rule) == 0 {
+		return 0, &InvalidPolicyError{Reason: "rule required"}
+	}
+	// 校验：能解析成 PolicyRule，且至少有 default 或 per_model（空策略无意义）。
+	var pr ratelimit.PolicyRule
+	if err := json.Unmarshal(in.Rule, &pr); err != nil {
+		return 0, &InvalidPolicyError{Reason: "rule not a valid PolicyRule: " + err.Error()}
+	}
+	if pr.Default == nil && len(pr.PerModel) == 0 {
+		return 0, &InvalidPolicyError{Reason: "rule has neither default nor per_model"}
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO quota_policies (name, description, rule_json) VALUES (?, ?, ?)`,
+		in.Name, in.Description, []byte(in.Rule))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// QuotaPolicyView 限流策略只读视图。
+type QuotaPolicyView struct {
+	ID          int64           `db:"id" json:"id"`
+	Name        string          `db:"name" json:"name"`
+	Description string          `db:"description" json:"description"`
+	RuleJSON    json.RawMessage `db:"rule_json" json:"rule"`
+	Enabled     bool            `db:"enabled" json:"enabled"`
+	CreatedAt   time.Time       `db:"created_at" json:"created_at"`
+}
+
+// ListQuotaPolicies 列全部未删策略。
+func (s *Store) ListQuotaPolicies(ctx context.Context) ([]QuotaPolicyView, error) {
+	var rows []QuotaPolicyView
+	err := s.db.SelectContext(ctx, &rows,
+		`SELECT id, name, description, rule_json, enabled, created_at
+		 FROM quota_policies WHERE deleted_at IS NULL ORDER BY id`)
+	return rows, err
+}
+
+// DeleteQuotaPolicy 软删策略。注意：被 accounts/api_keys 引用的策略软删后，数据面
+// 仍能按 id 读到（行还在）——真要停用建议改引用方的 quota_policy_id 为 NULL。
+func (s *Store) DeleteQuotaPolicy(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE quota_policies SET deleted_at = NOW(6) WHERE id = ? AND deleted_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

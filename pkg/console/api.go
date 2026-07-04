@@ -30,6 +30,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/endpoints", api.listEndpoints)
 		admin.GET("/endpoints/:id", api.getEndpoint)
 		admin.GET("/accounts/:pin/api-keys", api.listAPIKeys)
+		admin.GET("/quota-policies", api.listQuotaPolicies)
 
 		// 写：只有 admin
 		admin.POST("/accounts", requireAdmin, api.createAccount)
@@ -39,6 +40,8 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.DELETE("/endpoints/:id", requireAdmin, api.deleteEndpoint)
 		admin.POST("/api-keys", requireAdmin, api.createAPIKey)
 		admin.DELETE("/accounts/:pin/api-keys/:keyID", requireAdmin, api.revokeAPIKey)
+		admin.POST("/quota-policies", requireAdmin, api.createQuotaPolicy)
+		admin.DELETE("/quota-policies/:id", requireAdmin, api.deleteQuotaPolicy)
 	}
 	return engine
 }
@@ -221,6 +224,49 @@ func (a *api) revokeAPIKey(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "revoked"})
+}
+
+// =============================================================================
+// Quota policies
+// =============================================================================
+
+func (a *api) createQuotaPolicy(c *gin.Context) {
+	var in QuotaPolicyInput
+	if !bind(c, &in) {
+		return
+	}
+	id, err := a.store.CreateQuotaPolicy(c.Request.Context(), in)
+	if err != nil {
+		var invalid *InvalidPolicyError
+		if errors.As(err, &invalid) {
+			abortError(c, 400, "policy_invalid", invalid.Reason)
+			return
+		}
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"id": id})
+}
+
+func (a *api) listQuotaPolicies(c *gin.Context) {
+	rows, err := a.store.ListQuotaPolicies(c.Request.Context())
+	if err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"quota_policies": rows})
+}
+
+func (a *api) deleteQuotaPolicy(c *gin.Context) {
+	id, ok := pathInt64(c, "id")
+	if !ok {
+		return
+	}
+	if err := a.store.DeleteQuotaPolicy(c.Request.Context(), id); err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
 // =============================================================================
