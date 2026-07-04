@@ -201,12 +201,18 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 	inv := d.invokerFactory.For(ep, handler, s.Envelope())
 	res, ierr := inv.Invoke(ctx)
 	if ierr != nil {
-		return Abort{
-			Result:   OutcomeDepFail,
-			Class:    ClassTransient,
-			HTTPCode: 503,
-			Reason:   "invoke: " + ierr.Error(),
+		// "无法构造调用"极少见（当前默认 InvokerFactory 不会走到；给自定义
+		// Invoker 实现留的路径）。跟其它失败路径一致：Record + Report + Policy
+		// 决策——直接 Abort 会绕过 cooldown / retry，把 transient 错放大成 503。
+		v := Verdict{
+			Stage:  StageInvoke,
+			Class:  ClassTransient,
+			Reason: "invoke: " + ierr.Error(),
 		}
+		annotateVerdict(span, v)
+		s.Record(ep, v)
+		d.selector.Report(ctx, ep, v)
+		return d.retry.Decide(s, v)
 	}
 	defer res.Close()
 
@@ -222,6 +228,19 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		s.ApplyStream(rep)
 		// === EndpointQuota.ChargeUsage（后扣，fire-and-forget）===
 		d.quota.ChargeUsage(ctx, ep, rep.Usage)
+		if rep.Err != nil {
+			// 200 之后流中断：状态码已写出，不能 retry，但必须让 cooldown /
+			// stats 看到——否则"200 后 RST"的坏 endpoint 统计上永远 100% 成功，
+			// 流量持续打过去。pre-stream 的 Success Report 已经发过，这里补一条
+			// StageStream 的 transient 失败覆盖它。
+			sv := Verdict{
+				Stage:  StageStream,
+				Class:  ClassTransient,
+				Reason: "stream: " + rep.Err.Error(),
+			}
+			span.SetAttribute("stream.err", rep.Err.Error())
+			d.selector.Report(ctx, ep, sv)
+		}
 		return Stream{}
 	}
 	return action
@@ -259,22 +278,26 @@ func annotateVerdict(span trace.Span, v Verdict) {
 
 // quotaVerdictToAttempt 把 EndpointQuota.Reserve 的拒绝结果（QuotaVerdict）翻成
 // dispatch.Verdict（attempt-level 报告，用于 retry / Selector.Report）。
-// quota 返 nil verdict 但有 err（依赖故障）时也按 capacity 处理（让 retry 换 ep）。
+//
+// **Class 语义**（docs/04 §8）：
+//   - ClassCapacity ── 真配额拒绝：retry 换 ep + 该 ep 写 capacity cooldown
+//   - ClassUnknown  ── 依赖故障（Redis 错等）：retry 换 ep，但 **不写 cooldown**
+//     ——不能把"Redis 抖动"误标成"endpoint 坏了"，否则一次抖动把路径上每个
+//     健康 endpoint 都打进冷却，恢复后污染还残留一个 TTL
+//
+// denied.Class 由 EndpointQuota 实现显式填；denied == nil 但 qerr != nil
+// （实现直接返错）同样按依赖故障（Unknown）处理。
 func quotaVerdictToAttempt(denied *QuotaVerdict, qerr error) Verdict {
 	if denied != nil {
-		class := denied.Class
-		if class == ClassUnknown {
-			class = ClassCapacity
-		}
 		reason := denied.Reason
 		if denied.BucketKey != "" && reason == "" {
 			reason = "endpoint quota exhausted: " + denied.BucketKey
 		}
-		return Verdict{Stage: StageReserve, Class: class, Reason: reason}
+		return Verdict{Stage: StageReserve, Class: denied.Class, Reason: reason}
 	}
 	return Verdict{
 		Stage:  StageReserve,
-		Class:  ClassCapacity,
-		Reason: "endpoint quota: " + qerr.Error(),
+		Class:  ClassUnknown,
+		Reason: "endpoint quota (store error): " + qerr.Error(),
 	}
 }

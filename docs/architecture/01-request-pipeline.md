@@ -80,7 +80,13 @@ type RequestContext struct {
 | M7 | Schedule | model、group、endpoint candidates | `rc.RoutedModelService`、endpoint、upstream forward、usage、decision |
 | M10 | Tracing | RC 终态 | metric、usage outbox、schedule trace |
 
-M9 注册在早期，但通过 defer 覆盖 M2 之后所有 middleware 和 handler 的 panic；pre middleware（BodyLimit / Timeout）必须自身不可 panic 或自行兜底。M10 在链尾，通过 `c.Next()` 后执行收尾逻辑。
+M9 注册在早期，但通过 defer 覆盖 M2 之后所有 middleware 和 handler 的 panic；pre middleware（BodyLimit / Timeout）必须自身不可 panic 或自行兜底。
+
+**M10 注册在 M1 之后、M9 之前**（收尾逻辑在 post-`c.Next()` 洋葱返程执行）：
+- 任何后续 middleware abort（401/429/503）→ 返程仍执行收尾——请求 metric /
+  usage 事件 / decision 审计**没有盲区**（挂链尾的旧版会被 `c.Abort()` 整体跳过，
+  撞库 / 限流风暴在请求指标里隐身）
+- panic → 内层 M9 先恢复并写 500，控制流正常返回，M10 收尾看到最终 500 状态
 
 ## 5. M2 Auth
 

@@ -33,6 +33,11 @@ const (
 	StagePrepare
 	// StageReserve endpoint ratelimit 前扣阶段（quota exhausted）。
 	StageReserve
+	// StageStream 响应流阶段（HTTP 200 之后、body 转发中失败——上游 RST /
+	// 半途断流）。HTTP 状态已写出，无法回滚，也不能 retry；这个 Stage 只用于
+	// Selector.Report / stats：一个"200 后掐断"的坏 endpoint 必须被 cooldown /
+	// 打分看到，否则它在统计上永远是 100% success。
+	StageStream
 )
 
 func (s Stage) String() string {
@@ -45,6 +50,8 @@ func (s Stage) String() string {
 		return "reserve"
 	case StageInvoke:
 		return "invoke"
+	case StageStream:
+		return "stream"
 	default:
 		return "unknown"
 	}

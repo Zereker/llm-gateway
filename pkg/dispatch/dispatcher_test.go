@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -199,8 +200,8 @@ func TestDispatcher_FallbackToNextModel(t *testing.T) {
 	d := New(
 		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(
-			selResp{ep: nil},   // primary 候选耗尽
-			selResp{ep: ep},    // fallback 模型有候选
+			selResp{ep: nil}, // primary 候选耗尽
+			selResp{ep: ep},  // fallback 模型有候选
 		)),
 		WithInvokerFactory(newFakeInvokerFactory(successResult(&domain.Usage{Total: 200}, 80))),
 		WithCap(HeaderAttemptCap{Default: 3}),
@@ -272,12 +273,18 @@ func TestDispatcher_SelectorDepFail(t *testing.T) {
 	}
 }
 
-// TestDispatcher_InvokerDepFail: Invoker.Invoke 返 err → DepFail 503。
+// TestDispatcher_InvokerDepFail: Invoker.Invoke 返 err → 按 transient 走 retry
+// 流程（Record + Report + Continue），候选耗尽后 NoEndpoint 503。
+// （旧行为是直接 Abort DepFail，绕过 cooldown / retry——review 修复后不再如此。）
 func TestDispatcher_InvokerDepFail(t *testing.T) {
 	r := &fakeResult{invokeErr: errFakeDep}
+	sel := newFakeSelector(
+		selResp{ep: newTestEP(1)},
+		selResp{ep: nil}, // retry 后候选耗尽
+	)
 	d := New(
 		WithCandidates(fakeCandidates{}),
-		WithSelector(newFakeSelector(selResp{ep: newTestEP(1)})),
+		WithSelector(sel),
 		WithInvokerFactory(newFakeInvokerFactory(r)),
 		WithCap(HeaderAttemptCap{Default: 3}),
 		WithRetry(DefaultRetry{}),
@@ -287,8 +294,11 @@ func TestDispatcher_InvokerDepFail(t *testing.T) {
 	in := newTestInput("gpt-4")
 	out := d.Dispatch(context.Background(), httptest.NewRecorder(), in)
 
-	if out.Result != OutcomeDepFail {
-		t.Fatalf("want OutcomeDepFail, got %s (reason=%s)", out.Result, out.Reason)
+	if out.Result != OutcomeNoEndpoint {
+		t.Fatalf("want OutcomeNoEndpoint（retry 后耗尽）, got %s (reason=%s)", out.Result, out.Reason)
+	}
+	if len(sel.reports) != 1 || sel.reports[0].Class != ClassTransient {
+		t.Errorf("invoke err 应产生一条 transient Report，got %+v", sel.reports)
 	}
 }
 
@@ -420,5 +430,113 @@ func TestDispatcher_DecisionAlwaysFilled_NoAttempts(t *testing.T) {
 	}
 	if out.Decision.DurationMs < 0 {
 		t.Errorf("Decision.DurationMs = %d, want >= 0", out.Decision.DurationMs)
+	}
+}
+
+// =============================================================================
+// review 修复回归：dispatch 错误语义
+// =============================================================================
+
+// 200 之后流中断：Result 仍是 Streamed（状态码已写出），但 (1) selector 必须收到
+// StageStream/transient 反馈（否则坏 endpoint 统计上 100% 成功），(2) 审计 attempt
+// 不能标 success。
+func TestDispatcher_StreamErrorReportedAndNotMarkedSuccess(t *testing.T) {
+	ep := newTestEP(1)
+	sel := newFakeSelector(selResp{ep: ep})
+	res := successResult(&domain.Usage{Total: 10}, 5)
+	res.streamRep.Err = errors.New("connection reset mid-SSE")
+
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(sel),
+		WithInvokerFactory(newFakeInvokerFactory(res)),
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if out.Result != OutcomeStreamed {
+		t.Fatalf("Result = %s, want Streamed（状态码已写出不可回滚）", out.Result)
+	}
+	// Report 两条：invoke success + stream transient
+	if len(sel.reports) != 2 {
+		t.Fatalf("selector 收到 %d 条 Report，want 2（invoke + stream）", len(sel.reports))
+	}
+	if sel.reports[1].Stage != StageStream || sel.reports[1].Class != ClassTransient {
+		t.Errorf("stream 失败反馈 = {%s, %s}, want {stream, transient}",
+			sel.reports[1].Stage, sel.reports[1].Class)
+	}
+	// 审计 attempt 不标 success
+	if got := out.Decision.Attempts[0].Outcome; got != domain.AttemptFail {
+		t.Errorf("attempt outcome = %s, want fail（流没有完整交付）", got)
+	}
+}
+
+// 干净跑完的 stream 仍然只有一条 Report（success）且 attempt = success——
+// 上一个测试的反向对照。
+func TestDispatcher_CleanStreamSingleSuccessReport(t *testing.T) {
+	sel := newFakeSelector(selResp{ep: newTestEP(1)})
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(sel),
+		WithInvokerFactory(newFakeInvokerFactory(successResult(&domain.Usage{Total: 10}, 5))),
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if len(sel.reports) != 1 || sel.reports[0].Class != ClassSuccess {
+		t.Errorf("reports = %+v, want 单条 success", sel.reports)
+	}
+	if out.Decision.Attempts[0].Outcome != domain.AttemptSuccess {
+		t.Errorf("attempt outcome = %s, want success", out.Decision.Attempts[0].Outcome)
+	}
+}
+
+// Invoker.Invoke 返 err（自定义实现的路径）：不能直接 Abort 绕过 cooldown/retry——
+// 应 Record + Report + 走 RetryPolicy（transient → Continue → 下一个 ep）。
+func TestDispatcher_InvokeErrorGoesThroughRetryPath(t *testing.T) {
+	sel := newFakeSelector(selResp{ep: newTestEP(1)}, selResp{ep: newTestEP(2)})
+	broken := &fakeResult{invokeErr: errors.New("cannot build invocation")}
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(sel),
+		WithInvokerFactory(newFakeInvokerFactory(broken, successResult(&domain.Usage{Total: 5}, 3))),
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if out.Result != OutcomeStreamed {
+		t.Fatalf("Result = %s, want Streamed（invoke err 后应 retry 到第二个 ep）", out.Result)
+	}
+	if len(sel.reports) != 2 {
+		t.Fatalf("reports = %d 条, want 2（invoke-err transient + success）", len(sel.reports))
+	}
+	if sel.reports[0].Class != ClassTransient || sel.reports[0].Stage != StageInvoke {
+		t.Errorf("第一条反馈 = {%s, %s}, want {invoke, transient}", sel.reports[0].Stage, sel.reports[0].Class)
+	}
+}
+
+// quotaVerdictToAttempt：依赖故障（qerr / ClassUnknown）保持 Unknown（retry 但不
+// cooldown）；真容量拒绝保持 Capacity（retry + cooldown）。
+func TestQuotaVerdictToAttempt_ClassSemantics(t *testing.T) {
+	// 真拒绝
+	v := quotaVerdictToAttempt(&QuotaVerdict{Class: ClassCapacity, BucketKey: "rl:endpoint:1:rpm"}, nil)
+	if v.Class != ClassCapacity {
+		t.Errorf("真拒绝 class = %s, want capacity", v.Class)
+	}
+	// 依赖故障（QuotaVerdict 显式 Unknown）
+	v = quotaVerdictToAttempt(&QuotaVerdict{Class: ClassUnknown, Reason: "redis: connection refused"}, nil)
+	if v.Class != ClassUnknown {
+		t.Errorf("store 错误 class = %s, want unknown（不能升级成 capacity 污染 cooldown）", v.Class)
+	}
+	// 依赖故障（实现直接返 err）
+	v = quotaVerdictToAttempt(nil, errors.New("redis timeout"))
+	if v.Class != ClassUnknown {
+		t.Errorf("qerr class = %s, want unknown", v.Class)
 	}
 }

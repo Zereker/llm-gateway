@@ -225,6 +225,13 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		// M10 Tracing
 		UsageOutbox: outbox,
 		AuditTracer: dispatchTracer,
+
+		// /readyz 依赖检查（docs/06 §13：readiness 检查 SQL + Redis 可达；
+		// 不检查 Kafka——usage 发布失败不应摘流量）
+		Readiness: []router.ReadinessChecker{
+			{Name: "mysql", Check: sqldb.PingContext},
+			{Name: "redis", Check: func(ctx context.Context) error { return rdb.Ping(ctx).Err() }},
+		},
 	})
 
 	return engine, srv, nil
