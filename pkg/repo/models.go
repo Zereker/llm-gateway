@@ -133,8 +133,11 @@ type Endpoint struct {
 	Routing      RoutingConfig        `db:"routing"`
 	Quota        QuotaConfig          `db:"quota"`
 	Capabilities EndpointCapabilities `db:"capabilities"`
-	Quirks       json.RawMessage      `db:"quirks"`  // v0.7: pkg/protocol/quirks DSL；NULL → no-op
-	Extra        json.RawMessage      `db:"extra"`
+	// quirks / extra 是 DEFAULT NULL 列，用 rawJSON（NULL-safe Scanner）而非裸
+	// json.RawMessage——database/sql 无法把 SQL NULL 扫进 json.RawMessage，没配
+	// quirks 的 endpoint 一读就 "unsupported Scan" 挂掉。
+	Quirks rawJSON `db:"quirks"` // v0.7: pkg/protocol/quirks DSL；NULL → no-op
+	Extra  rawJSON `db:"extra"`
 
 	CreatedAt time.Time  `db:"created_at"`
 	UpdatedAt time.Time  `db:"updated_at"`
@@ -281,6 +284,45 @@ func (e *Endpoint) Form() EndpointForm {
 		return FormSelfHosted
 	}
 	return FormVendor
+}
+
+// rawJSON 是可空 JSON 列（quirks / extra）的 NULL-safe 承载类型。
+//
+// **为什么不用裸 json.RawMessage**：database/sql 的 convertAssign 对 "SQL NULL →
+// json.RawMessage（[]byte 的 named type）" 没有兜底分支，reflection fallback 撞到
+// nil→slice 直接返 "unsupported Scan, storing driver.Value type <nil> into type
+// *json.RawMessage"。裸类型只在列恒非 NULL 时侥幸不炸；quirks / extra 都是
+// DEFAULT NULL，deployer 没配就是 NULL，一 SELECT 就挂——整个 endpoint 读不出来，
+// 等于该 endpoint 直接不可用。这里显式把 NULL / 空 归一成 nil。
+type rawJSON []byte
+
+// Scan 实现 sql.Scanner：NULL / 空 → nil；否则 copy 一份（driver 的 []byte 缓冲
+// 在下次 rows.Next() 可能被复用，不能直接持有）。
+func (r *rawJSON) Scan(value any) error {
+	if value == nil {
+		*r = nil
+		return nil
+	}
+	b, err := bytesFromScan(value, "rawJSON")
+	if err != nil {
+		return err
+	}
+	if len(b) == 0 {
+		*r = nil
+		return nil
+	}
+	cp := make([]byte, len(b))
+	copy(cp, b)
+	*r = cp
+	return nil
+}
+
+// Value 实现 driver.Valuer：空 → NULL；否则原样写字节。
+func (r rawJSON) Value() (driver.Value, error) {
+	if len(r) == 0 {
+		return nil, nil
+	}
+	return []byte(r), nil
 }
 
 // bytesFromScan 把 driver.Value 标准化成 []byte；JSON 列 Scanner 复用。
