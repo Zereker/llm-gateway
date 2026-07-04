@@ -109,10 +109,29 @@ func (o *AsyncKafkaOutbox) Publish(ctx context.Context, evt *OutboxEvent) error 
 }
 
 // worker 消费 channel；retry + DLQ。
+//
+// **不依赖 close(queue) 退出**：Close 只关 done。收到 done 后进入 drain 循环，
+// 把 buffer 里已有的事件发完（非阻塞取，取空即退）。queue 永不 close——
+// 并发 Publish 往已关 channel 发送会 panic（select 在多 case 就绪时随机选，
+// 单靠 done case 挡不住）。
 func (o *AsyncKafkaOutbox) worker() {
 	defer o.wg.Done()
-	for evt := range o.queue {
-		o.publishOne(evt)
+	for {
+		select {
+		case evt := <-o.queue:
+			o.publishOne(evt)
+		case <-o.done:
+			// drain：清空 buffer 后退出。跟 Close 竞态挤进来的极少量事件
+			// 可能落在 drain 之后——丢弃（async 本就 best-effort），无 panic。
+			for {
+				select {
+				case evt := <-o.queue:
+					o.publishOne(evt)
+				default:
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -180,15 +199,18 @@ func (o *AsyncKafkaOutbox) Dropped() int64 {
 	return o.dropped.Load()
 }
 
-// Close 关 channel + 等 worker drain（带 timeout 防止永久阻塞）。
+// Close 通知 worker 退出并等 drain（带 timeout 防止永久阻塞）。
 //
-// 调用后 Publish 会拒绝新事件（返 "closed" err）。
+// 只 close(done)，**永不 close(queue)**——shutdown 超时路径下 handler goroutine
+// 可能仍在 Publish，往已关 channel 发送会 panic（select 多 case 就绪时随机选，
+// done case 挡不住竞态）。queue 留给 GC。
+//
+// 调用后 Publish 拒绝新事件（done case 返 "closed" err）。
 // **不** Close 内部 KafkaWriter——那个由 cmd 装配方持有引用统一关闭。
 func (o *AsyncKafkaOutbox) Close() error {
 	o.closeOnce.Do(func() {
 		close(o.done)
-		close(o.queue)
-		// 给 worker 30s 把 buffer drain 完
+		// 给 worker 30s 把 buffer drain 完（drain 逻辑在 worker 的 done 分支）
 		drainDone := make(chan struct{})
 		go func() {
 			o.wg.Wait()

@@ -82,8 +82,10 @@ func TestDualWrite_FileOKKafkaFail_ReturnsNil(t *testing.T) {
 	}
 }
 
-func TestDualWrite_FileFail_ReturnsError_StillTriesKafka(t *testing.T) {
-	// file 失败仍要尝试 kafka——双失败概率极低，给一线希望。
+// **不变量（review MED#10）**：file ⊇ kafka——file 写失败时**不发** kafka。
+// 否则 kafka 里出现 file 没有的事件，consumer-vs-file 对账没法区分
+// "kafka 幻影" 和 "file 丢数据"，file 不再是 source of truth。
+func TestDualWrite_FileFail_ReturnsError_DoesNotPublishKafka(t *testing.T) {
 	file := &stubPublisher{err: errors.New("disk full")}
 	kafka := &stubPublisher{}
 	o := NewDualWriteOutbox(file, kafka, slog.Default())
@@ -95,8 +97,8 @@ func TestDualWrite_FileFail_ReturnsError_StillTriesKafka(t *testing.T) {
 	if err.Error() != "disk full" {
 		t.Errorf("err = %v, want 'disk full'", err)
 	}
-	if kafka.count() != 1 {
-		t.Errorf("kafka should still get event when file fails, count=%d", kafka.count())
+	if kafka.count() != 0 {
+		t.Errorf("file 失败时不能发 kafka（file⊇kafka 不变量），kafka count=%d", kafka.count())
 	}
 }
 

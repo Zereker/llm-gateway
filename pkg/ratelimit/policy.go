@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
@@ -93,6 +95,15 @@ func (c *PolicyCache) Get(ctx context.Context, id int64) (*PolicyRule, error) {
 			return nil, fmt.Errorf("policy_cache: parse rule_json id=%d: %w", id, err)
 		}
 		rule = &r
+	}
+	if rule == nil {
+		// **悬空 policy id**：account/api_key 挂了 quota_policy_id 但表里没有这行
+		// （typo / 被 hard-delete）。语义上按"该层不限"处理（NULL = 不限的既有
+		// 契约），但这**多半是配置事故**——静默放行等于悄悄关掉限流，只能在账单
+		// 上发现。warn + metric 让它可见（30s cache 让 warn 频率有界）。
+		slog.WarnContext(ctx, "policy_cache: quota_policy_id dangling; treating as unlimited",
+			"policy_id", id)
+		metric.Inc(metric.PolicyCacheTotal, "layer", "any", "result", "dangling")
 	}
 	c.entries.Store(id, &cacheEntry{
 		rule:    rule,

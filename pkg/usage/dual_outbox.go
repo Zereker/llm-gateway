@@ -55,19 +55,19 @@ func NewDualWriteOutbox(file, kafka OutboxPublisher, log *slog.Logger) *DualWrit
 // **file ok + kafka 失败**：返回 nil（事件已落地；kafka 失败由 replay 工具补）。
 // 仅记录 warn 日志 + outbox_kafka_publish_error metric。
 //
-// **file 失败**：仍然尝试 kafka，给一线希望（双失败概率极低）。返回 file 的错误
-// 让 caller 知道数据可能丢——M10 不会因此阻塞业务响应，但会进 usage.publish.error
-// 计数 + 告警。
+// **file 失败：不发 kafka，直接返错**。这是 "file ⊇ kafka" 不变量——kafka 里
+// 出现的事件必须在 file 里也存在，否则 consumer-vs-file 对账没法区分
+// "kafka 幻影事件" 和 "file 丢数据"，file 也不再是 source of truth。
+// （旧行为 "file 失败仍发 kafka 给一线希望" 恰好破坏这个不变量；如需双活容灾
+// 应该显式换 AsyncKafkaOutbox+DLQ 模式，而不是悄悄反转信任关系。）
 func (d *DualWriteOutbox) Publish(ctx context.Context, evt *OutboxEvent) error {
 	if evt == nil {
 		return errors.New("usage: DualWriteOutbox.Publish: nil event")
 	}
 	if fileErr := d.file.Publish(ctx, evt); fileErr != nil {
 		metric.Inc(metric.OutboxFileErrorTotal, "result", "error")
-		d.log.WarnContext(ctx, "usage_events: file sink publish failed; data may be lost if kafka also fails",
+		d.log.ErrorContext(ctx, "usage_events: file sink publish failed; event NOT forwarded to kafka (file is source of truth)",
 			"event_key", evt.Key, "err", fileErr.Error())
-		// 仍然尝试 kafka，给一线希望
-		_ = d.kafka.Publish(ctx, evt)
 		return fileErr
 	}
 	if err := d.kafka.Publish(ctx, evt); err != nil {

@@ -276,26 +276,32 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// Validate fail-fast 校验（docs/07 §5）：
-//   - database.dsn 非空
+// Validate fail-fast 校验（docs/07 §5）。**在 ApplyDefaults 之后跑**——所以这里
+// 只校验"默认值填不了、必须人工给对"的约束：
 //   - data_key 是 hex 64 字符（32 字节）
-//   - scheduler.cooldown 覆盖全 5 个 ErrorClass
-//   - usage_events.driver=kafka 时 brokers 非空
-//   - content_log.driver=file 时 file.path 非空
-//   - content_log.backpressure=block 时必须配 block_timeout
+//   - trace.driver=otel 时 endpoint 必填（slog 不需要）；driver 只认 slog|otel
+//   - usage_events.driver / 各 driver 的必填子字段
+//   - content_log.driver / backpressure 约束
 //
-// 启动期失败即 panic，不让配置错走到运行期。
+// **注意**：database.dsn / redis.addr / cooldown 有本地开发默认值（ApplyDefaults
+// 填充），永远非空——它们的"配错"由启动期真实连接 fail-fast 暴露（OpenDB /
+// OpenRedis ping），不在这里做字符串检查（做了也是死代码——旧版的 dsn-empty /
+// cooldown-all-zero 检查在 defaults 之后永远打不中，已删）。
+//
+// 启动期失败即退出，不让配置错走到运行期。
 func (c *Config) Validate() error {
-	if c.Database.DSN == "" {
-		return errors.New("database.dsn empty")
-	}
 	if c.DataKey != "" && len(c.DataKey) != 64 {
 		return fmt.Errorf("data_key must be 64 hex chars (32 bytes); got %d", len(c.DataKey))
 	}
-	// scheduler.cooldown 必须覆盖全 5 类（任一为 0 视作有意，但至少 cfg 段非 zero）
-	cd := c.Selector.Cooldown
-	if cd.Transient == 0 && cd.Capacity == 0 && cd.Permanent == 0 && cd.Invalid == 0 && cd.Unknown == 0 {
-		return errors.New("scheduler.cooldown all-zero; configure at least transient/capacity/permanent")
+	switch c.Trace.Driver {
+	case "", "slog":
+		// ok；endpoint 忽略
+	case "otel":
+		if c.Trace.Endpoint == "" {
+			return errors.New("trace.driver=otel requires trace.endpoint (OTLP gRPC collector 地址)")
+		}
+	default:
+		return fmt.Errorf("trace.driver=%q not supported (use slog|otel)", c.Trace.Driver)
 	}
 	switch c.UsageEvents.Driver {
 	case "", "file":
