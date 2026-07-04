@@ -159,6 +159,9 @@ func defaultHTTPClient() *http.Client {
 			DialContext: (&net.Dialer{
 				Timeout:   dialTimeout,
 				KeepAlive: 30 * time.Second,
+				// SSRF 防线：拨号前拦截云 metadata 端点（按解析后的真实 IP，挡
+				// DNS-rebinding）。只挡 metadata，不挡私网自建上游。见 ssrf.go。
+				Control: blockMetadataDial,
 			}).DialContext,
 			ForceAttemptHTTP2:     true,
 			TLSHandshakeTimeout:   tlsHandshakeTimeout,
