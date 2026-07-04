@@ -166,6 +166,18 @@ TPM 后扣的取舍：
 
 如果 `ChargeBatch` 发现写入后超过 TPM 上限，必须记录 `llm_gateway_tpm_overflow_total{layer,dimension}`，供运营观察“后扣 token 已超过配置上限”的次数。
 
+## 7a. Redis 部署形态限制
+
+限流脚本是**多 key EVAL 且无 hash tag**（`rl:quota:account:*` 和 `rl:quota:apikey:*`
+落在不同 slot）——**不兼容 Redis Cluster**，切过去第一批请求就 CROSSSLOT 错误，
+而 M6 fail-closed 会把它放大成全量 503。支持的部署形态：单实例 / 主从 + Sentinel /
+代理层聚合（如 Twemproxy 不行、支持 EVAL 跨 key 的代理才行）。真要上 Cluster
+需要先给 bucket key 引入 `{account}` hash tag 并按 subject 分批 EVAL——记为已知
+演进项，做之前不要指向 Cluster。
+
+另外脚本用网关本机时钟做窗口边界（`ARGV = time.Now().Unix()`）：多副本间时钟偏移
+会造成 ≤ 偏移量/窗口 的过量放行——NTP 同步的机群可忽略。
+
 ## 8. Redis 故障行为
 
 Redis 是限流和 cooldown 的生产依赖，启动期连不上直接 fail-fast。运行期故障按调用点区分：

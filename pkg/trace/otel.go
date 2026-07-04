@@ -56,8 +56,13 @@ func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.T
 	)
 	otel.SetTracerProvider(tp)
 	// 全局 propagator 设为 W3C TraceContext + Baggage：让 M1 TraceContext middleware
-	// 提取 traceparent / baggage header；下游 outgoing HTTP（如果 adapter 用 OTel
-	// instrumented client 也会自动注入 traceparent 到 upstream request）。
+	// 提取 traceparent / baggage header。
+	//
+	// **安全警告——不要给上游 HTTP client 套 otelhttp 之类自动注入 propagator 的
+	// transport**：baggage 里有 sub_account_id / request_id 等内部租户标识，
+	// 自动注入会把它们作为 `baggage:` header 发给 OpenAI / Anthropic / Gemini
+	// （跨组织泄漏）。当前 invoker 用自建 http.Client 不注入——保持这样；
+	// 如需给上游调用加 trace，只注入 TraceContext（traceparent），剥掉 Baggage。
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},

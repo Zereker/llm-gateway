@@ -71,6 +71,12 @@ type (
 func NewEngine(deps Deps) *gin.Engine {
 	engine := gin.New()
 
+	// 兜底 recovery：M9 Recover 挂在 M1 之后，BodyLimit / Timeout（M1 之前）的
+	// panic 覆盖不到——没有这层时那类 panic 只有 net/http 的连接级 recover，
+	// 客户端看到的是连接重置而不是 500。gin.Recovery 的 500 没有我们的 JSON
+	// 错误结构，但它只是最后防线，正常路径永远走不到。
+	engine.Use(gin.Recovery())
+
 	registerOpsRoutes(engine, deps.Readiness)
 	registerChatRoutes(engine, deps)
 	registerImageRoutes(engine, deps)
