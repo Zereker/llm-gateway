@@ -8,10 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/redis/go-redis/v9"
 
+	"github.com/zereker/llm-gateway/pkg/cachebus"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/infra"
 	"github.com/zereker/llm-gateway/pkg/repo"
@@ -205,6 +208,89 @@ func TestConsole_APIKeyCrossPlaneLifecycle(t *testing.T) {
 	if _, err := provider.Resolve(context.Background(), &repo.Credentials{APIKey: plain}); !errors.Is(err, domain.ErrInvalidCredentials) {
 		t.Errorf("吊销后 resolve err = %v, want ErrInvalidCredentials", err)
 	}
+}
+
+// TestConsole_RevokeEvictsDataPlaneCache 是 Phase 1 的端到端回归：控制面吊销 key
+// 时经 cachebus 发布失效 → 数据面订阅的 CachedAPIKeyProvider 精准 evict。证明
+// "吊销即时生效"（不用等 TTL）。需 MYSQL_DSN + REDIS_ADDR。
+func TestConsole_RevokeEvictsDataPlaneCache(t *testing.T) {
+	engine, db := newTestEngine(t)
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		t.Skip("REDIS_ADDR not set; skipping cachebus eviction test")
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("redis ping failed (%v); skipping", err)
+	}
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	channel := "test:console:" + t.Name()
+
+	// 数据面侧：cached provider + 订阅 evict。
+	provider := repo.NewCachedAPIKeyProvider(repo.NewSQLAPIKeyProvider(db), 1024, 30*time.Second, nil)
+	evicted := make(chan string, 1)
+	sub := cachebus.NewSubscriber(rdb, channel, func(inv cachebus.Invalidation) {
+		if inv.Kind == cachebus.KindAPIKey {
+			provider.Evict(inv.Key)
+			evicted <- inv.Key
+		}
+	})
+	stop, err := sub.Start(context.Background())
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer stop()
+
+	// 控制面侧：带 publisher 的 store（复用同一 engine 走 API 更真实，但这里直接
+	// 用 store 触发 revoke 以聚焦 cachebus 环路）。
+	store := NewStore(db).WithPublisher(cachebus.NewPublisher(rdb, channel))
+	api := NewEngine(store, []string{testToken})
+
+	// 建账号 + 发 key。
+	if code, resp := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
+		t.Fatalf("create account = %d %v", code, resp)
+	}
+	_, resp := do(t, engine, "POST", "/admin/api-keys", APIKeyInput{AccountID: "default", SubAccountID: "eve"}, true)
+	plain, _ := resp["api_key"].(string)
+	keyID, _ := resp["api_key_id"].(string)
+
+	// 数据面 resolve 一次 → valid，进正向缓存（30s TTL）。
+	if _, err := provider.Resolve(context.Background(), &repo.Credentials{APIKey: plain}); err != nil {
+		t.Fatalf("initial resolve: %v", err)
+	}
+
+	// 控制面吊销（经带 publisher 的 store）→ DB 置 revoked + 发布 cachebus 失效。
+	if code, _ := doOn(t, api, "DELETE", "/admin/accounts/default/api-keys/"+keyID, nil, true); code != 200 {
+		t.Fatalf("revoke via store-with-publisher failed")
+	}
+
+	// 等数据面收到 evict 通知。
+	select {
+	case <-evicted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("数据面没收到 evict 通知")
+	}
+
+	// 关键断言：evict 后立刻 resolve 应 401（缓存已清，重查 DB 见 revoked）——
+	// 若没有 cachebus，这里会返回**缓存里的旧 valid 身份**长达 30s TTL。
+	if _, err := provider.Resolve(context.Background(), &repo.Credentials{APIKey: plain}); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Errorf("evict 后 resolve err = %v, want ErrInvalidCredentials（吊销应即时生效）", err)
+	}
+}
+
+// doOn 跟 do 一样但对指定 engine 发请求。
+func doOn(t *testing.T, engine *gin.Engine, method, path string, body any, withAuth bool) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	if withAuth {
+		req.Header.Set("Authorization", "Bearer "+testToken)
+	}
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
 }
 
 func toJSON(v any) string {

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/zereker/llm-gateway/pkg/cachebus"
 	"github.com/zereker/llm-gateway/pkg/console"
 	"github.com/zereker/llm-gateway/pkg/repo"
 	"github.com/zereker/llm-gateway/pkg/server"
@@ -66,7 +67,22 @@ func run(configPath string) error {
 		return fmt.Errorf("open db: %w", err)
 	}
 
-	engine := console.NewEngine(console.NewStore(sqldb), cfg.Admin.Tokens)
+	store := console.NewStore(sqldb)
+
+	// 可选 cachebus：配了 redis.addr 就挂 Publisher，吊销 key 时精准通知数据面。
+	if cfg.Redis.Addr != "" {
+		rdb, rerr := srv.OpenRedis(cfg.Redis)
+		if rerr != nil {
+			srv.Close()
+			return fmt.Errorf("open redis: %w", rerr)
+		}
+		store = store.WithPublisher(cachebus.NewPublisher(rdb, ""))
+		slog.Info("cachebus enabled: revocations invalidate data-plane cache")
+	} else {
+		slog.Info("cachebus disabled (no redis.addr); revocations rely on data-plane TTL")
+	}
+
+	engine := console.NewEngine(store, cfg.Admin.Tokens)
 
 	slog.Info("console starting", "addr", cfg.Server.Addr)
 	return srv.Serve(cfg.Server.Addr, engine, cfg.Server.ReadHeaderTimeout, cfg.Server.ShutdownTimeout)

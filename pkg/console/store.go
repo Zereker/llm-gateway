@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 
+	"github.com/zereker/llm-gateway/pkg/cachebus"
 	"github.com/zereker/llm-gateway/pkg/endpointcheck"
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
@@ -22,11 +24,19 @@ import (
 // rawJSON NULL-safe、HashAPIKey）——控制面写进去的字节，数据面读出来的语义，
 // 天然对齐，不可能漂移。
 type Store struct {
-	db *sqlx.DB
+	db  *sqlx.DB
+	pub *cachebus.Publisher // 可选；nil = 只靠数据面 TTL 兜底
 }
 
 // NewStore 构造 Store。
 func NewStore(db *sqlx.DB) *Store { return &Store{db: db} }
+
+// WithPublisher 挂上 cachebus Publisher，让吊销 key 时精准通知数据面失效
+// （把 ≤TTL 窗口收到亚秒级）。nil 时退化成纯 TTL。
+func (s *Store) WithPublisher(p *cachebus.Publisher) *Store {
+	s.pub = p
+	return s
+}
 
 // ErrNotFound 资源不存在（handler 翻成 404）。
 var ErrNotFound = errors.New("not found")
@@ -360,9 +370,24 @@ func (s *Store) ListAPIKeys(ctx context.Context, accountID string) ([]APIKeyView
 	return rows, err
 }
 
-// RevokeAPIKey 吊销 key：置 revoked_at + enabled=0。数据面按 TTL 缓存过期后失效
-// （Phase 1 会加 Redis 精准失效把这个窗口收到秒级）。
+// RevokeAPIKey 吊销 key：置 revoked_at + enabled=0，并经 cachebus 精准通知数据面
+// evict（把"吊销后仍缓存有效"窗口从 ≤30s TTL 收到亚秒级）。
+//
+// 先取 hash 再 UPDATE：hash 是数据面缓存键，控制面持有它即可通知失效，无需明文。
+// 发布 best-effort——Redis 挂了只 warn，DB 已落库 + TTL 兜底最终一致。
 func (s *Store) RevokeAPIKey(ctx context.Context, accountID, apiKeyID string) error {
+	var hash string
+	err := s.db.GetContext(ctx, &hash,
+		`SELECT api_key_hash FROM api_keys
+		 WHERE account_id = ? AND api_key_id = ? AND deleted_at IS NULL`,
+		accountID, apiKeyID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE api_keys SET revoked_at = NOW(6), enabled = 0
 		 WHERE account_id = ? AND api_key_id = ? AND deleted_at IS NULL AND revoked_at IS NULL`,
@@ -371,7 +396,13 @@ func (s *Store) RevokeAPIKey(ctx context.Context, accountID, apiKeyID string) er
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+		return ErrNotFound // 已经吊销过
+	}
+
+	if s.pub != nil {
+		if perr := s.pub.Invalidate(ctx, cachebus.Invalidation{Kind: cachebus.KindAPIKey, Key: hash}); perr != nil {
+			slog.WarnContext(ctx, "cachebus invalidate failed; data plane will fall back to TTL", "err", perr, "api_key_id", apiKeyID)
+		}
 	}
 	return nil
 }

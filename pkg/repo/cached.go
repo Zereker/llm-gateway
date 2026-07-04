@@ -75,6 +75,16 @@ func (p *CachedAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) 
 	return v, err
 }
 
+// Evict 按 api_key_hash 剔除正向 + 负向缓存项。控制面吊销 key 时经 cachebus 通知
+// 数据面调用，把"吊销后仍缓存有效"的窗口从 ≤TTL 收到亚秒级。
+//
+// hash 就是 HashAPIKey(plaintext)（= DB api_key_hash 列）——控制面持有它，数据面
+// 无需明文。删负缓存是为了对称：万一某 hash 正被负缓存（罕见竞态），也一并清掉。
+func (p *CachedAPIKeyProvider) Evict(hash string) {
+	p.cache.Delete(hash)
+	p.negative.Delete(hash)
+}
+
 // =============================================================================
 // CachedModelServiceReader — wraps SQLModelServiceReader with per-model TTL LRU
 // =============================================================================
