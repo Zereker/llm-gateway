@@ -28,6 +28,10 @@ redis:
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 admin:
-  # Phase 0 静态 bearer token；生产走 LLM_GATEWAY_CONSOLE_TOKENS 注入 + 未来换 OIDC/RBAC
+  # 静态 bearer token + 角色（admin 读写 / viewer 只读；role 省略=admin）。
+  # 生产走 LLM_GATEWAY_CONSOLE_TOKENS 注入（逗号分隔，全 admin）+ 未来换 OIDC。
   tokens:
-    - "dev-admin-token-change-me"
+    - token: "dev-admin-token-change-me"
+      role: admin
+    - token: "dev-viewer-token"
+      role: viewer

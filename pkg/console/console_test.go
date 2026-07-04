@@ -69,7 +69,7 @@ func newTestEngine(t *testing.T) (*gin.Engine, *sqlx.DB) {
 		t.Fatalf("fk on: %v", err)
 	}
 
-	return NewEngine(NewStore(db), []string{testToken}), db
+	return NewEngine(NewStore(db), []Token{{Value: testToken, Role: RoleAdmin}}), db
 }
 
 // do 发一条带 admin token 的 JSON 请求，返回 code + 解析后的 body map。
@@ -245,7 +245,7 @@ func TestConsole_RevokeEvictsDataPlaneCache(t *testing.T) {
 	// 控制面侧：带 publisher 的 store（复用同一 engine 走 API 更真实，但这里直接
 	// 用 store 触发 revoke 以聚焦 cachebus 环路）。
 	store := NewStore(db).WithPublisher(cachebus.NewPublisher(rdb, channel))
-	api := NewEngine(store, []string{testToken})
+	api := NewEngine(store, []Token{{Value: testToken, Role: RoleAdmin}})
 
 	// 建账号 + 发 key。
 	if code, resp := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
@@ -319,6 +319,41 @@ func TestConsole_UsageRead(t *testing.T) {
 	totals, _ = resp["totals"].(map[string]any)
 	if totals["total_tokens"].(float64) != 10 {
 		t.Errorf("acct2 total_tokens = %v, want 10", totals["total_tokens"])
+	}
+}
+
+// TestConsole_ViewerRoleReadOnly：viewer token 能 GET，不能 POST/DELETE（403）。
+func TestConsole_ViewerRoleReadOnly(t *testing.T) {
+	_, db := newTestEngine(t)
+	const viewerTok = "viewer-only-token"
+	engine := NewEngine(NewStore(db), []Token{
+		{Value: testToken, Role: RoleAdmin},
+		{Value: viewerTok, Role: RoleViewer},
+	})
+
+	req := func(method, path, tok string) int {
+		r := httptest.NewRequest(method, path, bytes.NewReader([]byte(`{"pin":"x","name":"y"}`)))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, r)
+		return w.Code
+	}
+
+	// viewer 读 OK
+	if code := req("GET", "/admin/endpoints", viewerTok); code != 200 {
+		t.Errorf("viewer GET /admin/endpoints = %d, want 200", code)
+	}
+	// viewer 写 → 403
+	if code := req("POST", "/admin/accounts", viewerTok); code != 403 {
+		t.Errorf("viewer POST /admin/accounts = %d, want 403", code)
+	}
+	if code := req("DELETE", "/admin/endpoints/1", viewerTok); code != 403 {
+		t.Errorf("viewer DELETE = %d, want 403", code)
+	}
+	// admin 写 OK
+	if code := req("POST", "/admin/accounts", testToken); code != 201 {
+		t.Errorf("admin POST /admin/accounts = %d, want 201", code)
 	}
 }
 

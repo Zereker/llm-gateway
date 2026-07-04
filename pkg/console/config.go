@@ -40,9 +40,10 @@ type ServerConfig struct {
 	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
 }
 
-// AdminConfig Phase 0 用静态 bearer token 鉴权（Phase 4 换真 RBAC / OIDC）。
+// AdminConfig 静态 bearer token 鉴权 + 角色（Phase 4 的 RBAC 基元；真 OIDC/多租户
+// 留后续）。yaml 里每个 token 带 role（admin / viewer；空 = admin）。
 type AdminConfig struct {
-	Tokens []string `yaml:"tokens"`
+	Tokens []Token `yaml:"tokens"`
 }
 
 // Load 读 YAML + env 覆盖 + 默认值 + 校验。
@@ -79,7 +80,12 @@ func (c *Config) applyEnv() {
 		c.DataKey = v
 	}
 	if v := os.Getenv("LLM_GATEWAY_CONSOLE_TOKENS"); v != "" {
-		c.Admin.Tokens = splitComma(v)
+		// env 简写形式：逗号分隔的裸 token，全给 admin 角色。
+		var toks []Token
+		for _, t := range splitComma(v) {
+			toks = append(toks, Token{Value: t, Role: RoleAdmin})
+		}
+		c.Admin.Tokens = toks
 	}
 }
 
@@ -107,6 +113,16 @@ func (c *Config) validate() error {
 	}
 	if len(c.Admin.Tokens) == 0 {
 		return fmt.Errorf("console: admin.tokens required (at least one bearer token; set LLM_GATEWAY_CONSOLE_TOKENS)")
+	}
+	for i, t := range c.Admin.Tokens {
+		if t.Value == "" {
+			return fmt.Errorf("console: admin.tokens[%d].token is empty", i)
+		}
+		if t.Role == "" {
+			c.Admin.Tokens[i].Role = RoleAdmin // 缺省 admin
+		} else if t.Role != RoleAdmin && t.Role != RoleViewer {
+			return fmt.Errorf("console: admin.tokens[%d].role %q invalid (want admin|viewer)", i, t.Role)
+		}
 	}
 	return nil
 }

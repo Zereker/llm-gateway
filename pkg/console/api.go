@@ -10,8 +10,9 @@ import (
 )
 
 // NewEngine 装配控制面 gin.Engine：ops 路由（/healthz）公开，/admin/* 全部走
-// adminAuth。所有业务 handler 只依赖 *Store。
-func NewEngine(store *Store, tokens []string) *gin.Engine {
+// adminAuth（认证 + 解析角色）。写路由（POST/DELETE）额外挂 requireAdmin——viewer
+// 角色只能读。所有业务 handler 只依赖 *Store。
+func NewEngine(store *Store, tokens []Token) *gin.Engine {
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
@@ -20,23 +21,22 @@ func NewEngine(store *Store, tokens []string) *gin.Engine {
 	api := &api{store: store}
 	admin := engine.Group("/admin", adminAuth(tokens))
 	{
-		admin.POST("/accounts", api.createAccount)
+		// 读：admin + viewer 都行
 		admin.GET("/accounts", api.listAccounts)
-
-		admin.POST("/model-services", api.createModelService)
 		admin.GET("/model-services", api.listModelServices)
-		admin.POST("/subscriptions", api.subscribe)
-
-		admin.POST("/endpoints", api.createEndpoint)
 		admin.GET("/endpoints", api.listEndpoints)
 		admin.GET("/endpoints/:id", api.getEndpoint)
-		admin.DELETE("/endpoints/:id", api.deleteEndpoint)
-
-		admin.POST("/api-keys", api.createAPIKey)
 		admin.GET("/accounts/:pin/api-keys", api.listAPIKeys)
-		admin.DELETE("/accounts/:pin/api-keys/:keyID", api.revokeAPIKey)
-
 		admin.GET("/usage", api.getUsage)
+
+		// 写：只有 admin
+		admin.POST("/accounts", requireAdmin, api.createAccount)
+		admin.POST("/model-services", requireAdmin, api.createModelService)
+		admin.POST("/subscriptions", requireAdmin, api.subscribe)
+		admin.POST("/endpoints", requireAdmin, api.createEndpoint)
+		admin.DELETE("/endpoints/:id", requireAdmin, api.deleteEndpoint)
+		admin.POST("/api-keys", requireAdmin, api.createAPIKey)
+		admin.DELETE("/accounts/:pin/api-keys/:keyID", requireAdmin, api.revokeAPIKey)
 	}
 	return engine
 }
