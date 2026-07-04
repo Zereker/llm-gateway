@@ -18,6 +18,10 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 
 	engine.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
 
+	// Web UI（Phase 3）：单文件 admin 控制台。页面本身不含机密，鉴权发生在它发起的
+	// /admin/* API 调用上（浏览器带 admin token）。
+	engine.GET("/", func(c *gin.Context) { c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML) })
+
 	api := &api{store: store}
 	admin := engine.Group("/admin", adminAuth(tokens))
 	{
