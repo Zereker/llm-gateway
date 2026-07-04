@@ -351,6 +351,63 @@ func TestConsole_QuotaPolicyCRUD(t *testing.T) {
 	}
 }
 
+// TestConsole_PricingAppendOnly：发布第二版价格会封盘第一版（effective_to 置值），
+// 且只剩一个 active。
+func TestConsole_PricingAppendOnly(t *testing.T) {
+	engine, db := newTestEngine(t)
+	// 前置：account + model_service（FK）
+	if code, _ := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
+		t.Fatal("account")
+	}
+	_, resp := do(t, engine, "POST", "/admin/model-services", ModelServiceInput{ServiceID: "openai/gpt-4o", Model: "gpt-4o"}, true)
+	msID := int64(resp["id"].(float64))
+
+	pub := func(rate float64) int {
+		code, _ := do(t, engine, "POST", "/admin/pricing", PricingInput{
+			AccountID: "default", ModelServiceID: msID,
+			Rule:      json.RawMessage(`{"unit":"tokens_per_1m","currency":"USD","rates":{"input":` + ftoa(rate) + `}}`),
+			CreatedBy: "test",
+		}, true)
+		return code
+	}
+	if pub(5.0) != 201 {
+		t.Fatal("publish v1")
+	}
+	if pub(6.0) != 201 {
+		t.Fatal("publish v2")
+	}
+
+	// 恰好一个 active（effective_to IS NULL）
+	var active int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pricing_versions WHERE account_id='default' AND model_service_id=? AND effective_to IS NULL`, msID).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 {
+		t.Errorf("active 版本数 = %d, want 1（append-only 应只留一个 active）", active)
+	}
+	// 共两个版本（v1 被封盘、v2 active）
+	code, list := do(t, engine, "GET", "/admin/pricing?account_id=default", nil, true)
+	if code != 200 {
+		t.Fatal("list pricing")
+	}
+	arr, _ := list["pricing"].([]any)
+	if len(arr) != 2 {
+		t.Errorf("版本总数 = %d, want 2", len(arr))
+	}
+	// active-only 过滤应只回 1 条
+	_, list = do(t, engine, "GET", "/admin/pricing?account_id=default&active=true", nil, true)
+	arr, _ = list["pricing"].([]any)
+	if len(arr) != 1 {
+		t.Errorf("active-only 版本数 = %d, want 1", len(arr))
+	}
+}
+
+func ftoa(f float64) string {
+	// 只用于测试固定值 5.0/6.0
+	return itoa(int64(f)) + ".0"
+}
+
 func itoa(n int64) string {
 	if n == 0 {
 		return "0"
