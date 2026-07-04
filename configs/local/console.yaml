@@ -17,6 +17,13 @@ database:
   max_idle_conns: 5
   conn_max_lifetime: 30m
 
+# 可选：配了就走 cachebus 精准失效——吊销 key 时亚秒级通知数据面 evict，
+# 而不是等数据面 ≤30s TTL 自然过期。必须与 gateway 用同一个 Redis。
+# 留空 addr（或整段删掉）= 退化成纯 TTL 吊销。
+redis:
+  addr: "localhost:6379"
+  db: 0
+
 # 必须与 gateway.yaml 的 data_key 一致（本地 dev 值；生产改）
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 

@@ -22,7 +22,10 @@ import (
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database infra.DBConfig `yaml:"database"`
-	Admin    AdminConfig    `yaml:"admin"`
+	// Redis 可选：配了就走 cachebus 精准失效（吊销 key 亚秒级通知数据面）；
+	// 不配则退化成纯 TTL（数据面 ≤30s 后自然失效）。addr 空 = 未配置。
+	Redis infra.RedisConfig `yaml:"redis"`
+	Admin AdminConfig       `yaml:"admin"`
 
 	// DataKey 是 AES-256-GCM 的 KEK（hex 64 字符）。控制面写 endpoints.auth 时用它
 	// 加密——**必须跟数据面 cfg.data_key 完全一致**，否则数据面解不开凭证。

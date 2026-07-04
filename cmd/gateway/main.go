@@ -25,6 +25,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/pkg/cachebus"
 	"github.com/zereker/llm-gateway/pkg/config"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
 	"github.com/zereker/llm-gateway/pkg/domain"
@@ -132,6 +133,19 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	apikeyProvider := repo.NewCachedAPIKeyProvider(
 		repo.NewSQLAPIKeyProvider(sqldb), 10240, 30*time.Second, cacheMetrics,
 	)
+
+	// 快速吊销：订阅控制面的 cachebus 失效频道，收到 apikey 失效就精准 evict——
+	// 把"key 已吊销但数据面仍缓存有效"的窗口从 ≤30s TTL 收到亚秒级。best-effort：
+	// 订阅失败只 warn（退化成纯 TTL），不阻塞启动。
+	if stop, subErr := cachebus.NewSubscriber(rdb, "", func(inv cachebus.Invalidation) {
+		if inv.Kind == cachebus.KindAPIKey {
+			apikeyProvider.Evict(inv.Key)
+		}
+	}).Start(context.Background()); subErr != nil {
+		slog.Warn("cachebus subscribe failed; falling back to TTL-only invalidation", "err", subErr)
+	} else {
+		srv.AddCloser("cachebus", func() error { stop(); return nil })
+	}
 
 	outbox, err := buildOutbox(srv, cfg.UsageEvents)
 	if err != nil {
