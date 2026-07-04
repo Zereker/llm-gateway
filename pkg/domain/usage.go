@@ -79,12 +79,18 @@ type UsageMeta struct {
 	APIKeyID     string `json:"api_key_id"`
 	ServiceID    string `json:"service_id,omitempty"`      // model_services.service_id（字符串可重命名）
 
-	// ModelServiceID / ServiceUpdateTime —— pricing 查询指纹（docs/05 §4 + docs/09 §6）。
+	// ModelServiceID —— 下游 billing 按 (account_id, model_service_id, rule_class,
+	// StartTime) 命中 pricing_versions 的 idx_active_lookup 索引选出 effective 价格
+	// 行（effective_from <= StartTime < effective_to）。跟 Model / ServiceID 一致
+	// 取自 RoutedModelService（fallback 后实际计费的模型）。
+	ModelServiceID int64 `json:"model_service_id,omitempty"`
+
+	// ServiceUpdateTime —— model_services.updated_at 快照，仅作**诊断参考**
+	// （事件产生时 gateway 看到的 catalog 版本；repo cache 下可能滞后 ≤30s）。
 	//
-	// 下游 billing aggregator 用 (account_id, model_service_id, service_update_time)
-	// 直接命中 pricing_versions 索引，无需经 service_id → id 二跳。
-	// 与 Model / ServiceID 一致取自 RoutedModelService（fallback 后实际计费的模型）。
-	ModelServiceID    int64     `json:"model_service_id,omitempty"`
+	// **不是 pricing 查询键**：pricing_versions 没有这个列，且改价（append-only
+	// INSERT）不会动 model_services.updated_at——价格匹配一律按 StartTime 走
+	// effective_from/to 区间（docs/05 §6：网关不做价格解析，时间语义归下游）。
 	ServiceUpdateTime time.Time `json:"service_update_time,omitempty"`
 
 	RequestID    string    `json:"request_id"`
