@@ -12,12 +12,13 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/protocol/quirks"
@@ -128,8 +129,11 @@ func validateRoutingURL(raw string) string {
 	case "metadata.google.internal", "metadata", "instance-data":
 		return "metadata_endpoint"
 	}
-	// 链路本地地址（AWS/GCP/Azure metadata 都在 169.254.0.0/16；IPv6 fe80::/10）
-	if ip := net.ParseIP(host); ip != nil && ip.IsLinkLocalUnicast() {
+	// metadata IP（169.254.0.0/16 / fe80::/10 / AWS IMDSv6 fd00:ec2::254）——
+	// 判定逻辑与 dial-time SSRF 防线共用 invoker.IsMetadataIP，单一真源。
+	// 注意：这是启动期**预警**（warn + metric，不阻塞）；运行期真正的拦截在
+	// invoker 拨号钩子（按解析后 IP，挡 DNS-rebinding）。
+	if ip, err := netip.ParseAddr(host); err == nil && invoker.IsMetadataIP(ip) {
 		return "metadata_endpoint"
 	}
 	return ""

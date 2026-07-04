@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -103,10 +104,13 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 		if len(reserveBuckets) > 0 {
 			allowed, violated, rerr := cfg.store.ReserveBatch(ctx, reserveBuckets)
 			if rerr != nil {
-				// fail-closed（docs/04 §8）
+				// fail-closed（docs/04 §8）。细节只进日志，不进响应 body——跟 auth
+				// 依赖故障一致，避免把 Redis / driver 内部错误（host / 拓扑）泄漏给
+				// 客户端。
 				metric.Inc(metric.RateLimitDecisionsTotal, "scope", "user", "dimension", "any", "result", "error")
+				slog.ErrorContext(ctx, "ratelimit: reserve failed", "err", rerr)
 				abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
-					"ratelimit: reserve: "+rerr.Error())
+					"rate limiter unavailable")
 				return
 			}
 			if !allowed {
