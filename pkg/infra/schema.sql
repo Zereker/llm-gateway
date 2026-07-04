@@ -232,3 +232,26 @@ CREATE TABLE IF NOT EXISTS pricing_versions (
     CONSTRAINT fk_pricing_model_service FOREIGN KEY (model_service_id) REFERENCES model_services(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- =====================================================================
+-- usage_daily：控制面 dashboard 用的**派生**用量聚合表（Phase 2）
+--
+-- 由 cmd/usage-rollup 消费 usage outbox（JSONL 文件是 source of truth）增量累加
+-- 出来——**不是计费真源**（计费仍以 outbox 事件为准）。按 (account_id, model, day)
+-- 聚合 token / 请求数，喂控制面 GET /admin/usage。
+--
+-- **无 FK**：这是 derived 数据，账号 hard-delete 后旧聚合行仍可保留供审计，不该因
+-- 引用完整性把 rollup 卡住。
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS usage_daily (
+    account_id    VARCHAR(64)     NOT NULL,
+    model         VARCHAR(191)    NOT NULL,
+    day           DATE            NOT NULL,
+    input_tokens  BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    output_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_tokens  BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    requests      BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMP(6)    NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (account_id, model, day),
+    INDEX idx_day (day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
