@@ -412,6 +412,10 @@ M4 Budget 可替换：
 - `alwayspass`：默认，永远通过。
 - `inmemory`：进程内余额跟踪，适合 demo/单实例。
 
+**`inmemory` 严禁多副本使用**：余额是 per-process 的——N 个副本各自独立扣减，
+实际授予 N 倍预算，且滚动重启即清零。多副本部署要么用 `alwayspass`（预算由
+下游计费管），要么实现外部账务 `BudgetGate`（共享存储）。
+
 新增外部账务系统时，实现 middleware 侧的 `BudgetGate` 接口，并在 `cmd/gateway` 中用 option 注入。
 
 ## 10. Moderation

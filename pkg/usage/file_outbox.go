@@ -25,6 +25,8 @@ import (
 // 没用 log/slog 写：slog `Handler.Handle()` 的 error 被 `_ = ...` 吞掉，调用方拿不到
 // "写成功了没"——违反 source-of-truth 的可观测性要求。详见 docs/05 §5。
 type FileOutbox struct {
+	mu sync.RWMutex // 保护 f 的 Close vs 并发 Publish（shutdown 超时路径下
+	// handler goroutine 可能仍在 Publish；无锁时 Close 置 nil → nil deref panic）
 	f *os.File
 }
 
@@ -69,9 +71,17 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 	buf = append(buf, evt.Payload...)
 	buf = append(buf, '\n')
 
-	// *os.File.Write 用 fdmutex 串行化；单次 Write 调用内核保证原子落地，
-	// 即使其他 goroutine 同时 Publish 也不会出现 JSONL 行交错。
-	_, err := o.f.Write(buf)
+	// RLock 挡住 Close 并发置 nil；写本身仍靠 *os.File 内部 fdmutex 串行化，
+	// 单次 Write 调用内核保证整行原子落地，不会跟其他 Publish 交错。
+	o.mu.RLock()
+	f := o.f
+	var err error
+	if f == nil {
+		err = errors.New("usage: FileOutbox: closed")
+	} else {
+		_, err = f.Write(buf)
+	}
+	o.mu.RUnlock()
 
 	// 大 payload 撑出来的 buffer 不放回池子，避免后续小 publish 持续占用大内存
 	if cap(buf) <= maxPooledBufSize {
@@ -81,13 +91,13 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 	return err
 }
 
-// Close 关闭底层文件；实现 io.Closer 以便 graceful shutdown 调用。
+// Close 关闭底层文件；实现 io.Closer 以便 graceful shutdown 调用。幂等。
 //
-// 关闭操作本身只调用一次有效（Close 后 f 置 nil，重复 Close 返回 nil）；为
-// 简化实现这里复用 *os.File 自己的 close-once 语义不再加额外保护，但保持
-// 调用幂等。多次 Close 在 Go 里是安全的（第二次返回 ErrClosed），这里我们
-// 主动检查 nil 避免暴露 ErrClosed 给 caller。
+// 写锁等待所有 in-flight Publish 的 RLock 释放后才关文件——shutdown 超时路径
+// 下仍在跑的 handler goroutine 不会 nil deref，之后的 Publish 拿到 "closed" 错误。
 func (o *FileOutbox) Close() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.f == nil {
 		return nil
 	}

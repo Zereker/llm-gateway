@@ -165,9 +165,14 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	endpointReader := repo.NewCachedEndpointReader(
 		repo.NewSQLEndpointReader(sqldb), 1024, 4096, cacheTTL, cacheMetrics,
 	)
-	quotaPolicyReader := repo.NewCachedQuotaPolicyProvider(
-		repo.NewSQLQuotaPolicyProvider(sqldb), 128, cacheTTL, cacheMetrics,
-	)
+
+	// 启动期 endpoint 配置扫描（docs/00 §3 step 6）：protocol typo / vendor 未注册 /
+	// translator 不可达 / metadata URL / quirks 编译失败——warn + metric，不阻塞启动。
+	scanEndpoints(context.Background(), endpointReader, slog.Default())
+	// quota policy 只有一层缓存：ratelimit.PolicyCache（缓存**解析后**的 PolicyRule，
+	// TTL 30s）。这里直接喂 SQL provider——不再叠 repo.CachedQuotaPolicyProvider，
+	// 双层 30s 会让改 policy 最坏 60s 才生效，且两层各自的 miss 语义叠加难排障。
+	quotaPolicyReader := repo.NewSQLQuotaPolicyProvider(sqldb)
 	rateStore := ratelimit.NewRedisStore(rdb)
 	cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{
 		Transient: cfg.Selector.Cooldown.Transient,
