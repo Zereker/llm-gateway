@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -78,8 +80,20 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 
 		u, err := cfg.provider.Resolve(ctx, creds)
 		if err != nil {
-			metric.Inc(metric.AuthTotal, "result", "invalid")
-			abortWithCode(c, 401, domain.ErrPermanent, domain.ErrCodeUnauthorized, "invalid credentials: "+err.Error())
+			// 错误分两类（docs/01 §5 + §7；sentinel 契约见 domain.ErrInvalidCredentials）：
+			//   凭证无效  → 401；固定文案，不带 err 细节（不细分 unknown/disabled/
+			//               expired，防枚举；也防内部信息泄漏）
+			//   依赖故障  → fail-closed 503 + Retry-After；不得伪装成 401。
+			//               细节只进日志，不进响应 body。
+			if errors.Is(err, domain.ErrInvalidCredentials) {
+				metric.Inc(metric.AuthTotal, "result", "invalid")
+				abortWithCode(c, 401, domain.ErrPermanent, domain.ErrCodeUnauthorized, "invalid credentials")
+				return
+			}
+			metric.Inc(metric.AuthTotal, "result", "error")
+			slog.ErrorContext(ctx, "auth: identity lookup failed", "err", err)
+			c.Header("Retry-After", "1")
+			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable, "identity lookup unavailable")
 			return
 		}
 

@@ -164,10 +164,10 @@ CREATE TABLE IF NOT EXISTS endpoints (
     INDEX idx_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- v0.7：给已存在 endpoints 表加 quirks 列（pkg/protocol/quirks 配置存这）。
--- MySQL 8.0.29+ 支持 ADD COLUMN IF NOT EXISTS，让 schema 演进幂等。
--- 老库重启 gateway 时自动加列；新库 CREATE TABLE 时已带，ADD 是 no-op。
-ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS quirks JSON DEFAULT NULL;
+-- 注意：本文件只放 CREATE TABLE IF NOT EXISTS。给已存在的表补列走 infra.Migrate
+-- 里的 ensureColumn（information_schema 判断后 ALTER）——MySQL **不支持**
+-- `ADD COLUMN IF NOT EXISTS`（那是 MariaDB 语法），直接写在这里会让 Migrate
+-- 在 mysql:8.0 上语法报错、gateway 无法启动。
 
 -- =====================================================================
 -- api_keys：M2 Auth middleware 凭证查表

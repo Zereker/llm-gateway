@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -37,9 +38,12 @@ func TestAuth_RejectsMissingCreds(t *testing.T) {
 	}
 }
 
+// 凭证无效（wrap domain.ErrInvalidCredentials）→ 401，固定文案，**不**泄漏内部细节。
 func TestAuth_RejectsInvalidCreds(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), Auth(
-		WithIdentityProvider(stubProvider{err: errors.New("unknown api key")}),
+		WithIdentityProvider(stubProvider{
+			err: fmt.Errorf("apikey: revoked at 2026-01-01: %w", domain.ErrInvalidCredentials),
+		}),
 	))
 	r.GET("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -51,8 +55,35 @@ func TestAuth_RejectsInvalidCreds(t *testing.T) {
 	if w.Code != 401 {
 		t.Errorf("status = %d, want 401", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "unknown api key") {
-		t.Errorf("body should include underlying error: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "invalid credentials") {
+		t.Errorf("body = %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "revoked") {
+		t.Errorf("内部错误细节不该出现在响应 body：%s", w.Body.String())
+	}
+}
+
+// 依赖故障（非 sentinel 的裸错误，如 SQL 连不上）→ fail-closed 503 + Retry-After，
+// 不得伪装成 401（docs/01 §7），错误细节不进 body。
+func TestAuth_DependencyFailureFailsClosed503(t *testing.T) {
+	r := newGinTest(TraceContext(), Recover(), Auth(
+		WithIdentityProvider(stubProvider{err: errors.New("apikey: lookup: dial tcp 10.0.0.5:3306: i/o timeout")}),
+	))
+	r.GET("/x", func(c *gin.Context) { c.Status(200) })
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer whatever")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 503 {
+		t.Errorf("status = %d, want 503 (DB 故障不能伪装成 401)", w.Code)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("503 应带 Retry-After")
+	}
+	if strings.Contains(w.Body.String(), "dial tcp") {
+		t.Errorf("SQL 错误细节不该出现在响应 body：%s", w.Body.String())
 	}
 }
 

@@ -229,3 +229,45 @@ func TestTTLCache_GetOrLoad_SingleflightCollapsesConcurrent(t *testing.T) {
 		t.Errorf("loader called %d times, want 1 (singleflight 失效)", got)
 	}
 }
+
+// **回归**：leader 的 ctx 被取消不能毒化 singleflight 的其他 waiter。
+// loader 必须跑在 WithoutCancel 的 ctx 上——leader 断连时 SQL 照常完成并回填。
+func TestTTLCache_GetOrLoad_CanceledLeaderDoesNotPoisonWaiters(t *testing.T) {
+	c := NewTTLCache[string, int](10, time.Minute)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel() // leader 的请求 ctx 已取消（模拟客户端断连）
+
+	v, err := c.GetOrLoad(canceled, "hot", func(loadCtx context.Context) (int, bool, error) {
+		// loader 拿到的 ctx 应该没被取消（已 WithoutCancel 解耦）
+		if loadCtx.Err() != nil {
+			return 0, false, loadCtx.Err()
+		}
+		return 42, true, nil
+	})
+	if err != nil {
+		t.Fatalf("canceled leader ctx 泄漏进 loader：%v", err)
+	}
+	if v != 42 {
+		t.Fatalf("v=%d, want 42", v)
+	}
+	// 且结果已回填——后续请求直接命中
+	if got, ok := c.Get("hot"); !ok || got != 42 {
+		t.Errorf("cache 未回填：ok=%v got=%d", ok, got)
+	}
+}
+
+// loader ctx 带 loaderTimeout deadline（不是无限期），DB 挂死时 waiter 不会永久阻塞。
+func TestTTLCache_GetOrLoad_LoaderCtxHasDeadline(t *testing.T) {
+	c := NewTTLCache[string, int](10, time.Minute)
+	_, _ = c.GetOrLoad(context.Background(), "k", func(loadCtx context.Context) (int, bool, error) {
+		dl, ok := loadCtx.Deadline()
+		if !ok {
+			t.Error("loader ctx 应带 deadline")
+		}
+		if remain := time.Until(dl); remain > loaderTimeout {
+			t.Errorf("deadline 超过 loaderTimeout：%v", remain)
+		}
+		return 1, true, nil
+	})
+}
