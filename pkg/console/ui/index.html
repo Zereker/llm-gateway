@@ -60,7 +60,7 @@
 
 <script>
 "use strict";
-const TABS = ["Endpoints","API Keys","Accounts","Models"];
+const TABS = ["Endpoints","API Keys","Accounts","Models","Policies"];
 let TOKEN = sessionStorage.getItem("tok") || "";
 let active = "Endpoints";
 
@@ -99,7 +99,7 @@ function renderNav(){
 function show(tab){
   active=tab; renderNav();
   const v=$("#view"); v.innerHTML="<div class='empty'>loading…</div>";
-  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
+  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Policies":viewPolicies})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
 }
 
 function table(cols,rows,rowFn){
@@ -196,6 +196,28 @@ async function viewModels(){
   const card=el("div",{class:"card"},el("h2",{},"Model services ("+(model_services||[]).length+")"));
   card.append(table(["ID","Service ID","Model","Created"],model_services,m=>el("tr",{},
     el("td",{class:"mono"},String(m.id)),el("td",{},m.service_id),el("td",{},m.model),el("td",{class:"mono"},(m.created_at||"").slice(0,19)))));
+  v.append(card);
+}
+
+// ---- Quota Policies ----
+async function viewPolicies(){
+  const {quota_policies}=await api("GET","/admin/quota-policies");
+  const v=$("#view"); v.innerHTML="";
+  const name=el("input",{placeholder:"name (tier1)"}), desc=el("input",{placeholder:"description"});
+  const rule=el("textarea",{rows:"5",style:"width:100%;font-family:ui-monospace,monospace",placeholder:'{"default":{"rpm":60,"tpm":100000},"per_model":{"gpt-4o":{"rpm":10}}}'});
+  v.append(el("div",{class:"card"},el("h2",{},"Create quota policy"),
+    el("div",{class:"grid"},el("label",{},"name",name),el("label",{},"description",desc)),
+    el("div",{style:"margin-top:10px"},el("div",{class:"hint",style:"margin-bottom:4px"},"rule JSON (default / per_model with rpm·tpm·rps)"),rule),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
+      let parsed; try{parsed=JSON.parse(rule.value)}catch(e){toast("rule is not valid JSON","bad");return}
+      try{await api("POST","/admin/quota-policies",{name:name.value,description:desc.value,rule:parsed});toast("policy created","ok");show("Policies")}catch(e){toast(e.message,"bad")}
+    }},"Create"))));
+
+  const card=el("div",{class:"card"},el("h2",{},"Quota policies ("+(quota_policies||[]).length+")"));
+  card.append(table(["ID","Name","Description","Rule","Enabled",""],quota_policies,p=>el("tr",{},
+    el("td",{class:"mono"},String(p.id)),el("td",{},p.name),el("td",{},p.description||""),
+    el("td",{class:"mono"},JSON.stringify(p.rule)),el("td",{},onoff(p.enabled)),
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete policy "+p.name+"?")){try{await api("DELETE","/admin/quota-policies/"+p.id);toast("deleted","ok");show("Policies")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
   v.append(card);
 }
 
