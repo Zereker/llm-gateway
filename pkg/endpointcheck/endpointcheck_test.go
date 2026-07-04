@@ -1,4 +1,4 @@
-package main
+package endpointcheck
 
 import (
 	"testing"
@@ -20,6 +20,7 @@ func TestValidateRoutingURL(t *testing.T) {
 		{"http://metadata.google.internal/computeMetadata/v1/", "metadata_endpoint"},
 		{"http://METADATA.GOOGLE.INTERNAL/x", "metadata_endpoint"}, // 大小写
 		{"http://[fe80::1]/x", "metadata_endpoint"},                // IPv6 链路本地
+		{"http://[fd00:ec2::254]/latest/", "metadata_endpoint"},    // AWS IMDSv6
 		{"http://instance-data/latest/", "metadata_endpoint"},
 	}
 	for _, tc := range cases {
@@ -29,14 +30,14 @@ func TestValidateRoutingURL(t *testing.T) {
 	}
 }
 
-func TestValidateEndpoint_UnknownProtocolAndBadQuirks(t *testing.T) {
+func TestValidate_UnknownProtocolAndBadQuirks(t *testing.T) {
 	ep := &domain.Endpoint{
 		ID: 1, Vendor: "no-such-vendor",
 		Protocol: domain.ProtoUnknown, // 'openai ' 尾空格之类 parse 失败
 		Routing:  domain.RoutingConfig{URL: "https://ok.example.com/v1"},
-		Quirks:   []byte(`{"strips": ["x"]}`), // typo: strips
+		Quirks:   []byte(`{"strips": ["x"]}`), // typo 字段
 	}
-	reasons := validateEndpoint(ep)
+	reasons := Validate(ep)
 
 	want := map[string]bool{
 		"unknown_protocol":      false,
