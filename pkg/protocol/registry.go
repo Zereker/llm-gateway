@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"log/slog"
 	"sync"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
@@ -51,6 +52,13 @@ var handlerCache sync.Map // key = "vendor|src|target" → Handler
 // **stateless**：所有缓存都在包级 handlerCache。零值即可用，per-request 创建零成本。
 type DefaultLookup struct{}
 
+// pivotProtocol 缺对组合回退用的中间协议（docs/02 §6a）。
+//
+// 选 OpenAI：事实上的行业中间语言——现有跨协议 translator 全部以它为一端
+// （anthropic↔openai / openai→gemini / responses→openai），任何新协议接入时
+// 优先写它跟 OpenAI 的互转对，组合 fallback 的覆盖自动最大化。
+const pivotProtocol = domain.ProtoOpenAI
+
 func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler {
 	if ep == nil || ep.Protocol == domain.ProtoUnknown {
 		return nil
@@ -63,9 +71,18 @@ func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler 
 	if ad == nil {
 		return nil
 	}
-	tr := translator.Find(srcProto, ep.Protocol)
+	// 直连 translator 优先（高保真）；miss 时经 pivot 组合兜底（可能有损，
+	// 双跳丢 pivot 表达不了的字段）。热门组合应尽快补直连实现——直连注册后
+	// FindVia 自动优先命中，组合退位，调用方无感。
+	tr := translator.FindVia(srcProto, ep.Protocol, pivotProtocol)
 	if tr == nil {
 		return nil
+	}
+	if translator.IsComposed(tr) {
+		// handlerCache 保证同 (vendor, src, tgt) 只 warn 一次
+		slog.Warn("protocol: no direct translator, using lossy pivot composition",
+			"src", srcProto.String(), "tgt", ep.Protocol.String(),
+			"pivot", pivotProtocol.String(), "vendor", ep.Vendor)
 	}
 	h := Combine(ad, tr)
 	actual, _ := handlerCache.LoadOrStore(key, h)

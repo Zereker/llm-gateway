@@ -241,11 +241,12 @@ func (DefaultLookup) Get(ep *Endpoint, src Protocol) Handler {
     if ad == nil {
         return nil
     }
-    tr := translator.Find(src, ep.Protocol)
+    // 直连优先；miss 时经 pivot（OpenAI）组合兜底，详见 §6a
+    tr := translator.FindVia(src, ep.Protocol, ProtoOpenAI)
     if tr == nil {
         return nil
     }
-    return Combine(ad, tr)
+    return Combine(ad, tr)   // 结果进包级 handlerCache（vendor|src|tgt）
 }
 ```
 
@@ -256,6 +257,46 @@ chain）。
 
 dispatcher / invoker / eligibility 一律走 `dispatch.HandlersFrom(rc)` 取
 typed Lookup，不直接消费 adapter / translator registry。
+
+## 6a. 缺对回退：pivot 组合（笛卡尔积治理）
+
+协议对矩阵的三个候选增长轴里，**vendor 轴已被塌缩**（协议归 endpoint 级 +
+OpenAI-compatible alias 共享 Factory + quirks 吸收 vendor 差异——新加 vendor
+是 O(1)，不进矩阵）。剩下 client protocol × upstream protocol 是慢变量，
+但仍会随协议接入线性乘积增长。治理策略分两层：
+
+**第一层：直连 translator（高保真，首选）**——每个真实有流量的 (src, tgt)
+对手写一个 `pkg/translator/<src>_<tgt>/`，完整映射协议特有字段
+（thinking blocks / cache_control / tool schema 等）。
+
+**第二层：pivot 组合（兜底，可能有损）**——`translator.FindVia(src, tgt, pivot)`
+在直连 miss 时尝试 `Compose(Find(src, pivot), Find(pivot, tgt))`：
+
+```text
+请求向：src body → front(src→openai) → openai body → back(openai→tgt) → tgt body
+响应向：tgt chunks → back.handler(tgt→openai) → openai body → front.handler(openai→src) → src body
+```
+
+- pivot 固定为 **OpenAI 协议**（事实行业中间语言；现有全部跨协议对都以它为
+  一端，新协议接入时优先写跟 OpenAI 的互转对即可让组合覆盖自动最大化）
+- **直连永远压过组合**：`FindVia` 先查直连；给热门组合补写直连实现后自动
+  接管，调用方无感
+- usage 提取优先取上游侧 handler（离真实响应最近；client 侧看到的是二手
+  pivot 字节）
+- 组合产物创建时打 `slog.Warn`（handlerCache 保证同 (vendor, src, tgt) 只
+  warn 一次）——**有损**：pivot 表达不了的字段在双跳中丢失
+- 两腿任一缺失 → 返回 nil → eligibility 照常剔除，行为与之前一致
+
+**当前覆盖**：直连 7 对；组合把 anthropic→gemini、responses→anthropic、
+responses→gemini 三对自动补上（7/12 → 10/12）；剩余 *→responses 两对因
+没有任何 `openai→responses` translator 而不可组合——出现真实需求时按第一层
+补直连。
+
+**演进纪律**：
+- 组合 warn 高频出现的 (src, tgt) 对 = 补直连 translator 的信号
+- **不要**因为组合可用就跳去建 canonical IR（全局中间表示）——项目在 v0.5
+  已删除 `Envelope.Canonical` 走过回头路：IR 双跳全量有损 + 流式复杂度，
+  劣于"直连高保真 + 组合兜底"的双层结构
 
 ## 7. `pkg/protocol` — vendor HTTP 层（facade 内部细节）
 

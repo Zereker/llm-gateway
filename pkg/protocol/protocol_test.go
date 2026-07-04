@@ -617,3 +617,43 @@ func TestDefaultLookup_CachesHandlerAcrossRequests(t *testing.T) {
 		t.Errorf("跨 DefaultLookup 实例没命中包级缓存")
 	}
 }
+
+// =============================================================================
+// Pivot 组合回退（缺对 → FindVia 经 OpenAI 组合，docs/02 §6a）
+// =============================================================================
+
+// 直连 (anthropic→gemini) 未注册，但两条腿 (anthropic→openai) + (openai→gemini)
+// 都在 → DefaultLookup 应组合出可用 Handler，而不是 nil（旧行为：eligibility 剔除）。
+func TestDefaultLookup_PivotCompositionFallback(t *testing.T) {
+	resetGlobalRegistries(t)
+
+	protocol.RegisterFactory("gvendor", &fakeAdapter{meta: protocol.Metadata{Vendor: "gvendor"}})
+	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
+	translator.Register(&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoGemini})
+	// 注意：没有注册 (anthropic → gemini) 直连对
+
+	ep := &domain.Endpoint{Vendor: "gvendor", Protocol: domain.ProtoGemini}
+	h := protocol.DefaultLookup{}.Get(ep, domain.ProtoAnthropic)
+	if h == nil {
+		t.Fatal("缺直连对但两腿俱在，应组合出 Handler")
+	}
+	caps := h.Capabilities()
+	if caps.SourceProtocol != domain.ProtoAnthropic || caps.UpstreamProtocol != domain.ProtoGemini {
+		t.Errorf("Capabilities span = %s→%s, want anthropic→gemini",
+			caps.SourceProtocol, caps.UpstreamProtocol)
+	}
+}
+
+// 两腿也缺时仍返 nil → eligibility 照常剔除。
+func TestDefaultLookup_PivotCompositionMissingLegStillNil(t *testing.T) {
+	resetGlobalRegistries(t)
+
+	protocol.RegisterFactory("gvendor", &fakeAdapter{meta: protocol.Metadata{Vendor: "gvendor"}})
+	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
+	// 缺 (openai → gemini) 腿
+
+	ep := &domain.Endpoint{Vendor: "gvendor", Protocol: domain.ProtoGemini}
+	if h := (protocol.DefaultLookup{}).Get(ep, domain.ProtoAnthropic); h != nil {
+		t.Errorf("缺腿时应返 nil，got %v", h)
+	}
+}
