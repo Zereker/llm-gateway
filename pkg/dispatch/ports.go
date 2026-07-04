@@ -92,8 +92,13 @@ type Invoker interface {
 
 // QuotaVerdict 是 EndpointQuota.Reserve 的拒绝结果——比 Verdict 更窄，只描述
 // "为什么被拒"。Dispatcher 在拿到 QuotaVerdict 后翻成 Verdict 走 retry / Report 流程。
+//
+// **Class 必须显式填**（docs/04 §8）：
+//   - ClassCapacity ── 真配额拒绝：换 ep + 该 ep 写 capacity cooldown
+//   - ClassUnknown  ── 依赖故障（Redis 错等）：换 ep 但**不写 cooldown**，
+//     防止把 store 抖动误标成坏 endpoint
 type QuotaVerdict struct {
-	Class     Class  // 一般 ClassCapacity；依赖故障时仍 ClassCapacity（让 retry 换 ep）
+	Class     Class
 	BucketKey string // 哪个 bucket 拒了（rl:endpoint:<id>:rpm 等）；空 = 依赖故障
 	Reason    string
 }

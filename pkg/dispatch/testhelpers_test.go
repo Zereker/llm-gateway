@@ -26,6 +26,7 @@ func (fakeCandidates) ListForModel(_ context.Context, _, _ string) ([]*domain.En
 type fakeSelector struct {
 	responses []selResp
 	calls     int
+	reports   []Verdict // Report 收到的全部反馈
 }
 
 type selResp struct {
@@ -46,8 +47,10 @@ func (f *fakeSelector) Pick(_ context.Context, _ []*domain.Endpoint, _ PickQuery
 	return r.ep, r.err
 }
 
-// Report 是 noop——单测只看 verdict 流转，不验证 cooldown 反馈。
-func (f *fakeSelector) Report(_ context.Context, _ *domain.Endpoint, _ Verdict) {}
+// Report 记录所有反馈（cooldown 语义断言用）。
+func (f *fakeSelector) Report(_ context.Context, _ *domain.Endpoint, v Verdict) {
+	f.reports = append(f.reports, v)
+}
 
 // fakeInvokerFactory 顺序消费 results。
 type fakeInvokerFactory struct {

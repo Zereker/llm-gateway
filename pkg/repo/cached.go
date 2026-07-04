@@ -2,8 +2,12 @@ package repo
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
 // 本文件给 repo 的 5 个 SQL Reader/Provider 各包一层 TTL 缓存——gateway 启动时
@@ -23,18 +27,33 @@ import (
 // CachedAPIKeyProvider — wraps SQLAPIKeyProvider with per-(hash) TTL LRU
 // =============================================================================
 
+// negativeTTL 无效凭证 / 订阅 false 的负缓存时长。
+//
+// **为什么要负缓存**：M2 Auth 在 M6 RateLimit 之前——没有负缓存时，拿一个
+// 不存在的 key 打洪峰，MySQL QPS 1:1 跟着涨（无认证 DoS 放大器）。
+//
+// **为什么短**：负缓存的代价是"刚创建 / 刚订阅的资源"最多延迟 negativeTTL
+// 才生效。5s 把撞库流量从 per-request 压到 per-5s-per-key，同时 deployer
+// "INSERT 后 curl 验证" 的体感延迟可忽略。
+const negativeTTL = 5 * time.Second
+
 // CachedAPIKeyProvider 用 TTL LRU 缓存 Resolve 结果。cache key = api_key_hash。
+//
+// 双 cache：正向（hash → identity，30s）+ 负向（hash → 无效，5s）。
+// **只有 ErrInvalidCredentials 进负缓存**——DB 故障不缓存（下次重试）。
 type CachedAPIKeyProvider struct {
-	inner *SQLAPIKeyProvider
-	cache *TTLCache[string, *UserIdentity]
+	inner    *SQLAPIKeyProvider
+	cache    *TTLCache[string, *UserIdentity]
+	negative *TTLCache[string, struct{}]
 }
 
 // NewCachedAPIKeyProvider 默认 capacity=10240（支持几千个并发活跃 key）/ ttl=30s。
 // metrics 为 nil 时不上报。
 func NewCachedAPIKeyProvider(inner *SQLAPIKeyProvider, capacity int, ttl time.Duration, metrics Metrics) *CachedAPIKeyProvider {
 	return &CachedAPIKeyProvider{
-		inner: inner,
-		cache: NewTTLCache[string, *UserIdentity](capacity, ttl).WithMetrics("api_keys", metrics),
+		inner:    inner,
+		cache:    NewTTLCache[string, *UserIdentity](capacity, ttl).WithMetrics("api_keys", metrics),
+		negative: NewTTLCache[string, struct{}](capacity, negativeTTL).WithMetrics("api_keys_negative", metrics),
 	}
 }
 
@@ -43,10 +62,17 @@ func (p *CachedAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) 
 		return p.inner.Resolve(ctx, creds)
 	}
 	key := HashAPIKey(creds.APIKey)
-	return p.cache.GetOrLoad(ctx, key, func(ctx context.Context) (*UserIdentity, bool, error) {
-		v, err := p.inner.Resolve(ctx, creds)
-		return v, err == nil && v != nil, err
+	if _, invalid := p.negative.Get(key); invalid {
+		return nil, fmt.Errorf("apikey: %w", domain.ErrInvalidCredentials)
+	}
+	v, err := p.cache.GetOrLoad(ctx, key, func(ctx context.Context) (*UserIdentity, bool, error) {
+		u, err := p.inner.Resolve(ctx, creds)
+		return u, err == nil && u != nil, err
 	})
+	if err != nil && errors.Is(err, domain.ErrInvalidCredentials) {
+		p.negative.Set(key, struct{}{})
+	}
+	return v, err
 }
 
 // =============================================================================
@@ -175,25 +201,42 @@ var _ QuotaPolicyProvider = (*CachedQuotaPolicyProvider)(nil)
 
 // CachedSubscriptionProvider 缓存 Has(accountID, modelServiceID) → bool。
 //
-// **缓存 false 值**——subscription 不存在跟"刚被删除"语义相同，TTL 内一致即可。
+// **true / false 分 TTL**：
+//   - true  ── 30s（正常 TTL；订阅取消最多延迟 30s 生效，可接受）
+//   - false ── negativeTTL 5s（短）：deployer "INSERT subscription 后 curl 验证"
+//     不会撞上 30s 的 403 窗口，多副本 LB 后 200/403 交替的时间也压到秒级
 type CachedSubscriptionProvider struct {
-	inner *SQLSubscriptionProvider
-	cache *TTLCache[string, bool]
+	inner      *SQLSubscriptionProvider
+	trueCache  *TTLCache[string, struct{}]
+	falseCache *TTLCache[string, struct{}]
 }
 
-// NewCachedSubscriptionProvider 默认 capacity=10240（active subscriptions）/ ttl=30s。
+// NewCachedSubscriptionProvider 默认 capacity=10240（active subscriptions）/ ttl=30s（true 侧）。
 func NewCachedSubscriptionProvider(inner *SQLSubscriptionProvider, capacity int, ttl time.Duration, metrics Metrics) *CachedSubscriptionProvider {
 	return &CachedSubscriptionProvider{
-		inner: inner,
-		cache: NewTTLCache[string, bool](capacity, ttl).WithMetrics("subscriptions", metrics),
+		inner:      inner,
+		trueCache:  NewTTLCache[string, struct{}](capacity, ttl).WithMetrics("subscriptions", metrics),
+		falseCache: NewTTLCache[string, struct{}](capacity, negativeTTL).WithMetrics("subscriptions_negative", metrics),
 	}
 }
 
-// Has 跟其它 cached wrapper 不同：false 也缓存（loader 返 cache=true）。
+// Has true / false 分别进不同 TTL 的 cache；DB 错误不缓存。
 func (p *CachedSubscriptionProvider) Has(ctx context.Context, accountID string, modelServiceID int64) (bool, error) {
 	key := accountID + "\x00" + strconv.FormatInt(modelServiceID, 10)
-	return p.cache.GetOrLoad(ctx, key, func(ctx context.Context) (bool, bool, error) {
-		v, err := p.inner.Has(ctx, accountID, modelServiceID)
-		return v, err == nil, err
-	})
+	if _, ok := p.trueCache.Get(key); ok {
+		return true, nil
+	}
+	if _, ok := p.falseCache.Get(key); ok {
+		return false, nil
+	}
+	v, err := p.inner.Has(ctx, accountID, modelServiceID)
+	if err != nil {
+		return false, err
+	}
+	if v {
+		p.trueCache.Set(key, struct{}{})
+	} else {
+		p.falseCache.Set(key, struct{}{})
+	}
+	return v, nil
 }

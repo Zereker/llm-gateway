@@ -46,10 +46,14 @@ MYSQL_DSN='root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4'
 请求流水线由 10 个 middleware 组成，**顺序在 `pkg/router/chat.go` 等模态文件里显式列出**，不要抽公共 helper。当前顺序：
 
 ```
-M1 TraceContext → M9 Recover → M2 Auth        （pre-Envelope，挂在 group 上）
+M1 TraceContext → M10 Tracing → M9 Recover → M2 Auth   （pre-Envelope，挂在 group 上）
 → WithSourceProtocol（路径打标）→ M3 Envelope
-→ M4 Budget → M5 ModelService → M6 Limit → M8 Moderation → M7 Schedule → M10 Tracing
+→ M4 Budget → M5 ModelService → M6 Limit → M8 Moderation → M7 Schedule
 ```
+
+M10 注册在 Recover **外层**但收尾逻辑跑在 post-`c.Next()`（洋葱返程）——所以
+执行顺序上仍是"最后收尾"，但任何 abort（401/429/503）和已恢复的 panic 都逃不过
+它的 metric / usage / 审计（挂链尾的旧版会被 abort 跳过）。
 
 每个模态文件（`chat.go` / `image.go` / `audio.go` / `embedding.go`）**自己列**完整链。差异化预期会增加（如 chat 加 Moderator、image 加 multipart Parser），所以拒绝 DRY。
 

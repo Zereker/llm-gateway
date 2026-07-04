@@ -54,6 +54,10 @@ type Deps struct {
 	// M10 Tracing
 	UsageOutbox UsageOutbox
 	AuditTracer AuditTracer
+
+	// Readiness /readyz 的依赖检查项（SQL ping / Redis ping）；空 = 静态 200。
+	// cmd 装配时注入，检查逻辑见 helpers.go readyzHandler。
+	Readiness []ReadinessChecker
 }
 
 // UsageOutbox / AuditTracer 类型别名让 Deps 字段类型描述跟 middleware port 名一致，
@@ -67,7 +71,7 @@ type (
 func NewEngine(deps Deps) *gin.Engine {
 	engine := gin.New()
 
-	registerOpsRoutes(engine)
+	registerOpsRoutes(engine, deps.Readiness)
 	registerChatRoutes(engine, deps)
 	registerImageRoutes(engine, deps)
 	registerAudioRoutes(engine, deps)

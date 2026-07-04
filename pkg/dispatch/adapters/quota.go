@@ -39,9 +39,14 @@ func (q *EndpointQuotaAdapter) Reserve(ctx context.Context, ep *domain.Endpoint)
 	}
 	allowed, violated, err := q.store.ReserveBatch(ctx, buckets)
 	if err != nil {
+		// **依赖故障 ≠ 容量拒绝**：Redis 错误翻成 ClassUnknown——retryable（换下
+		// 一个 endpoint 试）但 Scheduler.Report 对 unknown **不写 cooldown**。
+		// 如果翻成 ClassCapacity，一次 Redis 抖动会把路径上每个健康 endpoint 都
+		// 打进 capacity 冷却，Redis 恢复后污染还残留一个 TTL（docs/04 §8：endpoint
+		// ReserveBatch 错 → 当前 endpoint 视为不可用换下一个，不能误标坏 endpoint）。
 		return &dispatch.QuotaVerdict{
-			Class:  dispatch.ClassCapacity,
-			Reason: "endpoint reserve: " + err.Error(),
+			Class:  dispatch.ClassUnknown,
+			Reason: "endpoint reserve (store error): " + err.Error(),
 		}, nil
 	}
 	if !allowed {

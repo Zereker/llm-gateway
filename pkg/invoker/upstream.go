@@ -31,6 +31,7 @@ package invoker
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"time"
 
@@ -127,13 +128,57 @@ func WithHooks(hooks ...Hook) Option {
 	return func(c *senderConfig) { c.hooks = append(c.hooks, hooks...) }
 }
 
-// New 构造 Sender；零配置走 stdlib + 无 hook。
+// per-attempt 超时边界（Transport 级，对本 client 的所有请求生效）：
+//
+//   - dialTimeout / tlsHandshakeTimeout：连接建立阶段。挂死的 endpoint（accept
+//     后不响应 / 半开连接）在这里快速失败，而不是烧光整个请求预算。
+//   - responseHeaderTimeout：请求写完到响应头到达（≈ TTFB）。LLM 首 token 可能
+//     慢（长 prompt / 冷启动），30s 给足余量，但**有界**——留出 retry / fallback
+//     的预算（request 级总超时默认 60s+）。
+//   - **不限制**响应 body 读取时长：流式响应合法地可以跑几分钟，由 request 级
+//     总超时（middleware.Timeout）兜底。
+//
+// **为什么不用 http.DefaultClient**：它无任何超时（挂死 = 永久占用），且
+// DefaultTransport 的 MaxIdleConnsPerHost=2——高 QPS 打同一上游 host 时连接
+// 疯狂重建（延迟 + 端口耗尽）。
+const (
+	dialTimeout           = 5 * time.Second
+	tlsHandshakeTimeout   = 5 * time.Second
+	responseHeaderTimeout = 30 * time.Second
+	idleConnTimeout       = 90 * time.Second
+	maxIdleConns          = 512
+	maxIdleConnsPerHost   = 128
+)
+
+// defaultHTTPClient 数据面上游调用的默认 client；需要不同参数时用
+// WithHTTPClient 覆盖（如 mTLS / 代理 / 自定义超时）。
+func defaultHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   dialTimeout,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			TLSHandshakeTimeout:   tlsHandshakeTimeout,
+			ResponseHeaderTimeout: responseHeaderTimeout,
+			IdleConnTimeout:       idleConnTimeout,
+			MaxIdleConns:          maxIdleConns,
+			MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		},
+		// 不设 Client.Timeout——它包含 body 读取，会掐断长流。
+		// 阶段性超时全部在 Transport 上。
+	}
+}
+
+// New 构造 Sender；零配置走 defaultHTTPClient + 无 hook。
 //
 // protocol.Handler 在 Send 调用时由 caller 传入；Sender 本身不持有，
 // 支持多租户 / 灰度场景按请求覆盖。
 func New(opts ...Option) *Sender {
 	cfg := &senderConfig{
-		client: http.DefaultClient,
+		client: defaultHTTPClient(),
 	}
 
 	for _, opt := range opts {

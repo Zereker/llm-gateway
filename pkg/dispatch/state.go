@@ -233,7 +233,9 @@ func (s *state) finalize() {
 		for i := 0; i < n-1; i++ {
 			s.decisions[i].Outcome = domain.AttemptFallback
 		}
-		if s.outcome.Result == OutcomeStreamed {
+		// 流中断（200 之后 body 转发失败）不算成功——审计上这次 attempt 没有
+		// 完整交付；只有干净跑完的 stream 才标 AttemptSuccess。
+		if s.outcome.Result == OutcomeStreamed && s.outcome.StreamErr == nil {
 			s.decisions[n-1].Outcome = domain.AttemptSuccess
 		} else {
 			s.decisions[n-1].Outcome = domain.AttemptFail
