@@ -97,10 +97,14 @@ func run(configPath string) error {
 //
 // 任意中间步骤失败时通过 defer 把已 open 的 infra 一并 Close，避免泄漏。
 func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, err error) {
-	srv = server.New(slog.Default())
+	// 用局部 s 持有真实 server：error 路径 `return nil, nil, err` 会把 named
+	// return srv 覆盖成 nil，若 defer 依赖 srv 就会 Close nil → panic，反而盖掉
+	// 真正的启动错误。defer 只认 s，任何早退都能干净 Close 已 open 的 infra。
+	s := server.New(slog.Default())
+	srv = s
 	defer func() {
 		if err != nil {
-			srv.Close()
+			s.Close()
 		}
 	}()
 

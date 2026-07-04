@@ -2,7 +2,6 @@ package repo
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
@@ -63,7 +62,8 @@ func TestSQLEndpointReader_PickForModel(t *testing.T) {
 		Weight:       100,
 		Routing:      RoutingConfig{URL: "https://api.openai.com/v1/chat/completions"},
 		Capabilities: EndpointCapabilities{SelfHosted: false, PrefixCacheEnabled: true},
-		Extra:        json.RawMessage(`{"region":"us-east-1"}`),
+		Quirks:       rawJSON(`{"body":{"set":{"stream_options":{"include_usage":true}}}}`),
+		Extra:        rawJSON(`{"region":"us-east-1"}`),
 	}
 	auth, _ := EncodePayload(AuthTypeBearer, BearerAuth{APIKey: "sk-xxx"})
 	ep.Auth = auth
@@ -83,6 +83,31 @@ func TestSQLEndpointReader_PickForModel(t *testing.T) {
 	}
 	if bearer.APIKey != "sk-xxx" {
 		t.Errorf("APIKey = %q (encryption broken?)", bearer.APIKey)
+	}
+	// 非空 quirks 应原样回来（NULL-safe rawJSON 的非 NULL 分支）。
+	if len(got.Quirks) == 0 {
+		t.Error("Quirks 丢失：非空 quirks 列未回读")
+	}
+}
+
+// TestSQLEndpointReader_NullableJSONColumns 回归：quirks / extra 是 DEFAULT NULL
+// 列，不配 quirks 的 endpoint（Quirks/Extra 都为 NULL）必须能正常读出来——裸
+// json.RawMessage 会在此处 "unsupported Scan" 崩掉，rawJSON 修复它。
+func TestSQLEndpointReader_NullableJSONColumns(t *testing.T) {
+	db := newTestDB(t)
+	// 全程不设 Quirks / Extra → 两列写 NULL
+	seedEndpoint(t, db, &Endpoint{Name: "no_quirks", Vendor: "openai", Model: "m-null", Group: "default"})
+
+	r := NewSQLEndpointReader(db)
+	got, err := r.PickForModel(context.Background(), "m-null", "default")
+	if err != nil {
+		t.Fatalf("PickForModel（NULL quirks/extra 应可读）: %v", err)
+	}
+	if len(got.Quirks) != 0 {
+		t.Errorf("NULL quirks 应扫成 nil，got %q", got.Quirks)
+	}
+	if len(got.Extra) != 0 {
+		t.Errorf("NULL extra 应扫成 nil，got %q", got.Extra)
 	}
 }
 

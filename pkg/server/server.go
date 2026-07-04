@@ -109,6 +109,12 @@ func (s *Server) OpenRedis(cfg infra.RedisConfig) (*redis.Client, error) {
 // 测试 / 非 Serve 路径（比如 cmd 内部 buildEngine 的 error fast-fail）用这个。
 // Serve 在退出前也会调用，多调一次不会重复 close 同一资源（内部 closer 列表清空）。
 func (s *Server) Close() {
+	if s == nil {
+		// error fast-fail 路径可能在 server.New 返回值还没落地就走 defer cleanup
+		// （named return 被 `return nil,...` 覆盖成 nil）——nil 收敛成 no-op，
+		// 让真正的启动错误浮出来而不是被 nil-deref panic 盖掉。
+		return
+	}
 	s.mu.Lock()
 	closers := s.closers
 	s.closers = nil

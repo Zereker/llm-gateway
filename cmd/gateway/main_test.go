@@ -61,8 +61,8 @@ func TestE2E_OpenAIChatCompletions(t *testing.T) {
 	}
 
 	usageLog, _ := os.ReadFile(cfg.UsageEvents.File.Path)
-	if !strings.Contains(string(usageLog), `"Total":15`) {
-		t.Errorf("usage log missing Total:15; got: %s", usageLog)
+	if !strings.Contains(string(usageLog), `"total":15`) {
+		t.Errorf("usage log missing total:15; got: %s", usageLog)
 	}
 }
 
