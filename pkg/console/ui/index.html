@@ -60,7 +60,7 @@
 
 <script>
 "use strict";
-const TABS = ["Endpoints","API Keys","Accounts","Models","Policies","Pricing"];
+const TABS = ["Endpoints","API Keys","Accounts","Models","Policies","Pricing","Audit"];
 let TOKEN = sessionStorage.getItem("tok") || "";
 let active = "Endpoints";
 
@@ -99,7 +99,7 @@ function renderNav(){
 function show(tab){
   active=tab; renderNav();
   const v=$("#view"); v.innerHTML="<div class='empty'>loading…</div>";
-  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Policies":viewPolicies,"Pricing":viewPricing})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
+  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Policies":viewPolicies,"Pricing":viewPricing,"Audit":viewAudit})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
 }
 
 function table(cols,rows,rowFn){
@@ -245,6 +245,21 @@ async function viewPricing(){
     el("td",{},p.rule_class),el("td",{class:"mono"},(p.effective_from||"").slice(0,19)),
     el("td",{},p.effective_to?el("span",{class:"mono"},p.effective_to.slice(0,19)):el("span",{class:"pill on"},"active")),
     el("td",{class:"mono"},JSON.stringify(p.rule)),el("td",{},p.created_by||""))));
+  v.append(card);
+}
+
+// ---- Audit (admin only) ----
+async function viewAudit(){
+  const v=$("#view"); v.innerHTML="";
+  let data;
+  try{ data=await api("GET","/admin/audit?limit=200"); }
+  catch(e){ v.append(el("div",{class:"card"},el("div",{class:"empty"},"audit is admin-only ("+esc(e.message)+")"))); return; }
+  const card=el("div",{class:"card"},el("h2",{},"Audit log — recent writes ("+(data.audit||[]).length+")"),
+    el("div",{class:"hint",style:"margin-bottom:8px"},"actor · method · path · status — request bodies are never recorded (no secrets)"));
+  card.append(table(["When","Actor","Role","Method","Path","Status"],data.audit,a=>el("tr",{},
+    el("td",{class:"mono"},(a.created_at||"").slice(0,19).replace("T"," ")),el("td",{},a.actor),el("td",{},a.role),
+    el("td",{class:"mono"},a.method),el("td",{class:"mono"},a.path),
+    el("td",{},el("span",{class:"pill "+(a.status_code<400?"on":"off")},String(a.status_code))))));
   v.append(card);
 }
 

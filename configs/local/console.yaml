@@ -33,5 +33,7 @@ admin:
   tokens:
     - token: "dev-admin-token-change-me"
       role: admin
+      name: "dev-admin"      # 可选：审计里当 actor（不填用 role 兜底）
     - token: "dev-viewer-token"
       role: viewer
+      name: "dev-viewer"

@@ -22,7 +22,8 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 	engine.GET("/", func(c *gin.Context) { c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML) })
 
 	api := &api{store: store}
-	admin := engine.Group("/admin", adminAuth(tokens))
+	// adminAuth 先认证 + 解析角色/actor；auditWrites 再记写操作审计（顺序不能反）。
+	admin := engine.Group("/admin", adminAuth(tokens), auditWrites(store))
 	{
 		// 读：admin + viewer 都行
 		admin.GET("/accounts", api.listAccounts)
@@ -32,6 +33,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/accounts/:pin/api-keys", api.listAPIKeys)
 		admin.GET("/quota-policies", api.listQuotaPolicies)
 		admin.GET("/pricing", api.listPricing)
+		admin.GET("/audit", requireAdmin, api.listAudit) // 审计只给 admin 看
 
 		// 写：只有 admin
 		admin.POST("/accounts", requireAdmin, api.createAccount)
@@ -306,6 +308,25 @@ func (a *api) listPricing(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"pricing": rows})
+}
+
+// =============================================================================
+// Audit
+// =============================================================================
+
+func (a *api) listAudit(c *gin.Context) {
+	limit := 100
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	rows, err := a.store.ListAudit(c.Request.Context(), limit)
+	if err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"audit": rows})
 }
 
 // =============================================================================
