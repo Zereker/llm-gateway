@@ -31,6 +31,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/endpoints/:id", api.getEndpoint)
 		admin.GET("/accounts/:pin/api-keys", api.listAPIKeys)
 		admin.GET("/quota-policies", api.listQuotaPolicies)
+		admin.GET("/pricing", api.listPricing)
 
 		// 写：只有 admin
 		admin.POST("/accounts", requireAdmin, api.createAccount)
@@ -42,6 +43,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.DELETE("/accounts/:pin/api-keys/:keyID", requireAdmin, api.revokeAPIKey)
 		admin.POST("/quota-policies", requireAdmin, api.createQuotaPolicy)
 		admin.DELETE("/quota-policies/:id", requireAdmin, api.deleteQuotaPolicy)
+		admin.POST("/pricing", requireAdmin, api.publishPrice)
 	}
 	return engine
 }
@@ -267,6 +269,43 @@ func (a *api) deleteQuotaPolicy(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+// =============================================================================
+// Pricing（append-only）
+// =============================================================================
+
+func (a *api) publishPrice(c *gin.Context) {
+	var in PricingInput
+	if !bind(c, &in) {
+		return
+	}
+	id, err := a.store.PublishPrice(c.Request.Context(), in)
+	if err != nil {
+		var invalid *InvalidPricingError
+		if errors.As(err, &invalid) {
+			abortError(c, 400, "pricing_invalid", invalid.Reason)
+			return
+		}
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"id": id})
+}
+
+func (a *api) listPricing(c *gin.Context) {
+	q := PricingQuery{AccountID: c.Query("account_id"), ActiveOnly: c.Query("active") == "true"}
+	if v := c.Query("model_service_id"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			q.ModelServiceID = n
+		}
+	}
+	rows, err := a.store.ListPricing(c.Request.Context(), q)
+	if err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"pricing": rows})
 }
 
 // =============================================================================

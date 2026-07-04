@@ -484,6 +484,112 @@ func (s *Store) DeleteQuotaPolicy(ctx context.Context, id int64) error {
 }
 
 // =============================================================================
+// Pricing（append-only 价格版本；改价 = 封盘旧 + insert 新）
+// =============================================================================
+
+// PricingInput 发布一个新价格版本入参。RuleClass 空 = "standard"。
+//
+// **rule_json 对网关不透明**：billing engine 自己定义 schema，网关不解析（docs/05
+// §6）——所以这里只校验它是合法 JSON，不强加定价形态（避免把计费域拉进网关）。
+type PricingInput struct {
+	AccountID      string          `json:"account_id"`
+	ModelServiceID int64           `json:"model_service_id"`
+	RuleClass      string          `json:"rule_class,omitempty"`
+	Rule           json.RawMessage `json:"rule"`
+	CreatedBy      string          `json:"created_by,omitempty"`
+	Notes          string          `json:"notes,omitempty"`
+}
+
+// InvalidPricingError 价格入参非法。
+type InvalidPricingError struct{ Reason string }
+
+func (e *InvalidPricingError) Error() string { return "pricing invalid: " + e.Reason }
+
+// PublishPrice append-only 发布：一个事务里封盘当前 active 行（effective_to=NOW）
+// + insert 新行（effective_from=NOW, effective_to=NULL）。绝不 UPDATE rule_json。
+func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error) {
+	if in.AccountID == "" || in.ModelServiceID == 0 {
+		return 0, &InvalidPricingError{Reason: "account_id and model_service_id required"}
+	}
+	if !json.Valid(in.Rule) || len(in.Rule) == 0 {
+		return 0, &InvalidPricingError{Reason: "rule must be non-empty valid JSON"}
+	}
+	class := orDefault(in.RuleClass, "standard")
+
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 1) 封盘当前 active（同 account+model+class 且 effective_to IS NULL）
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE pricing_versions SET effective_to = NOW(6)
+		 WHERE account_id = ? AND model_service_id = ? AND rule_class = ? AND effective_to IS NULL`,
+		in.AccountID, in.ModelServiceID, class); err != nil {
+		return 0, fmt.Errorf("pricing: close active: %w", err)
+	}
+	// 2) insert 新 active
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO pricing_versions
+		 (account_id, model_service_id, rule_class, effective_from, effective_to, rule_json, created_by, notes)
+		 VALUES (?, ?, ?, NOW(6), NULL, ?, ?, ?)`,
+		in.AccountID, in.ModelServiceID, class, []byte(in.Rule), in.CreatedBy, in.Notes)
+	if err != nil {
+		return 0, fmt.Errorf("pricing: insert: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("pricing: commit: %w", err)
+	}
+	return id, nil
+}
+
+// PricingView 价格版本只读视图。
+type PricingView struct {
+	ID             int64           `db:"id" json:"id"`
+	AccountID      string          `db:"account_id" json:"account_id"`
+	ModelServiceID int64           `db:"model_service_id" json:"model_service_id"`
+	RuleClass      string          `db:"rule_class" json:"rule_class"`
+	EffectiveFrom  time.Time       `db:"effective_from" json:"effective_from"`
+	EffectiveTo    *time.Time      `db:"effective_to" json:"effective_to,omitempty"`
+	RuleJSON       json.RawMessage `db:"rule_json" json:"rule"`
+	CreatedBy      string          `db:"created_by" json:"created_by"`
+	Notes          string          `db:"notes" json:"notes"`
+}
+
+// PricingQuery 过滤：AccountID / ModelServiceID 空/0 = 不过滤；ActiveOnly = 只看未封盘。
+type PricingQuery struct {
+	AccountID      string
+	ModelServiceID int64
+	ActiveOnly     bool
+}
+
+// ListPricing 列价格版本（active + 历史；effective_from 降序）。
+func (s *Store) ListPricing(ctx context.Context, q PricingQuery) ([]PricingView, error) {
+	sqlStr := `SELECT id, account_id, model_service_id, rule_class, effective_from, effective_to,
+	                  rule_json, created_by, notes
+	           FROM pricing_versions WHERE 1=1`
+	var args []any
+	if q.AccountID != "" {
+		sqlStr += ` AND account_id = ?`
+		args = append(args, q.AccountID)
+	}
+	if q.ModelServiceID != 0 {
+		sqlStr += ` AND model_service_id = ?`
+		args = append(args, q.ModelServiceID)
+	}
+	if q.ActiveOnly {
+		sqlStr += ` AND effective_to IS NULL`
+	}
+	sqlStr += ` ORDER BY effective_from DESC, id DESC`
+
+	var rows []PricingView
+	err := s.db.SelectContext(ctx, &rows, sqlStr, args...)
+	return rows, err
+}
+
+// =============================================================================
 // helpers
 // =============================================================================
 

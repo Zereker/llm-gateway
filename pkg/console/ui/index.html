@@ -60,7 +60,7 @@
 
 <script>
 "use strict";
-const TABS = ["Endpoints","API Keys","Accounts","Models","Policies"];
+const TABS = ["Endpoints","API Keys","Accounts","Models","Policies","Pricing"];
 let TOKEN = sessionStorage.getItem("tok") || "";
 let active = "Endpoints";
 
@@ -99,7 +99,7 @@ function renderNav(){
 function show(tab){
   active=tab; renderNav();
   const v=$("#view"); v.innerHTML="<div class='empty'>loading…</div>";
-  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Policies":viewPolicies})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
+  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Policies":viewPolicies,"Pricing":viewPricing})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
 }
 
 function table(cols,rows,rowFn){
@@ -218,6 +218,33 @@ async function viewPolicies(){
     el("td",{class:"mono"},String(p.id)),el("td",{},p.name),el("td",{},p.description||""),
     el("td",{class:"mono"},JSON.stringify(p.rule)),el("td",{},onoff(p.enabled)),
     el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete policy "+p.name+"?")){try{await api("DELETE","/admin/quota-policies/"+p.id);toast("deleted","ok");show("Policies")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
+  v.append(card);
+}
+
+// ---- Pricing (append-only) ----
+async function viewPricing(){
+  const {accounts}=await api("GET","/admin/accounts");
+  const {model_services}=await api("GET","/admin/model-services");
+  const v=$("#view"); v.innerHTML="";
+  const acc=el("select"); (accounts||[]).forEach(a=>acc.append(el("option",{value:a.pin},a.pin)));
+  const mod=el("select"); (model_services||[]).forEach(m=>mod.append(el("option",{value:m.id},m.model)));
+  const cls=el("input",{placeholder:"rule_class (standard)"}), by=el("input",{placeholder:"created_by"});
+  const rule=el("textarea",{rows:"4",style:"width:100%;font-family:ui-monospace,monospace",placeholder:'{"unit":"tokens_per_1m","currency":"USD","rates":{"input":5.0,"output":15.0}}'});
+  v.append(el("div",{class:"card"},el("h2",{},"Publish price (append-only — closes the current active version)"),
+    el("div",{class:"grid"},el("label",{},"account",acc),el("label",{},"model",mod),el("label",{},"rule_class",cls),el("label",{},"created_by",by)),
+    el("div",{style:"margin-top:10px"},el("div",{class:"hint",style:"margin-bottom:4px"},"rule JSON (opaque to the gateway — billing engine defines the schema)"),rule),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
+      let parsed; try{parsed=JSON.parse(rule.value)}catch(e){toast("rule is not valid JSON","bad");return}
+      try{await api("POST","/admin/pricing",{account_id:acc.value,model_service_id:Number(mod.value),rule_class:cls.value,rule:parsed,created_by:by.value});toast("price published","ok");show("Pricing")}catch(e){toast(e.message,"bad")}
+    }},"Publish"))));
+
+  const {pricing}=await api("GET","/admin/pricing");
+  const card=el("div",{class:"card"},el("h2",{},"Price versions ("+(pricing||[]).length+")"));
+  card.append(table(["ID","Account","Model#","Class","From","To","Rule","By"],pricing,p=>el("tr",{},
+    el("td",{class:"mono"},String(p.id)),el("td",{class:"mono"},p.account_id),el("td",{class:"mono"},String(p.model_service_id)),
+    el("td",{},p.rule_class),el("td",{class:"mono"},(p.effective_from||"").slice(0,19)),
+    el("td",{},p.effective_to?el("span",{class:"mono"},p.effective_to.slice(0,19)):el("span",{class:"pill on"},"active")),
+    el("td",{class:"mono"},JSON.stringify(p.rule)),el("td",{},p.created_by||""))));
   v.append(card);
 }
 
