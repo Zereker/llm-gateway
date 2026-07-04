@@ -473,6 +473,37 @@ func TestDispatcher_StreamErrorReportedAndNotMarkedSuccess(t *testing.T) {
 	}
 }
 
+// 客户端在流式途中主动断开（请求 ctx 取消）：状态码已写出，但 endpoint 是健康的——
+// 不能因为客户端断连就补一条 stream-transient 惩罚 endpoint（打 cooldown），否则
+// "客户端频繁取消"会误伤健康 endpoint。只保留 pre-stream 的 success Report。
+func TestDispatcher_ClientAbortDoesNotPenalizeEndpoint(t *testing.T) {
+	ep := newTestEP(1)
+	sel := newFakeSelector(selResp{ep: ep})
+	res := successResult(&domain.Usage{Total: 10}, 5)
+	res.streamRep.Err = context.Canceled // 流中断，但源于客户端断开
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 模拟客户端断开：请求 ctx 已取消
+
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(sel),
+		WithInvokerFactory(newFakeInvokerFactory(res)),
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+	out := d.Dispatch(ctx, httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if out.Result != OutcomeStreamed {
+		t.Fatalf("Result = %s, want Streamed（状态码已写出）", out.Result)
+	}
+	// 只有 pre-stream success 一条；不补 stream-transient
+	if len(sel.reports) != 1 || sel.reports[0].Class != ClassSuccess {
+		t.Fatalf("reports = %+v, want 单条 success（客户端断开不惩罚 endpoint）", sel.reports)
+	}
+}
+
 // 干净跑完的 stream 仍然只有一条 Report（success）且 attempt = success——
 // 上一个测试的反向对照。
 func TestDispatcher_CleanStreamSingleSuccessReport(t *testing.T) {

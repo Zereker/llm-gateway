@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -229,21 +230,42 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		// === EndpointQuota.ChargeUsage（后扣，fire-and-forget）===
 		d.quota.ChargeUsage(ctx, ep, rep.Usage)
 		if rep.Err != nil {
-			// 200 之后流中断：状态码已写出，不能 retry，但必须让 cooldown /
-			// stats 看到——否则"200 后 RST"的坏 endpoint 统计上永远 100% 成功，
-			// 流量持续打过去。pre-stream 的 Success Report 已经发过，这里补一条
-			// StageStream 的 transient 失败覆盖它。
-			sv := Verdict{
-				Stage:  StageStream,
-				Class:  ClassTransient,
-				Reason: "stream: " + rep.Err.Error(),
+			// 200 之后流中断：状态码已写出，不能 retry。是否惩罚 endpoint 取决于是
+			// 谁断的：
+			//   - 客户端主动断开（请求 ctx 取消 / 写 client 时 EPIPE）——不是
+			//     endpoint 的错。惩罚它会让"客户端频繁取消"误伤健康 endpoint 打进
+			//     cooldown。
+			//   - 上游 RST / 半途断流——endpoint 的锅，必须让 cooldown / stats 看到，
+			//     否则"200 后掐断"的坏 endpoint 统计上永远 100% 成功、流量持续打过去。
+			// pre-stream 的 Success Report 已经发过；只在"上游断"时补一条 StageStream
+			// 的 transient 覆盖它，客户端断开则保留 success 不惩罚。
+			if isClientAbort(ctx, rep.Err) {
+				span.SetAttribute("stream.abort", "client")
+			} else {
+				sv := Verdict{
+					Stage:  StageStream,
+					Class:  ClassTransient,
+					Reason: "stream: " + rep.Err.Error(),
+				}
+				span.SetAttribute("stream.err", rep.Err.Error())
+				d.selector.Report(ctx, ep, sv)
 			}
-			span.SetAttribute("stream.err", rep.Err.Error())
-			d.selector.Report(ctx, ep, sv)
 		}
 		return Stream{}
 	}
 	return action
+}
+
+// isClientAbort 判断流中断是不是客户端主动断开（而非上游 RST / 半途断流）。
+//
+// 首要判据是请求 ctx.Err()——gin 在客户端断连 / 请求超时时取消 c.Request.Context()，
+// 这也覆盖了"w.Write 遇到 EPIPE 后 ctx 被取消"的竞态；兜底再直接匹配 context 错误
+// （StreamTo 内部把 ctx 取消透传成 rep.Err 的实现）。
+func isClientAbort(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // modelName 安全取 *domain.ModelService 的 Model（防 nil）。

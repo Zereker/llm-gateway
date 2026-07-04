@@ -24,5 +24,6 @@
 //
 // 业务真相分布在 Policy 实现里。Dispatcher 只是 Action 的 reducer。
 //
-// 详见 docs/architecture/05-dispatcher.md（TODO）。
+// 详见 docs/architecture/03a-schedule-overview.md（调度 + dispatch 编排总览）
+// 和 docs/architecture/03-endpoint-scheduling.md（endpoint 选择 / cooldown / retry）。
 package dispatch

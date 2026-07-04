@@ -136,9 +136,19 @@ func (s *state) Handlers() protocol.Lookup { return s.in.Handlers }
 
 // Record 记一次 attempt：attempts++ / excluded / lastVerdict / decisions append。
 // Outcome 字段先填 Unknown，finalize 阶段按终态修正。
+//
+// **ClassUnknown 不排除**：Unknown = 分类盲区 / 依赖故障（Redis reserve store
+// 错等），不是"这个 endpoint 坏了"。跟 cooldown 一样（scheduler.Report 对 Unknown
+// 也不 Mark），这里也不把 endpoint 加进 excluded——否则一次 Redis 抖动会把健康
+// endpoint 从后续 fallback model 的候选池里永久删掉：endpoint E 同时服务 model
+// A/B，chain [A→B]，E 在 A 上撞 store 错被 exclude，fallback 到 B 时 E 是唯一候选
+// 却被 excluded 过滤 → eligible 空 → 对健康 endpoint 报 503。attempt 数由
+// attemptsCap 兜底，不会因不排除而无限重选同一个 ep。
 func (s *state) Record(ep *domain.Endpoint, v Verdict) {
 	s.attempts++
-	s.excluded[ep.ID] = struct{}{}
+	if v.Class != ClassUnknown {
+		s.excluded[ep.ID] = struct{}{}
+	}
 	s.lastVerdict = v
 
 	role := domain.AttemptRolePrimary
