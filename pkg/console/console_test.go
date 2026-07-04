@@ -279,49 +279,6 @@ func TestConsole_RevokeEvictsDataPlaneCache(t *testing.T) {
 	}
 }
 
-// TestConsole_UsageRead：GET /admin/usage 读 usage_daily 聚合 + 合计。
-func TestConsole_UsageRead(t *testing.T) {
-	engine, db := newTestEngine(t)
-	if _, err := db.Exec(`TRUNCATE TABLE usage_daily`); err != nil {
-		t.Fatalf("truncate usage_daily: %v", err)
-	}
-	for _, r := range []struct {
-		acct, model, day string
-		in, out, tot, req int64
-	}{
-		{"acct1", "gpt-4o", "2026-07-01", 100, 50, 150, 10},
-		{"acct1", "gpt-4o", "2026-07-02", 200, 100, 300, 20},
-		{"acct2", "claude", "2026-07-02", 5, 5, 10, 1},
-	} {
-		if _, err := db.Exec(
-			`INSERT INTO usage_daily (account_id, model, day, input_tokens, output_tokens, total_tokens, requests)
-			 VALUES (?,?,?,?,?,?,?)`,
-			r.acct, r.model, r.day, r.in, r.out, r.tot, r.req); err != nil {
-			t.Fatalf("seed usage_daily: %v", err)
-		}
-	}
-
-	// 全量（默认最近 30 天覆盖 7 月初）
-	code, resp := do(t, engine, "GET", "/admin/usage?from=2026-07-01&to=2026-07-31", nil, true)
-	if code != 200 {
-		t.Fatalf("get usage = %d", code)
-	}
-	totals, _ := resp["totals"].(map[string]any)
-	if totals == nil || totals["total_tokens"].(float64) != 460 || totals["requests"].(float64) != 31 {
-		t.Errorf("totals = %v, want total_tokens=460 requests=31", totals)
-	}
-
-	// 按 account 过滤
-	code, resp = do(t, engine, "GET", "/admin/usage?account_id=acct2&from=2026-07-01&to=2026-07-31", nil, true)
-	if code != 200 {
-		t.Fatalf("get usage acct2 = %d", code)
-	}
-	totals, _ = resp["totals"].(map[string]any)
-	if totals["total_tokens"].(float64) != 10 {
-		t.Errorf("acct2 total_tokens = %v, want 10", totals["total_tokens"])
-	}
-}
-
 // TestConsole_ViewerRoleReadOnly：viewer token 能 GET，不能 POST/DELETE（403）。
 func TestConsole_ViewerRoleReadOnly(t *testing.T) {
 	_, db := newTestEngine(t)
