@@ -3,6 +3,8 @@ package console
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -21,14 +23,18 @@ const (
 	RoleViewer Role = "viewer"
 )
 
-// Token 一个 admin 凭证 + 它的角色。
+// Token 一个 admin 凭证 + 它的角色 + 可选的可读名（审计里当 actor）。
 type Token struct {
 	Value string `yaml:"token"`
 	Role  Role   `yaml:"role"`
+	Name  string `yaml:"name"`
 }
 
-// ctxRoleKey gin.Context 里存角色的键。
-const ctxRoleKey = "console_role"
+// ctxRoleKey / ctxActorKey gin.Context 里存角色 / actor 名的键。
+const (
+	ctxRoleKey  = "console_role"
+	ctxActorKey = "console_actor"
+)
 
 // adminAuth 鉴权 bearer token，解析出角色写进 context。
 //
@@ -36,8 +42,9 @@ const ctxRoleKey = "console_role"
 // 且**遍历所有条目不早退**——不泄漏"匹配了哪个 token / 长度前缀"的时序信息。
 func adminAuth(tokens []Token) gin.HandlerFunc {
 	type entry struct {
-		sum  [32]byte
-		role Role
+		sum   [32]byte
+		role  Role
+		actor string
 	}
 	entries := make([]entry, len(tokens))
 	for i, t := range tokens {
@@ -45,7 +52,11 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 		if role == "" {
 			role = RoleAdmin
 		}
-		entries[i] = entry{sum: sha256.Sum256([]byte(t.Value)), role: role}
+		actor := t.Name
+		if actor == "" {
+			actor = string(role) // 没配 name 时用 role 兜底当 actor
+		}
+		entries[i] = entry{sum: sha256.Sum256([]byte(t.Value)), role: role, actor: actor}
 	}
 
 	return func(c *gin.Context) {
@@ -57,10 +68,12 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 		gotSum := sha256.Sum256([]byte(got))
 		matched := false
 		var role Role
+		var actor string
 		for _, e := range entries {
 			if subtle.ConstantTimeCompare(gotSum[:], e.sum[:]) == 1 {
 				matched = true
 				role = e.role
+				actor = e.actor
 			}
 		}
 		if !matched {
@@ -68,7 +81,26 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 			return
 		}
 		c.Set(ctxRoleKey, string(role))
+		c.Set(ctxActorKey, actor)
 		c.Next()
+	}
+}
+
+// auditWrites 是 group 级中间件：写操作（POST/DELETE/PUT/PATCH）跑完后记一条审计。
+// 挂在 adminAuth **之后**（actor / role 已入 context）。best-effort——审计写失败只
+// warn，不影响已完成的操作。刻意不记 request body（见 audit_log schema）。
+func auditWrites(store *Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		switch c.Request.Method {
+		case http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodPatch:
+			if err := store.RecordAudit(c.Request.Context(),
+				c.GetString(ctxActorKey), c.GetString(ctxRoleKey),
+				c.Request.Method, c.Request.URL.Path, c.Writer.Status()); err != nil {
+				slog.WarnContext(c.Request.Context(), "audit record failed", "err", err,
+					"method", c.Request.Method, "path", c.Request.URL.Path)
+			}
+		}
 	}
 }
 

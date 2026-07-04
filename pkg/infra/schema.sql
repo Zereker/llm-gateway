@@ -236,3 +236,21 @@ CREATE TABLE IF NOT EXISTS pricing_versions (
 -- + Kafka 广播）产出，下游 metering/billing 系统消费。控制面不做 usage 聚合，避免
 -- 把"计费"这个独立复杂域拉进数据面/控制面。
 
+-- =====================================================================
+-- audit_log：控制面写操作审计（谁·何时·对什么·结果）
+--
+-- **刻意不记 request body**：endpoint 创建 body 带上游密钥、发 key 涉及凭证——
+-- 只记 actor / method / path / status_code，审计有据可查又绝不落密文。
+-- 数据面不读这张表；纯控制面用。
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    actor       VARCHAR(128) NOT NULL DEFAULT '',    -- token 的 name（或 role 兜底）
+    role        VARCHAR(32)  NOT NULL DEFAULT '',
+    method      VARCHAR(8)   NOT NULL,
+    path        VARCHAR(512) NOT NULL,
+    status_code INT          NOT NULL,
+    created_at  TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+

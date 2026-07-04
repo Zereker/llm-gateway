@@ -590,6 +590,41 @@ func (s *Store) ListPricing(ctx context.Context, q PricingQuery) ([]PricingView,
 }
 
 // =============================================================================
+// Audit log（控制面写操作审计）
+// =============================================================================
+
+// RecordAudit 记一条审计（best-effort，调用方吞错只 warn）。刻意不含 request body。
+func (s *Store) RecordAudit(ctx context.Context, actor, role, method, path string, status int) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO audit_log (actor, role, method, path, status_code) VALUES (?, ?, ?, ?, ?)`,
+		actor, role, method, path, status)
+	return err
+}
+
+// AuditView 审计条目只读视图。
+type AuditView struct {
+	ID         int64     `db:"id" json:"id"`
+	Actor      string    `db:"actor" json:"actor"`
+	Role       string    `db:"role" json:"role"`
+	Method     string    `db:"method" json:"method"`
+	Path       string    `db:"path" json:"path"`
+	StatusCode int       `db:"status_code" json:"status_code"`
+	CreatedAt  time.Time `db:"created_at" json:"created_at"`
+}
+
+// ListAudit 列最近 limit 条审计（时间倒序）。
+func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditView, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var rows []AuditView
+	err := s.db.SelectContext(ctx, &rows,
+		`SELECT id, actor, role, method, path, status_code, created_at
+		 FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
+	return rows, err
+}
+
+// =============================================================================
 // helpers
 // =============================================================================
 

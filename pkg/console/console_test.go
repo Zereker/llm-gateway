@@ -403,6 +403,52 @@ func TestConsole_PricingAppendOnly(t *testing.T) {
 	}
 }
 
+// TestConsole_AuditLog：写操作被审计（含 actor/method/path），审计只给 admin 看，
+// 且审计不含 request body（密钥不落审计）。
+func TestConsole_AuditLog(t *testing.T) {
+	_, db := newTestEngine(t)
+	if _, err := db.Exec("TRUNCATE TABLE audit_log"); err != nil {
+		t.Fatalf("truncate audit_log: %v", err)
+	}
+	engine := NewEngine(NewStore(db), []Token{
+		{Value: testToken, Role: RoleAdmin, Name: "alice-admin"},
+		{Value: "viewer-tok", Role: RoleViewer, Name: "bob"},
+	})
+	send := func(method, path, tok, body string) (int, []byte) {
+		r := httptest.NewRequest(method, path, bytes.NewReader([]byte(body)))
+		r.Header.Set("Content-Type", "application/json")
+		if tok != "" {
+			r.Header.Set("Authorization", "Bearer "+tok)
+		}
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, r)
+		return w.Code, w.Body.Bytes()
+	}
+
+	// admin 建 endpoint（body 含上游密钥）
+	secret := `{"name":"e","vendor":"openai","protocol":"openai","model":"m","auth":{"type":"bearer","payload":{"api_key":"sk-should-not-be-audited"}},"routing":{"url":"https://api.openai.com/v1"}}`
+	if code, _ := send("POST", "/admin/endpoints", testToken, secret); code != 201 {
+		t.Fatalf("create endpoint = %d", code)
+	}
+
+	// admin 读审计
+	code, body := send("GET", "/admin/audit", testToken, "")
+	if code != 200 {
+		t.Fatalf("audit read = %d", code)
+	}
+	if !bytes.Contains(body, []byte(`"alice-admin"`)) || !bytes.Contains(body, []byte(`/admin/endpoints`)) || !bytes.Contains(body, []byte(`"POST"`)) {
+		t.Errorf("审计缺条目: %s", body)
+	}
+	// 关键：审计里绝不含上游密钥
+	if bytes.Contains(body, []byte("sk-should-not-be-audited")) {
+		t.Error("审计泄漏了 request body 里的密钥！")
+	}
+	// viewer 不能看审计
+	if code, _ := send("GET", "/admin/audit", "viewer-tok", ""); code != 403 {
+		t.Errorf("viewer GET /admin/audit = %d, want 403", code)
+	}
+}
+
 func ftoa(f float64) string {
 	// 只用于测试固定值 5.0/6.0
 	return itoa(int64(f)) + ".0"
