@@ -100,7 +100,8 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 //
 // **路由**：
 //   - Success / Invalid → 不冷却（无价值；Invalid 是客户端错误，cooldown 会误伤其它请求）
-//   - Capacity / Permanent / Transient / Unknown → cooldown（best-effort，失败不阻塞）
+//   - Unknown → 不冷却（分类盲区 / 依赖故障，不能把"Redis 抖动"误标成"endpoint 坏了"）
+//   - Capacity / Permanent / Transient → cooldown（best-effort，失败不阻塞）
 //
 // Stats（如配置）：每次 Report 都写一份观测数据（latency / class），供下次 Pick
 // 的 Scorer 读取做 Runtime Scoring。

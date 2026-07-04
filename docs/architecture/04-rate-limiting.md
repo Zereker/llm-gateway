@@ -42,6 +42,8 @@ if usage != nil:
 
 RPM / RPS 是前扣：cost 固定为 1，请求开始前已知，用于挡住请求洪峰。
 
+**前扣不退还（明确取舍）**：RPM/RPS reserve 是"漏斗计数"而非"预留额度"——请求即使后续在网关侧失败（dispatch 503 / 上游全挂 / M8 moderation 拒绝），已 reserve 的那 1 个 slot **不回滚**。理由：(1) sliding window counter 会在窗口长度内自然过期该计数，over-count 是有界且自愈的；(2) 补偿式退还要在每条失败路径上精确配对 reserve/refund，跨 middleware + dispatch 多层、含 panic recover，配错反而会 double-refund 打穿限流；(3) 限流语义本就是"进入系统的请求速率"而非"成功响应速率"——一个持续打 503 的客户端占用 RPM 额度是期望行为，能防止它无成本地重试洪峰。需要按成功计费的口径以 usage outbox 为准，不走限流 bucket。endpoint 侧 RPM/RPS（§10）同理不退还。
+
 TPM 是后扣：请求已经完成后才知道真实 token，因此不做 pre-reserve。TPM 后扣失败不改变本次响应。用户侧 ReserveBatch 默认不读取 TPM bucket，所以 TPM 超限本身不会拒绝后续请求；它用于事后观测、报表和运营告警。需要强 token 上限的业务应配置更严格的 RPM/RPS 或另行引入显式的 TPM soft-check 方案。
 
 ## 3. 数据来源
