@@ -85,7 +85,10 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 		if len(t) == 0 {
 			return nil, nil // 还没拿到非空字节
 		}
-		if t[0] == '{' {
+		// '{'（单对象）或 '['（Gemini 非 alt=sse 的 JSON 数组流）都当 JSON 走
+		// buffer 模式——只有真正的 SSE（data: 行）才进 modeSSE。否则数组会被误判成
+		// SSE，drainSSE 找不到 data: 行 → 静默空响应。
+		if t[0] == '{' || t[0] == '[' {
 			h.mode = modeJSON
 			h.ex.Feed(h.buf) // 把已暂存的喂给 extractor
 			return nil, nil
@@ -165,6 +168,16 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 	}
 	cand := ev.Get("candidates.0")
 	if !cand.Exists() {
+		// 无 candidate：若 prompt 被拦截（blockReason 非空），合成 content_filter 收尾
+		// chunk，别让客户端收到完全空的流（无内容、无 finish_reason）。
+		if br := ev.Get("promptFeedback.blockReason").String(); br != "" {
+			var out []byte
+			if !h.roleSent {
+				h.roleSent = true
+				out = append(out, h.chunk(map[string]any{"role": "assistant"}, "")...)
+			}
+			return append(out, h.chunk(map[string]any{}, "content_filter")...)
+		}
 		return nil
 	}
 	var out []byte
@@ -249,8 +262,11 @@ type geminiGenConfig struct {
 }
 
 type geminiResponse struct {
-	Candidates    []geminiCandidate `json:"candidates"`
-	UsageMetadata *geminiUsageMeta  `json:"usageMetadata,omitempty"`
+	Candidates     []geminiCandidate `json:"candidates"`
+	UsageMetadata  *geminiUsageMeta  `json:"usageMetadata,omitempty"`
+	PromptFeedback *struct {
+		BlockReason string `json:"blockReason"`
+	} `json:"promptFeedback,omitempty"`
 }
 
 type geminiCandidate struct {
@@ -417,6 +433,21 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 		})
 	}
 
+	// 无 candidates（如 prompt 被 SAFETY 拦截：{"promptFeedback":{"blockReason":...}}）：
+	// OpenAI 客户端期待 choices 是**非空数组**，marshal nil slice 会出 "choices":null →
+	// SDK 反序列化失败。合成一个空 content 的 choice；被拦截时 finish_reason=content_filter。
+	if len(out.Choices) == 0 {
+		finish := "stop"
+		if in.PromptFeedback != nil && in.PromptFeedback.BlockReason != "" {
+			finish = "content_filter"
+		}
+		out.Choices = []openAIChoice{{
+			Index:        0,
+			Message:      openAIMessage{Role: "assistant", Content: ""},
+			FinishReason: finish,
+		}}
+	}
+
 	if in.UsageMetadata != nil {
 		out.Usage = openAIUsage{
 			PromptTokens:     in.UsageMetadata.PromptTokenCount,
@@ -447,22 +478,12 @@ func mapFinishReason(g string) string {
 	}
 }
 
+// isGeminiError 判断 body 是不是 Gemini 错误响应。Gemini 错误 shape 是顶层
+// {"error":{"code":...,"message":...,"status":...}}——用**结构化**判断 top-level
+// error 是不是对象，而非扫字节找 `"error"` 子串。后者会把成功响应里正文含 error 的
+// body 误判成错误（如模型回复恰好是 "error"），进而不翻译 + 丢 usage（计费漏记）。
 func isGeminiError(body []byte) bool {
-	for i := 0; i < len(body) && i < 30; i++ {
-		if body[i] == '{' {
-			rest := body[i:]
-			if len(rest) > 200 {
-				rest = rest[:200]
-			}
-			for j := 0; j+7 <= len(rest); j++ {
-				if string(rest[j:j+7]) == `"error"` {
-					return true
-				}
-			}
-			return false
-		}
-	}
-	return false
+	return gjson.GetBytes(body, "error").IsObject()
 }
 
 func randID() string {

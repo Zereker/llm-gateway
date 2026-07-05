@@ -75,7 +75,7 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 		}
 
 		ctx := c.Request.Context()
-		key := cacheKey(rc.Envelope.SourceProtocol, rc.ModelService.Model, rc.Envelope.RawBytes)
+		key := cacheKey(rc.Envelope.SourceProtocol, rc.Envelope.Modality, rc.ModelService.Model, rc.Envelope.RawBytes)
 
 		// 命中:写缓存响应 + 透传 usage,abort 跳过 M7（M6-post/M10 在洋葱返程仍跑）。
 		if cached, ok := store.Get(ctx, key); ok {
@@ -142,10 +142,18 @@ type CachedResponse struct {
 	Usage       *domain.Usage
 }
 
-// cacheKey = SHA256(protocol | model | body) 的 hex。
-func cacheKey(proto domain.Protocol, model string, body []byte) string {
+// cacheKey = SHA256(protocol | modality | model | body) 的 hex。
+//
+// **modality 必须入 key**：chat 与 embeddings 都是 ProtoOpenAI，且精确缓存共用一个
+// Redis store/prefix；只按 protocol|model|body 入 key 时，一个 byte-identical 的
+// body（如 {"model":"m","input":"x","temperature":0}）发到 /v1/embeddings 和
+// /v1/chat/completions 会撞同一 key → 跨模态返回错响应（且 key 与账号无关，跨租户）。
+// 折入 modality 后两个 keyspace 干净隔离。
+func cacheKey(proto domain.Protocol, modality domain.Modality, model string, body []byte) string {
 	h := sha256.New()
 	h.Write([]byte(proto.String()))
+	h.Write([]byte{0})
+	h.Write([]byte(modality.String()))
 	h.Write([]byte{0})
 	h.Write([]byte(model))
 	h.Write([]byte{0})

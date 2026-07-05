@@ -3,7 +3,72 @@ package openai_gemini
 import (
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
+
+// 成功响应正文恰好含 "error" 不应被误判成错误（旧的字节扫描 bug）；真错误 body 才是。
+func TestIsGeminiError(t *testing.T) {
+	success := []byte(`{"candidates":[{"content":{"parts":[{"text":"error"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":1,"totalTokenCount":9}}`)
+	if isGeminiError(success) {
+		t.Error("正文含 error 的成功响应被误判成错误")
+	}
+	errBody := []byte(`{"error":{"code":400,"message":"bad","status":"INVALID_ARGUMENT"}}`)
+	if !isGeminiError(errBody) {
+		t.Error("真错误响应未被识别")
+	}
+}
+
+// 成功响应正文是 "error" 时应正常翻译 + 带 usage（不走 error passthrough）。
+func TestResponseHandler_JSON_ContentIsError(t *testing.T) {
+	h := openaiGemini{}.NewResponseHandler()
+	body := `{"candidates":[{"content":{"parts":[{"text":"error"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":1,"totalTokenCount":9}}`
+	_, _ = h.Feed([]byte(body))
+	out, usage, err := h.Flush()
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if !strings.Contains(string(out), `"object":"chat.completion"`) || !strings.Contains(string(out), `"content":"error"`) {
+		t.Errorf("应翻译成 OpenAI shape, got: %s", out)
+	}
+	if usage == nil || usage.Total != 9 {
+		t.Errorf("usage 应保留, got %+v", usage)
+	}
+}
+
+// 安全拦截（无 candidates + promptFeedback.blockReason）：非流式 choices 非 null +
+// content_filter。
+func TestResponseHandler_JSON_SafetyBlock(t *testing.T) {
+	h := openaiGemini{}.NewResponseHandler()
+	body := `{"promptFeedback":{"blockReason":"SAFETY"}}`
+	_, _ = h.Feed([]byte(body))
+	out, _, err := h.Flush()
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	choices := gjson.GetBytes(out, "choices")
+	if !choices.IsArray() || len(choices.Array()) != 1 {
+		t.Fatalf("choices 应是含一个元素的数组（非 null）, got: %s", out)
+	}
+	if choices.Array()[0].Get("finish_reason").String() != "content_filter" {
+		t.Errorf("finish_reason 应 content_filter, got: %s", out)
+	}
+}
+
+// 流式安全拦截：不是空流，发 content_filter 收尾 chunk。
+func TestResponseHandler_SSE_SafetyBlock(t *testing.T) {
+	h := openaiGemini{}.NewResponseHandler()
+	chunk := "data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n"
+	out, _ := h.Feed([]byte(chunk))
+	final, _, _ := h.Flush()
+	all := string(out) + string(final)
+	if !strings.Contains(all, `"finish_reason":"content_filter"`) {
+		t.Errorf("流式拦截应发 content_filter chunk, got: %s", all)
+	}
+	if !strings.Contains(all, "data: [DONE]") {
+		t.Errorf("应有 [DONE], got: %s", all)
+	}
+}
 
 // 流式：Gemini SSE chunk → OpenAI chat.completion.chunk SSE + usage 从末帧抽。
 func TestResponseHandler_SSE(t *testing.T) {

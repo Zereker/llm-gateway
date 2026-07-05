@@ -211,6 +211,21 @@ func TestResponseCache_EmbeddingsDeterministicByDefault(t *testing.T) {
 	}
 }
 
+// cacheKey 折入 modality：同 protocol/model/body 但不同模态 → 不同 key（防 chat 与
+// embeddings 撞键、跨模态返回错响应）。
+func TestCacheKey_ModalityNamespaced(t *testing.T) {
+	body := []byte(`{"model":"m","input":"x","temperature":0}`)
+	kChat := cacheKey(domain.ProtoOpenAI, domain.ModalityChat, "m", body)
+	kEmb := cacheKey(domain.ProtoOpenAI, domain.ModalityEmbedding, "m", body)
+	if kChat == kEmb {
+		t.Errorf("chat 与 embedding 同 body 不应撞 key: %s", kChat)
+	}
+	// 同模态同输入必须稳定（可命中）。
+	if cacheKey(domain.ProtoOpenAI, domain.ModalityEmbedding, "m", body) != kEmb {
+		t.Error("同模态同输入 key 应稳定")
+	}
+}
+
 // 流式：永不缓存。
 func TestResponseCache_StreamBypass(t *testing.T) {
 	store := newFakeCacheStore()
