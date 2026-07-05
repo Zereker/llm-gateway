@@ -2,27 +2,35 @@ package domain
 
 import "errors"
 
-// ErrInvalidCredentials 凭证无效的 sentinel——key 不存在 / 禁用 / 过期 / 吊销 /
-// 主账号禁用，统一归为这一类（**不细分**，避免给撞库者提供枚举 oracle）。
+// ErrInvalidCredentials is the sentinel for invalid credentials — key not
+// found / disabled / expired / revoked / parent account disabled are all
+// unified into this one class (**not subdivided**, to avoid giving credential
+// stuffers an enumeration oracle).
 //
-// **契约**（docs/01 §5 + §7）：IdentityProvider.Resolve 的错误分两类：
+// **Contract** (docs/01 §5 + §7): IdentityProvider.Resolve errors split into
+// two categories:
 //
-//	errors.Is(err, ErrInvalidCredentials) → 客户端问题 → M2 返 401
-//	其它错误                              → 依赖故障（DB 连不上等）→ M2 fail-closed 返 503
+//	errors.Is(err, ErrInvalidCredentials) → client problem → M2 returns 401
+//	any other error                       → dependency failure (DB down, etc.) → M2 fail-closed returns 503
 //
-// 实现方（repo.SQLAPIKeyProvider 等）必须用 fmt.Errorf("...: %w", ErrInvalidCredentials)
-// 包装 not-found 类错误；裸 SQL 错误直接透传（不 wrap 本 sentinel）。
+// Implementations (repo.SQLAPIKeyProvider, etc.) must wrap not-found style
+// errors with fmt.Errorf("...: %w", ErrInvalidCredentials); raw SQL errors
+// are passed through as-is (not wrapped with this sentinel).
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
-// UserIdentity M2 Auth middleware 的产物（凭证查表得到的主账号 + 子账户上下文）。
+// UserIdentity is the product of the M2 Auth middleware (the parent account +
+// sub-account context obtained by looking up the credentials).
 //
-// **AccountID** 是主账号 pin / 计费主体；M5 用它判定模型订阅，
-// M6 用它命中主账号级 quota policy。
+// **AccountID** is the parent account pin / billing subject; M5 uses it to
+// determine model subscription, M6 uses it to match the parent-account-level
+// quota policy.
 //
-// **QuotaPolicy 双层指针**：两层策略彼此独立、叠加生效；任一层超限都会拒绝。
-// NULL = 该层不限。
+// **QuotaPolicy dual-layer pointers**: the two policy layers are independent
+// and stack; exceeding either layer's limit results in rejection.
+// NULL = that layer is unlimited.
 //
-// 设计原则（docs/06 §3）：纯业务结构，无 SQL tag、无 Scanner/Valuer、不 import repo。
+// Design principle (docs/06 §3): a pure business struct, no SQL tags, no
+// Scanner/Valuer, does not import repo.
 type UserIdentity struct {
 	AccountID            string
 	SubAccountID         string
@@ -33,9 +41,10 @@ type UserIdentity struct {
 	APIKeyQuotaPolicyID  *int64
 }
 
-// Credentials 从请求头提取的鉴权凭证；IdentityProvider.Resolve 的入参。
+// Credentials are the auth credentials extracted from the request headers;
+// the input to IdentityProvider.Resolve.
 type Credentials struct {
-	APIKey      string            // "Authorization: Bearer xxx" 或 "X-API-Key: xxx" 提取
-	BearerToken string            // JWT 形态时使用
-	Headers     map[string]string // 完整透传
+	APIKey      string            // extracted from "Authorization: Bearer xxx" or "X-API-Key: xxx"
+	BearerToken string            // used for JWT form
+	Headers     map[string]string // passed through in full
 }

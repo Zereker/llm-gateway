@@ -1,22 +1,25 @@
 package domain
 
-// RateLimitState M6 RateLimit middleware 的产物，传给 M10 做 TPM 调账。
+// RateLimitState is the product of the M6 RateLimit middleware, passed to
+// M10 for TPM reconciliation.
 //
-// **TPM 两阶段**：
-//   - M6 reserve 估算 cost（input chars/4 + max_tokens）；记录 TPMBucketKeys + ReservedTPM
-//   - M10 拿真实 rc.Usage.Total - ReservedTPM 算 delta；非零时 store.AdjustBatch(TPMBucketKeys, delta)
+// **TPM two-phase**:
+//   - M6 reserve estimates cost (input chars/4 + max_tokens); records TPMBucketKeys + ReservedTPM
+//   - M10 computes delta from the real rc.Usage.Total - ReservedTPM; when nonzero, store.AdjustBatch(TPMBucketKeys, delta)
 //
-// **TightestBucketKey + TightestLimit + TightestUsed + TightestResetAtUnix**：
-// M6 reserve 成功后挑最紧的 bucket（按 Limit 升序）snapshot，写到这；M10 在 dump
-// usage event 时附加为 X-RateLimit-* 反查依据。
+// **TightestBucketKey + TightestLimit + TightestUsed + TightestResetAtUnix**:
+// once M6 reserve succeeds, it snapshots the tightest bucket (ascending by
+// Limit) here; M10 attaches it as the basis for X-RateLimit-* headers when
+// dumping the usage event.
 //
-// 没有引用 ratelimit.Bucket 是为了避免 domain 反向依赖 pkg/ratelimit。
+// There's no reference to ratelimit.Bucket, to avoid domain reverse-depending
+// on pkg/ratelimit.
 type RateLimitState struct {
-	// TPM 两阶段调账数据
-	ReservedTPM   uint32   // M6 估的总 token cost
-	TPMBucketKeys []string // 这些 bucket 在 M10 commit 时一起 AdjustBatch
+	// TPM two-phase reconciliation data
+	ReservedTPM   uint32   // total token cost estimated by M6
+	TPMBucketKeys []string // these buckets get AdjustBatch'd together at M10 commit time
 
-	// Tightest bucket（用于 X-RateLimit-* headers / debug）
+	// Tightest bucket (used for X-RateLimit-* headers / debug)
 	TightestBucketKey  string
 	TightestLimit      uint32
 	TightestUsed       uint32

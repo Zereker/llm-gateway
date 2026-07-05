@@ -1,17 +1,20 @@
-// Package openai_anthropic OpenAI 客户端 → Anthropic 上游的 Translator。
+// Package openai_anthropic is the Translator for OpenAI clients → Anthropic upstream.
 //
-// 客户端按 OpenAI ChatCompletion 格式发请求；本 translator 翻成 Anthropic Messages
-// 格式给 adapter 转发；上游响应再翻回 OpenAI 格式。
+// Clients send requests in OpenAI ChatCompletion format; this translator converts
+// them to Anthropic Messages format for the adapter to forward; upstream responses
+// are translated back to OpenAI format.
 //
-// **支持两种模式**：
-//   - 非流式（stream=false）：buffer-then-translate；Flush 一次性翻整 body
-//   - 流式（stream=true）：SSE event-by-event 实时翻译，客户端拿到 OpenAI SSE 体验
+// **Supports two modes**:
+//   - Non-streaming (stream=false): buffer-then-translate; Flush translates the
+//     whole body at once
+//   - Streaming (stream=true): SSE event-by-event real-time translation, so the
+//     client gets the OpenAI SSE experience
 //
-// **v0.5 限制**：
-//   - 只支持 chat（system/user/assistant + text content）
-//   - 不支持 tool_use / vision / multi-block content
+// **v0.5 limitations**:
+//   - Only chat is supported (system/user/assistant + text content)
+//   - tool_use / vision / multi-block content are not supported
 //
-// 字段映射详见 translateRequest / translateResponse / parseAndEmitStreamEvent。
+// See translateRequest / translateResponse / parseAndEmitStreamEvent for field mapping details.
 package openai_anthropic
 
 import (
@@ -28,8 +31,9 @@ import (
 	"github.com/zereker/llm-gateway/pkg/usage/extractor"
 )
 
-// Anthropic Messages API 必填 max_tokens；client 没传时用这个 default。
-// 4096 是个保守值（claude-3-5-sonnet 上限 8192；haiku 上限 8192）。
+// Anthropic Messages API requires max_tokens; used as the default when the
+// client doesn't pass one. 4096 is a conservative value (claude-3-5-sonnet
+// caps at 8192; haiku caps at 8192).
 const defaultAnthropicMaxTokens uint32 = 4096
 
 type openaiAnthropic struct{}
@@ -45,29 +49,32 @@ func (openaiAnthropic) NewResponseHandler() translator.ResponseHandler {
 	return &responseHandler{ex: extractor.NewAnthropic()}
 }
 
-// responseHandler 同时支持非流式（buffer）和流式（SSE event-by-event）。
+// responseHandler supports both non-streaming (buffer) and streaming
+// (SSE event-by-event) modes.
 //
-// 启动时不知道是哪种模式；第一个 chunk 到来时按 prefix 检测：
-//   - "event:" / "data:" / ":" 开头 → SSE 流式
-//   - 否则 → 非流式 buffer
+// Which mode applies isn't known at start; it's detected by prefix when the
+// first chunk arrives:
+//   - starts with "event:" / "data:" / ":" → SSE streaming
+//   - otherwise → non-streaming buffer
 //
-// usage 提取走 extractor.Anthropic 旁路（v0.5 G6 抽出）：每次 Feed 把 chunk 同时
-// 喂给 ex；Flush 直接拿 ex.Final()。本 handler 主路径只关心 chunk 翻译。
+// Usage extraction goes through the extractor.Anthropic side channel (split
+// out in v0.5 G6): each Feed call also feeds the chunk to ex; Flush just
+// calls ex.Final(). This handler's main path only cares about chunk translation.
 type responseHandler struct {
 	streamingDecided bool
 	isStreaming      bool
 
-	// 非流式状态
+	// Non-streaming state
 	bodyBuffer   []byte
 	requestModel string
 
-	// 流式状态
-	sseBuffer     []byte // 跨 chunk 累计未完整事件
-	chatcmplID    string // 流式响应共享一个 id（OpenAI 约定 chunks 共享 id）
-	upstreamModel string // 从 message_start.message.model 取
-	createdSec    int64  // 流式 chunks 共享 created 秒（首个 chunk 时确定）
+	// Streaming state
+	sseBuffer     []byte // incomplete events accumulated across chunks
+	chatcmplID    string // streaming response shares one id (OpenAI convention: chunks share an id)
+	upstreamModel string // taken from message_start.message.model
+	createdSec    int64  // streaming chunks share one created timestamp (fixed at first chunk)
 
-	// usage 旁路
+	// usage side channel
 	ex extractor.Session
 }
 
@@ -96,7 +103,7 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		return nil, h.ex.Final(), nil
 	}
 
-	// 非流式
+	// Non-streaming
 	if len(h.bodyBuffer) == 0 {
 		return nil, nil, nil
 	}
@@ -107,7 +114,7 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	return body, h.ex.Final(), err
 }
 
-// detectStreaming 第一个 chunk 出现时判断流式与否。
+// detectStreaming decides streaming vs. non-streaming when the first chunk arrives.
 func (h *responseHandler) detectStreaming(chunk []byte) {
 	h.streamingDecided = true
 	trimmed := bytes.TrimLeft(chunk, " \t\r\n")
@@ -116,9 +123,11 @@ func (h *responseHandler) detectStreaming(chunk []byte) {
 		bytes.HasPrefix(trimmed, []byte(":"))
 }
 
-// parseAndEmitStream 切出已完整的 SSE event 并翻译成 OpenAI SSE chunks。
+// parseAndEmitStream slices out complete SSE events and translates them into
+// OpenAI SSE chunks.
 //
-// 返回字节直接写客户端（已含 "data: " prefix + "\n\n" 分隔符）。
+// The returned bytes are written to the client directly (already including
+// the "data: " prefix + "\n\n" separator).
 func (h *responseHandler) parseAndEmitStream() []byte {
 	var out bytes.Buffer
 	for {
@@ -129,7 +138,7 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 		event := h.sseBuffer[:idx]
 		h.sseBuffer = h.sseBuffer[idx+2:]
 
-		// 提取 data: 行
+		// Extract the data: line
 		var dataPayload []byte
 		for _, line := range bytes.Split(event, []byte("\n")) {
 			if bytes.HasPrefix(line, []byte("data:")) {
@@ -144,20 +153,22 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 	}
 }
 
-// translateAnthropicEvent 翻译单个 Anthropic SSE event payload → 写 OpenAI SSE chunk(s) 到 out。
+// translateAnthropicEvent translates a single Anthropic SSE event payload → writes
+// OpenAI SSE chunk(s) to out.
 //
-// Anthropic event types → OpenAI chunk 映射：
+// Anthropic event types → OpenAI chunk mapping:
 //
-//	message_start       → 1 个 chunk: delta={role:"assistant"}（OpenAI SDK 期望先收到 role）
-//	content_block_start → 不输出（无文本增量）
-//	content_block_delta → 1 个 chunk: delta={content:"<text>"}
-//	content_block_stop  → 不输出
-//	message_delta       → 1 个 chunk: delta={}, finish_reason=<mapped>（携带 stop_reason 时）
-//	message_stop        → 1 个 sentinel: data: [DONE]
-//	ping                → 不输出
+//	message_start       → 1 chunk: delta={role:"assistant"} (OpenAI SDK expects role first)
+//	content_block_start → no output (no text delta)
+//	content_block_delta → 1 chunk: delta={content:"<text>"}
+//	content_block_stop  → no output
+//	message_delta       → 1 chunk: delta={}, finish_reason=<mapped> (when stop_reason is present)
+//	message_stop        → 1 sentinel: data: [DONE]
+//	ping                → no output
 //
-// usage 提取**不在这里**——extractor.Anthropic 在 Feed 时已经独立扫一遍。本函数只
-// 关心翻译，不读不写 token 字段。
+// Usage extraction does **not** happen here — extractor.Anthropic already scans
+// independently in Feed. This function only cares about translation; it doesn't
+// read or write token fields.
 func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte) {
 	var ev struct {
 		Type    string `json:"type"`
@@ -181,7 +192,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		if ev.Message != nil && ev.Message.Model != "" {
 			h.upstreamModel = ev.Message.Model
 		}
-		// 输出 role chunk（OpenAI SDK 习惯）
+		// Emit the role chunk (OpenAI SDK convention)
 		h.writeChunk(out, map[string]any{"role": "assistant"}, "")
 
 	case "content_block_delta":
@@ -198,13 +209,14 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		out.WriteString("data: [DONE]\n\n")
 
 	case "ping", "content_block_start", "content_block_stop":
-		// 无输出
+		// No output
 	}
 }
 
-// writeChunk 拼一个 OpenAI SSE chunk 写到 out（含 "data: " prefix + "\n\n" 分隔符）。
+// writeChunk assembles one OpenAI SSE chunk and writes it to out (including the
+// "data: " prefix + "\n\n" separator).
 //
-// finishReason 空时写 null；非空时写字符串。
+// Writes null when finishReason is empty; writes the string otherwise.
 func (h *responseHandler) writeChunk(out *bytes.Buffer, delta map[string]any, finishReason string) {
 	choice := map[string]any{
 		"index":         0,
@@ -231,7 +243,8 @@ func (h *responseHandler) writeChunk(out *bytes.Buffer, delta map[string]any, fi
 }
 
 // =============================================================================
-// 非流式：OpenAI 输入端 / Anthropic 上游端 / OpenAI 输出端 shape + 翻译函数
+// Non-streaming: OpenAI input side / Anthropic upstream side / OpenAI output
+// side shapes + translation functions
 // =============================================================================
 
 type openAIRequest struct {
@@ -306,7 +319,8 @@ type openAIUsage struct {
 	TotalTokens      int64 `json:"total_tokens"`
 }
 
-// translateRequest OpenAI body → Anthropic body。**保留 stream 字段透传**给上游。
+// translateRequest converts an OpenAI body → Anthropic body. **The stream field
+// is passed through as-is** to the upstream.
 func translateRequest(rawBody []byte) ([]byte, error) {
 	var in openAIRequest
 	if err := json.Unmarshal(rawBody, &in); err != nil {
@@ -368,10 +382,11 @@ func parseStopField(raw json.RawMessage) []string {
 	return nil
 }
 
-// translateResponse Anthropic body → OpenAI body（非流式）。
+// translateResponse converts an Anthropic body → OpenAI body (non-streaming).
 //
-// 返 *domain.Usage 给 caller 的职责已移出（走 extractor.NewAnthropic 旁路）；本函数
-// 只把 Anthropic usage 翻进 OpenAI body 的 usage 字段（OpenAI 客户端期待的形态）。
+// Returning *domain.Usage to the caller has been moved out (goes through the
+// extractor.NewAnthropic side channel); this function only translates the
+// Anthropic usage into the OpenAI body's usage field (the shape OpenAI clients expect).
 func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	var in anthropicResponse
 	if err := json.Unmarshal(rawBody, &in); err != nil {
@@ -419,7 +434,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	return body, nil
 }
 
-// mapStopReason Anthropic stop_reason → OpenAI finish_reason。
+// mapStopReason converts Anthropic stop_reason → OpenAI finish_reason.
 func mapStopReason(r string) string {
 	switch r {
 	case "end_turn", "stop_sequence", "":
@@ -433,7 +448,7 @@ func mapStopReason(r string) string {
 	}
 }
 
-// anthropicIDOrGen Anthropic 的 id 形如 "msg_xxx"；OpenAI 客户端期望 "chatcmpl-xxx"。
+// anthropicIDOrGen: Anthropic's id looks like "msg_xxx"; OpenAI clients expect "chatcmpl-xxx".
 func anthropicIDOrGen(anthropicID string) string {
 	if anthropicID == "" {
 		return "chatcmpl-" + randID()
@@ -441,7 +456,7 @@ func anthropicIDOrGen(anthropicID string) string {
 	return "chatcmpl-" + strings.TrimPrefix(anthropicID, "msg_")
 }
 
-// isAnthropicError 粗判 body 是否错误响应（top-level "error" key）。
+// isAnthropicError roughly determines whether body is an error response (top-level "error" key).
 func isAnthropicError(body []byte) bool {
 	for i := 0; i < len(body) && i < 30; i++ {
 		if body[i] == '{' {

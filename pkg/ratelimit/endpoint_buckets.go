@@ -7,20 +7,21 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// EndpointReserveBuckets 把 endpoint quota 展开成 RPM + RPS reserve bucket
-// （前扣用，cost=1）。
+// EndpointReserveBuckets expands an endpoint quota into RPM + RPS reserve buckets
+// (for pre-charge, cost=1).
 //
-// 命名规则（docs/04 §10）：rl:endpoint:<id>:rpm / rl:endpoint:<id>:rps
+// Naming rule (docs/04 §10): rl:endpoint:<id>:rpm / rl:endpoint:<id>:rps
 //
-// **归属在 pkg/ratelimit**：bucket key 派生是 ratelimit 自身的领域知识；
-// 之前在 pkg/selector 是历史遗留，v0.6 归位（同时解 selector ↔ ratelimit 循环）。
+// **Lives in pkg/ratelimit**: deriving bucket keys is ratelimit's own domain knowledge; having it
+// in pkg/selector was legacy from before, moved here in v0.6 (which also resolved a
+// selector ↔ ratelimit import cycle).
 func EndpointReserveBuckets(ep *domain.Endpoint) []Bucket {
 	return buildEndpointReserveBuckets(ep, 1)
 }
 
-// EndpointTPMChargeBucket 成功响应后 charge endpoint TPM bucket。
+// EndpointTPMChargeBucket charges the endpoint TPM bucket after a successful response.
 //
-// cost 由调用方传入 rc.Usage.Total。endpoint 没配 TPM 时返 nil。
+// cost is passed in by the caller as rc.Usage.Total. Returns nil if the endpoint has no TPM configured.
 func EndpointTPMChargeBucket(ep *domain.Endpoint, cost uint32) *Bucket {
 	if ep == nil {
 		return nil
@@ -37,8 +38,8 @@ func EndpointTPMChargeBucket(ep *domain.Endpoint, cost uint32) *Bucket {
 	}
 }
 
-// buildEndpointReserveBuckets endpoint quota → RPM / RPS buckets。
-// rpsCost 参数让 selector 的 LimitReadFilter 用更细粒度（peek 不扣）的预算。
+// buildEndpointReserveBuckets converts an endpoint quota → RPM / RPS buckets.
+// The rpsCost parameter lets selector's LimitReadFilter use a finer-grained budget (peek without charging).
 func buildEndpointReserveBuckets(ep *domain.Endpoint, rpsCost uint32) []Bucket {
 	if ep == nil {
 		return nil

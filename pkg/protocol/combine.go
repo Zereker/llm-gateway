@@ -11,15 +11,17 @@ import (
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
-// Combine 把 Factory（vendor HTTP 层）+ translator.Translator（body 转换）组装
-// 成一个 Handler。**facade 融合的核心 helper**。
+// Combine assembles a Factory (vendor HTTP layer) + translator.Translator
+// (body conversion) into a Handler. **The core helper for facade composition.**
 //
-// **使用形态**：DefaultLookup.Get(ep, srcProto) 在请求时调用 Combine 把当前
-// endpoint 的 Factory + 选中的 translator 组合成 Handler；不在 init() 时静态
-// 注册。这是 v0.6 把"协议归属"从 vendor 级移到 endpoint 级的体现。
+// **Usage pattern**: DefaultLookup.Get(ep, srcProto) calls Combine at request
+// time to combine the current endpoint's Factory with the selected translator
+// into a Handler; it is not statically registered in init(). This reflects
+// v0.6's move of "protocol ownership" from vendor-level to endpoint-level.
 //
-// **约束**：translator.Target() 必须 == ep.Protocol；Combine 不验证（运行期
-// 高频路径），由 DefaultLookup 在按 translator.Find(src, ep.Protocol) 挑选时保证。
+// **Constraint**: translator.Target() must == ep.Protocol; Combine does not
+// validate this (it's a hot runtime path) — DefaultLookup guarantees it when
+// selecting via translator.Find(src, ep.Protocol).
 func Combine(ad Factory, tr translator.Translator) Handler {
 	if ad == nil {
 		panic("protocol.Combine: nil Factory")
@@ -39,15 +41,20 @@ func Combine(ad Factory, tr translator.Translator) Handler {
 	}
 }
 
-// combined 是 Combine 出来的 Handler 实现——facade 内部仍调原 adapter / translator。
+// combined is the Handler implementation produced by Combine — internally the
+// facade still delegates to the original adapter / translator.
 //
-// **quirksCache**：endpoint.Quirks JSON 在第一次见时 compile 成 Rewriter；
-// 后续同 spec（即 string(rawJSON)）请求直接命中。
-//   - key   = string(endpoint.Quirks) — JSON 字面量；同 spec 不同 endpoint 共享
+// **quirksCache**: endpoint.Quirks JSON is compiled into a Rewriter the first
+// time it's seen; subsequent requests with the same spec (i.e. the same
+// string(rawJSON)) hit the cache directly.
+//   - key   = string(endpoint.Quirks) — the JSON literal; endpoints with the
+//     same spec share the compiled result
 //   - value = quirks.Rewriter
 //
-// 没主动失效逻辑——deployer 改 SQL 后新 spec 的字符串自然不同，会新增 entry；老
-// entry 没 evict（量级一般 < 100，可接受）。需要严格 eviction 时改用 hashicorp lru。
+// No active invalidation — once a deployer changes the SQL, the new spec's
+// string naturally differs and a new entry is added; old entries are never
+// evicted (cardinality is typically < 100, which is acceptable). Switch to a
+// hashicorp lru if strict eviction is required.
 type combined struct {
 	ad          Factory
 	tr          translator.Translator
@@ -58,15 +65,16 @@ type combined struct {
 func (c *combined) Capabilities() Capabilities { return c.caps }
 
 func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody []byte) (*Call, error) {
-	// phase 1: translator——客户端协议 → 上游协议 shape
+	// phase 1: translator — client protocol → upstream protocol shape
 	upstreamBody, err := c.tr.TranslateRequest(srcBody)
 	if err != nil {
 		return nil, NewPrepareError(PhaseTranslate, err)
 	}
 
-	// phase 2: quirks——endpoint 配置的 body + header 微调。
-	// **body 和 header 一起跑完再交 adapter**，保持 quirks → adapter 单向管道，
-	// adapter 不需要知道 quirks 的存在。
+	// phase 2: quirks — body + header tweaks configured on the endpoint.
+	// **Body and header both finish before handing off to the adapter**,
+	// keeping the quirks → adapter pipeline one-directional; the adapter
+	// doesn't need to know quirks exist.
 	var extraHeaders http.Header
 	if len(ep.Quirks) > 0 {
 		rw, err := c.quirksFor(ep.Quirks)
@@ -78,15 +86,17 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 			return nil, NewPrepareError(PhaseQuirks, err)
 		}
 		extraHeaders = make(http.Header)
-		rw.RewriteHeader(extraHeaders) // 对空 header 跑 spec：set / set_default 生效
+		rw.RewriteHeader(extraHeaders) // run the spec against an empty header: set / set_default take effect
 	}
 
-	// phase 3: adapter——HTTP 信封（URL / Auth / Content-Type），合并 extraHeaders。
-	// adapter 内部约定：先拷贝 extraHeaders，再写自己的协议必需 header（后写覆盖
-	// quirks），防止 deployer 误改 Authorization / Content-Type 把请求打挂。
+	// phase 3: adapter — HTTP envelope (URL / Auth / Content-Type), merging
+	// extraHeaders. Internal adapter convention: copy extraHeaders first,
+	// then write its own protocol-required headers (later writes override
+	// quirks), preventing a deployer from accidentally breaking the request
+	// by overriding Authorization / Content-Type.
 	sess, err := c.ad.NewSession(ctx, ep, &domain.RequestEnvelope{
 		SourceProtocol: c.caps.SourceProtocol,
-		RawBytes:       srcBody, // 备份给可能引用原 body 的 session 实现
+		RawBytes:       srcBody, // backup copy for session implementations that may reference the original body
 	})
 	if err != nil {
 		return nil, NewPrepareError(PhaseBuild, err)
@@ -96,19 +106,22 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 		_ = sess.Close()
 		return nil, NewPrepareError(PhaseBuild, err)
 	}
-	// v0.5 slim session 没有流式状态——构造完即关。
+	// The v0.5 slim session has no streaming state — close it right after construction.
 	_ = sess.Close()
 
 	return &Call{Request: req, UpstreamBody: upstreamBody}, nil
 }
 
-// quirksFor 拿（或构造）endpoint.Quirks 对应的 Rewriter，sync.Map 缓存。
+// quirksFor gets (or builds) the Rewriter corresponding to endpoint.Quirks,
+// cached in a sync.Map.
 //
-// **key**：string(rawSpec)——同字符串字面量同 Rewriter；不同 endpoint 配置相同
-// quirks 时共享同一个编译产物。
+// **key**: string(rawSpec) — the same string literal maps to the same
+// Rewriter; different endpoints configured with the same quirks share the
+// same compiled artifact.
 //
-// **error 不缓存**：compile 失败时不存进 cache，每次重试 compile（让 deployer
-// 改了 SQL 之后能立即看到新 spec 生效；缓存错误规则反而难调试）。
+// **Errors are not cached**: on compile failure nothing is stored in the
+// cache, so it's retried every time (this lets a deployer's SQL change take
+// effect immediately; caching failed rules would only make debugging harder).
 func (c *combined) quirksFor(rawSpec []byte) (quirks.Rewriter, error) {
 	key := string(rawSpec)
 	if cached, ok := c.quirksCache.Load(key); ok {
@@ -126,10 +139,11 @@ func (c *combined) NewResponseStream() ResponseStream {
 	return &combinedStream{inner: c.tr.NewResponseHandler()}
 }
 
-// Classify 透传到 Factory 的 Classifier（如果实现了）。
+// Classify delegates to the Factory's Classifier, if implemented.
 //
-// **接口提升**：Factory 的 Classifier 是可选实现；combined 自动把这能力透出，
-// 让上层只 type-assert protocol.Classifier。
+// **Interface promotion**: Factory's Classifier is an optional implementation;
+// combined automatically surfaces this capability so callers only need to
+// type-assert protocol.Classifier.
 func (c *combined) Classify(status int, body []byte) *domain.AdapterError {
 	if cls, ok := c.ad.(Classifier); ok {
 		return cls.Classify(status, body)
@@ -137,8 +151,9 @@ func (c *combined) Classify(status int, body []byte) *domain.AdapterError {
 	return nil
 }
 
-// DecodeTransport 透传到 Factory 的 TransportDecoder（如果实现了）。同 Classify 的
-// 能力提升模式——上层只 type-assert protocol.TransportDecoder，nil 表示无需解帧。
+// DecodeTransport delegates to the Factory's TransportDecoder, if
+// implemented. Same capability-promotion pattern as Classify — callers only
+// type-assert protocol.TransportDecoder; nil means no de-framing is needed.
 func (c *combined) DecodeTransport(resp *http.Response) io.Reader {
 	if dec, ok := c.ad.(TransportDecoder); ok {
 		return dec.DecodeTransport(resp)
@@ -146,8 +161,9 @@ func (c *combined) DecodeTransport(resp *http.Response) io.Reader {
 	return nil
 }
 
-// combinedStream 包装 translator.ResponseHandler 成 protocol.ResponseStream
-// （接口形状一致——只是换包名 + 解 import 循环风险）。
+// combinedStream wraps a translator.ResponseHandler as a
+// protocol.ResponseStream (identical interface shape — just renaming the
+// package to avoid an import-cycle risk).
 type combinedStream struct {
 	inner translator.ResponseHandler
 }

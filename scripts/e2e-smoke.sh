@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 # scripts/e2e-smoke.sh
 #
-# 纯数据面 e2e 烟测：
+# Data-plane-only e2e smoke test:
 #
-#   1. docker compose up -d           （mysql + redis + redpanda）
-#   2. 等 stack healthy
-#   3. go run cmd/mockupstream (bg)   假上游
-#   4. go run cmd/gateway     (bg)    数据面（启动期跑 infra.Migrate）
-#   5. go run scripts/seed-e2e        往 DB 写最小业务数据（account / endpoint / api_key）
-#   6. curl /v1/chat/completions      期望 200 + content
-#   7. cleanup（kill bg pids）
+#   1. docker compose up -d           (mysql + redis + redpanda)
+#   2. wait for the stack to become healthy
+#   3. go run cmd/mockupstream (bg)   fake upstream
+#   4. go run cmd/gateway     (bg)    data plane (runs infra.Migrate at startup)
+#   5. go run scripts/seed-e2e        writes minimal business data to the DB (account / endpoint / api_key)
+#   6. curl /v1/chat/completions      expect 200 + content
+#   7. cleanup (kill background pids)
 #
-# 用法：
-#   ./scripts/e2e-smoke.sh                # 默认 60s 超时；保留 docker stack
-#   ./scripts/e2e-smoke.sh --teardown     # 跑完后 docker compose down -v
+# Usage:
+#   ./scripts/e2e-smoke.sh                # default 60s timeout; keeps the docker stack
+#   ./scripts/e2e-smoke.sh --teardown     # runs docker compose down -v afterward
 #
-# 退出码：
-#   0  全过
-#   1  任意环节失败（详细 log 留在 /tmp/e2e-smoke-{gateway,mockupstream}.log）
+# Exit codes:
+#   0  everything passed
+#   1  some step failed (detailed logs left in /tmp/e2e-smoke-{gateway,mockupstream}.log)
 
 set -euo pipefail
 
@@ -32,13 +32,13 @@ for arg in "$@"; do
   esac
 done
 
-# 临时文件
+# Temp files
 LOG_GW="/tmp/e2e-smoke-gateway.log"
 LOG_UP="/tmp/e2e-smoke-mockupstream.log"
 PID_GW=""
 PID_UP=""
 
-# 测试参数
+# Test parameters
 API_KEY="sk-test-e2e-$RANDOM"
 MODEL="gpt-4o"
 DATA_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -60,7 +60,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# 简单的 wait-for-port 工具（避免依赖 wait-for-it）
+# A simple wait-for-port helper (avoids depending on wait-for-it)
 wait_port() {
   local host="$1" port="$2" timeout="${3:-30}"
   for ((i=0; i<timeout; i++)); do
@@ -90,9 +90,9 @@ echo "[smoke] docker compose up -d"
 docker compose up -d >/dev/null
 
 echo "[smoke] wait for mysql / redis"
-wait_port 127.0.0.1 3306 60 || { echo "mysql 起不来" >&2; exit 1; }
-wait_port 127.0.0.1 6379 30 || { echo "redis 起不来" >&2; exit 1; }
-# mysqld 内部还有一段初始化时间——再 ping 一下
+wait_port 127.0.0.1 3306 60 || { echo "mysql failed to start" >&2; exit 1; }
+wait_port 127.0.0.1 6379 30 || { echo "redis failed to start" >&2; exit 1; }
+# mysqld still needs some internal init time -- ping it once more
 for ((i=0; i<30; i++)); do
   if docker compose exec -T mysql mysqladmin ping -h localhost -uroot --silent >/dev/null 2>&1; then
     break
@@ -101,31 +101,31 @@ for ((i=0; i<30; i++)); do
 done
 
 # ============================================================================
-# 2) mockupstream（后台）
+# 2) mockupstream (background)
 # ============================================================================
 echo "[smoke] start mockupstream :$MOCK_PORT"
 MOCK_ADDR=":$MOCK_PORT" go run ./cmd/mockupstream >"$LOG_UP" 2>&1 &
 PID_UP=$!
 wait_http "http://127.0.0.1:$MOCK_PORT/health" 30 || {
-  echo "mockupstream 启动失败，log: $LOG_UP" >&2
+  echo "mockupstream failed to start, log: $LOG_UP" >&2
   cat "$LOG_UP" >&2
   exit 1
 }
 
 # ============================================================================
-# 3) gateway（后台；启动期自跑 infra.Migrate）
+# 3) gateway (background; runs infra.Migrate at startup)
 # ============================================================================
 echo "[smoke] start gateway :$GATEWAY_PORT"
 go run ./cmd/gateway -config ./configs/local/gateway.yaml >"$LOG_GW" 2>&1 &
 PID_GW=$!
 wait_http "http://127.0.0.1:$GATEWAY_PORT/healthz" 60 || {
-  echo "gateway 启动失败，log: $LOG_GW" >&2
+  echo "gateway failed to start, log: $LOG_GW" >&2
   tail -30 "$LOG_GW" >&2
   exit 1
 }
 
 # ============================================================================
-# 4) seed 业务数据
+# 4) seed business data
 # ============================================================================
 echo "[smoke] seed e2e data (api_key=$API_KEY)"
 go run ./scripts/seed-e2e \
@@ -134,18 +134,19 @@ go run ./scripts/seed-e2e \
   -upstream "http://127.0.0.1:$MOCK_PORT/v1/chat/completions" \
   -api-key "$API_KEY" \
   -model "$MODEL" >/dev/null || {
-  echo "seed 失败" >&2
+  echo "seed failed" >&2
   exit 1
 }
 
-# repo TTL cache 默认 30s——刚 seed 的 api_key / endpoint 第一次查肯定走 SQL，
-# 但前置 health check 期间 gateway 可能已经缓存了空结果（apikey 不缓存 nil；
-# subscription 缓存 false 30s）。给一个短 sleep 让 cache 自然失效。
-# v0.7 起 subscription 也不缓存 false 时这里可删。
+# repo TTL cache defaults to 30s -- the freshly-seeded api_key / endpoint will definitely
+# hit SQL on first lookup, but during the preceding health checks gateway may already have
+# cached an empty result (apikey doesn't cache nil; subscription caches false for 30s).
+# Add a short sleep to let the cache naturally expire.
+# As of v0.7, subscription no longer caches false, so this can be removed then.
 sleep 2
 
 # ============================================================================
-# 5) 发请求 → 期望 200 + content
+# 5) send request -> expect 200 + content
 # ============================================================================
 echo "[smoke] curl /v1/chat/completions"
 RESP="$(curl -sS -o /tmp/e2e-smoke-resp.json -w '%{http_code}' \
@@ -163,7 +164,7 @@ if [[ "$RESP" != "200" ]]; then
   exit 1
 fi
 
-# 简单内容校验：mockupstream 默认吐 "hello from mockupstream..." 之类
+# Simple content check: mockupstream responds with something like "hello from mockupstream..." by default
 if ! grep -q '"content"' /tmp/e2e-smoke-resp.json; then
   echo "[smoke] FAIL: response missing content field" >&2
   cat /tmp/e2e-smoke-resp.json >&2

@@ -1,26 +1,26 @@
 # 04 — Rate Limiting
 
-本文记录限流设计目标。限流分两类：
+This document records the design goals for rate limiting. Rate limiting is split into two categories:
 
-1. **用户侧 quota**：account / API key / model 维度，M6 处理。
-2. **Endpoint quota**：上游 endpoint 自身容量，M7 选中 endpoint 后处理。
+1. **User-side quota**: account / API key / model dimensions, handled by M6.
+2. **Endpoint quota**: the upstream endpoint's own capacity, handled by M7 after an endpoint is selected.
 
-限流 bucket 只服务流控，不作为计费账本。计费以 usage outbox 为准。
+Rate-limit buckets only serve flow control, not billing ledgers. Billing is based on the usage outbox.
 
-## 1. 设计原则
+## 1. Design Principles
 
-- M6 只处理用户侧 quota，不混入 endpoint quota。
-- M7 只对最终选中的 endpoint 做 endpoint quota reserve，不在候选 filter 阶段扣所有 endpoint。
-- 用户侧 RPM / RPS 在请求前 reserve。
-- TPM 不请求前预扣，不读取 `max_tokens`，只在响应后按真实 usage 后扣；它是事后计数器，不保证请求开始前的 token 上限。
-- 不返回 `X-RateLimit-*` headers；限流状态不作为客户端契约暴露。
-- Redis 是生产唯一 Store；多副本 gateway 必须共享计数器。
+- M6 only handles user-side quota; it does not mix in endpoint quota.
+- M7 only does endpoint quota reserve for the finally selected endpoint; it does not deduct from all endpoints during the candidate filter stage.
+- User-side RPM / RPS are reserved before the request.
+- TPM is not pre-deducted before the request, does not read `max_tokens`, and is only deducted after the response based on real usage; it is an after-the-fact counter and does not guarantee a token ceiling before the request starts.
+- `X-RateLimit-*` headers are not returned; rate-limit state is not exposed as a client contract.
+- Redis is the only Store in production; multi-replica gateways must share the counters.
 
-## 2. M6 用户侧限流
+## 2. M6 User-Side Rate Limiting
 
-M6 位于 M5 ModelService 之后、M7 Schedule 之前。
+M6 sits after M5 ModelService and before M7 Schedule.
 
-流程：
+Flow:
 
 ```text
 identity = rc.Identity
@@ -34,21 +34,21 @@ if denied:
 
 c.Next()
 
-usage = rc.Usage  # M7 thin adapter 从 dispatch.Outcome 写回；nil 表示未提取到 usage
+usage = rc.Usage  # M7 thin adapter writes back from dispatch.Outcome; nil means usage was not extracted
 if usage != nil:
     build user TPM buckets by additive policy
     ChargeBatch(TPM buckets with cost = usage.Total)
 ```
 
-RPM / RPS 是前扣：cost 固定为 1，请求开始前已知，用于挡住请求洪峰。
+RPM / RPS are pre-deducted: cost is fixed at 1, known before the request starts, used to block request surges.
 
-**前扣不退还（明确取舍）**：RPM/RPS reserve 是"漏斗计数"而非"预留额度"——请求即使后续在网关侧失败（dispatch 503 / 上游全挂 / M8 moderation 拒绝），已 reserve 的那 1 个 slot **不回滚**。理由：(1) sliding window counter 会在窗口长度内自然过期该计数，over-count 是有界且自愈的；(2) 补偿式退还要在每条失败路径上精确配对 reserve/refund，跨 middleware + dispatch 多层、含 panic recover，配错反而会 double-refund 打穿限流；(3) 限流语义本就是"进入系统的请求速率"而非"成功响应速率"——一个持续打 503 的客户端占用 RPM 额度是期望行为，能防止它无成本地重试洪峰。需要按成功计费的口径以 usage outbox 为准，不走限流 bucket。endpoint 侧 RPM/RPS（§10）同理不退还。
+**Pre-deduction is not refunded (an explicit trade-off)**: RPM/RPS reserve is a "funnel count" rather than a "reserved quota" — even if the request subsequently fails on the gateway side (dispatch 503 / all upstreams down / M8 moderation rejection), the 1 slot already reserved **is not rolled back**. Reasons: (1) the sliding window counter will naturally expire that count within the window length, so the over-count is bounded and self-healing; (2) a compensating refund would need to precisely pair reserve/refund on every failure path, across multiple layers of middleware + dispatch, including panic recover — getting the pairing wrong would instead cause double-refunds that blow through the rate limit; (3) the semantics of rate limiting are inherently "the rate of requests entering the system" rather than "the rate of successful responses" — a client that keeps hitting 503 consuming RPM quota is expected behavior, since it prevents that client from retry-flooding at no cost. Where billing needs to be based on success, the usage outbox is authoritative, not the rate-limit bucket. Endpoint-side RPM/RPS (§10) likewise are not refunded.
 
-TPM 是后扣：请求已经完成后才知道真实 token，因此不做 pre-reserve。TPM 后扣失败不改变本次响应。用户侧 ReserveBatch 默认不读取 TPM bucket，所以 TPM 超限本身不会拒绝后续请求；它用于事后观测、报表和运营告警。需要强 token 上限的业务应配置更严格的 RPM/RPS 或另行引入显式的 TPM soft-check 方案。
+TPM is post-deducted: the real token count is only known after the request completes, so no pre-reserve is done. A TPM post-deduction failure does not change the current response. The user-side `ReserveBatch` by default does not read the TPM bucket, so exceeding the TPM limit itself does not reject subsequent requests; it is used for after-the-fact observation, reporting, and operational alerting. Businesses that need a hard token ceiling should configure stricter RPM/RPS or separately introduce an explicit TPM soft-check scheme.
 
-## 3. 数据来源
+## 3. Data Sources
 
-身份来自 M2：
+Identity comes from M2:
 
 ```go
 type UserIdentity struct {
@@ -62,7 +62,7 @@ type UserIdentity struct {
 }
 ```
 
-quota policy 来自 SQL 表 `quota_policies`，`rule_json` 解析为：
+The quota policy comes from the SQL table `quota_policies`, whose `rule_json` is parsed into:
 
 ```go
 type PolicyRule struct {
@@ -71,7 +71,7 @@ type PolicyRule struct {
 }
 ```
 
-示例：
+Example:
 
 ```json
 {
@@ -82,20 +82,20 @@ type PolicyRule struct {
 }
 ```
 
-## 4. Additive 语义
+## 4. Additive Semantics
 
-`PolicyRule.PickRulesAdditive(model)` 同时返回：
+`PolicyRule.PickRulesAdditive(model)` returns both:
 
-- default rule，scope 为 `*`
-- 命中的 per-model rule，scope 为当前 model
+- the default rule, with scope `*`
+- the matched per-model rule, with scope being the current model
 
-两者都存在时会同时消耗。这样 per-model 是 default 的子上限，避免“命中 per-model 后绕过总量上限”。
+When both exist, both are consumed simultaneously. This way per-model acts as a sub-limit of default, avoiding a situation where "matching per-model bypasses the overall cap."
 
-主账号层和 API key 层也会同时消耗；两层策略彼此独立、叠加生效。RPM/RPS 这类前扣 bucket 任一超限则整批拒绝；TPM bucket 是后扣计数器，不参与请求前拒绝。
+The account layer and the API key layer are also consumed simultaneously; the two layers of policy are independent of each other and apply additively. For pre-deducted buckets like RPM/RPS, if either exceeds the limit the whole batch is rejected; the TPM bucket is a post-deduction counter and does not participate in pre-request rejection.
 
-## 5. Redis Store 接口
+## 5. Redis Store Interface
 
-目标接口：
+Target interface:
 
 ```go
 type Store interface {
@@ -105,28 +105,28 @@ type Store interface {
 }
 ```
 
-`ReserveBatch` 用于请求前限流，是多 key 原子 all-or-nothing；任一 bucket 超限则整批不写入，调用方返回 429 或换 endpoint。算法使用 sliding window counter，避免 fixed window 边界 2 倍突刺。
+`ReserveBatch` is used for pre-request rate limiting; it is a multi-key atomic all-or-nothing operation — if any bucket exceeds its limit, the whole batch is not written, and the caller returns 429 or switches endpoints. The algorithm uses a sliding window counter, avoiding the 2x burst at fixed window boundaries.
 
-`ChargeBatch` 用于响应后记账，必须写入实际 usage；即使写入后超过上限，也不能拒绝已经完成的响应。返回值可标记哪些 bucket 已经 over limit，供日志、metric 和运营告警使用。
+`ChargeBatch` is used for post-response accounting and must write the actual usage; even if the write results in exceeding the limit, the already-completed response cannot be rejected. The return value can flag which buckets are already over the limit, for use in logging, metrics, and operational alerting.
 
-`SnapshotBatch` 是 read-only，用于后续 endpoint quota / 可观测场景读取当前状态，不产生扣减副作用。
+`SnapshotBatch` is read-only, used for subsequent endpoint quota / observability scenarios to read current state, without any deduction side effects.
 
-## 6. Bucket 命名
+## 6. Bucket Naming
 
-M6 用户侧 bucket：
+M6 user-side buckets:
 
 ```text
 rl:quota:<layer>:<subject>:<scope>:<dim>
 ```
 
-字段含义：
+Field meanings:
 
-- `layer`：`account` 或 `apikey`
-- `subject`：主账号 pin 或 api_key_id
-- `scope`：`*` 或实际 model
-- `dim`：`rpm`、`tpm`、`rps`
+- `layer`: `account` or `apikey`
+- `subject`: the primary account pin or api_key_id
+- `scope`: `*` or the actual model
+- `dim`: `rpm`, `tpm`, `rps`
 
-示例：
+Example:
 
 ```text
 rl:quota:account:default:*:rpm
@@ -134,24 +134,24 @@ rl:quota:account:default:gpt-4o:tpm
 rl:quota:apikey:ak_alice:*:rps
 ```
 
-M7 endpoint 侧 bucket：
+M7 endpoint-side buckets:
 
 ```text
 rl:endpoint:<endpoint_id>:<dim>
 ```
 
-endpoint quota 不暴露给客户端，只用于保护上游容量。
+Endpoint quota is not exposed to clients; it is only used to protect upstream capacity.
 
-## 7. TPM 后扣
+## 7. TPM Post-Deduction
 
-不再使用请求体估算 TPM：
+Estimating TPM from the request body is no longer used:
 
-- 不读 `max_tokens`。
-- 不使用全局默认输出 token。
-- 不做 `input_chars / 4 + max_tokens` 预扣。
-- 不因为估算过大而提前拒绝请求。
+- `max_tokens` is not read.
+- A global default output token count is not used.
+- `input_chars / 4 + max_tokens` pre-deduction is not done.
+- Requests are not rejected early because the estimate is too large.
 
-M7 thin adapter 把 `dispatch.Outcome.Usage` 写回 `rc.Usage` 后，M6 post-side 按真实值写入用户侧 TPM：
+After the M7 thin adapter writes `dispatch.Outcome.Usage` back to `rc.Usage`, M6's post-side writes the user-side TPM using the real value:
 
 ```text
 usage = rc.Usage
@@ -159,66 +159,66 @@ cost = usage.Total
 ChargeBatch(TPM buckets, cost)
 ```
 
-如果 `usage == nil`，本次请求不扣 TPM bucket。该情况应通过 usage extractor / translator 覆盖率逐步减少。
+If `usage == nil`, the TPM bucket is not deducted for this request. This case should be gradually reduced through usage extractor / translator coverage.
 
-TPM 后扣的取舍：
+The trade-offs of TPM post-deduction:
 
-- 优点：不会因预估过大错杀正常请求；实现更简单；不依赖客户端 `max_tokens`。
-- 缺点：并发高时可能超出 TPM 上限，且超限不自动阻断后续请求；这是明确取舍，计费仍以 usage outbox 为准。
+- Pros: normal requests are not wrongly blocked due to over-estimation; the implementation is simpler; it does not depend on the client's `max_tokens`.
+- Cons: under high concurrency it may exceed the TPM limit, and exceeding the limit does not automatically block subsequent requests; this is an explicit trade-off — billing is still based on the usage outbox.
 
-如果 `ChargeBatch` 发现写入后超过 TPM 上限，必须记录 `llm_gateway_tpm_overflow_total{layer,dimension}`，供运营观察“后扣 token 已超过配置上限”的次数。
+If `ChargeBatch` finds that the write causes the TPM limit to be exceeded, it must record `llm_gateway_tpm_overflow_total{layer,dimension}`, for operations to observe how many times "post-deducted tokens have exceeded the configured limit."
 
-## 7a. Redis 部署形态限制
+## 7a. Redis Deployment Shape Limitations
 
-限流脚本是**多 key EVAL 且无 hash tag**（`rl:quota:account:*` 和 `rl:quota:apikey:*`
-落在不同 slot）——**不兼容 Redis Cluster**，切过去第一批请求就 CROSSSLOT 错误，
-而 M6 fail-closed 会把它放大成全量 503。支持的部署形态：单实例 / 主从 + Sentinel /
-代理层聚合（如 Twemproxy 不行、支持 EVAL 跨 key 的代理才行）。真要上 Cluster
-需要先给 bucket key 引入 `{account}` hash tag 并按 subject 分批 EVAL——记为已知
-演进项，做之前不要指向 Cluster。
+The rate-limiting script is a **multi-key EVAL with no hash tag** (`rl:quota:account:*` and `rl:quota:apikey:*`
+fall on different slots) — **incompatible with Redis Cluster**; switching to it would cause the very first batch of requests to hit CROSSSLOT errors,
+and M6's fail-closed behavior would amplify this into a full-scale 503. Supported deployment shapes: single instance / master-replica + Sentinel /
+a proxy layer that aggregates (e.g. Twemproxy won't work — only a proxy that supports EVAL across keys will). To actually move to Cluster
+you'd need to first introduce a `{account}` hash tag into the bucket key and batch EVAL by subject — this is recorded as a known
+evolution item; do not point at Cluster before doing so.
 
-另外脚本用网关本机时钟做窗口边界（`ARGV = time.Now().Unix()`）：多副本间时钟偏移
-会造成 ≤ 偏移量/窗口 的过量放行——NTP 同步的机群可忽略。
+Also, the script uses the gateway's local clock for window boundaries (`ARGV = time.Now().Unix()`): clock skew between replicas
+will cause over-admission bounded by ≤ skew/window — negligible for an NTP-synced fleet.
 
-## 8. Redis 故障行为
+## 8. Redis Failure Behavior
 
-Redis 是限流和 cooldown 的生产依赖，启动期连不上直接 fail-fast。运行期故障按调用点区分：
+Redis is a production dependency for rate limiting and cooldown; if it cannot be connected to at startup, it fails fast. Runtime failures are handled differently depending on the call site:
 
-| 调用点 | 默认行为 | 说明 |
+| Call Site | Default Behavior | Notes |
 |--------|----------|------|
-| M6 用户侧 `ReserveBatch` | fail-closed，返回 503 + `Retry-After` | 不能确认配额时不放行，避免绕过限流 |
-| M6 用户侧 `ChargeBatch` | 不改变本次响应，记录错误 metric | 请求已经完成，不能再改响应 |
-| M7 endpoint `ReserveBatch` | 当前 endpoint 视为不可用，尝试下一个 endpoint；全部失败则 503 | 避免把 Redis 抖动误判为上游成功 |
-| M7 endpoint `SnapshotBatch` | 不影响调度，该 endpoint 视为无可读配额信息 | read-only filter 不能成为硬依赖 |
-| cooldown set/report | 不影响本次响应，记录错误 metric | cooldown 是保护机制，不是响应成功的必要条件 |
+| M6 user-side `ReserveBatch` | fail-closed, returns 503 + `Retry-After` | when quota cannot be confirmed, do not admit, to avoid bypassing rate limiting |
+| M6 user-side `ChargeBatch` | does not change the current response, records an error metric | the request has already completed, the response cannot be changed anymore |
+| M7 endpoint `ReserveBatch` | the current endpoint is treated as unavailable, try the next endpoint; if all fail then 503 | avoids mistaking Redis jitter for upstream success |
+| M7 endpoint `SnapshotBatch` | does not affect scheduling; the endpoint is treated as having no readable quota info | a read-only filter must not become a hard dependency |
+| cooldown set/report | does not affect the current response, records an error metric | cooldown is a protection mechanism, not a prerequisite for a successful response |
 
-可选 fail-open 只能作为显式配置，必须打 warn log 和 `llm_gateway_ratelimit_fail_open_total`，生产默认关闭。
+An optional fail-open mode can only be an explicit configuration; it must emit a warn log and `llm_gateway_ratelimit_fail_open_total`, and is off by default in production.
 
 ## 9. Headers
 
-不返回 `X-RateLimit-*` headers。
+`X-RateLimit-*` headers are not returned.
 
-原因：
+Reasons:
 
-- 当前 quota 是 account / API key / model 多桶叠加，很难用一组 header 准确表达。
-- endpoint quota 是上游容量，不是用户权益，不应暴露给客户端。
-- 后扣 TPM 下，请求开始前无法准确给出 token remaining。
+- The current quota is a stack of multiple buckets across account / API key / model, which is hard to accurately express with one set of headers.
+- Endpoint quota is upstream capacity, not a user entitlement, and should not be exposed to clients.
+- Under post-deducted TPM, it is not possible to accurately give token remaining before the request starts.
 
-拒绝请求时只返回：
+When rejecting a request, only the following are returned:
 
 - HTTP 429
 - `Retry-After`
-- 错误 body 中包含超限维度和 bucket key，便于排查
+- an error body containing the dimension that was exceeded and the bucket key, for troubleshooting
 
-## 10. Endpoint 限流
+## 10. Endpoint Rate Limiting
 
-Endpoint quota 属于 M7。
+Endpoint quota belongs to M7.
 
-目标流程：
+Target flow:
 
 ```text
 candidates = list + eligibility filter + cooldown filter
-optional: SnapshotBatch(endpoint buckets) 做 read-only 过滤
+optional: SnapshotBatch(endpoint buckets) for read-only filtering
 ep = weighted/scored pick
 
 ReserveBatch(endpoint RPM/RPS buckets for selected ep)
@@ -233,29 +233,30 @@ if usage != nil:
     ChargeBatch(endpoint TPM bucket, cost = usage.Total)
 ```
 
-关键约束：
+Key constraints:
 
-- 不在 filter 阶段对所有候选 endpoint reserve。
-- 只有最终要尝试的 endpoint 才能扣 endpoint RPM/RPS。
-- endpoint TPM 也按真实 usage 后扣。
-- read-only 过滤只能使用 `SnapshotBatch`。
+- Do not reserve for all candidate endpoints during the filter stage.
+- Only the endpoint that will finally be tried may deduct endpoint RPM/RPS.
+- Endpoint TPM is also post-deducted based on real usage.
+- Read-only filtering may only use `SnapshotBatch`.
 
 ## 11. PolicyCache
 
-`ratelimit.PolicyCache` 包装 middleware 定义的 `QuotaPolicyReader`：
+`ratelimit.PolicyCache` wraps the `QuotaPolicyReader` defined by middleware:
 
-- 默认 TTL 30 秒。
-- 缓存预解析后的 `PolicyRule`。
-- policy 不存在返回 `nil, nil`，表示该层不限。
-- SQL 改 policy 后通过被动 TTL 传播：缓存项 30s 后自然过期重新加载。data plane 不
-  设主动 invalidate 通道；业务表变更不需要秒级生效（详见
-  [06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)）。
+- Default TTL of 30 seconds.
+- Caches the pre-parsed `PolicyRule`.
+- If the policy does not exist, returns `nil, nil`, meaning that layer is unlimited.
+- After SQL changes a policy, propagation happens via passive TTL: the cached item naturally expires after 30s and is
+  reloaded. The data plane does
+  not have an active invalidation channel; changes to business tables do not need to take effect within seconds (see
+  [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details).
 
-## 12. 演进规则
+## 12. Evolution Rules
 
-- 修改 quota JSON schema 时，同步更新 domain/ratelimit quota 类型、repo row/mapper、示例配置和本文档。
-- 新增限流维度时，必须定义 bucket key 规则、reserve cost 规则和拒绝语义。
-- 不引入内存 Store 作为生产兜底；多副本 gateway 必须共享 Redis 计数器。
-- endpoint quota 不允许在候选 filter 阶段产生扣减副作用。
-- RPM/RPS 前扣使用 `ReserveBatch`；TPM 后扣使用 `ChargeBatch`，不能用 reserve 语义吞掉真实用量。
-- TPM 不做预扣；任何重新引入 TPM 预估的方案都必须说明错杀风险和回滚策略。
+- When modifying the quota JSON schema, update the domain/ratelimit quota types, repo row/mapper, example configuration, and this document in sync.
+- When adding a new rate-limit dimension, the bucket key rule, reserve cost rule, and rejection semantics must be defined.
+- Do not introduce an in-memory Store as a production fallback; multi-replica gateways must share Redis counters.
+- Endpoint quota must not produce deduction side effects during the candidate filter stage.
+- RPM/RPS pre-deduction uses `ReserveBatch`; TPM post-deduction uses `ChargeBatch` — reserve semantics must not be used to swallow real usage.
+- TPM does not do pre-deduction; any scheme that reintroduces TPM estimation must explain the risk of wrongly blocking requests and the rollback strategy.

@@ -1,7 +1,7 @@
-// Package middleware 实现请求生命周期的 10 个 middleware (M1-M10) + 注册装配 +
-// RequestContext 存取 helper。
+// Package middleware implements the 10 middlewares of the request lifecycle
+// (M1-M10) + registration wiring + RequestContext access helpers.
 //
-// 详见 docs/architecture/01-request-pipeline.md。
+// See docs/architecture/01-request-pipeline.md for details.
 package middleware
 
 import (
@@ -12,15 +12,17 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// rcCtxKey 用 stdlib context.Value 的 typed-key 模式：私有 struct 类型作 key，
-// 跟其它包的 ctx value 不会撞 key（哪怕字面 string 一样）。
+// rcCtxKey uses the stdlib context.Value typed-key pattern: a private struct
+// type as the key, so it never collides with ctx values from other packages
+// (even if the literal string were the same).
 type rcCtxKey struct{}
 
 var requestContextKey = rcCtxKey{}
 
-// GetRequestContext 从 *gin.Context 取出 *RequestContext。
+// GetRequestContext retrieves *RequestContext from *gin.Context.
 //
-// 假设 M1 TraceContext 已注册并已执行；取不到则 panic（M9 Recover 兜底转 500）。
+// Assumes M1 TraceContext has already been registered and run; panics if not
+// found (M9 Recover falls back to a 500).
 func GetRequestContext(c *gin.Context) *domain.RequestContext {
 	rc := fromCtx(c.Request.Context())
 	if rc == nil {
@@ -29,16 +31,19 @@ func GetRequestContext(c *gin.Context) *domain.RequestContext {
 	return rc
 }
 
-// AttachRequestContext 将 *RequestContext 挂到 c.Request.Context()；仅 M1 TraceContext 调用。
+// AttachRequestContext attaches *RequestContext to c.Request.Context(); called
+// only by M1 TraceContext.
 //
-// 之后任何下游 middleware 取 RC 都走 `GetRequestContext(c)`，取 ctx 都走
-// `c.Request.Context()`——单源真相。
+// Afterward, any downstream middleware that needs RC goes through
+// `GetRequestContext(c)`, and any that needs ctx goes through
+// `c.Request.Context()` — single source of truth.
 func AttachRequestContext(c *gin.Context, rc *domain.RequestContext) {
 	ctx := context.WithValue(c.Request.Context(), requestContextKey, rc)
 	c.Request = c.Request.WithContext(ctx)
 }
 
-// fromCtx 内部 typed-key 提取。ctx 为 nil 或 key 不存在返 nil。
+// fromCtx is the internal typed-key extraction. Returns nil if ctx is nil or
+// the key is absent.
 func fromCtx(ctx context.Context) *domain.RequestContext {
 	if ctx == nil {
 		return nil
@@ -51,19 +56,20 @@ func fromCtx(ctx context.Context) *domain.RequestContext {
 	return rc
 }
 
-// abort 是早期 middleware（M2-M8）拒绝请求的统一出口。
+// abort is the unified exit point for early middleware (M2-M8) rejecting a request.
 //
-// status == 0 时由 domain.DefaultHTTPStatus 按 class 推导；Code 由
-// domain.DefaultCode 按 class 推导。
+// When status == 0, it's derived from domain.DefaultHTTPStatus by class; Code
+// is derived from domain.DefaultCode by class.
 //
-// 想自定义 Code 用 abortWithCode。
+// Use abortWithCode to customize Code.
 func abort(c *gin.Context, status int, class domain.ErrorClass, message string) {
 	abortWithCode(c, status, class, "", message)
 }
 
-// abortWithCode 同 abort，但显式指定稳定机器码 code（docs/01 §8）。
+// abortWithCode is the same as abort, but explicitly specifies a stable
+// machine code (docs/01 §8).
 //
-// code == "" 时由 domain.DefaultCode 按 class 推导。
+// When code == "", it's derived from domain.DefaultCode by class.
 func abortWithCode(c *gin.Context, status int, class domain.ErrorClass, code, message string) {
 	rc := GetRequestContext(c)
 	if code == "" {
@@ -78,7 +84,8 @@ func abortWithCode(c *gin.Context, status int, class domain.ErrorClass, code, me
 	c.Abort()
 }
 
-// abortWithDetails 同 abortWithCode + 额外排障字段（限流维度 / endpoint_id 等）。
+// abortWithDetails is the same as abortWithCode + extra troubleshooting fields
+// (rate-limit dimension / endpoint_id, etc.).
 func abortWithDetails(c *gin.Context, status int, class domain.ErrorClass, code, message string, details map[string]any) {
 	rc := GetRequestContext(c)
 	if code == "" {

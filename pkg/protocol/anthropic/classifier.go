@@ -7,28 +7,29 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Classify 实现 protocol.Classifier，覆盖 DefaultClassifier 给 Anthropic 协议族细化分类。
+// Classify implements protocol.Classifier, overriding DefaultClassifier to refine
+// classification for the Anthropic protocol family.
 //
-// **Anthropic error JSON shape**（顶层 type=error）：
+// **Anthropic error JSON shape** (top-level type=error):
 //
 //	{ "type": "error", "error": { "type": "...", "message": "..." } }
 //
-// **error.type 枚举（Anthropic API 文档）**：
-//   - invalid_request_error  → 客户端错（4xx）
-//   - authentication_error   → 401（key 无效）
+// **error.type enum (per Anthropic API docs)**:
+//   - invalid_request_error  → client error (4xx)
+//   - authentication_error   → 401 (invalid key)
 //   - permission_error       → 403
 //   - not_found_error        → 404
 //   - rate_limit_error       → 429
-//   - api_error              → 5xx 上游内部错
-//   - overloaded_error       → 529 / 5xx 容量错（应当走 ErrRateLimit/capacity，不该按
-//     transient 短 cooldown，否则会 hammer）
+//   - api_error              → 5xx upstream internal error
+//   - overloaded_error       → 529 / 5xx capacity error (should map to ErrRateLimit/capacity,
+//     not a short transient cooldown, otherwise it will hammer the upstream)
 //
-// **细分规则**（HTTP-status 之外的判断）：
-//   - error.type=overloaded_error  → ErrRateLimit（容量类，cooldown 应较长）
-//   - error.type=invalid_request_error → ErrInvalid（即使 status 是 5xx 也按客户端错）
-//   - 其他：走 DefaultClassifier
+// **Refinement rules** (judgment beyond HTTP status alone):
+//   - error.type=overloaded_error  → ErrRateLimit (capacity class, cooldown should be longer)
+//   - error.type=invalid_request_error → ErrInvalid (treated as a client error even if status is 5xx)
+//   - otherwise: fall through to DefaultClassifier
 //
-// **body 解析失败 / 截断时**：fallback 到 DefaultClassifier。
+// **On body parse failure / truncation**: fall back to DefaultClassifier.
 func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	base := protocol.DefaultClassifier{}.Classify(httpStatus, body)
 
@@ -63,5 +64,5 @@ func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	return base
 }
 
-// 编译期断言 Factory 实现 protocol.Classifier。
+// Compile-time assertion that Factory implements protocol.Classifier.
 var _ protocol.Classifier = Factory{}

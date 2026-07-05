@@ -1,18 +1,18 @@
-# examples/prometheus — 监控告警配置
+# examples/prometheus — Monitoring & Alerting Configuration
 
-llm-gateway 自带 `/metrics` endpoint（Prometheus exposition format）；本目录给出推荐 alert / dashboard 模板。
+llm-gateway ships its own `/metrics` endpoint (Prometheus exposition format); this directory provides recommended alert / dashboard templates.
 
-## 文件
+## Files
 
-| 文件 | 用途 |
+| File | Purpose |
 |---|---|
-| `alerts.yaml` | Alertmanager 告警规则（按可用性 / 延迟 / 限流 / cooldown / 计费分组） |
+| `alerts.yaml` | Alertmanager alert rules (grouped by availability / latency / rate limiting / cooldown / billing) |
 
-## 接入步骤
+## Setup Steps
 
-### 1. 让 Prometheus 抓 llm-gateway metrics
+### 1. Have Prometheus scrape llm-gateway metrics
 
-`prometheus.yml` 加 scrape target：
+Add a scrape target to `prometheus.yml`:
 
 ```yaml
 scrape_configs:
@@ -25,20 +25,20 @@ scrape_configs:
           service: llm-gateway
 ```
 
-### 2. 加载 alert rules
+### 2. Load alert rules
 
-`prometheus.yml` 同一文件：
+In the same `prometheus.yml` file:
 
 ```yaml
 rule_files:
   - /etc/prometheus/rules/llm-gateway-alerts.yaml
 ```
 
-把本目录 `alerts.yaml` 复制到 `/etc/prometheus/rules/`，重启 prometheus（或 `kill -HUP`）让它重读规则。
+Copy `alerts.yaml` from this directory to `/etc/prometheus/rules/`, then restart prometheus (or `kill -HUP`) so it reloads the rules.
 
-### 3. Alertmanager 路由
+### 3. Alertmanager routing
 
-`alertmanager.yml` 按 severity / team label 路由：
+Route in `alertmanager.yml` by severity / team label:
 
 ```yaml
 route:
@@ -52,33 +52,33 @@ route:
       receiver: oncall-pd
 ```
 
-## Metric 命名约定
+## Metric Naming Convention
 
-llm-gateway 用 `llm_gateway.<component>.<name>` 命名（见 `pkg/metric/names.go`）；
-落 Prometheus 时 `.` → `_`，所以这里 alert 表达式都是下划线版本。
+llm-gateway names metrics as `llm_gateway.<component>.<name>` (see `pkg/metric/names.go`);
+when landed in Prometheus, `.` becomes `_`, so the alert expressions here all use the underscore form.
 
-label 维度：`vendor` / `model` / `class` / `endpoint_id` / `result` / `scope`，
-按 metric 不同部分会出现。看 `pkg/metric/recorder.go` 的 Inc/Observe 调用确认。
+Label dimensions: `vendor` / `model` / `class` / `endpoint_id` / `result` / `scope`,
+which appear on different parts of a metric depending on context. Check the Inc/Observe calls in `pkg/metric/recorder.go` to confirm.
 
-## 自定义阈值
+## Custom Thresholds
 
-告警阈值是经验值，按业务调：
+The alert thresholds are empirical values; tune them for your workload:
 
-| Alert | 默认阈值 | 何时调 |
+| Alert | Default Threshold | When to Adjust |
 |---|---|---|
-| UpstreamHighErrorRate | 10% / 5min | 容忍度低改 5% / 容忍度高改 20% |
-| HttpLatencyP99High | 5000ms | 流式长输出场景拔到 30000ms |
-| RateLimitHighRejection | 20% / 5min | 已知限流频繁场景调到 50% 减噪 |
-| CooldownStorm | 5 ep/sec | endpoint 池小（< 10）时降到 2 |
+| UpstreamHighErrorRate | 10% / 5min | Lower to 5% for low tolerance / raise to 20% for high tolerance |
+| HttpLatencyP99High | 5000ms | Raise to 30000ms for long streaming output scenarios |
+| RateLimitHighRejection | 20% / 5min | Raise to 50% to reduce noise in scenarios with frequent, known rate limiting |
+| CooldownStorm | 5 ep/sec | Lower to 2 when the endpoint pool is small (< 10) |
 
 ## Dashboard
 
-dashboard.json 留空（不同 Grafana 版本 schema 不同；以 alerts 为基础自己 panel）。
-推荐 panel 维度：
+dashboard.json is left empty (schema differs across Grafana versions; build your own panels based on the alerts).
+Recommended panel dimensions:
 
-- 总 RPS（按 vendor / model 分）
-- 端到端 p50 / p99 latency
-- error rate 按 ErrorClass 堆叠
-- endpoint cooldown 状态时间线
-- usage outbox publish lag
-- cost 总览（按 model）
+- Total RPS (broken down by vendor / model)
+- End-to-end p50 / p99 latency
+- Error rate stacked by ErrorClass
+- Endpoint cooldown status timeline
+- Usage outbox publish lag
+- Cost overview (by model)

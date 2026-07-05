@@ -4,15 +4,18 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// mappers.go: 把 SQL-layer struct（带 db tag + Scanner/Valuer）映射为 domain
-// 业务结构（docs/06 §3 — domain 不引用 repo，repo 在边界做转换）。
+// mappers.go: maps SQL-layer structs (with db tags + Scanner/Valuer) into
+// domain business structs (docs/06 §3 — domain does not import repo; repo
+// does the conversion at the boundary).
 //
-// 所有 repo 接口返回 *domain.X，consumer 不再看到 SQL tag / 加密细节。
+// All repo interfaces return *domain.X, so consumers never see SQL tags /
+// encryption details.
 
-// ToDomainEndpoint 把 repo.Endpoint (SQL row) → *domain.Endpoint。
+// ToDomainEndpoint maps repo.Endpoint (SQL row) -> *domain.Endpoint.
 //
-// **Protocol 映射**：repo 用 VARCHAR(32) 字符串列；domain 用 typed Protocol。
-// 未知字符串 → ProtoUnknown（DefaultLookup 看到会返 nil → eligibility 剔除该 ep）。
+// **Protocol mapping**: repo uses a VARCHAR(32) string column; domain uses a
+// typed Protocol. An unknown string maps to ProtoUnknown (DefaultLookup sees
+// this and returns nil -> eligibility excludes this endpoint).
 func ToDomainEndpoint(e *Endpoint) *domain.Endpoint {
 	if e == nil {
 		return nil
@@ -38,7 +41,7 @@ func ToDomainEndpoint(e *Endpoint) *domain.Endpoint {
 	}
 }
 
-// ToDomainEndpoints 批量映射。
+// ToDomainEndpoints maps a batch.
 func ToDomainEndpoints(rows []*Endpoint) []*domain.Endpoint {
 	if rows == nil {
 		return nil
@@ -50,7 +53,7 @@ func ToDomainEndpoints(rows []*Endpoint) []*domain.Endpoint {
 	return out
 }
 
-// ToDomainModelService 把 SQL row → domain.ModelService。
+// ToDomainModelService maps a SQL row -> domain.ModelService.
 func ToDomainModelService(m *ModelService) *domain.ModelService {
 	if m == nil {
 		return nil
@@ -64,4 +67,3 @@ func ToDomainModelService(m *ModelService) *domain.ModelService {
 		DeletedAt: m.DeletedAt,
 	}
 }
-

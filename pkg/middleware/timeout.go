@@ -7,13 +7,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Timeout 给请求 ctx 加截止时间；上游调用与 RC.Ctx 都会感知到。
+// Timeout attaches a deadline to the request ctx; both the upstream call and
+// RC.Ctx observe it.
 //
-// **客户端可覆盖**：X-Gateway-Timeout: <duration string>（如 "30s", "5m"）。
-// 只能往**更严**的方向覆盖（不能比 cfg 默认更松）；防恶意客户端写超长 timeout
-// 占着上游连接不放。畸形 header 静默 fallback 到 cfg。
+// **Client-overridable**: X-Gateway-Timeout: <duration string> (e.g. "30s", "5m").
+// Can only override in the **stricter** direction (never looser than the cfg
+// default); prevents a malicious client from setting an oversized timeout to
+// hog an upstream connection. A malformed header silently falls back to cfg.
 //
-// d <= 0 时表示"不强制 timeout"——header 仍可启用一个；都没就 no-op。
+// d <= 0 means "no enforced timeout" — the header can still enable one; if
+// neither is set, it's a no-op.
 func Timeout(defaultDur time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		d := defaultDur

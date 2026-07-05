@@ -14,22 +14,22 @@ func TestGeminiStreamURL(t *testing.T) {
 			"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
 			"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse",
 		},
-		// 已带 query（如 ?key=）→ 保留 + 追加 alt=sse
+		// already has a query (e.g. ?key=) -> keep it + append alt=sse
 		{
 			"https://x/models/m:generateContent?key=abc",
 			"https://x/models/m:streamGenerateContent?key=abc&alt=sse",
 		},
-		// 已经是流式端点 → 只补 alt=sse
+		// already a streaming endpoint -> only append alt=sse
 		{
 			"https://x/models/m:streamGenerateContent",
 			"https://x/models/m:streamGenerateContent?alt=sse",
 		},
-		// 已带 alt=sse → 不重复
+		// already has alt=sse -> don't duplicate
 		{
 			"https://x/models/m:streamGenerateContent?alt=sse",
 			"https://x/models/m:streamGenerateContent?alt=sse",
 		},
-		// 非标准 URL（找不到 :generateContent）→ 原样
+		// non-standard URL (no :generateContent found) -> unchanged
 		{"https://custom/gateway/path", "https://custom/gateway/path"},
 	}
 	for _, c := range cases {
@@ -39,7 +39,7 @@ func TestGeminiStreamURL(t *testing.T) {
 	}
 }
 
-// streaming session 应把 URL 换成 streamGenerateContent；非流式保持原样。
+// A streaming session should swap the URL to streamGenerateContent; non-streaming keeps it unchanged.
 func TestSession_BuildRequest_StreamingURL(t *testing.T) {
 	ep := &domain.Endpoint{Routing: domain.RoutingConfig{URL: "https://x/models/m:generateContent"}}
 	tp := fakeTokenProvider{hdrName: "x-goog-api-key", hdrValue: "k"}

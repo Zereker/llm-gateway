@@ -7,33 +7,42 @@ import (
 	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
-// registerChatRoutes 注册 chat 模态路由 + 它专属的 middleware 链。
+// registerChatRoutes registers the chat modality routes plus their dedicated
+// middleware chain.
 //
-// 路径（每条 `.POST` 自带 /v1 完整前缀，不依赖外层 group）：
+// Paths (each `.POST` carries its own full /v1 prefix, no outer group):
 //
 //	POST /v1/chat/completions   OpenAI / OpenAI-compat
 //	POST /v1/messages           Anthropic
-//	POST /v1/responses          OpenAI Responses（v1.0 加；新协议 input + instructions shape）
+//	POST /v1/responses          OpenAI Responses (added in v1.0; the new protocol's input + instructions shape)
 //
-// **协议打标**：每条路径在 Envelope 之前各自挂一个 WithSourceProtocol，把
-// "这个 path 是哪个协议" 钉死。Envelope 不再做 path 启发式（DefaultDetector 已删）。
+// **Protocol tagging**: each path mounts its own WithSourceProtocol before
+// Envelope, pinning down "which protocol this path is." Envelope no longer
+// does path-based heuristics (DefaultDetector has been removed).
 //
-// 每个模态自己列出需要的 middleware；不抽公共 buildChain，因为不同模态
-// 未来会差异化（chat 加 Moderator / image 加 multipart Parser / audio 加
-// ASR-only ParamSpec 等）。当前 v0.1 各模态链恰好一致，但代码上独立。
+// Each modality lists its own required middleware; there's no shared
+// buildChain extracted, because modalities are expected to diverge going
+// forward (chat adds a Moderator / image adds a multipart Parser / audio adds
+// an ASR-only ParamSpec, etc.). As of v0.1 the chains happen to be identical
+// across modalities, but they're kept independent in code.
 func registerChatRoutes(engine *gin.Engine, deps Deps) {
-	// pre-Envelope 共享中间件做成一个 group，省得每条 POST 都重复列；
-	// 路径前缀 "/" 让 group 不引入额外 URL 段。
+	// Group the pre-Envelope shared middleware so it doesn't need to be
+	// repeated on every POST; the "/" path prefix keeps the group from
+	// introducing an extra URL segment.
 	chat := engine.Group("/",
 		middleware.BodyLimit(deps.BodyLimit),
 		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
-		// M10 Tracing 挂在 Recover **外层**（post-c.Next() 收尾）：
-		//   - 任何后续 middleware abort（401/429/503）→ 洋葱返程仍执行收尾
-		//     ——请求 metric / usage 事件 / decision 审计没有盲区
-		//   - panic → 内层 Recover 先恢复并写 500，控制流正常返回，收尾照跑
-		//     且看到的是最终 500 状态
-		// （旧版挂链尾，abort 一律跳过 → 429 风暴在 M10 指标里隐身）
+		// M10 Tracing is mounted **outside** Recover (its finishing logic runs
+		// post-c.Next()):
+		//   - any subsequent middleware abort (401/429/503) -> the onion's
+		//     return leg still runs the finishing logic, so request metrics /
+		//     usage events / decision audit have no blind spot
+		//   - panic -> the inner Recover recovers first and writes 500,
+		//     control flow returns normally, finishing logic still runs and
+		//     sees the final 500 status
+		// (the old version was mounted at the end of the chain, so any abort
+		// was skipped entirely -> 429 storms went invisible in M10 metrics)
 		middleware.Tracing(
 			middleware.WithUsageOutbox(deps.UsageOutbox),
 			middleware.WithTracer(deps.AuditTracer),

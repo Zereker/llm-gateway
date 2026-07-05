@@ -20,37 +20,37 @@ func TestDenylistGuard_Input(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	// 命中
+	// matches
 	if err := g.CheckInput(context.Background(), env(`{"messages":[{"content":"my SSN is here"}]}`)); !errors.Is(err, ErrDenied) {
-		t.Errorf("命中 SSN 应 ErrDenied, got %v", err)
+		t.Errorf("matching an SSN should give ErrDenied, got %v", err)
 	}
 	if err := g.CheckInput(context.Background(), env(`{"content":"123-45-6789"}`)); !errors.Is(err, ErrDenied) {
-		t.Errorf("命中 SSN 数字应 ErrDenied, got %v", err)
+		t.Errorf("matching an SSN number should give ErrDenied, got %v", err)
 	}
-	// 干净
+	// clean
 	if err := g.CheckInput(context.Background(), env(`{"content":"hello world"}`)); err != nil {
-		t.Errorf("干净输入应放行, got %v", err)
+		t.Errorf("clean input should pass, got %v", err)
 	}
-	// 错误不泄漏 pattern（只暴露 guard 存在）
+	// error must not leak the pattern (only reveal that a guard exists)
 	if err := g.CheckInput(context.Background(), env(`{"content":"SSN"}`)); err != nil && strings.Contains(err.Error(), "ssn") {
-		t.Errorf("错误串不该含 pattern: %v", err)
+		t.Errorf("error string should not contain the pattern: %v", err)
 	}
 }
 
 func TestDenylistGuard_OutputGatedByFlag(t *testing.T) {
 	off, _ := NewDenylistGuard([]string{`secret`}, false)
 	if err := off.CheckOutput(context.Background(), []byte("this is secret")); err != nil {
-		t.Errorf("check_output=false 应不扫输出, got %v", err)
+		t.Errorf("check_output=false should not scan the output, got %v", err)
 	}
 	on, _ := NewDenylistGuard([]string{`secret`}, true)
 	if err := on.CheckOutput(context.Background(), []byte("this is secret")); !errors.Is(err, ErrDenied) {
-		t.Errorf("check_output=true 命中应 ErrDenied, got %v", err)
+		t.Errorf("check_output=true match should give ErrDenied, got %v", err)
 	}
 }
 
 func TestDenylistGuard_BadPatternFailsFast(t *testing.T) {
 	if _, err := NewDenylistGuard([]string{`(unclosed`}, false); err == nil {
-		t.Error("坏正则应返错（启动 fail-fast）")
+		t.Error("a bad regex should return an error (fail-fast at startup)")
 	}
 }
 
@@ -70,10 +70,10 @@ func TestChain_InputFailFastWithAttribution(t *testing.T) {
 	)
 	err := chain.CheckInput(context.Background(), env(`{}`))
 	if err == nil || !strings.HasPrefix(err.Error(), "pii:") {
-		t.Errorf("应被 pii guard 拦并带名字, got %v", err)
+		t.Errorf("should be blocked by the pii guard with its name attached, got %v", err)
 	}
 	if !errors.Is(err, blockErr) {
-		t.Errorf("应 wrap 原始 error, got %v", err)
+		t.Errorf("should wrap the original error, got %v", err)
 	}
 }
 
@@ -83,10 +83,10 @@ func TestChain_AllPass(t *testing.T) {
 		NamedGuard{Name: "b", Guard: stubGuard{}},
 	)
 	if err := chain.CheckInput(context.Background(), env(`{}`)); err != nil {
-		t.Errorf("全放行应 nil, got %v", err)
+		t.Errorf("all guards passing should give nil, got %v", err)
 	}
 	if err := chain.CheckOutput(context.Background(), []byte("x")); err != nil {
-		t.Errorf("输出全放行应 nil, got %v", err)
+		t.Errorf("output all passing should give nil, got %v", err)
 	}
 }
 
@@ -97,11 +97,11 @@ func TestChain_OutputAttribution(t *testing.T) {
 	)
 	err := chain.CheckOutput(context.Background(), []byte("bad"))
 	if err == nil || !strings.HasPrefix(err.Error(), "denylist:") {
-		t.Errorf("输出应被 denylist 拦, got %v", err)
+		t.Errorf("output should be blocked by the denylist, got %v", err)
 	}
 }
 
-// Chain / DenylistGuard 都满足 Moderator（能直接插进 M8）。
+// Chain / DenylistGuard both satisfy Moderator (can be plugged directly into M8).
 func TestGuardsAreModerators(t *testing.T) {
 	var _ Moderator = (*Chain)(nil)
 	var _ Moderator = (*DenylistGuard)(nil)

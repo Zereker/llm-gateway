@@ -1,25 +1,36 @@
-// Package bedrock 是 AWS Bedrock 的 vendor 实现（Anthropic Claude on Bedrock，
-// 支持非流式 InvokeModel + 流式 InvokeModelWithResponseStream）。
+// Package bedrock is the vendor implementation for AWS Bedrock (Anthropic Claude
+// on Bedrock, supporting non-streaming InvokeModel + streaming
+// InvokeModelWithResponseStream).
 //
-// **线协议 = Anthropic Messages**：endpoint 的 `protocol` 填 `anthropic`，复用
-// Anthropic 的 translator + response handler（Bedrock 的 Claude 返回体就是 Anthropic
-// Messages JSON）。Bedrock 特有的只在 HTTP 层：
+// **Wire protocol = Anthropic Messages**: the endpoint's `protocol` is set to
+// `anthropic`, reusing the Anthropic translator + response handler (Bedrock's
+// Claude response body is already Anthropic Messages JSON). What's Bedrock-specific
+// is confined to the HTTP layer:
 //
-//	鉴权：AWS SigV4（service=bedrock），凭证走 AWSSigV4Auth（access/secret/region）。
-//	URL： deployer 在 routing.url 填完整 invoke 端点，含 modelId + region host，如
+//	Auth: AWS SigV4 (service=bedrock), credentials go through AWSSigV4Auth
+//	      (access/secret/region).
+//	URL:  the deployer fills routing.url with the full invoke endpoint, including
+//	      modelId + region host, e.g.
 //	      https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20240620-v1:0/invoke
-//	body：Anthropic Messages 去掉顶层 model（modelId 在 URL 里）、补 anthropic_version。
+//	Body: Anthropic Messages with the top-level model field stripped (modelId is
+//	      already in the URL) and anthropic_version filled in.
 //
-// **SigV4 用官方 aws-sdk-go-v2 signer**：SigV4 的 canonical-URI 编码（Bedrock 路径带
-// `:`）等边界极易手写出错且无法离线对真实端点验证，用官方 signer 保正确。
+// **SigV4 uses the official aws-sdk-go-v2 signer**: edge cases in SigV4's
+// canonical-URI encoding (Bedrock paths contain `:`) are extremely easy to get
+// wrong by hand and impossible to verify offline against a real endpoint, so we
+// rely on the official signer for correctness.
 //
-// **流式**：客户端 stream:true 时用 InvokeModelWithResponseStream 端点，响应是 AWS
-// event-stream 二进制分帧——由 Factory.DecodeTransport（protocol.TransportDecoder，
-// 见 stream.go）解成 Anthropic SSE,再交 openai_anthropic handler 翻成 OpenAI SSE。
-// 传输层(解帧)与协议层(shape 翻译)分离,复用现成 Anthropic 流式翻译。
+// **Streaming**: when the client sends stream:true, the
+// InvokeModelWithResponseStream endpoint is used and the response is an AWS
+// event-stream binary framing — Factory.DecodeTransport (protocol.TransportDecoder,
+// see stream.go) decodes it into Anthropic SSE, which the openai_anthropic handler
+// then translates into OpenAI SSE. The transport layer (frame decoding) is kept
+// separate from the protocol layer (shape translation), reusing the existing
+// Anthropic streaming translation.
 //
-// 接入方式：deployer 写 endpoint `vendor: bedrock` + `protocol: anthropic` +
-// `auth.type: aws-sigv4`。cmd/gateway blank import 本包。
+// Integration: the deployer configures the endpoint with `vendor: bedrock` +
+// `protocol: anthropic` + `auth.type: aws-sigv4`. cmd/gateway blank-imports this
+// package.
 package bedrock
 
 import (
@@ -29,11 +40,12 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// Factory 实现 protocol.Factory。无自定义 Classify——Bedrock 错误是 AWS 形状，
-// 走 DefaultClassifier 的 status-based 分类兜底即可。
+// Factory implements protocol.Factory. No custom Classify — Bedrock errors are
+// shaped like AWS errors, so falling back to DefaultClassifier's status-based
+// classification is sufficient.
 type Factory struct{}
 
-// Metadata 静态元信息。
+// Metadata returns static metadata.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
 		Vendor:              "bedrock",
@@ -41,7 +53,7 @@ func (Factory) Metadata() protocol.Metadata {
 	}
 }
 
-// NewSession 为本次请求构造 Bedrock session。
+// NewSession constructs a Bedrock session for this request.
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	return newSession(c, ep, env), nil
 }

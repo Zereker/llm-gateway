@@ -9,28 +9,40 @@ import (
 	"sync"
 )
 
-// FileOutbox 把 OutboxEvent.Payload 按 JSONL 格式追加到本地文件。
+// FileOutbox appends OutboxEvent.Payload to a local file in JSONL format.
 //
-// 设计目标：source of truth（必须能透传写失败错误）+ 高吞吐（target 10k+ QPS）。
+// Design goals: source of truth (write failures must be transparently
+// propagated) + high throughput (target 10k+ QPS).
 //
-// 性能要点：
+// Performance notes:
 //
-//   - 单 syscall 写入：把 payload + '\n' 合并到一个 buffer 后一次 Write，避免
-//     "Write(payload) + Write('\n')" 的双 syscall 开销（用户态↔内核态切换 ~0.5-2μs/次）。
-//   - 无显式锁：*os.File.Write 内部用 fdmutex 串行化同 FD 的写——只要每次 Publish
-//     是单次 Write 调用，内核保证整行原子落地，不会跟其他 goroutine 的 Publish 交错。
-//   - buffer pool：用 sync.Pool 复用 append 用的字节切片，减少 GC 压力。超大 payload
-//     的 buffer 不放回池子（按 maxPooledBufSize 截断），避免长尾把池子撑大。
+//   - Single syscall write: payload + '\n' are merged into one buffer and
+//     written with a single Write call, avoiding the double-syscall overhead
+//     of "Write(payload) + Write('\n')" (each user-space <-> kernel-space
+//     switch costs ~0.5-2μs).
+//   - No explicit lock: *os.File.Write internally uses an fdmutex to
+//     serialize writes on the same FD — as long as each Publish is a single
+//     Write call, the kernel guarantees the whole line lands atomically and
+//     won't interleave with another goroutine's Publish.
+//   - buffer pool: uses sync.Pool to reuse the byte slice used for
+//     appending, reducing GC pressure. Buffers grown by an oversized payload
+//     are not returned to the pool (truncated per maxPooledBufSize) to avoid
+//     a long tail bloating the pool.
 //
-// 没用 log/slog 写：slog `Handler.Handle()` 的 error 被 `_ = ...` 吞掉，调用方拿不到
-// "写成功了没"——违反 source-of-truth 的可观测性要求。详见 docs/05 §5。
+// Not written via log/slog: slog's `Handler.Handle()` error is swallowed by
+// `_ = ...`, so the caller has no way to know whether the write actually
+// succeeded — which violates the observability requirement of being a
+// source of truth. See docs/05 §5 for details.
 type FileOutbox struct {
-	mu sync.RWMutex // 保护 f 的 Close vs 并发 Publish（shutdown 超时路径下
-	// handler goroutine 可能仍在 Publish；无锁时 Close 置 nil → nil deref panic）
+	mu sync.RWMutex // guards f against Close racing with concurrent Publish
+	// (on the shutdown-timeout path a handler goroutine may still be in
+	// Publish; without the lock, Close setting f to nil would cause a nil
+	// deref panic)
 	f *os.File
 }
 
-// 池化的 buffer，复用 append 缓冲；payload 通常几百 B 到几 KB，预分配 1KiB 起步。
+// Pooled buffer, reused for the append buffer; payloads are typically a few
+// hundred bytes to a few KB, so we pre-allocate starting at 1KiB.
 var fileOutboxBufPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 0, 1024)
@@ -38,12 +50,13 @@ var fileOutboxBufPool = sync.Pool{
 	},
 }
 
-// maxPooledBufSize 超过这个 cap 的 buffer 不放回池子（避免被偶发大消息撑大）。
+// maxPooledBufSize: buffers whose cap exceeds this are not returned to the
+// pool (avoids the pool being bloated by an occasional oversized message).
 const maxPooledBufSize = 64 * 1024
 
-// NewFileOutbox 打开（或创建）path 文件，以 append 模式写入。
+// NewFileOutbox opens (or creates) the file at path, writing in append mode.
 //
-// path 所在目录会自动创建。
+// The directory containing path is created automatically.
 func NewFileOutbox(path string) (*FileOutbox, error) {
 	if path == "" {
 		return nil, errors.New("usage: FileOutbox path is empty")
@@ -58,10 +71,11 @@ func NewFileOutbox(path string) (*FileOutbox, error) {
 	return &FileOutbox{f: f}, nil
 }
 
-// Publish 实现 OutboxPublisher.Publish。
+// Publish implements OutboxPublisher.Publish.
 //
-// 单次 syscall 写入 evt.Payload + '\n'；不做 fsync（v0.1 牺牲耐久性换吞吐——
-// 由 OS page cache 异步刷盘；如需更强 durability 由调用方按需 fsync）。
+// Writes evt.Payload + '\n' in a single syscall; no fsync is performed (v0.1
+// trades durability for throughput — the OS page cache flushes to disk
+// asynchronously; callers needing stronger durability should fsync as needed).
 func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 	if evt == nil {
 		return errors.New("usage: FileOutbox.Publish: nil event")
@@ -71,8 +85,10 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 	buf = append(buf, evt.Payload...)
 	buf = append(buf, '\n')
 
-	// RLock 挡住 Close 并发置 nil；写本身仍靠 *os.File 内部 fdmutex 串行化，
-	// 单次 Write 调用内核保证整行原子落地，不会跟其他 Publish 交错。
+	// RLock blocks Close from concurrently setting f to nil; the write
+	// itself is still serialized by *os.File's internal fdmutex, and a
+	// single Write call guarantees the kernel lands the whole line
+	// atomically without interleaving with other Publish calls.
 	o.mu.RLock()
 	f := o.f
 	var err error
@@ -83,7 +99,8 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 	}
 	o.mu.RUnlock()
 
-	// 大 payload 撑出来的 buffer 不放回池子，避免后续小 publish 持续占用大内存
+	// A buffer that a large payload grew is not returned to the pool, to
+	// avoid subsequent small publishes continuously holding a large amount of memory
 	if cap(buf) <= maxPooledBufSize {
 		*bp = buf[:0]
 		fileOutboxBufPool.Put(bp)
@@ -91,10 +108,13 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 	return err
 }
 
-// Close 关闭底层文件；实现 io.Closer 以便 graceful shutdown 调用。幂等。
+// Close closes the underlying file; implements io.Closer so it can be called
+// during graceful shutdown. Idempotent.
 //
-// 写锁等待所有 in-flight Publish 的 RLock 释放后才关文件——shutdown 超时路径
-// 下仍在跑的 handler goroutine 不会 nil deref，之后的 Publish 拿到 "closed" 错误。
+// The write lock waits for all in-flight Publish calls' RLocks to release
+// before closing the file — so a handler goroutine still running on the
+// shutdown-timeout path won't hit a nil deref, and subsequent Publish calls
+// get a "closed" error.
 func (o *FileOutbox) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -106,7 +126,7 @@ func (o *FileOutbox) Close() error {
 	return err
 }
 
-// 编译期断言：FileOutbox 满足 OutboxPublisher + io.Closer。
+// Compile-time assertion: FileOutbox satisfies OutboxPublisher + io.Closer.
 var (
 	_ OutboxPublisher = (*FileOutbox)(nil)
 	_ io.Closer       = (*FileOutbox)(nil)

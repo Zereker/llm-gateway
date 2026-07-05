@@ -1,13 +1,13 @@
-# 多阶段：单一 builder 出三个 binary（admin / gateway / mockupstream），
-# 三个 final 镜像各装一个，alpine 基底（busybox 自带 wget 给 healthcheck 用）。
+# Multi-stage: a single builder produces three binaries (admin / gateway / mockupstream),
+# each of the three final images installs one, on an alpine base (busybox ships wget, used by healthcheck).
 #
-# 用法（docker-compose 里）：
+# Usage (in docker-compose):
 #   build:
 #     context: .
 #     target: admin
 #
-# build 参数：
-#   GO_VERSION  Go toolchain 版本（默认对齐 go.mod）
+# Build args:
+#   GO_VERSION  Go toolchain version (defaults to match go.mod)
 
 ARG GO_VERSION=1.25
 
@@ -18,24 +18,24 @@ FROM golang:${GO_VERSION}-alpine AS builder
 
 WORKDIR /src
 
-# 先拷 go.mod / go.sum 让 download 层独立缓存。
-# 沙箱 / 无网环境下走 GOFLAGS=-mod=vendor + 仓库自带 vendor/ 时也能跑；
-# 这里默认依赖 proxy.golang.org（CI 默认行为）。
+# Copy go.mod / go.sum first so the download layer caches independently.
+# Also works in sandboxed / offline environments via GOFLAGS=-mod=vendor plus the repo's own vendor/;
+# by default this relies on proxy.golang.org (the CI default behavior).
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY cmd ./cmd
 COPY pkg ./pkg
 
-# CGO 关 → 纯静态 binary；-trimpath 去宿主路径；-s -w 去 symbol table 缩小体积
+# CGO off -> fully static binary; -trimpath strips host paths; -s -w strips the symbol table to shrink size
 ENV CGO_ENABLED=0
 RUN go build -trimpath -ldflags="-s -w" -o /out/admin        ./cmd/admin && \
     go build -trimpath -ldflags="-s -w" -o /out/gateway      ./cmd/gateway && \
     go build -trimpath -ldflags="-s -w" -o /out/mockupstream ./cmd/mockupstream
 
 # =============================================================================
-# binaries-host: 用法 docker build --target binaries-host --output type=local,dest=bin/
-# 把 builder 阶段产出的 binary 复制到本地（CI 出 artifact 用，本仓 e2e 不用）
+# binaries-host: usage docker build --target binaries-host --output type=local,dest=bin/
+# Copies the binaries produced by the builder stage to the local filesystem (used for CI artifacts, not used by this repo's e2e)
 # =============================================================================
 FROM scratch AS binaries-host
 COPY --from=builder /out/admin        /admin
@@ -72,9 +72,9 @@ EXPOSE 9090
 ENTRYPOINT ["/app/mockupstream"]
 
 # =============================================================================
-# === host-prebuilt path：bin/ 已是宿主 go build 的产物 → 直接拷到 alpine ===
-# 沙箱 / 离线场景：先 `make build` 让 bin/{gateway,admin,mockupstream} 存在，
-# 再用 --target admin-prebuilt 等装配镜像，跳过 in-container go mod download。
+# === host-prebuilt path: bin/ already holds the host's go build output -> copy straight into alpine ===
+# Sandboxed / offline scenario: run `make build` first so bin/{gateway,admin,mockupstream} exist,
+# then assemble the image with --target admin-prebuilt etc., skipping the in-container go mod download.
 # =============================================================================
 FROM alpine:3.20 AS admin-prebuilt
 WORKDIR /app

@@ -9,7 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// testRedis 连 REDIS_ADDR（没设就 skip，跟 MYSQL_DSN 模式一致）。
+// testRedis connects to REDIS_ADDR (skips if unset, same pattern as MYSQL_DSN).
 func testRedis(t *testing.T) *redis.Client {
 	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
@@ -27,7 +27,7 @@ func testRedis(t *testing.T) *redis.Client {
 func TestPublisherSubscriberRoundtrip(t *testing.T) {
 	rdb := testRedis(t)
 	ctx := context.Background()
-	// 每个测试用独立频道，避免并发串扰。
+	// Each test uses its own channel to avoid cross-talk between concurrent tests.
 	channel := "test:cachebus:" + t.Name()
 
 	got := make(chan Invalidation, 1)
@@ -64,14 +64,15 @@ func TestDecodeRejectsMalformed(t *testing.T) {
 	if !ok || inv.Kind != KindAPIKey || inv.Key != "abc123" {
 		t.Errorf("decode(apikey:abc123) = %+v ok=%v", inv, ok)
 	}
-	// key 里带冒号（hash 不会，但防御性）——只按第一个冒号切
+	// Key containing a colon (a hash never would, but this is defensive) —
+	// only split on the first colon.
 	inv, ok = decode("apikey:a:b")
 	if !ok || inv.Key != "a:b" {
 		t.Errorf("decode multi-colon = %+v ok=%v", inv, ok)
 	}
 }
 
-// nilPublisherNoop：nil Publisher / nil rdb 不 panic（graceful degradation）。
+// nilPublisherNoop: nil Publisher / nil rdb should not panic (graceful degradation).
 func TestNilPublisherNoop(t *testing.T) {
 	var p *Publisher
 	if err := p.Invalidate(context.Background(), Invalidation{Kind: KindAPIKey, Key: "x"}); err != nil {

@@ -13,24 +13,26 @@ import (
 	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
-// InvokerFactoryAdapter 实现 dispatch.InvokerFactory——把 *invoker.Sender 包成
-// dispatch port。
+// InvokerFactoryAdapter implements dispatch.InvokerFactory — wraps
+// *invoker.Sender as a dispatch port.
 //
-// **职责**：For(ep, handler, env) → dispatch.Invoker；Invoker.Invoke 调用
-// Sender.Send + 把 Outcome 翻成 dispatch.Verdict 包进 Result。
+// **Responsibility**: For(ep, handler, env) → dispatch.Invoker; Invoker.Invoke
+// calls Sender.Send and translates the Outcome into a dispatch.Verdict
+// wrapped in a Result.
 //
-// **不做** reserve / Report / TPM charge——v0.6 这些拆给 dispatch.EndpointQuota
-// + Dispatcher 内置。invoker 只负责一次纯调用 + forward。
+// **Not handled here**: reserve / Report / TPM charge — as of v0.6 those are
+// split out to dispatch.EndpointQuota plus built into Dispatcher. invoker is
+// only responsible for a single plain call plus forwarding.
 type InvokerFactoryAdapter struct {
 	sender *invoker.Sender
 }
 
-// NewInvokerFactory 构造一个 InvokerFactoryAdapter。
+// NewInvokerFactory constructs an InvokerFactoryAdapter.
 func NewInvokerFactory(sender *invoker.Sender) *InvokerFactoryAdapter {
 	return &InvokerFactoryAdapter{sender: sender}
 }
 
-// For 实现 dispatch.InvokerFactory.For；body 从 env.RawBytes 读。
+// For implements dispatch.InvokerFactory.For; the body is read from env.RawBytes.
 func (f *InvokerFactoryAdapter) For(ep *domain.Endpoint, handler protocol.Handler, env *domain.RequestEnvelope) dispatch.Invoker {
 	return &invokerImpl{
 		ep:      ep,
@@ -47,7 +49,7 @@ type invokerImpl struct {
 	sender  *invoker.Sender
 }
 
-// Invoke 实现 dispatch.Invoker.Invoke——纯 HTTP 调用 + classify。
+// Invoke implements dispatch.Invoker.Invoke — a plain HTTP call plus classification.
 func (i *invokerImpl) Invoke(ctx context.Context) (dispatch.Result, error) {
 	var body []byte
 	if i.env != nil {
@@ -70,7 +72,8 @@ func (i *invokerImpl) Invoke(ctx context.Context) (dispatch.Result, error) {
 	}, nil
 }
 
-// invokerResult 实现 dispatch.Result——成功路径走 sender.Forward + 顺手 wrap moderator。
+// invokerResult implements dispatch.Result — the success path goes through
+// sender.Forward and wraps the moderator along the way.
 type invokerResult struct {
 	ep       *domain.Endpoint
 	verdict  dispatch.Verdict
@@ -89,18 +92,25 @@ func (r *invokerResult) StreamTo(ctx context.Context, w http.ResponseWriter) dis
 	}
 	r.consumed = true
 
-	// 传输解码接缝：vendor（如 Bedrock event-stream）把上游分帧解成协议 handler 认识
-	// 的字节流，再进 Feed。TransportDecoder 是可选的——返回 nil = 无需解帧（SSE/JSON，
-	// 绝大多数）。这样传输层（分帧）跟协议层（shape 翻译）干净分离。
+	// Transport decoding seam: a vendor (e.g. Bedrock event-stream) decodes the
+	// upstream's framing into the byte stream the protocol handler
+	// understands, which then goes into Feed. TransportDecoder is optional —
+	// returning nil means no deframing is needed (SSE/JSON, the vast
+	// majority). This keeps the transport layer (framing) cleanly separated
+	// from the protocol layer (shape translation).
 	if dec, ok := r.handler.(protocol.TransportDecoder); ok {
 		if decoded := dec.DecodeTransport(r.response); decoded != nil {
-			// 用 decoded 替换 body 供 Forward 读；原 body 的 Close 权交给包装，
-			// 保证 Forward 的 defer Close 仍关到真实连接。
+			// Replace body with decoded for Forward to read; hand the
+			// original body's Close over to the wrapper, so Forward's
+			// deferred Close still closes the real connection.
 			orig := r.response.Body
 			r.response.Body = readClose{Reader: decoded, closeFn: orig.Close}
-			// 传输已从 vendor 分帧（如 application/vnd.amazon.eventstream）解成
-			// SSE：上游 Content-Type 不再描述客户端将收到的字节，强制成
-			// text/event-stream，否则 SSE 客户端会拒绝按流解析（Forward 直拷上游头）。
+			// The transport has been deframed from the vendor's framing
+			// (e.g. application/vnd.amazon.eventstream) into SSE: the
+			// upstream Content-Type no longer describes the bytes the client
+			// will receive, so force it to text/event-stream — otherwise SSE
+			// clients will refuse to parse it as a stream (Forward copies
+			// upstream headers directly).
 			r.response.Header.Set("Content-Type", "text/event-stream")
 		}
 	}
@@ -124,7 +134,7 @@ func (r *invokerResult) Close() error {
 }
 
 // =============================================================================
-// 跨包 Stage / Class 翻译 helpers
+// Cross-package Stage / Class translation helpers
 // =============================================================================
 
 func invokerStageToDispatch(s invoker.Stage) dispatch.Stage {
@@ -151,15 +161,16 @@ func selectorClassToDispatch(c selector.ErrorClass) dispatch.Class {
 	}
 }
 
-// 编译期断言。
+// Compile-time assertions.
 var (
 	_ dispatch.InvokerFactory = (*InvokerFactoryAdapter)(nil)
 	_ dispatch.Invoker        = (*invokerImpl)(nil)
 	_ dispatch.Result         = (*invokerResult)(nil)
 )
 
-// readClose 把一个 io.Reader（解帧后的流）+ 原 body 的 Close 组合成 ReadCloser——
-// Forward 读解帧字节，defer Close 仍关真实上游连接。
+// readClose combines an io.Reader (the deframed stream) with the original
+// body's Close into a ReadCloser — Forward reads the deframed bytes, and the
+// deferred Close still closes the real upstream connection.
 type readClose struct {
 	io.Reader
 	closeFn func() error

@@ -13,7 +13,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/moderation"
 )
 
-// attachEnvelopeFor 给 RC 装 Envelope 用于 Moderation 测试
+// attachEnvelopeFor attaches an Envelope to the RC for Moderation tests
 func attachEnvelopeFor(model string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -106,14 +106,14 @@ func TestModeration_CheckInputReject_400_Invalid(t *testing.T) {
 }
 
 // =============================================================================
-// moderation_handler 装饰器：moderation.WrapStream / moderatedResponseHandler
+// moderation_handler decorator: moderation.WrapStream / moderatedResponseHandler
 // =============================================================================
 
-// fakeHandler 实现 translator.ResponseHandler，把 Feed 入参原样返回。
+// fakeHandler implements translator.ResponseHandler, returning the Feed input unchanged.
 type fakeHandler struct {
-	feeds  [][]byte
-	flush  []byte
-	usage  *domain.Usage
+	feeds   [][]byte
+	flush   []byte
+	usage   *domain.Usage
 	feedErr error
 }
 
@@ -150,7 +150,7 @@ func TestModeratedResponseHandler_Feed_AbortsOnViolation(t *testing.T) {
 		t.Errorf("violated bytes should be dropped, got=%q", string(out))
 	}
 
-	// 后续 Feed 短路
+	// subsequent Feed calls short-circuit
 	out2, err2 := h.Feed([]byte("more"))
 	if err2 == nil || !errors.Is(err2, moderation.ErrViolated) {
 		t.Errorf("subsequent Feed should short-circuit with moderation.ErrViolated, got=%v", err2)
@@ -205,7 +205,7 @@ func TestModeratedResponseHandler_Flush_ViolatedFromStream_DropsFinal(t *testing
 	ctx := moderation.ContextWithModerator(context.Background(), mod)
 	h := moderation.WrapStream(inner, ctx)
 
-	// 先 Feed 触发 violated
+	// first, Feed triggers a violation
 	_, _ = h.Feed([]byte("bad"))
 
 	out, _, err := h.Flush()

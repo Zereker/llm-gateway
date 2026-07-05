@@ -1,10 +1,12 @@
-// middleware_adapters.go：composition root 的小适配层。
+// middleware_adapters.go: a small adapter layer in the composition root.
 //
-// 为什么不在 pkg/repo 里：会形成 cycle（middleware → ratelimit → repo →
-// middleware）。adapter 是装配粘合代码，本来就应该住在 composition root
-// （cmd/gateway/main.go 同包）——所有上下游包都已 import 到位，零循环。
+// Why not in pkg/repo: it would form a cycle (middleware → ratelimit → repo →
+// middleware). An adapter is wiring glue code, and it naturally belongs in
+// the composition root (same package as cmd/gateway/main.go)—every upstream
+// and downstream package is already imported there, so there's zero cycle.
 //
-// 这里只放"repo 行类型 → middleware port"的形状转换；不放业务逻辑。
+// This file only holds "repo row type → middleware port" shape conversions;
+// no business logic goes here.
 package main
 
 import (
@@ -16,7 +18,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// adaptCatalog 把 SQL 行型 ModelServiceReader 适配为 middleware.ModelCatalog。
+// adaptCatalog adapts the SQL row-based ModelServiceReader to middleware.ModelCatalog.
 func adaptCatalog(p repo.ModelServiceReader) middleware.ModelCatalog {
 	return repoCatalogAdapter{p: p}
 }
@@ -31,7 +33,7 @@ func (a repoCatalogAdapter) GetByModel(ctx context.Context, model string) (*doma
 	return repo.ToDomainModelService(ms), nil
 }
 
-// adaptSubscriptions 把 SubscriptionProvider 适配为 middleware.SubscriptionChecker。
+// adaptSubscriptions adapts SubscriptionProvider to middleware.SubscriptionChecker.
 func adaptSubscriptions(p repo.SubscriptionProvider) middleware.SubscriptionChecker {
 	return repoSubsAdapter{p: p}
 }
@@ -42,7 +44,7 @@ func (a repoSubsAdapter) HasModel(ctx context.Context, accountID string, modelSe
 	return a.p.Has(ctx, accountID, modelServiceID)
 }
 
-// adaptEndpoints 把 SQL 行型 EndpointReader 适配为 dispatch.CandidateSource。
+// adaptEndpoints adapts the SQL row-based EndpointReader to dispatch.CandidateSource.
 func adaptEndpoints(p repo.EndpointReader) dispatch.CandidateSource {
 	return repoEndpointAdapter{p: p}
 }
@@ -57,9 +59,10 @@ func (a repoEndpointAdapter) ListForModel(ctx context.Context, model, group stri
 	return repo.ToDomainEndpoints(rows), nil
 }
 
-// Compile-time port satisfaction assertions——验证装配点引用的 concrete 类型
-// 满足 middleware port。放在 cmd/gateway 而不是 pkg/repo / pkg/ratelimit 是为了
-// 避免 import cycle（详见本文件 doc）。
+// Compile-time port satisfaction assertions—verifies that the concrete types
+// referenced at wiring points satisfy the middleware port. Placed in
+// cmd/gateway rather than pkg/repo / pkg/ratelimit to avoid an import cycle
+// (see this file's doc comment).
 var (
 	// pkg/repo
 	_ middleware.IdentityProvider = (*repo.SQLAPIKeyProvider)(nil)

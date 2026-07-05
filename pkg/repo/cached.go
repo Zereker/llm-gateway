@@ -10,45 +10,53 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// 本文件给 repo 的 5 个 SQL Reader/Provider 各包一层 TTL 缓存——gateway 启动时
-// cmd 拿 cached 版本注入到 middleware / dispatch port。repo 层唯一的缓存策略。
+// This file wraps each of repo's 5 SQL Readers/Providers in a TTL cache — at
+// gateway startup cmd injects the cached versions into middleware / dispatch
+// ports. This is the repo layer's only caching strategy.
 //
-// **设计**：
-//   - 每个 cached wrapper 嵌一个 sql reader + 一个 TTLCache
-//   - 所有 hot path 走 TTLCache.GetOrLoad（miss + singleflight 一步搞定）
-//   - cache key 是查询参数（Resolve(creds) 用 api_key_hash；GetByID(id) 用 id；
-//     ListForModel(model,group) 用 "model\x00group" 复合 string；等等）
-//   - "not found"（loader 返 nil 或没数据）**不**进缓存——loader 通过返回
-//     cache=false 显式告诉缓存层。让"刚创建的资源"立即生效，不被 negative cache
-//     卡 TTL 时长
-//   - 默认参数（capacity / ttl）给个 sensible default；cmd 可以按需调整
+// **Design**:
+//   - Each cached wrapper embeds a sql reader + a TTLCache
+//   - Every hot path goes through TTLCache.GetOrLoad (miss + singleflight in one step)
+//   - The cache key is the query parameter (Resolve(creds) uses api_key_hash;
+//     GetByID(id) uses id; ListForModel(model,group) uses the composite string
+//     "model\x00group"; etc.)
+//   - "not found" (loader returns nil or no data) is **not** cached — the
+//     loader tells the cache layer explicitly by returning cache=false. This
+//     lets a "just-created resource" take effect immediately, instead of
+//     being stuck behind a negative-cache TTL
+//   - Default parameters (capacity / ttl) get a sensible default; cmd can tune
+//     them as needed
 
 // =============================================================================
 // CachedAPIKeyProvider — wraps SQLAPIKeyProvider with per-(hash) TTL LRU
 // =============================================================================
 
-// negativeTTL 无效凭证 / 订阅 false 的负缓存时长。
+// negativeTTL is the negative-cache duration for invalid credentials / false subscriptions.
 //
-// **为什么要负缓存**：M2 Auth 在 M6 RateLimit 之前——没有负缓存时，拿一个
-// 不存在的 key 打洪峰，MySQL QPS 1:1 跟着涨（无认证 DoS 放大器）。
+// **Why a negative cache**: M2 Auth runs before M6 RateLimit — without a
+// negative cache, hammering a non-existent key floods traffic straight into
+// MySQL 1:1 (an unauthenticated DoS amplifier).
 //
-// **为什么短**：负缓存的代价是"刚创建 / 刚订阅的资源"最多延迟 negativeTTL
-// 才生效。5s 把撞库流量从 per-request 压到 per-5s-per-key，同时 deployer
-// "INSERT 后 curl 验证" 的体感延迟可忽略。
+// **Why short**: the cost of a negative cache is that a "just-created /
+// just-subscribed resource" can take up to negativeTTL to become visible. 5s
+// squeezes credential-stuffing traffic down from per-request to
+// per-5s-per-key, while the deployer's "INSERT then curl to verify" workflow
+// sees negligible added latency.
 const negativeTTL = 5 * time.Second
 
-// CachedAPIKeyProvider 用 TTL LRU 缓存 Resolve 结果。cache key = api_key_hash。
+// CachedAPIKeyProvider caches Resolve results with a TTL LRU. cache key = api_key_hash.
 //
-// 双 cache：正向（hash → identity，30s）+ 负向（hash → 无效，5s）。
-// **只有 ErrInvalidCredentials 进负缓存**——DB 故障不缓存（下次重试）。
+// Dual cache: positive (hash -> identity, 30s) + negative (hash -> invalid, 5s).
+// **Only ErrInvalidCredentials goes into the negative cache** — DB failures
+// are not cached (retried next time).
 type CachedAPIKeyProvider struct {
 	inner    *SQLAPIKeyProvider
 	cache    *TTLCache[string, *UserIdentity]
 	negative *TTLCache[string, struct{}]
 }
 
-// NewCachedAPIKeyProvider 默认 capacity=10240（支持几千个并发活跃 key）/ ttl=30s。
-// metrics 为 nil 时不上报。
+// NewCachedAPIKeyProvider defaults to capacity=10240 (supports several
+// thousand concurrently active keys) / ttl=30s. No reporting when metrics is nil.
 func NewCachedAPIKeyProvider(inner *SQLAPIKeyProvider, capacity int, ttl time.Duration, metrics Metrics) *CachedAPIKeyProvider {
 	return &CachedAPIKeyProvider{
 		inner:    inner,
@@ -75,11 +83,15 @@ func (p *CachedAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) 
 	return v, err
 }
 
-// Evict 按 api_key_hash 剔除正向 + 负向缓存项。控制面吊销 key 时经 cachebus 通知
-// 数据面调用，把"吊销后仍缓存有效"的窗口从 ≤TTL 收到亚秒级。
+// Evict removes both the positive and negative cache entries for an
+// api_key_hash. The control plane calls this via cachebus notification when
+// revoking a key, shrinking the "still cached as valid after revocation"
+// window from <=TTL down to sub-second.
 //
-// hash 就是 HashAPIKey(plaintext)（= DB api_key_hash 列）——控制面持有它，数据面
-// 无需明文。删负缓存是为了对称：万一某 hash 正被负缓存（罕见竞态），也一并清掉。
+// hash is just HashAPIKey(plaintext) (= the DB api_key_hash column) — the
+// control plane holds it, so the data plane never needs the plaintext.
+// Clearing the negative cache too is for symmetry: in the rare race where a
+// hash happens to be negatively cached, that gets wiped as well.
 func (p *CachedAPIKeyProvider) Evict(hash string) {
 	p.cache.Delete(hash)
 	p.negative.Delete(hash)
@@ -89,13 +101,13 @@ func (p *CachedAPIKeyProvider) Evict(hash string) {
 // CachedModelServiceReader — wraps SQLModelServiceReader with per-model TTL LRU
 // =============================================================================
 
-// CachedModelServiceReader 缓存 GetByModel(model) 结果。
+// CachedModelServiceReader caches GetByModel(model) results.
 type CachedModelServiceReader struct {
 	inner *SQLModelServiceReader
 	cache *TTLCache[string, *ModelService]
 }
 
-// NewCachedModelServiceReader 默认 capacity=256 / ttl=30s。
+// NewCachedModelServiceReader defaults to capacity=256 / ttl=30s.
 func NewCachedModelServiceReader(inner *SQLModelServiceReader, capacity int, ttl time.Duration, metrics Metrics) *CachedModelServiceReader {
 	return &CachedModelServiceReader{
 		inner: inner,
@@ -110,7 +122,8 @@ func (r *CachedModelServiceReader) GetByModel(ctx context.Context, model string)
 	})
 }
 
-// List 不缓存——调用方一般在启动期 / 巡检用，命中频次低。
+// List is not cached — callers typically use it at startup / for health
+// checks, where hit frequency is low.
 func (r *CachedModelServiceReader) List(ctx context.Context) ([]*ModelService, error) {
 	return r.inner.List(ctx)
 }
@@ -119,17 +132,17 @@ func (r *CachedModelServiceReader) List(ctx context.Context) ([]*ModelService, e
 // CachedEndpointReader — wraps SQLEndpointReader with per-(model,group) TTL LRU
 // =============================================================================
 
-// CachedEndpointReader 缓存 ListForModel / GetByID / PickForModel 结果。
+// CachedEndpointReader caches ListForModel / GetByID / PickForModel results.
 //
-// **不缓存 List()**——调用方一般在启动期 / 巡检用。
+// **List() is not cached** — callers typically use it at startup / for health checks.
 type CachedEndpointReader struct {
 	inner     *SQLEndpointReader
 	listCache *TTLCache[string, []*Endpoint] // key = "model\x00group"
 	idCache   *TTLCache[int64, *Endpoint]
 }
 
-// NewCachedEndpointReader 默认 listCapacity=1024（model×group 对数），
-// idCapacity=4096（按 id 查），ttl=30s。
+// NewCachedEndpointReader defaults to listCapacity=1024 (number of
+// model x group pairs), idCapacity=4096 (lookup by id), ttl=30s.
 func NewCachedEndpointReader(inner *SQLEndpointReader, listCap, idCap int, ttl time.Duration, metrics Metrics) *CachedEndpointReader {
 	return &CachedEndpointReader{
 		inner:     inner,
@@ -149,14 +162,15 @@ func (r *CachedEndpointReader) ListForModel(ctx context.Context, model, group st
 	})
 }
 
-// PickForModel 走 ListForModel 缓存的第一条。
+// PickForModel takes the first entry from ListForModel's cache.
 func (r *CachedEndpointReader) PickForModel(ctx context.Context, model, group string) (*Endpoint, error) {
 	list, err := r.ListForModel(ctx, model, group)
 	if err != nil {
 		return nil, err
 	}
 	if len(list) == 0 {
-		// 跟 SQL 实现保持错误风格——not found 返 error。
+		// Keep the error style consistent with the SQL implementation — not
+		// found returns an error.
 		return r.inner.PickForModel(ctx, model, group)
 	}
 	return list[0], nil
@@ -169,25 +183,25 @@ func (r *CachedEndpointReader) GetByID(ctx context.Context, id int64) (*Endpoint
 	})
 }
 
-// List 不缓存——启动期 / health prober 用。
+// List is not cached — used at startup / by the health prober.
 func (r *CachedEndpointReader) List(ctx context.Context) ([]*Endpoint, error) {
 	return r.inner.List(ctx)
 }
 
-// 编译期断言：CachedEndpointReader 满足 EndpointReader 接口。
+// Compile-time assertion: CachedEndpointReader satisfies the EndpointReader interface.
 var _ EndpointReader = (*CachedEndpointReader)(nil)
 
 // =============================================================================
 // CachedQuotaPolicyProvider — wraps SQLQuotaPolicyProvider with per-id TTL LRU
 // =============================================================================
 
-// CachedQuotaPolicyProvider 缓存 GetByID(id) → *QuotaPolicy。
+// CachedQuotaPolicyProvider caches GetByID(id) -> *QuotaPolicy.
 type CachedQuotaPolicyProvider struct {
 	inner *SQLQuotaPolicyProvider
 	cache *TTLCache[int64, *QuotaPolicy]
 }
 
-// NewCachedQuotaPolicyProvider 默认 capacity=128（少量 policy 共享）/ ttl=30s。
+// NewCachedQuotaPolicyProvider defaults to capacity=128 (a small number of shared policies) / ttl=30s.
 func NewCachedQuotaPolicyProvider(inner *SQLQuotaPolicyProvider, capacity int, ttl time.Duration, metrics Metrics) *CachedQuotaPolicyProvider {
 	return &CachedQuotaPolicyProvider{
 		inner: inner,
@@ -202,26 +216,30 @@ func (p *CachedQuotaPolicyProvider) GetByID(ctx context.Context, id int64) (*Quo
 	})
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ QuotaPolicyProvider = (*CachedQuotaPolicyProvider)(nil)
 
 // =============================================================================
 // CachedSubscriptionProvider — wraps SQLSubscriptionProvider with per-pair TTL LRU
 // =============================================================================
 
-// CachedSubscriptionProvider 缓存 Has(accountID, modelServiceID) → bool。
+// CachedSubscriptionProvider caches Has(accountID, modelServiceID) -> bool.
 //
-// **true / false 分 TTL**：
-//   - true  ── 30s（正常 TTL；订阅取消最多延迟 30s 生效，可接受）
-//   - false ── negativeTTL 5s（短）：deployer "INSERT subscription 后 curl 验证"
-//     不会撞上 30s 的 403 窗口，多副本 LB 后 200/403 交替的时间也压到秒级
+// **true / false use different TTLs**:
+//   - true  -- 30s (the normal TTL; a subscription cancellation taking up to
+//     30s to take effect is acceptable)
+//   - false -- negativeTTL 5s (short): so the deployer's "INSERT subscription
+//     then curl to verify" workflow doesn't hit the 30s 403 window, and the
+//     time a multi-replica LB spends flip-flopping between 200/403 is also
+//     squeezed down to seconds
 type CachedSubscriptionProvider struct {
 	inner      *SQLSubscriptionProvider
 	trueCache  *TTLCache[string, struct{}]
 	falseCache *TTLCache[string, struct{}]
 }
 
-// NewCachedSubscriptionProvider 默认 capacity=10240（active subscriptions）/ ttl=30s（true 侧）。
+// NewCachedSubscriptionProvider defaults to capacity=10240 (active
+// subscriptions) / ttl=30s (for the true side).
 func NewCachedSubscriptionProvider(inner *SQLSubscriptionProvider, capacity int, ttl time.Duration, metrics Metrics) *CachedSubscriptionProvider {
 	return &CachedSubscriptionProvider{
 		inner:      inner,
@@ -230,7 +248,7 @@ func NewCachedSubscriptionProvider(inner *SQLSubscriptionProvider, capacity int,
 	}
 }
 
-// Has true / false 分别进不同 TTL 的 cache；DB 错误不缓存。
+// Has caches true / false separately in caches with different TTLs; DB errors are not cached.
 func (p *CachedSubscriptionProvider) Has(ctx context.Context, accountID string, modelServiceID int64) (bool, error) {
 	key := accountID + "\x00" + strconv.FormatInt(modelServiceID, 10)
 	if _, ok := p.trueCache.Get(key); ok {

@@ -29,7 +29,8 @@ func TestKafkaProducer_WriteRejectsEmptyTopic(t *testing.T) {
 }
 
 func TestKafkaProducer_CloseNeverUsed(t *testing.T) {
-	// kafka.Writer 是 lazy connect；从没 Write 过的 Close 应该是 no-op 不报错。
+	// kafka.Writer is a lazy connect; Close on a producer that never
+	// called Write should be a no-op and not error.
 	p, err := NewKafkaProducer(KafkaConfig{Brokers: []string{"localhost:9092"}})
 	if err != nil {
 		t.Fatalf("NewKafkaProducer: %v", err)
@@ -39,10 +40,11 @@ func TestKafkaProducer_CloseNeverUsed(t *testing.T) {
 	}
 }
 
-// TestKafkaProducer_WriteIntegration 真 broker 集成测试，
-// gate 在 KAFKA_BROKERS 环境变量后面；CI 默认跳过。
+// TestKafkaProducer_WriteIntegration is a real-broker integration test,
+// gated behind the KAFKA_BROKERS environment variable; skipped by default
+// in CI.
 //
-// 跑法：
+// How to run:
 //
 //	docker run -p 9092:9092 apache/kafka:latest
 //	KAFKA_BROKERS=localhost:9092 KAFKA_TOPIC=llm-gateway-test go test ./pkg/infra/...

@@ -8,14 +8,15 @@ import (
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
-// LimitReadFilter 用 SnapshotBatch 做**只读**过滤（docs/04 §5 §10）：
-// 检查每个候选 endpoint 的 quota 是否还有余量；超限的剔除。
+// LimitReadFilter uses SnapshotBatch to do **read-only** filtering (docs/04 §5 §10):
+// check whether each candidate endpoint's quota still has headroom; endpoints over the limit are excluded.
 //
-// **关键约束**：filter 阶段**不**做 ReserveBatch（不能在所有候选 endpoint 上扣减）；
-// 真正的 reserve 在 dispatcher Pick 之后通过 EndpointQuota.Reserve 做（避免不被选中的 endpoint 被多扣）。
+// **Key constraint**: the filter stage does **not** do ReserveBatch (it must not deduct from every
+// candidate endpoint); the actual reserve happens after the dispatcher's Pick, via EndpointQuota.Reserve
+// (avoiding over-deducting endpoints that weren't even selected).
 //
-// **Fail-open on Redis error**（docs/04 §8）：endpoint quota read-only filter 不能
-// 因 Redis 故障变成硬依赖；故障时保留所有候选，让请求继续 try。
+// **Fail-open on Redis error** (docs/04 §8): the endpoint quota read-only filter must not become a
+// hard dependency due to a Redis outage; on failure it keeps all candidates, letting the request keep trying.
 type LimitReadFilter struct {
 	store ratelimit.Store
 }
@@ -31,7 +32,7 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 		return candidates
 	}
 
-	// 把所有候选的 RPM/RPS bucket 平铺，一次 SnapshotBatch 全部查
+	// Flatten all candidates' RPM/RPS buckets and query them all in one SnapshotBatch
 	type slot struct{ epIdx int }
 	var slots []slot
 	var allBuckets []ratelimit.Bucket
@@ -43,21 +44,21 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 		}
 	}
 	if len(allBuckets) == 0 {
-		// 候选 endpoint 都没配 quota → 全保留
+		// none of the candidate endpoints have quota configured → keep all
 		return candidates
 	}
 
 	states, err := f.store.SnapshotBatch(ctx, allBuckets)
 	if err != nil {
-		// fail-open：Redis 错时保留所有候选（docs/04 §8）
+		// fail-open: keep all candidates when Redis errors (docs/04 §8)
 		metric.Inc(metric.RateLimitFailOpenTotal, "scope", "endpoint", "dimension", "any")
 		return candidates
 	}
 
-	// 标记超限的 ep
+	// mark endpoints over the limit
 	exhausted := make(map[int]bool, len(candidates))
 	for i, st := range states {
-		if st.Used+1 > st.Limit { // 已用满
+		if st.Used+1 > st.Limit { // already fully used
 			exhausted[slots[i].epIdx] = true
 		}
 	}
@@ -70,5 +71,5 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 	return out
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ Filter = (*LimitReadFilter)(nil)

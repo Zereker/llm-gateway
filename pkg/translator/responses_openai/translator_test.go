@@ -84,7 +84,7 @@ func TestResponseHandler_TranslatesChatToResponses(t *testing.T) {
 	if !strings.Contains(s, `"text":"hello!"`) {
 		t.Errorf("missing assistant content, got %s", s)
 	}
-	// usage 应当从 OpenAI extractor 拿到（旁路提取）
+	// usage should be obtained from the OpenAI extractor (side-channel extraction)
 	if usage == nil {
 		t.Error("usage should be extracted")
 	} else if usage.Total != 13 {

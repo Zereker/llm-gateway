@@ -6,7 +6,8 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// 所有 OpenAI-compatible vendor 别名都注册进 registry（LookupFactory 可解析）。
+// TestAliasesAllRegistered verifies all OpenAI-compatible vendor aliases are
+// registered into the registry (resolvable via LookupFactory).
 func TestAliasesAllRegistered(t *testing.T) {
 	for _, v := range []string{
 		"ark", "deepseek", "moonshot", "zhipu", "qwen", "doubao", "minimax",

@@ -5,17 +5,17 @@ import (
 	"fmt"
 )
 
-// Modality 请求模态。
+// Modality is the request modality.
 type Modality int
 
 const (
-	ModalityChat Modality = iota // 含 Anthropic Messages
+	ModalityChat Modality = iota // includes Anthropic Messages
 	ModalityEmbedding
-	ModalityImage // 含文生图、图生图、Inpaint，Adapter 内部按 Parsed 分发
+	ModalityImage // includes text-to-image, image-to-image, inpaint; the Adapter dispatches internally by Parsed
 	ModalityRerank
 	ModalityTTS
 	ModalityASR
-	ModalityTask // 异步任务（视频生成、长音频合成等），轮询模型
+	ModalityTask // async tasks (video generation, long-form audio synthesis, etc.), polling model
 )
 
 func (m Modality) String() string {
@@ -38,7 +38,7 @@ func (m Modality) String() string {
 	return "unknown"
 }
 
-// ParseModality 反向：字符串 → Modality；未知 → 0 (ModalityChat) + error。
+// ParseModality is the reverse: string → Modality; unknown → 0 (ModalityChat) + error.
 func ParseModality(s string) (Modality, error) {
 	switch s {
 	case "chat":
@@ -59,13 +59,15 @@ func ParseModality(s string) (Modality, error) {
 	return 0, fmt.Errorf("unknown modality %q", s)
 }
 
-// MarshalJSON 让 endpoint capabilities JSON 里 modality 以 "chat" / "embedding"
-// 这种 deployer 友好的字符串落库，而不是 enum 数字。
+// MarshalJSON makes modality persist in endpoint capabilities JSON as a
+// deployer-friendly string like "chat" / "embedding", rather than an enum
+// number.
 func (m Modality) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m.String())
 }
 
-// UnmarshalJSON 反向；未知值返 error 让启动期 / mapper 直接看到。
+// UnmarshalJSON is the reverse; an unknown value returns an error so it's
+// surfaced directly at startup / in the mapper.
 func (m *Modality) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {

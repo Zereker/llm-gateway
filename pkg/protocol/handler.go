@@ -1,32 +1,36 @@
-// Package protocol 定义端到端协议处理器 Handler——把"vendor HTTP 层 + 协议
-// body 转换"两件事融合成一个抽象。
+// Package protocol defines the end-to-end protocol handler abstraction,
+// Handler — it fuses "vendor HTTP layer + protocol body conversion" into a
+// single abstraction.
 //
-// **架构定位**：
+// **Architectural role**:
 //
 //	┌──────────┐                                           ┌──────────┐
 //	│ Client   │ ────────── Handler ──────────────────── → │ Upstream │
-//	│ (proto X)│  PrepareCall (pre-call 协议转换)          │ (proto Y)│
+//	│ (proto X)│  PrepareCall (pre-call protocol convert)  │ (proto Y)│
 //	│          │  ↓ translate body X→Y                    │          │
 //	│          │  ↓ build HTTP request (vendor-specific)  │          │
 //	│          │                                           │          │
-//	│          │ ← NewResponseStream (post-call 协议转换)─ │          │
-//	│          │  ↓ chunk-by-chunk Y→X                    │          │
+//	│          │ ← NewResponseStream (post-call protocol   │          │
+//	│          │    convert) ─ ↓ chunk-by-chunk Y→X        │          │
 //	└──────────┘                                           └──────────┘
 //
-// **跟 v0.5 (split adapter + translator) 的差异**：
+// **Difference from v0.5 (split adapter + translator)**:
 //
-//	v0.5: 两个独立抽象（adapter + translator），消费侧两次 lookup + match 检查；
-//	      protocol.Metadata.NativeProtocol 写死 vendor → 上游协议绑死。
-//	v0.6: 一个 Handler 抽象（facade），由 DefaultLookup 按 (endpoint, srcProto)
-//	      动态组合 adapter + translator。endpoint 携带 Protocol 字段——同 vendor
-//	      可以挂多条不同协议的 endpoint。
+//	v0.5: two independent abstractions (adapter + translator); the consumer
+//	      side did two lookups + a match check; protocol.Metadata.NativeProtocol
+//	      hardcoded vendor → upstream protocol, locking them together.
+//	v0.6: a single Handler abstraction (facade), dynamically composed by
+//	      DefaultLookup from (endpoint, srcProto) → adapter + translator. The
+//	      endpoint carries a Protocol field — the same vendor can back
+//	      multiple endpoints on different protocols.
 //
-// **组合时机**：请求级，不是 init()。DefaultLookup.Get(ep, srcProto) 调用：
-//  1. protocol.LookupFactory(ep.Vendor) → protocol.Factory（vendor HTTP 实现）
-//  2. translator.Find(srcProto, ep.Protocol) → translator.Translator（body 转换）
+// **When composition happens**: at request time, not in init().
+// DefaultLookup.Get(ep, srcProto) calls:
+//  1. protocol.LookupFactory(ep.Vendor) → protocol.Factory (vendor HTTP implementation)
+//  2. translator.Find(srcProto, ep.Protocol) → translator.Translator (body conversion)
 //  3. Combine(ad, tr) → Handler
 //
-// 任一缺失 → return nil → eligibility filter 剔除该 endpoint。
+// If either is missing → return nil → the eligibility filter excludes that endpoint.
 package protocol
 
 import (
@@ -37,114 +41,144 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Capabilities Handler 运行时元信息——描述本次组合的 (srcProto, ep.Protocol)
-// + adapter 支持的模态。
+// Capabilities is Handler's runtime metadata — it describes the (srcProto,
+// ep.Protocol) of this composition + the modalities the adapter supports.
 //
-// **注意**：Vendor 不在这里——它是 endpoint 的属性，不是 Handler 的；Handler
-// 是 (adapter, translator) 动态组合，跟具体 endpoint 一一对应只在 PrepareCall
-// 调用时才确定。
+// **Note**: Vendor is not here — it's a property of the endpoint, not the
+// Handler; Handler is a dynamic (adapter, translator) composition, and its
+// one-to-one correspondence with a specific endpoint is only determined at
+// PrepareCall time.
 //
-// 用途：metric 标签 / debug log / eligibility 能力过滤。
+// Use: metric labels / debug logs / eligibility capability filtering.
 type Capabilities struct {
-	SourceProtocol      domain.Protocol   // 这个 Handler 接受的客户端协议
-	UpstreamProtocol    domain.Protocol   // endpoint 上游使用的协议（来源 ep.Protocol）
-	SupportedModalities []domain.Modality // adapter 支持的模态
+	SourceProtocol      domain.Protocol   // the client protocol this Handler accepts
+	UpstreamProtocol    domain.Protocol   // the protocol used by the endpoint's upstream (from ep.Protocol)
+	SupportedModalities []domain.Modality // modalities the adapter supports
 }
 
-// Call PrepareCall 的产出——已准备好发往上游的 HTTP 请求 + 翻译后的 body 副本。
+// Call is the output of PrepareCall — the HTTP request ready to send
+// upstream + a copy of the translated body.
 //
-// **UpstreamBody 字段**：caller 用来 fan-out audit / observer hook（审计场景
-// 要"先记录后发送"上游字节）。Request.Body 已经吃掉了这些字节；UpstreamBody
-// 是给 observability 的独立副本——所以即使是大 body 也只 ~2x footprint，
-// 不会重复消费 Reader。
+// **UpstreamBody field**: used by callers to fan out to audit / observer
+// hooks (audit scenarios need to "log before sending" the upstream bytes).
+// Request.Body has already consumed these bytes; UpstreamBody is an
+// independent copy for observability — so even for a large body the
+// footprint is only ~2x, and the Reader is never consumed twice.
 type Call struct {
 	Request      *http.Request
 	UpstreamBody []byte
 }
 
-// Handler 一个 (vendor, sourceProtocol) 的端到端协议处理器。
+// Handler is the end-to-end protocol handler for a (vendor, sourceProtocol) pair.
 //
-// **职责**：
-//   - PrepareCall: pre-call 协议转换——把客户端 body 翻译成上游协议，封装成
-//     vendor-specific HTTP request
-//   - NewResponseStream: post-call 协议转换——chunk-by-chunk 反向翻译响应给客户端
+// **Responsibilities**:
+//   - PrepareCall: pre-call protocol conversion — translates the client body
+//     into the upstream protocol, wraps it into a vendor-specific HTTP request
+//   - NewResponseStream: post-call protocol conversion — translates the
+//     response back to the client, chunk by chunk
 //
-// **并发约束**：Handler 实例 MUST be safe for concurrent use（多 gin handler
-// 并发调用 PrepareCall / NewResponseStream）。NewResponseStream 返回的
-// ResponseStream 是每请求 new 的、单 goroutine 使用的句柄。
+// **Concurrency constraint**: Handler instances MUST be safe for concurrent
+// use (multiple gin handlers call PrepareCall / NewResponseStream
+// concurrently). The ResponseStream returned by NewResponseStream is a
+// per-request, single-goroutine handle.
 type Handler interface {
 	Capabilities() Capabilities
 
-	// PrepareCall 把客户端原始 body 转换 + 包装成可发往上游的 HTTP request。
+	// PrepareCall converts the client's raw body and wraps it into an HTTP
+	// request ready to send upstream.
 	//
-	// 内部两步：
+	// Internally, two steps:
 	//   1. translator.TranslateRequest(srcBody) → upstreamBody
-	//   2. adapter session BuildRequest(upstreamBody) → *http.Request（URL / auth / headers）
+	//   2. adapter session BuildRequest(upstreamBody) → *http.Request (URL / auth / headers)
 	//
-	// 失败分类：
-	//   - PrepareError{Phase: PhaseTranslate}: srcBody 不符合 SourceProtocol 的 schema；
-	//     调用方应 abort（同请求换 endpoint 也会失败）
-	//   - PrepareError{Phase: PhaseBuild}: vendor HTTP 构造失败（极少；通常是 endpoint 配置非法）
+	// Failure classification:
+	//   - PrepareError{Phase: PhaseTranslate}: srcBody doesn't match
+	//     SourceProtocol's schema; the caller should abort (retrying with a
+	//     different endpoint on the same request will also fail)
+	//   - PrepareError{Phase: PhaseBuild}: vendor HTTP construction failed
+	//     (rare; usually an invalid endpoint configuration)
 	PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody []byte) (*Call, error)
 
-	// NewResponseStream 每请求一个；负责吃上游响应 chunk → 吐客户端 chunk。
+	// NewResponseStream creates one instance per request; it consumes
+	// upstream response chunks → emits client chunks.
 	//
-	// 单 goroutine（与 gin handler 同协程）。
+	// Single-goroutine (runs in the same goroutine as the gin handler).
 	NewResponseStream() ResponseStream
 }
 
-// ResponseStream 处理一次上游响应：chunk-by-chunk 喂入；最终 Flush 输出。
+// ResponseStream handles one upstream response: fed chunk-by-chunk; Flush
+// produces the final output.
 //
-// **streaming 模式**（identity）：Feed 直接返回 chunk；usage 在 Feed 阶段解析；
-// Flush 返回 nil bytes + 已积累的 usage。
+// **Streaming mode** (identity): Feed returns the chunk directly; usage is
+// parsed during the Feed phase; Flush returns nil bytes + the accumulated usage.
 //
-// **buffer-then-translate 模式**（跨协议）：Feed 全部累积，返回 nil；Flush 一次性
-// 翻译累积 body 返回完整客户端格式 body + usage。
+// **Buffer-then-translate mode** (cross-protocol): Feed accumulates
+// everything and returns nil; Flush translates the accumulated body once and
+// returns the full client-format body + usage.
 type ResponseStream interface {
 	Feed(chunk []byte) (clientBytes []byte, err error)
 	Flush() (clientBytes []byte, usage *domain.Usage, err error)
 }
 
-// TransportDecoder 可选接口：vendor 把上游响应的**传输分帧**解成协议 handler 认识
-// 的字节流。用于 wire 传输格式 ≠ 协议 SSE 的场景。
+// TransportDecoder is an optional interface: the vendor decodes the upstream
+// response's **transport framing** into the byte stream the protocol handler
+// understands. Used when the wire transport format ≠ the protocol's SSE format.
 //
-// **为什么单独一层**：至今所有 provider 的流式都是 SSE / JSON，传输格式恰好 ≈ 协议
-// 格式，一个 ResponseStream 顺手两件事都干了。AWS Bedrock 的 event-stream 是二进制
-// 分帧（`vnd.amazon.eventstream`），把 Anthropic 事件裹在帧里——这是**传输层**关注
-// 点，跟协议 shape 是两回事。TransportDecoder 在字节进 ResponseStream.Feed **之前**
-// 把帧解掉，还原成协议 handler 期望的字节（如 Anthropic SSE）。于是 Bedrock 保持
-// protocol=anthropic、复用 anthropic 的 ResponseStream 做 shape 翻译，传输/协议干净分离。
+// **Why a separate layer**: so far every provider's streaming is SSE / JSON,
+// where the transport format happens to ≈ the protocol format, so a single
+// ResponseStream conveniently handles both. AWS Bedrock's event-stream is
+// binary framing (`vnd.amazon.eventstream`) that wraps Anthropic events
+// inside frames — that's a **transport-layer** concern, distinct from
+// protocol shape. TransportDecoder strips the framing **before** the bytes
+// enter ResponseStream.Feed, restoring the bytes the protocol handler
+// expects (e.g. Anthropic SSE). This lets Bedrock keep protocol=anthropic
+// and reuse anthropic's ResponseStream for shape translation, cleanly
+// separating transport from protocol.
 //
-// **可选**：Factory 不实现 = 上游字节直接进 handler（SSE/JSON 场景，绝大多数）。
-// combined Handler 自动透出 Factory 的这能力（同 Classifier 的透传模式）。
+// **Optional**: if the Factory doesn't implement it, upstream bytes go
+// straight into the handler (the SSE/JSON case, the vast majority). The
+// combined Handler automatically surfaces this Factory capability (same
+// promotion pattern as Classifier).
 type TransportDecoder interface {
-	// DecodeTransport 把 resp.Body 包成"已解帧"的 reader；不需要解码时返 nil
-	// （调用方据此判断是否插入解码层）。实现**不负责** Close resp.Body（调用方管）。
+	// DecodeTransport wraps resp.Body into an "already de-framed" reader;
+	// returns nil when no decoding is needed (the caller uses this to decide
+	// whether to insert a decode layer). The implementation is **not
+	// responsible** for closing resp.Body (the caller owns that).
 	DecodeTransport(resp *http.Response) io.Reader
 }
 
-// Classifier 可选接口：vendor 自定义把错误响应 body 细化到 domain.ErrorClass。
+// Classifier is an optional interface: lets a vendor refine an error
+// response body into a domain.ErrorClass with custom logic.
 //
-// invoker 在 HTTP 非 2xx 时通过 type-assert 调用：例 OpenAI 区分 insufficient_quota
-// （permanent）vs 真 rate-limit（capacity）；Anthropic 529 overloaded_error → capacity。
+// The invoker calls it via type-assert on non-2xx HTTP responses: e.g.
+// OpenAI distinguishes insufficient_quota (permanent) from a genuine
+// rate-limit (capacity); Anthropic's 529 overloaded_error → capacity.
 //
-// **典型用途**：HTTP status 单维度不够细分时
-//   - 同样的 429：OpenAI 区分 insufficient_quota（permanent）vs 真 rate-limit（capacity）
-//   - 200 + 错误 body：少数厂商把错误塞 200 响应里，HTTP-only 看不出来
-//   - 5xx 细分：Anthropic 的 529 overloaded_error 应当走 capacity 而非 transient
+// **Typical use cases**: when the HTTP status alone isn't granular enough
+//   - Same 429: OpenAI distinguishes insufficient_quota (permanent) vs a
+//     genuine rate-limit (capacity)
+//   - 200 + error body: a few vendors stuff errors into a 200 response,
+//     invisible from HTTP status alone
+//   - 5xx refinement: Anthropic's 529 overloaded_error should be capacity,
+//     not transient
 //
-// **契约**：
-//   - 实现 MUST be safe for concurrent use（多 goroutine 同时分类）
-//   - body 入参：实现不可保留 slice 引用——如要存进返回的 AdapterError 必须 string(body) / 拷贝
-//   - body 可能是部分（M7 limit-read 1KiB），实现要 tolerant of truncated JSON
+// **Contract**:
+//   - implementations MUST be safe for concurrent use (classified from
+//     multiple goroutines simultaneously)
+//   - body argument: implementations must not retain a reference to the
+//     slice — if it needs to be stored in the returned AdapterError, it must
+//     be string(body) / copied
+//   - body may be partial (M7 limit-reads to 1KiB); implementations must be
+//     tolerant of truncated JSON
 type Classifier interface {
 	Classify(status int, body []byte) *domain.AdapterError
 }
 
-// DefaultClassifier 仅按 HTTP 状态分类。Factory 不实现 Classifier 时的 fallback。
+// DefaultClassifier classifies purely by HTTP status. Used as a fallback
+// when the Factory doesn't implement Classifier.
 type DefaultClassifier struct{}
 
-// Classify 按 HTTP 状态映射到 ErrorClass。
+// Classify maps an HTTP status to an ErrorClass.
 func (DefaultClassifier) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	e := &domain.AdapterError{
 		HTTPStatus:      httpStatus,

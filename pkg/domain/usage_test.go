@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// Usage 新 schema (docs/05 §3): Raw / Source / Estimator / Confidence / Truncated。
-// 不再有 Details map[MetricKey]int64 / Reasoning 字段。
+// Usage new schema (docs/05 §3): Raw / Source / Estimator / Confidence / Truncated.
+// No more Details map[MetricKey]int64 / Reasoning fields.
 
 func TestUsage_ZeroValue(t *testing.T) {
 	var u Usage
@@ -58,16 +58,16 @@ func TestUsage_TruncatedFlag(t *testing.T) {
 	}
 }
 
-// UsageSource / UsageEstimator / UsageConfidence 常量稳定性
+// UsageSource / UsageEstimator / UsageConfidence constant value stability
 func TestUsageEnum_StableValues(t *testing.T) {
 	cases := map[string]string{
-		string(UsageSourceUpstream):       "upstream",
-		string(UsageSourceExtracted):      "extracted",
-		string(UsageSourceEstimated):      "estimated",
-		string(UsageEstimatorTiktoken):    "tiktoken",
-		string(UsageEstimatorNaiveChars):  "naive_chars",
-		string(UsageConfidenceExact):      "exact",
-		string(UsageConfidenceDerived):    "derived",
+		string(UsageSourceUpstream):        "upstream",
+		string(UsageSourceExtracted):       "extracted",
+		string(UsageSourceEstimated):       "estimated",
+		string(UsageEstimatorTiktoken):     "tiktoken",
+		string(UsageEstimatorNaiveChars):   "naive_chars",
+		string(UsageConfidenceExact):       "exact",
+		string(UsageConfidenceDerived):     "derived",
 		string(UsageConfidenceApproximate): "approximate",
 	}
 	for got, want := range cases {

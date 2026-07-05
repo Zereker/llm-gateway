@@ -1,8 +1,10 @@
-// Package respcache 是响应缓存的 Redis 存储实现（middleware.ResponseCacheStore）。
+// Package respcache is the Redis storage implementation of the response cache
+// (middleware.ResponseCacheStore).
 //
-// 存整条非流式响应(status/content-type/body/usage)为一个 JSON blob,带 TTL。
-// body []byte 经 json.Marshal 自动 base64,读回 unmarshal。best-effort:读/写错都当
-// miss/no-op,不阻塞请求。
+// It stores an entire non-streaming response (status/content-type/body/usage) as a
+// single JSON blob, with a TTL. The body []byte is base64-encoded automatically by
+// json.Marshal and decoded back on unmarshal. Best-effort: any read/write error is
+// treated as a miss/no-op, and never blocks the request.
 package respcache
 
 import (
@@ -15,13 +17,13 @@ import (
 	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
-// RedisStore Redis-backed 响应缓存,多副本共享。
+// RedisStore is a Redis-backed response cache, shared across multiple replicas.
 type RedisStore struct {
 	rdb    *redis.Client
 	prefix string
 }
 
-// NewRedisStore 构造;prefix 空用 "llm-gateway:respcache"。
+// NewRedisStore constructs a RedisStore; if prefix is empty, "llm-gateway:respcache" is used.
 func NewRedisStore(rdb *redis.Client, prefix string) *RedisStore {
 	if prefix == "" {
 		prefix = "llm-gateway:respcache"
@@ -31,7 +33,8 @@ func NewRedisStore(rdb *redis.Client, prefix string) *RedisStore {
 
 func (s *RedisStore) key(k string) string { return s.prefix + ":" + k }
 
-// Get 读缓存;缺失 / Redis 错 / 反序列化失败都当 miss。
+// Get reads from the cache; a missing key, a Redis error, or a deserialization
+// failure are all treated as a miss.
 func (s *RedisStore) Get(ctx context.Context, key string) (middleware.CachedResponse, bool) {
 	b, err := s.rdb.Get(ctx, s.key(key)).Bytes()
 	if err != nil {
@@ -44,7 +47,7 @@ func (s *RedisStore) Get(ctx context.Context, key string) (middleware.CachedResp
 	return cr, true
 }
 
-// Set 写缓存 + TTL(best-effort)。
+// Set writes to the cache with a TTL (best-effort).
 func (s *RedisStore) Set(ctx context.Context, key string, resp middleware.CachedResponse, ttl time.Duration) {
 	b, err := json.Marshal(resp)
 	if err != nil {
@@ -56,5 +59,5 @@ func (s *RedisStore) Set(ctx context.Context, key string, resp middleware.Cached
 	_ = s.rdb.Set(ctx, s.key(key), b, ttl).Err()
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ middleware.ResponseCacheStore = (*RedisStore)(nil)

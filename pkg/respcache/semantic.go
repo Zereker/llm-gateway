@@ -11,19 +11,21 @@ import (
 	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
-// RedisSemanticStore 语义缓存的 Redis 实现（middleware.SemanticCacheStore）。
+// RedisSemanticStore is the Redis implementation of the semantic cache (middleware.SemanticCacheStore).
 //
-// **索引形态**：每个 namespace 一个有界 LIST `<prefix>:sem:<ns>`,元素是
-// {vec, resp} JSON。Lookup 拉全表在 Go 里算 cosine（暴力 KNN）——namespace 内条目上
-// 限 maxEntries（LTRIM），个位数到几百量级 O(N) 可忽略。真要上规模换 RediSearch
-// 向量索引,接口不变。
+// **Index shape**: each namespace gets one bounded LIST `<prefix>:sem:<ns>`, whose elements
+// are {vec, resp} JSON. Lookup pulls the whole list and computes cosine similarity in Go
+// (brute-force KNN) — entries per namespace are capped at maxEntries (via LTRIM), so at a
+// scale of single digits to a few hundred, O(N) is negligible. To scale further, swap in a
+// RediSearch vector index without changing the interface.
 type RedisSemanticStore struct {
 	rdb        *redis.Client
 	prefix     string
 	maxEntries int
 }
 
-// NewRedisSemanticStore 构造；prefix 空用默认；maxEntries<=0 用 500。
+// NewRedisSemanticStore constructs a RedisSemanticStore; an empty prefix uses the default,
+// and maxEntries<=0 defaults to 500.
 func NewRedisSemanticStore(rdb *redis.Client, prefix string, maxEntries int) *RedisSemanticStore {
 	if prefix == "" {
 		prefix = "llm-gateway:respcache"
@@ -41,7 +43,8 @@ type semanticEntry struct {
 	Resp middleware.CachedResponse `json:"resp"`
 }
 
-// Lookup 暴力扫 namespace 里全部条目，返回 cosine 最高且 ≥ threshold 的响应。
+// Lookup brute-force scans every entry in the namespace and returns the response with the
+// highest cosine similarity that is ≥ threshold.
 func (s *RedisSemanticStore) Lookup(ctx context.Context, ns string, vec []float32, threshold float64) (middleware.CachedResponse, bool) {
 	items, err := s.rdb.LRange(ctx, s.key(ns), 0, -1).Result()
 	if err != nil {
@@ -63,7 +66,8 @@ func (s *RedisSemanticStore) Lookup(ctx context.Context, ns string, vec []float3
 	return bestResp, found
 }
 
-// Store LPUSH 新条目 + LTRIM 到上限 + 刷 TTL（一个 pipeline）。best-effort。
+// Store does LPUSH of the new entry + LTRIM to the cap + refreshes the TTL (in one pipeline).
+// Best-effort.
 func (s *RedisSemanticStore) Store(ctx context.Context, ns string, vec []float32, resp middleware.CachedResponse, ttl time.Duration) {
 	b, err := json.Marshal(semanticEntry{Vec: vec, Resp: resp})
 	if err != nil {
@@ -80,5 +84,5 @@ func (s *RedisSemanticStore) Store(ctx context.Context, ns string, vec []float32
 	_, _ = pipe.Exec(ctx)
 }
 
-// 编译期断言。
+// Compile-time interface assertion.
 var _ middleware.SemanticCacheStore = (*RedisSemanticStore)(nil)

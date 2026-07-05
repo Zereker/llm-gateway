@@ -5,34 +5,34 @@ import (
 	"math/rand"
 )
 
-// Selector Filter / Scorer 之后的最终选择步骤：按 EffectiveWeight 选 1 个候选。
+// Picker is the final selection step after Filter / Scorer: picks 1 candidate by EffectiveWeight.
 //
-// 设计精神（docs/03 §4 §8）：
-//   - WeightedRandom 必须基于 Candidate.EffectiveWeight 而非 Endpoint.Weight
-//   - 候选只剩 1 时 trivially 返回该候选
-//   - 全部 EffectiveWeight=0 或空 → 返回 nil（dispatch.FallbackPolicy.OnExhausted 兜底）
+// Design philosophy (docs/03 §4 §8):
+//   - WeightedRandom must be based on Candidate.EffectiveWeight, not Endpoint.Weight
+//   - trivially returns the sole candidate when only 1 remains
+//   - all EffectiveWeight=0 or empty → returns nil (dispatch.FallbackPolicy.OnExhausted handles it)
 //
-// 实现 MUST be safe for concurrent use。
+// Implementations MUST be safe for concurrent use.
 type Picker interface {
 	Select(ctx context.Context, candidates []Candidate) *Candidate
 }
 
-// WeightedRandomPicker 按 EffectiveWeight 概率分布选 1。
+// WeightedRandomPicker picks 1 by an EffectiveWeight probability distribution.
 //
-// weight=0 → 排除（管理上的"软下线"语义）。
-// 全 0 → 返回 nil。
+// weight=0 → excluded (the "soft offline" semantics for admin purposes).
+// all 0 → returns nil.
 type WeightedRandomPicker struct {
-	rng *rand.Rand // nil = 用 math/rand 全局
+	rng *rand.Rand // nil = use the math/rand global
 }
 
-// NewWeightedRandomPicker 构造一个 selector。
+// NewWeightedRandomPicker constructs a selector.
 //
-// rng=nil 时用 math/rand 全局（thread-safe，Go 1.20+ 自动 per-goroutine seed）。
+// When rng=nil, uses the math/rand global (thread-safe, Go 1.20+ auto per-goroutine seed).
 func NewWeightedRandomPicker() *WeightedRandomPicker {
 	return &WeightedRandomPicker{}
 }
 
-// Select 按 EffectiveWeight 加权随机选 1。
+// Select picks 1 by EffectiveWeight-weighted random.
 func (s *WeightedRandomPicker) Select(_ context.Context, candidates []Candidate) *Candidate {
 	if len(candidates) == 0 {
 		return nil
@@ -60,7 +60,7 @@ func (s *WeightedRandomPicker) Select(_ context.Context, candidates []Candidate)
 			return &live[i]
 		}
 	}
-	// 数学保证不会到这里，fallback
+	// mathematically guaranteed not to reach here; fallback
 	return &live[len(live)-1]
 }
 

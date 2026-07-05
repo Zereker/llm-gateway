@@ -7,17 +7,17 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Config 构造默认 Scheduler 的依赖。
+// Config holds the dependencies for constructing the default Scheduler.
 type Config struct {
-	Filters  []Filter           // hard filters（cooldown / limit_read / ...）按顺序执行
-	Scorer   Scorer             // Runtime Scoring（docs/03 §8）；nil = 不打分（保留静态 weight）
-	Picker Picker             // 最终选择器；nil = 默认 WeightedRandomPicker
-	Cooldown CooldownManager    // Report 失败时调用；nil = 不冷却
-	Stats    EndpointStatsStore // 统计读模型；nil = 不更新（Report 不写）
-	Affinity AffinityStore      // 会话亲和；nil = 不粘会话
+	Filters  []Filter           // hard filters (cooldown / limit_read / ...), executed in order
+	Scorer   Scorer             // Runtime Scoring (docs/03 §8); nil = no scoring (keep static weight)
+	Picker   Picker             // final selector; nil = default WeightedRandomPicker
+	Cooldown CooldownManager    // called on Report failure; nil = no cooldown
+	Stats    EndpointStatsStore // stats read model; nil = not updated (Report doesn't write)
+	Affinity AffinityStore      // session affinity; nil = no sticky session
 }
 
-// New 构造默认 Scheduler。Selector 缺省 = WeightedRandomPicker。
+// New constructs the default Scheduler. Selector defaults to WeightedRandomPicker.
 func New(cfg Config) Scheduler {
 	if cfg.Picker == nil {
 		cfg.Picker = NewWeightedRandomPicker()
@@ -25,19 +25,19 @@ func New(cfg Config) Scheduler {
 	return &defaultScheduler{cfg: cfg}
 }
 
-// defaultScheduler 无状态 Pick / Report 实现。
+// defaultScheduler is the stateless Pick / Report implementation.
 type defaultScheduler struct {
 	cfg Config
 }
 
-// Pick 跑 Filter 链 → Scorer 调权 → 取第一个候选（链尾 selector 必须缩到 1 个）。
+// Pick runs the Filter chain → Scorer adjusts weights → takes the first candidate (the selector at the end of the chain must narrow it down to 1).
 //
-// 流程（docs/03 §7 §8）：
+// Flow (docs/03 §7 §8):
 //
-//  1. 按 req.ExcludeIDs 过滤（已经试过的 ep）
-//  2. 跑 hard filters：cooldown / limit_read / ...
-//  3. Scorer.Score 调权（runtime scoring，可选）
-//  4. 链尾 selector（weighted_random）按 EffectiveWeight 选 1 个
+//  1. Filter by req.ExcludeIDs (endpoints already tried)
+//  2. Run hard filters: cooldown / limit_read / ...
+//  3. Scorer.Score adjusts weights (runtime scoring, optional)
+//  4. The selector at the end of the chain (weighted_random) picks 1 by EffectiveWeight
 func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endpoint, error) {
 	if req == nil {
 		return nil, errors.New("schedule: nil request")
@@ -46,7 +46,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		return nil, nil
 	}
 
-	// 1. 排除已尝试 endpoint
+	// 1. Exclude already-tried endpoints
 	avail := make([]Candidate, 0, len(req.Candidates))
 	for _, c := range req.Candidates {
 		if c.Endpoint == nil {
@@ -61,7 +61,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		return nil, nil
 	}
 
-	// 2. 跑 filter 链（filter 操作的是 *domain.Endpoint；scorer 操作 Candidate）
+	// 2. Run the filter chain (filters operate on *domain.Endpoint; the scorer operates on Candidate)
 	eps := make([]*domain.Endpoint, len(avail))
 	for i, c := range avail {
 		eps[i] = c.Endpoint
@@ -71,7 +71,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		return nil, nil
 	}
 
-	// 3. Scorer 调权（可选）：把 filter 剩余 eps 映射回 Candidate（保留原 EffectiveWeight）
+	// 3. Scorer adjusts weights (optional): map the surviving eps back to Candidate (keeping the original EffectiveWeight)
 	survived := make([]Candidate, 0, len(eps))
 	keepSet := make(map[int64]float64, len(avail))
 	for _, c := range avail {
@@ -87,20 +87,21 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		survived = s.cfg.Scorer.Score(ctx, survived, req)
 	}
 
-	// 3.5 会话亲和（软）：pinned endpoint 仍在 survived（健康 + eligible + 未排除）
-	//     里就粘住它（prefix/KV cache 命中）；否则 fall through 正常选 + 重新 pin。
-	//     session key 按 group 命名空间化,避免跨租户池碰撞。
+	// 3.5 Session affinity (soft): if the pinned endpoint is still in survived (healthy +
+	//     eligible + not excluded), stick to it (prefix/KV cache hit); otherwise fall through
+	//     to normal selection + re-pin. The session key is namespaced by group to avoid
+	//     collisions across tenant pools.
 	if s.cfg.Affinity != nil && req.SessionKey != "" {
 		ak := req.Group + "|" + req.SessionKey
 		if id, ok := s.cfg.Affinity.Get(ctx, ak); ok {
 			for _, c := range survived {
 				if c.Endpoint.ID == id {
-					s.cfg.Affinity.Set(ctx, ak, id) // 刷 TTL——稳态命中也要续期，否则活跃会话在 TTL 后丢 pin
+					s.cfg.Affinity.Set(ctx, ak, id) // refresh TTL — steady-state hits must also renew, otherwise an active session loses its pin after the TTL expires
 					return c.Endpoint, nil          // sticky hit
 				}
 			}
 		}
-		// pinned 不可用（或首次）——正常选完再 pin。
+		// pinned endpoint unavailable (or first time) — select normally, then pin.
 		chosen := s.cfg.Picker.Select(ctx, survived)
 		if chosen == nil {
 			return nil, nil
@@ -109,7 +110,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		return chosen.Endpoint, nil
 	}
 
-	// 4. 用 Selector 按 EffectiveWeight 选 1 个
+	// 4. Use the Selector to pick 1 by EffectiveWeight
 	chosen := s.cfg.Picker.Select(ctx, survived)
 	if chosen == nil {
 		return nil, nil
@@ -117,28 +118,28 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 	return chosen.Endpoint, nil
 }
 
-// Report 反馈 Send 结果给 cooldown + stats store + metric。
+// Report feeds the Send result back to cooldown + stats store + metric.
 //
-// 不决定控制流——dispatch.RetryPolicy.Decide 看 result.Class.IsRetryable 决定继续 / 停止。
+// Does not decide control flow — dispatch.RetryPolicy.Decide looks at result.Class.IsRetryable to decide whether to continue or stop.
 //
-// **路由**：
-//   - Success / Invalid → 不冷却（无价值；Invalid 是客户端错误，cooldown 会误伤其它请求）
-//   - Unknown → 不冷却（分类盲区 / 依赖故障，不能把"Redis 抖动"误标成"endpoint 坏了"）
-//   - Capacity / Permanent / Transient → cooldown（best-effort，失败不阻塞）
+// **Routing**:
+//   - Success / Invalid → no cooldown (no value; Invalid is a client error, cooldown would wrongly punish other requests)
+//   - Unknown → no cooldown (classification blind spot / dependency failure; can't mistake "Redis jitter" for "endpoint is broken")
+//   - Capacity / Permanent / Transient → cooldown (best-effort, failure doesn't block)
 //
-// Stats（如配置）：每次 Report 都写一份观测数据（latency / class），供下次 Pick
-// 的 Scorer 读取做 Runtime Scoring。
+// Stats (if configured): every Report writes an observation (latency / class), which the next Pick's
+// Scorer reads for Runtime Scoring.
 func (s *defaultScheduler) Report(ctx context.Context, ep *domain.Endpoint, result Result) {
 	if ep == nil {
 		return
 	}
 
-	// 写 stats store（runtime scoring 的输入；best-effort）
+	// write to stats store (input for runtime scoring; best-effort)
 	if s.cfg.Stats != nil {
 		s.cfg.Stats.Record(ctx, ep.ID, result)
 	}
 
-	// 失败 + retryable → cooldown
+	// failure + retryable → cooldown
 	if result.Class.IsRetryable() && result.Class != ClassUnknown && s.cfg.Cooldown != nil {
 		_ = s.cfg.Cooldown.Mark(ctx, ep.ID, result.Class)
 	}

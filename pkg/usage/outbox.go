@@ -2,20 +2,23 @@ package usage
 
 import "context"
 
-// OutboxPublisher M10 Tracing 发计量事件的依赖接口。
+// OutboxPublisher is the dependency interface M10 Tracing uses to emit metering events.
 //
-// 内置实现：file (JSONL append) 和 kafka (sync ack=1)。
+// Built-in implementations: file (JSONL append) and kafka (sync ack=1).
 //
-// 详见 docs/architecture/05-metering-billing.md 第 6 节（同步两阶段：本地日志 + Kafka）。
+// See docs/architecture/05-metering-billing.md section 6 for details
+// (synchronous two-phase: local log + Kafka).
 //
-// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时 Publish）。
-// evt.Payload []byte：实现不可保留 slice 引用（caller 可能复用 / GC）。
+// Implementations MUST be safe for concurrent use (multiple gin handler
+// goroutines calling Publish at the same time).
+// evt.Payload []byte: implementations must not retain a reference to the
+// slice (the caller may reuse it / it may be GC'd).
 type OutboxPublisher interface {
 	Publish(c context.Context, evt *OutboxEvent) error
 }
 
-// OutboxEvent 一条计量事件。
+// OutboxEvent is a single metering event.
 type OutboxEvent struct {
-	Payload []byte // 序列化的 JSON / Protobuf
-	Key     string // 分区键（默认 EndpointID）
+	Payload []byte // serialized JSON / Protobuf
+	Key     string // partition key (defaults to EndpointID)
 }

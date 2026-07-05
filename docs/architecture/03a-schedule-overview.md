@@ -1,15 +1,16 @@
-# 03a — Schedule 速查 / 上手伴读
+# 03a — Schedule Quick Reference / Onboarding Companion
 
-这是 [03-endpoint-scheduling.md](./03-endpoint-scheduling.md) 的入门视角：先把 schedule
-全貌讲一遍（数据流、各包职责、关键数据结构、装配点），再回到 03 看每条规则的设计理由。
+This is the beginner's-eye view of [03-endpoint-scheduling.md](./03-endpoint-scheduling.md): first walk through
+the whole schedule picture (data flow, each package's responsibility, key data structures, wiring points),
+then go back to 03 for the design rationale behind each rule.
 
-> 03 讲 **why**，本文讲 **what / where**。改主链路代码仍以 03 为准。
+> 03 explains **why**, this doc explains **what / where**. For changes to main-path code, 03 still governs.
 
 ## 0. TL;DR
 
-调度的执行时序由 **`dispatch.Dispatcher`** 拥有，`middleware/schedule.go` 只是一个
-thin adapter——把 gin / RC 映射成 `dispatch.Input`，跑 `Dispatch()`，再把
-`dispatch.Outcome` 映射回 RC + HTTP。下面是真正的执行流：
+The scheduling execution timing is owned by **`dispatch.Dispatcher`**; `middleware/schedule.go` is just a
+thin adapter — it maps gin / RC into `dispatch.Input`, runs `Dispatch()`, then maps
+`dispatch.Outcome` back into RC + HTTP. Below is the actual execution flow:
 
 ```text
 middleware/schedule.go (M7 thin adapter):
@@ -22,14 +23,14 @@ dispatch.Dispatcher.Dispatch (pkg/dispatch/dispatcher.go):
   for {
       action := step(ctx, w, state)
       switch action {
-      case Continue: 同 model 再选一个
-      case Switch:   切下一个 model（FallbackPolicy 触发）
-      case Stream:   流已写出，return Outcome
-      case Abort:    终止，return Outcome
+      case Continue: pick another one on the same model
+      case Switch:   switch to the next model (triggered by FallbackPolicy)
+      case Stream:   stream already written, return Outcome
+      case Abort:    terminate, return Outcome
       }
   }
 
-dispatch.Dispatcher.step (单次 attempt):
+dispatch.Dispatcher.step (a single attempt):
   if Exhausted → Abort(NoEndpoint, 503)
   candidates := CandidateSource.ListForModel(model, group)
   eligible   := filterEligible(candidates, env, handlers)   # pkg/dispatch/eligibility.go
@@ -40,98 +41,98 @@ dispatch.Dispatcher.step (单次 attempt):
   res := InvokerFactory.For(ep, handler, env).Invoke(ctx)    # pkg/invoker → adapters.InvokerFactoryAdapter
   Selector.Report(ep, verdict)
   switch RetryPolicy.Decide(verdict):
-  case Stream:   res.StreamTo(w) + EndpointQuota.ChargeUsage  # TPM 后扣
+  case Stream:   res.StreamTo(w) + EndpointQuota.ChargeUsage  # deducted after TPM
   case Continue / Switch / Abort: return action
 ```
 
-三层职责分工：
+Three-layer division of responsibility:
 
-| 谁 | 负责 |
+| Who | Responsible for |
 |----|------|
-| `pkg/middleware/schedule.go` | RC ↔ dispatch.Input/Outcome 映射；content log enrichment；metric `scheduling_duration_seconds`；**不做调度决策** |
-| `dispatch.Dispatcher` (`pkg/dispatch`) | 调度执行时序的**唯一**所有者：候选 → 资格过滤 → 选择 → 前扣 → 调用 → 上报 → retry/fallback → 后扣 |
-| `pkg/selector` | 在一批候选里跑 filter chain → scorer → picker，输出 1 个 endpoint。**无状态**，不知道 protocol / handler / repo / fallback |
-| `pkg/invoker` | 拿 Handler 跑 `PrepareCall + HTTP Do + 响应 forward + 错误归类`（不做协议查找——dispatch 已通过 `protocol.Lookup` 拿到 Handler） |
-| `pkg/protocol` | facade：Handler = Factory + Translator + Quirks；消费侧只看 Handler / Lookup |
-| `pkg/ratelimit` | bucket / store primitives；`dispatch/adapters.EndpointQuotaAdapter` 把它接成 `dispatch.EndpointQuota` |
-| `pkg/dispatch/adapters/` | 把上面 4 个 primitive 包桥成 dispatch 的 4 个 port（CandidateSource / Selector / InvokerFactory / EndpointQuota），把组合逻辑跟 primitives 解耦 |
+| `pkg/middleware/schedule.go` | RC ↔ dispatch.Input/Outcome mapping; content log enrichment; metric `scheduling_duration_seconds`; **does not make scheduling decisions** |
+| `dispatch.Dispatcher` (`pkg/dispatch`) | The **sole** owner of scheduling execution timing: candidates → eligibility filter → selection → pre-deduction → invocation → reporting → retry/fallback → post-deduction |
+| `pkg/selector` | Runs the filter chain → scorer → picker over a batch of candidates, outputs 1 endpoint. **Stateless**, unaware of protocol / handler / repo / fallback |
+| `pkg/invoker` | Takes a Handler and runs `PrepareCall + HTTP Do + response forward + error classification` (does not do protocol lookup — dispatch has already obtained the Handler via `protocol.Lookup`) |
+| `pkg/protocol` | facade: Handler = Factory + Translator + Quirks; consumers only see Handler / Lookup |
+| `pkg/ratelimit` | bucket / store primitives; `dispatch/adapters.EndpointQuotaAdapter` wires it into `dispatch.EndpointQuota` |
+| `pkg/dispatch/adapters/` | Bridges the 4 primitive packages above into dispatch's 4 ports (CandidateSource / Selector / InvokerFactory / EndpointQuota), decoupling composition logic from the primitives |
 
-`pkg/selector` 不持有 repo，不知道 fallback model 存在。跨 model fallback 是业务语义，
-留在 dispatch.Dispatcher 的 outer loop（FallbackPolicy 触发 Switch action）。
+`pkg/selector` does not hold a repo, and doesn't know fallback models exist. Cross-model fallback is
+business semantics, and stays in the outer loop of `dispatch.Dispatcher` (FallbackPolicy triggers the Switch action).
 
-## 1. 各包 / 各文件职责一览
+## 1. Overview of package / file responsibilities
 
 ```
-pkg/middleware/schedule.go     M7 thin adapter（gin.HandlerFunc Schedule()）：
+pkg/middleware/schedule.go     M7 thin adapter (gin.HandlerFunc Schedule()):
                                RC → dispatch.Input → dispatcher.Dispatch → RC
 
-pkg/dispatch/                  调度执行时序的所有者
-    dispatcher.go              Dispatcher.Dispatch / step 主循环
-    eligibility.go             纯函数 filterEligible：输入 candidates + envelope + protocol.Lookup
-                               输出 eligible endpoints；语义见 §2
-    state.go                   per-request state；finalize 永远生成 SchedulingDecision
-    action.go / verdict.go     Continue / Switch / Stream / Abort + Verdict 类型
-    ports.go                   4 个 port 接口（CandidateSource / Selector / InvokerFactory / EndpointQuota）
+pkg/dispatch/                  owner of scheduling execution timing
+    dispatcher.go              Dispatcher.Dispatch / step main loop
+    eligibility.go             pure function filterEligible: takes candidates + envelope + protocol.Lookup
+                               outputs eligible endpoints; semantics in §2
+    state.go                   per-request state; finalize always produces a SchedulingDecision
+    action.go / verdict.go     Continue / Switch / Stream / Abort + Verdict types
+    ports.go                   4 port interfaces (CandidateSource / Selector / InvokerFactory / EndpointQuota)
     policy.go / fallback_chain.go / retry_default.go
-                               AttemptCap / RetryPolicy / FallbackPolicy 默认实现
-    cap_header.go              X-Gateway-Max-Attempts header 解析
-    adapters/                  把 primitive 包桥成 dispatch port
+                               default implementations of AttemptCap / RetryPolicy / FallbackPolicy
+    cap_header.go              X-Gateway-Max-Attempts header parsing
+    adapters/                  bridges primitive packages into dispatch ports
         selector.go            selector.Scheduler → dispatch.Selector
         invoker.go             invoker.Sender   → dispatch.InvokerFactory
         quota.go               ratelimit.Store  → dispatch.EndpointQuota
 
-pkg/selector/                  selection primitives，**不知道** protocol / handler / repo
-    types.go                   Candidate / Request / Result / ErrorClass / Scheduler 接口
-    scheduler.go               defaultScheduler：Pick（filter→scorer→picker）+ Report
-    filter.go                  Filter 接口 + runChain
+pkg/selector/                  selection primitives, **unaware** of protocol / handler / repo
+    types.go                   Candidate / Request / Result / ErrorClass / Scheduler interfaces
+    scheduler.go               defaultScheduler: Pick (filter→scorer→picker) + Report
+    filter.go                  Filter interface + runChain
     cooldown.go                CooldownManager + RedisCooldownManager + CooldownFilter
-    limit_filter.go            LimitReadFilter（SnapshotBatch 只读）
-    busy.go / prefix_cache.go  self-hosted 优化 filter
-    weighted.go                Picker 接口 + WeightedRandomPicker
+    limit_filter.go            LimitReadFilter (SnapshotBatch, read-only)
+    busy.go / prefix_cache.go  self-hosted optimization filters
+    weighted.go                Picker interface + WeightedRandomPicker
     scorer.go                  Scorer + EndpointStatsStore + DefaultScorer
 
-pkg/invoker/                   HTTP 调用 + forward stream，不做协议查找
+pkg/invoker/                   HTTP invocation + forward stream, does not do protocol lookup
 pkg/ratelimit/                 Store / Bucket / endpoint bucket helpers
 pkg/protocol/                  Handler facade + Factory/Session + quirks
 
 cmd/gateway/                   composition root
-    main.go                    把 primitives 串成 dispatch.Dispatcher
-    dispatch_wiring.go         buildDispatcher：dispatch.New(WithCandidates / WithSelector /
+    main.go                    wires primitives together into dispatch.Dispatcher
+    dispatch_wiring.go         buildDispatcher: dispatch.New(WithCandidates / WithSelector /
                                WithInvokerFactory / WithQuota / WithCap / WithRetry /
                                WithFallback / WithTracer)
 ```
 
-## 2. 三层过滤的语义边界（**这是 schedule 最容易搞混的点**）
+## 2. Semantic boundaries of the three filtering layers (**the point most easily confused in schedule**)
 
-| 层 | 谁 | 语义 | 失败后果 |
+| Layer | Who | Semantics | Consequence of failure |
 |----|----|------|----------|
-| **Eligibility** | `pkg/dispatch/eligibility.go`（dispatch 内部 helper，不是独立 package） | 能不能承接：protocol.Lookup 拿不到 Handler / 模态不支持 | 剔除，**不入 cooldown，不算上游失败** |
-| **Hard Filter** | `pkg/selector.Filter`（cooldown / limit_read / busy / prefix_cache） | 此刻该不该选：在冷却 / 配额耗尽 / 太忙 / prefix 亲和 | 当次 Pick 不选；不直接终止请求 |
-| **Soft Scoring** | `pkg/selector.Scorer` | 更倾向选谁：success/latency/cost 调 `EffectiveWeight` | 只调权重，**不淘汰**候选 |
-| **Selector** | `pkg/selector.Selector`（默认 weighted_random） | 在筛后候选里按 `EffectiveWeight` 选 1 | 全 0 → nil → 内层 break |
+| **Eligibility** | `pkg/dispatch/eligibility.go` (an internal helper of dispatch, not a standalone package) | Can it handle this at all: protocol.Lookup can't find a Handler / modality unsupported | Excluded, **does not enter cooldown, not counted as an upstream failure** |
+| **Hard Filter** | `pkg/selector.Filter` (cooldown / limit_read / busy / prefix_cache) | Should it be picked right now: in cooldown / quota exhausted / too busy / prefix affinity | Not chosen this Pick; does not directly terminate the request |
+| **Soft Scoring** | `pkg/selector.Scorer` | Who is preferred: adjusts `EffectiveWeight` based on success/latency/cost | Only adjusts weight, **never eliminates** a candidate |
+| **Selector** | `pkg/selector.Selector` (default weighted_random) | Picks 1 from the filtered candidates by `EffectiveWeight` | All-zero → nil → inner break |
 
-**核心原则**（03 §3）：能力性问题（缺 vendor Factory / translator / ep.Protocol unknown）必须在
-Eligibility 阶段剔除——绝不能让它进 `Scheduler.Report`，否则会把"不支持"误标成"坏 ep"
-触发 cooldown，污染后续选择。
+**Core principle** (03 §3): capability issues (missing vendor Factory / translator / ep.Protocol unknown)
+must be excluded at the Eligibility stage — they must never reach `Scheduler.Report`, otherwise
+"unsupported" gets mislabeled as "bad ep", triggering cooldown and polluting subsequent selection.
 
-## 3. 关键数据结构（types.go）
+## 3. Key data structures (types.go)
 
 ```go
 type Candidate struct {
     Endpoint        *domain.Endpoint
-    EffectiveWeight float64           // 静态时 = ep.Weight；Scorer 启用时被调权
+    EffectiveWeight float64           // = ep.Weight when static; adjusted when Scorer is enabled
 }
 
 type Request struct {
-    Model      string                  // 当前轮次的 model（primary 或某个 fallback）
+    Model      string                  // the model for the current round (primary or a fallback)
     Group      string                  // rc.Identity.Group
-    Candidates []Candidate             // eligibility 之后的候选
-    ExcludeIDs map[int64]struct{}      // 本请求已尝试过的 ep
-    PrefixKey  []byte                  // 仅 PrefixCacheFilter 用
+    Candidates []Candidate             // candidates after eligibility
+    ExcludeIDs map[int64]struct{}      // eps already tried in this request
+    PrefixKey  []byte                  // used only by PrefixCacheFilter
 }
 
 type Result struct {
-    Class    ErrorClass                // 决定 cooldown TTL + 是否重试
+    Class    ErrorClass                // determines cooldown TTL + whether to retry
     HTTPCode int
     Reason   string
     Latency  time.Duration
@@ -143,138 +144,144 @@ type Scheduler interface {
 }
 ```
 
-**Request 故意不带** `attempts` / `fallbackModels` / `LoadFallback`——这些都是
-dispatch.Dispatcher 外层 reducer 的职责，scheduler 只看一批候选。
+**Request deliberately does not carry** `attempts` / `fallbackModels` / `LoadFallback` — these are all
+the responsibility of the outer reducer of dispatch.Dispatcher; the scheduler only looks at a single batch of candidates.
 
-## 4. ErrorClass 六分类速查
+## 4. ErrorClass six-way classification quick reference
 
-| Class | 触发场景 | IsRetryable | Cooldown |
+| Class | Trigger scenario | IsRetryable | Cooldown |
 |-------|----------|-------------|----------|
-| `success` | HTTP 2xx + 协议层成功 | false | 不冷却 |
-| `transient` | 5xx / 网络 / timeout / DNS | true | 按配置 TTL |
-| `capacity` | 上游 429 / overloaded / 本地 reserve 超限 | true | 按配置 TTL |
-| `permanent` | 上游 401 / 403 / 配置错 | true（换 ep） | 按配置 TTL |
-| `invalid` | 客户端 4xx（除 401/403/429）/ translator 转换失败 | **false** | 不冷却 |
-| `unknown` | 分类不出来 | true | **不冷却**（防止把分类 bug 放大成全集冷却） |
+| `success` | HTTP 2xx + protocol-layer success | false | no cooldown |
+| `transient` | 5xx / network / timeout / DNS | true | TTL per config |
+| `capacity` | upstream 429 / overloaded / local reserve exceeded | true | TTL per config |
+| `permanent` | upstream 401 / 403 / config error | true (switch ep) | TTL per config |
+| `invalid` | client 4xx (other than 401/403/429) / translator conversion failure | **false** | no cooldown |
+| `unknown` | cannot be classified | true | **no cooldown** (to prevent a classification bug from being amplified into a blanket cooldown) |
 
-注意两个特殊点：
+Note two special points:
 
-- `invalid` 命中时 `dispatch.DefaultRetry.Decide` 直接返 `Abort{HTTPCode: 400}`，
-  outer reducer 收到后 `state.SetAbort` + 退出循环——**既不**换 ep **也不**切
-  fallback model（PrepareError{Phase:PhaseTranslate|PhaseQuirks} 也走这条）。
-- `unknown` 虽 retryable 但 `Scheduler.Report` 里特判**不写 cooldown**（避免分类盲区污染冷却）。
+- When `invalid` is hit, `dispatch.DefaultRetry.Decide` returns `Abort{HTTPCode: 400}` directly,
+  and after the outer reducer receives it, `state.SetAbort` + exits the loop — it **neither** switches ep
+  **nor** switches fallback model (`PrepareError{Phase:PhaseTranslate|PhaseQuirks}` also takes this path).
+- `unknown` is retryable, but `Scheduler.Report` special-cases it to **not write a cooldown**
+  (to avoid a classification blind spot polluting cooldown).
 
-## 5. 重试模型（两层，互补）
+## 5. Retry model (two layers, complementary)
 
 ```
-内层（同 model 换 endpoint）：
-  失败 + retryable → excluded[ep.ID] = struct{}{} → 继续 Pick
-  attempts 计入 totalAttempts，受 attemptsCap 限制
-  (attemptsCap = min(cfg.MaxAttempts, X-Gateway-Max-Attempts) , 默认 3)
+Inner layer (same model, switch endpoint):
+  failure + retryable → excluded[ep.ID] = struct{}{} → continue Pick
+  attempts count toward totalAttempts, bounded by attemptsCap
+  (attemptsCap = min(cfg.MaxAttempts, X-Gateway-Max-Attempts), default 3)
 
-外层（跨 model fallback）：
-  仅当 request 带 X-Gateway-Fallback-Models 才会切
-  上限 MaxFallbackModels = 3（去重保序）
-  每个 fallback model 都要重新过 M5（catalog + subscription）
-  totalAttempts 在所有 model 之间累加，不重置
+Outer layer (cross-model fallback):
+  switches only when the request carries X-Gateway-Fallback-Models
+  cap MaxFallbackModels = 3 (dedup, order preserved)
+  each fallback model must go through M5 again (catalog + subscription)
+  totalAttempts accumulates across all models, never resets
 ```
 
-**关键**：同 endpoint retry（L1 retry）已经不再做——网络抖动靠"同 model 换 ep"承接。
-未来如需再加，必须作为显式配置加回来，不能在 schedule 内部隐式开启。
+**Key point**: same-endpoint retry (L1 retry) is no longer done — network jitter is now absorbed by
+"same model, switch ep". If needed again in the future, it must be added back as explicit config,
+not implicitly turned on inside schedule.
 
-## 6. Cooldown 流程
+## 6. Cooldown flow
 
 ```
 Scheduler.Report(ep, result) [scheduler.go:107]
-  ├─ Stats.Record(ep.ID, result)          # 写 EndpointStatsStore（Scorer 输入）
+  ├─ Stats.Record(ep.ID, result)          # writes to EndpointStatsStore (Scorer input)
   └─ if result.Class.IsRetryable()
-        && result.Class != ClassUnknown   # unknown 不冷却
+        && result.Class != ClassUnknown   # unknown does not cool down
         && Cooldown != nil
         → Cooldown.Mark(ep.ID, class)     # Redis SET cd:endpoint:<id> <class> EX <ttl>
-                                           # best-effort：err 仅记 log，不阻塞
+                                           # best-effort: errors only logged, never block
 ```
 
-**Redis 视角**：
+**From Redis's perspective**:
 
 ```
 key:   cd:endpoint:<id>
-value: ErrorClass 字符串（诊断用）
-TTL:   按 class 配置（CooldownDurations.Get）
+value: ErrorClass string (for diagnostics)
+TTL:   configured per class (CooldownDurations.Get)
 ```
 
-后到的 Mark **直接覆盖** TTL —— 持续失败 = 持续冷却（符合预期）。
+A later Mark **directly overwrites** the TTL — continued failure = continued cooldown (as expected).
 
-CooldownFilter 走 MGET 批量查；**Redis 错时 fail-open**（保留所有候选），避免 Redis
-抖动 = 503 风暴。
+CooldownFilter does a batch query via MGET; **fail-open on Redis error** (keeps all candidates), to avoid
+Redis jitter turning into a 503 storm.
 
-## 7. Endpoint Quota（与 M6 用户侧 quota 严格分层）
+## 7. Endpoint Quota (strictly layered apart from M6 user-side quota)
 
-| 时机 | 操作 | Bucket Key |
+| Timing | Operation | Bucket Key |
 |------|------|------------|
-| eligibility 之后 / Pick filter 链内 | `LimitReadFilter` 用 `SnapshotBatch` **只读**剔除已耗尽 | `rl:endpoint:<id>:rpm`、`...:rps` |
-| Pick 选中 ep 后 / Invoke 之前 | `dispatch.Dispatcher.step` 调 `EndpointQuota.Reserve(ctx, ep)`（`adapters/EndpointQuotaAdapter` 包 `ratelimit.Store.ReserveBatch` 做 RPM/RPS 前扣）；超限 → `QuotaVerdict` 翻成 `Verdict{Class: ClassCapacity}` → `RetryPolicy.Decide` 一般返 `Continue` 换 ep | 同上 |
-| StreamTo 完成（响应已结束） | dispatcher 拿到 `StreamReport.Usage` 后调 `EndpointQuota.ChargeUsage(ctx, ep, usage)`（`adapters/EndpointQuotaAdapter` 包 `ratelimit.Store.ChargeBatch`，`cost = usage.Total`，fire-and-forget） | `rl:endpoint:<id>:tpm` |
+| After eligibility / inside the Pick filter chain | `LimitReadFilter` uses `SnapshotBatch` **read-only** to exclude already-exhausted ones | `rl:endpoint:<id>:rpm`, `...:rps` |
+| After Pick selects an ep / before Invoke | `dispatch.Dispatcher.step` calls `EndpointQuota.Reserve(ctx, ep)` (`adapters/EndpointQuotaAdapter` wraps `ratelimit.Store.ReserveBatch` for RPM/RPS pre-deduction); over limit → `QuotaVerdict` becomes `Verdict{Class: ClassCapacity}` → `RetryPolicy.Decide` generally returns `Continue` to switch ep | same as above |
+| After StreamTo completes (response already finished) | after the dispatcher gets `StreamReport.Usage`, it calls `EndpointQuota.ChargeUsage(ctx, ep, usage)` (`adapters/EndpointQuotaAdapter` wraps `ratelimit.Store.ChargeBatch`, `cost = usage.Total`, fire-and-forget) | `rl:endpoint:<id>:tpm` |
 
-**为什么前扣不在 filter 阶段做**：filter 输入是"候选集"，如果在那里 reserve，未被选中
-的候选也被扣了 quota，会显著放大错误。所以 filter **永远只能 SnapshotBatch 只读**；
-Reserve 只发生在 dispatcher Pick 之后。
+**Why pre-deduction isn't done at the filter stage**: the filter's input is a "candidate set" — if reserve
+happened there, candidates that weren't even selected would also get their quota deducted, significantly
+amplifying errors. So the filter can **only ever do a read-only SnapshotBatch**;
+Reserve only happens after the dispatcher's Pick.
 
-**TPM 必须后扣**：因为请求时不知道 usage.Total（要等 stream 结束）。dispatcher
-拿到 `StreamReport.Usage` 后才知道真实 token 用量，再去 `ChargeUsage`。
-TPM 超限只发 metric，不阻塞**本次**响应（已经 stream 出去了）；下次请求才被
-`LimitReadFilter` 屏蔽。
+**TPM must be deducted after the fact**: because at request time `usage.Total` is unknown (must wait for the
+stream to finish). Only after the dispatcher gets `StreamReport.Usage` does it know the real token usage,
+and only then does it call `ChargeUsage`. When TPM goes over limit, only a metric is emitted; it doesn't
+block **this** response (it has already been streamed out); the next request is the one that gets blocked
+by `LimitReadFilter`.
 
-## 8. Runtime Scoring（可选层）
+## 8. Runtime Scoring (optional layer)
 
-默认关闭（`cfg.Scoring.Enabled = false`），启用后链路变成：
+Off by default (`cfg.Scoring.Enabled = false`); once enabled, the pipeline becomes:
 
 ```
 filter chain → Scorer.Score(candidates) → Selector.Select
                      ↑
        EndpointStatsStore.Snapshot(ep.ID)
                      ↑
-       Scheduler.Report → Stats.Record（每次都写）
+       Scheduler.Report → Stats.Record (writes every time)
 ```
 
-`DefaultScorer` 公式：
+`DefaultScorer` formula:
 
 ```
 effective_weight = base_weight * success_factor * latency_factor
 success_factor    = clamp(stats.SuccessRate,                [0.1, 2.0])
 latency_factor    = clamp(latencyBaselineMs / stats.LatencyMs, [0.1, 2.0])
-SampleCount < minSamples（默认 5）→ 中性 factor 1.0（保留探索）
+SampleCount < minSamples (default 5) → neutral factor 1.0 (preserve exploration)
 ```
 
-`InMemoryStatsStore` 用 EMA（默认 decay=0.2）；多副本部署下每实例独立累积——如需跨副本
-一致，把 store 换成 Redis-backed 实现，接口不变。
+`InMemoryStatsStore` uses EMA (default decay=0.2); under a multi-replica deployment each instance
+accumulates independently — if cross-replica consistency is needed, swap the store for a Redis-backed
+implementation; the interface stays the same.
 
-## 9. Header 速查
+## 9. Header quick reference
 
-| Header | 含义 | 解析规则 |
+| Header | Meaning | Parsing rule |
 |--------|------|----------|
-| `X-Gateway-Fallback-Models` | 跨 model fallback 列表（逗号分隔） | 去重保序，空忽略，超出 `MaxFallbackModels=3` 截断 |
-| `X-Gateway-Max-Attempts` | 客户端要求更紧的 attempts 上限 | 仅当 < cfg 默认值才生效，**不能**反向放大 |
+| `X-Gateway-Fallback-Models` | cross-model fallback list (comma-separated) | dedup, order preserved, empty ignored, truncated beyond `MaxFallbackModels=3` |
+| `X-Gateway-Max-Attempts` | client requests a tighter attempts cap | only takes effect when < the cfg default, **cannot** widen it |
 
-**客户端只能让默认更严**——这是配置原则，避免恶意请求把网关 attempts 拉爆。
+**The client can only make the default stricter** — this is a config principle, to prevent a malicious
+request from blowing up the gateway's attempts.
 
-## 10. SchedulingDecision 写入点
+## 10. Where SchedulingDecision gets written
 
 ```go
 rc.SchedulingDecision = &domain.SchedulingDecision{
-    Model:       rc.ModelService.Model,   // 原始请求 model
-    RoutedModel: routedModelOf(rc),       // 实际命中的 model（含 fallback）
+    Model:       rc.ModelService.Model,   // the original requested model
+    RoutedModel: routedModelOf(rc),       // the model actually hit (including fallback)
     UserGroup:   rc.Identity.Group,
-    Attempts:    []domain.Attempt{...},    // 每次 Pick + Send 一条
+    Attempts:    []domain.Attempt{...},    // one entry per Pick + Send
     DurationMs:  ...,
 }
 ```
 
-每个 `Attempt`：
+Each `Attempt`:
 
 ```go
 type Attempt struct {
-    Index       int        // 1, 2, 3 ... 跨 model 累加
-    Model       string     // 本次 attempt 用的 model
+    Index       int        // 1, 2, 3 ... accumulates across models
+    Model       string     // the model used for this attempt
     EndpointID  string
     AttemptRole string     // "primary" | "fallback"
     LatencyMs   int64
@@ -283,65 +290,66 @@ type Attempt struct {
 }
 ```
 
-Outcome 三态推导：成功 = `success`；中间失败 = `fallback`；最后一次失败 = `fail`。
+Outcome has three states derived: success = `success`; an intermediate failure = `fallback`;
+the final failure = `fail`.
 
-## 11. Metric 写入点
+## 11. Where metrics get written
 
-| Metric | 标签 | 写入位置 |
+| Metric | Labels | Write location |
 |--------|------|---------|
-| `scheduling_duration_seconds` | model, attempts | M7 thin adapter defer 结束时 |
-| `invoker_attempts_total` | model, routed_model, vendor, endpoint_id, attempt_role, result, error_class | 每次 Invoker.Invoke 之后（dispatch adapter） |
-| `rate_limit_decisions_total` | scope="endpoint", dimension, result="violated" | EndpointQuota.Reserve 超限时 |
-| `rate_limit_charge_total` | dimension="tpm", result | EndpointQuota.ChargeUsage 时 |
-| `tpm_overflow_total` | layer="endpoint", dimension="tpm" | endpoint TPM 后扣溢出时 |
-| `rate_limit_fail_open_total` | scope="endpoint", dimension="any" | LimitReadFilter Redis 错 fail-open 时 |
+| `scheduling_duration_seconds` | model, attempts | at the M7 thin adapter's defer, when it ends |
+| `invoker_attempts_total` | model, routed_model, vendor, endpoint_id, attempt_role, result, error_class | after every Invoker.Invoke (dispatch adapter) |
+| `rate_limit_decisions_total` | scope="endpoint", dimension, result="violated" | when EndpointQuota.Reserve goes over limit |
+| `rate_limit_charge_total` | dimension="tpm", result | at EndpointQuota.ChargeUsage |
+| `tpm_overflow_total` | layer="endpoint", dimension="tpm" | when endpoint TPM post-deduction overflows |
+| `rate_limit_fail_open_total` | scope="endpoint", dimension="any" | when LimitReadFilter fails open on a Redis error |
 | `llm_gateway_repo_cache_total` | table, result | repo TTL LRU cache hit/miss/error |
 
-Dispatch 内部还有 OTel span（`dispatch.request` / `dispatch.attempt`），attrs 含
+Dispatch also has internal OTel spans (`dispatch.request` / `dispatch.attempt`), with attrs including
 model / endpoint.id / vendor / verdict.{stage,class,http_code,reason} / dispatch.outcome
-/ dispatch.routed_model / dispatch.attempts，详见 [08 §4](./08-observability.md#4-tracing)。
+/ dispatch.routed_model / dispatch.attempts — see [08 §4](./08-observability.md#4-tracing) for details.
 
-完整 metric 契约见 [08-observability.md §3](./08-observability.md#3-metrics)。
+The complete metric contract is in [08-observability.md §3](./08-observability.md#3-metrics).
 
-## 12. 装配点（cmd/gateway/main.go + cmd/gateway/dispatch_wiring.go）
+## 12. Wiring points (cmd/gateway/main.go + cmd/gateway/dispatch_wiring.go)
 
-实际装配分两层：先把 selector / invoker / ratelimit 各自的 primitives 拼出来，
-再喂给 `buildDispatcher` 组合成 `dispatch.Dispatcher`，最后把 Dispatcher（**而不是**
-selector / sender）注入到 M7 middleware。
+The actual wiring happens in two layers: first assemble the primitives for selector / invoker / ratelimit
+individually, then feed them into `buildDispatcher` to compose the `dispatch.Dispatcher`, and finally
+inject the Dispatcher (**not** the selector / sender) into the M7 middleware.
 
 ```go
-// === main.go 准备 primitives ===
+// === main.go prepares primitives ===
 
 // 1. Cooldown manager
 cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{...})
 
-// 2. Filter chain（按 cfg.Selector.Filters 顺序）
+// 2. Filter chain (in the order of cfg.Selector.Filters)
 filters := buildSchedulerFilters(cfg.Selector.Filters, rateStore, cooldown)
 
-// 3. Scorer + Stats（可选）
+// 3. Scorer + Stats (optional)
 stats, scorer := buildScoring(cfg.Scoring)
 
-// 4. Scheduler primitives（selector.Scheduler 接口；纯批内 Pick + Report）
+// 4. Scheduler primitives (selector.Scheduler interface; pure in-batch Pick + Report)
 sched := selector.New(selector.Config{
     Filters: filters, Picker: selector.NewWeightedRandomPicker(),
     Cooldown: cooldown, Scorer: scorer, Stats: stats,
 })
 
-// 5. Sender primitives（invoker.Sender；纯 HTTP Do + forward）
+// 5. Sender primitives (invoker.Sender; pure HTTP Do + forward)
 sender := invoker.New(senderOpts...)
 
-// === dispatch_wiring.go 把 primitives 组合成 Dispatcher ===
+// === dispatch_wiring.go composes the primitives into a Dispatcher ===
 
 dispatcher := buildDispatcher(
-    adaptEndpoints(endpointReader),  // CandidateSource 桥接 repo.EndpointReader
-    sched,                            // Selector 桥（pkg/dispatch/adapters/SelectorAdapter）
-    sender,                           // InvokerFactory 桥（adapters/InvokerFactoryAdapter）
-    rateStore,                        // EndpointQuota 桥（adapters/EndpointQuotaAdapter；ratelimit.Store）
+    adaptEndpoints(endpointReader),  // CandidateSource bridge for repo.EndpointReader
+    sched,                            // Selector bridge (pkg/dispatch/adapters/SelectorAdapter)
+    sender,                           // InvokerFactory bridge (adapters/InvokerFactoryAdapter)
+    rateStore,                        // EndpointQuota bridge (adapters/EndpointQuotaAdapter; ratelimit.Store)
     cfg.Selector.MaxAttempts,         // AttemptCap.Default
-    dispatchTracer,                   // OTel tracer，spans dispatch.request / dispatch.attempt
+    dispatchTracer,                   // OTel tracer, spans dispatch.request / dispatch.attempt
 )
 
-// buildDispatcher 内部：
+// inside buildDispatcher:
 //   dispatch.New(
 //       dispatch.WithCandidates(candidates),
 //       dispatch.WithSelector(adapters.NewSelector(sched)),
@@ -353,72 +361,72 @@ dispatcher := buildDispatcher(
 //       dispatch.WithTracer(tracer),
 //   )
 
-// === 注入到 router.Deps；M7 middleware 只看 Dispatcher，不看 selector / sender ===
+// === injected into router.Deps; M7 middleware only sees the Dispatcher, not selector / sender ===
 Dispatcher: dispatcher,
 ```
 
-`buildSchedulerFilters` 把 yaml 里的字符串名映射到 Filter 实例：
+`buildSchedulerFilters` maps the string names from yaml to Filter instances:
 
-| 名字 | 实现 |
+| Name | Implementation |
 |------|------|
 | `cooldown` | `NewCooldownFilter(cd)` |
 | `limit_read` | `NewLimitReadFilter(rateStore)` |
-| `prefix_cache` | `NewPrefixCacheFilter(0)`（vnodes=64） |
-| `busy` | `NewBusyFilter(0)`（threshold=0.85） |
-| `weighted_random` | 忽略（已是 Selector，单独配） |
-| 其它 | **panic**（fail-fast 暴露配置错） |
+| `prefix_cache` | `NewPrefixCacheFilter(0)` (vnodes=64) |
+| `busy` | `NewBusyFilter(0)` (threshold=0.85) |
+| `weighted_random` | ignored (it's already the Selector, configured separately) |
+| anything else | **panic** (fail-fast to expose config errors) |
 
-## 13. 配置 YAML 速查
+## 13. Config YAML quick reference
 
 ```yaml
 selector:
   max_attempts: 3
-  filters:                  # 顺序敏感
-    - cooldown              # 最便宜的过滤，放前面
-    - limit_read            # endpoint quota 只读过滤
-    # - busy                # 可选：self-hosted 负载阈值
-    # - prefix_cache        # 可选：与 weighted_random 二选一
+  filters:                  # order-sensitive
+    - cooldown              # cheapest filter, put it first
+    - limit_read            # endpoint quota read-only filter
+    # - busy                # optional: self-hosted load threshold
+    # - prefix_cache        # optional: pick either this or weighted_random
   cooldown:
     transient: 30s
     capacity:  10s
     permanent: 5m
-    invalid:   0s           # 不冷却（语义见 §4）
-    unknown:   0s           # 不冷却（语义见 §4）
+    invalid:   0s           # no cooldown (semantics in §4)
+    unknown:   0s           # no cooldown (semantics in §4)
 
 scoring:
-  enabled: false            # 默认关；启用后走 runtime scoring
+  enabled: false            # off by default; enabling switches to runtime scoring
   ema_decay: 0.2
   min_samples: 5
   latency_baseline: 200ms
 ```
 
-Cooldown 时长里 0 = 不冷却；deployer 给 invalid / unknown 配 0 是默认推荐。
+In cooldown durations, 0 = no cooldown; a deployer setting invalid / unknown to 0 is the recommended default.
 
-## 14. 演进规则（与 03 §12 对齐 / 简版）
+## 14. Evolution rules (aligned with 03 §12 / abridged)
 
-1. 跨 model fallback 只能来自客户端 header，不能由 gateway 默认链路隐式降级。
-2. 新增 endpoint Protocol / Capabilities.Modalities 配置时，先扩 eligibility，再让请求落到 retry/cooldown。
-3. 新加 Filter：实现 `selector.Filter` → 在 `cmd/gateway/buildSchedulerFilters` 注册名字 → 加 yaml 字段。
-4. 新加 Scorer / Stats 实现：接口在 `pkg/selector/scorer.go`；多副本一致性需求时把 InMemoryStatsStore 换成 Redis 实现，接口不变。
-5. `pkg/selector` 永远不持有 repo 依赖；要查 SQL 的事都属于 dispatch port adapter 或 cmd 装配。
-6. Runtime Scoring 只能改 `EffectiveWeight`，不能淘汰候选，更不能引入 per-request 状态机。
-7. **职责不要塞回 middleware**：候选拉取、eligibility、retry/fallback 决策、quota
-   reserve/charge 都在 `dispatch.Dispatcher`。M7 middleware 永远是 thin adapter，
-   只做 RC ↔ dispatch.Input/Outcome 映射 + content log enrichment + 总 metric。
+1. Cross-model fallback can only come from a client header, never implicitly demoted by the gateway's default path.
+2. When adding new endpoint Protocol / Capabilities.Modalities config, extend eligibility first, and only then let the request fall into retry/cooldown.
+3. To add a new Filter: implement `selector.Filter` → register the name in `cmd/gateway/buildSchedulerFilters` → add a yaml field.
+4. To add a new Scorer / Stats implementation: the interface is in `pkg/selector/scorer.go`; when cross-replica consistency is needed, swap InMemoryStatsStore for a Redis implementation, interface unchanged.
+5. `pkg/selector` never holds a repo dependency; anything that needs to query SQL belongs in a dispatch port adapter or cmd wiring.
+6. Runtime Scoring can only adjust `EffectiveWeight`; it cannot eliminate candidates, let alone introduce a per-request state machine.
+7. **Don't push responsibilities back into middleware**: candidate fetching, eligibility, retry/fallback decisions, quota
+   reserve/charge all live in `dispatch.Dispatcher`. The M7 middleware is always a thin adapter,
+   doing only RC ↔ dispatch.Input/Outcome mapping + content log enrichment + the overall metric.
 
-## 15. 看代码顺序建议
+## 15. Suggested reading order for the code
 
-第一次上手按这个顺序读最快：
+The fastest onboarding path is to read in this order:
 
-1. [03-endpoint-scheduling.md](./03-endpoint-scheduling.md) §1（流程图）→ §3（eligibility）→ §6（错误分类）
-2. `pkg/middleware/schedule.go` `Schedule()`（thin adapter，~165 行，看 RC ↔ Input/Outcome 映射）
-3. `pkg/dispatch/dispatcher.go` `Dispatch` / `step`（调度时序主循环，~250 行）
-4. `pkg/dispatch/ports.go`（4 个 port 接口 ~150 行；理解 dispatch 的接缝）
-5. `pkg/dispatch/eligibility.go`（纯函数 ~70 行）
-6. `pkg/dispatch/adapters/`（3 个文件 ~200 行：把 selector / invoker / ratelimit 桥成 port）
-7. `pkg/selector/types.go`（Candidate / Request / Result 等数据结构）
-8. `pkg/selector/scheduler.go` `defaultScheduler.Pick / Report`（~50 行实质逻辑）
-9. 各 Filter（cooldown / limit_filter / busy / prefix_cache），按需读
-10. 想理解 runtime scoring 再回 `pkg/selector/scorer.go`
+1. [03-endpoint-scheduling.md](./03-endpoint-scheduling.md) §1 (flow diagram) → §3 (eligibility) → §6 (error classification)
+2. `pkg/middleware/schedule.go` `Schedule()` (thin adapter, ~165 lines, look at the RC ↔ Input/Outcome mapping)
+3. `pkg/dispatch/dispatcher.go` `Dispatch` / `step` (main scheduling-timing loop, ~250 lines)
+4. `pkg/dispatch/ports.go` (4 port interfaces ~150 lines; understand dispatch's seams)
+5. `pkg/dispatch/eligibility.go` (pure function ~70 lines)
+6. `pkg/dispatch/adapters/` (3 files ~200 lines: bridging selector / invoker / ratelimit into ports)
+7. `pkg/selector/types.go` (Candidate / Request / Result and other data structures)
+8. `pkg/selector/scheduler.go` `defaultScheduler.Pick / Report` (~50 lines of substantive logic)
+9. Each Filter (cooldown / limit_filter / busy / prefix_cache), as needed
+10. To understand runtime scoring, go back to `pkg/selector/scorer.go`
 
-读完这一圈，schedule 模块的所有控制流 + 数据流就在脑里了。
+After this pass, all the control flow + data flow of the schedule module will be in your head.

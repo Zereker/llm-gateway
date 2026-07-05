@@ -71,7 +71,7 @@ func TestInMemoryBudget_Deduct_GoesNegative_NoFloor(t *testing.T) {
 
 func TestInMemoryBudget_Deduct_FromDefault(t *testing.T) {
 	g := NewInMemoryBudgetGate(10)
-	// 没显式 SetBalance；Deduct 从 default 起算
+	// no explicit SetBalance; Deduct starts from the default
 	got := g.Deduct("u_never_set", 4)
 	if got != 6 {
 		t.Errorf("deduct from default: got=%v, want=6", got)
@@ -87,7 +87,7 @@ func TestInMemoryBudget_Concurrent_Safety(t *testing.T) {
 		go func() { defer wg.Done(); g.Deduct("u_race", 1) }()
 	}
 	wg.Wait()
-	// 50 次 deduct，每次 1 → 余额 = 1000 - 50 = 950
+	// 50 deducts of 1 each -> balance = 1000 - 50 = 950
 	if bal := g.GetBalance("u_race"); bal != 950 {
 		t.Errorf("balance=%v, want=950", bal)
 	}

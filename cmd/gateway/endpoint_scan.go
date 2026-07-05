@@ -1,12 +1,15 @@
-// endpoint_scan.go：启动期 endpoint 配置完整性扫描（docs/00 §3 step 6）。
+// endpoint_scan.go: startup-time endpoint configuration integrity scan (docs/00 §3 step 6).
 //
-// 本仓库的唯一运维接口是裸 SQL INSERT——protocol 写错（'openai ' 尾空格）、
-// vendor Factory 未注册、translator 缺失、routing.url 指向 cloud metadata 这类
-// 错配**没有任何入库校验**。不扫描的话，坏行的表现是请求侧 503 "no candidates"
-// 且没有任何日志指向它。
+// This repo's only operational interface is raw SQL INSERT—misconfigurations
+// like a mistyped protocol ('openai ' with a trailing space), an unregistered
+// vendor Factory, a missing translator, or routing.url pointing at cloud
+// metadata **have no insert-time validation at all**. Without this scan, a bad
+// row manifests as a request-side 503 "no candidates" with no log pointing at
+// the cause.
 //
-// 扫描只 warn + metric（llm_gateway_endpoint_misconfigured_total），**不阻塞启动**
-// ——一行坏配置不该拖垮其它健康 endpoint 的服务。
+// The scan only warns + emits a metric (llm_gateway_endpoint_misconfigured_total),
+// **it never blocks startup**—one bad config row shouldn't take down service for
+// other healthy endpoints.
 package main
 
 import (
@@ -19,8 +22,10 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// scanEndpoints 拉全部 endpoint 逐行校验。DB 错只 warn（启动期 DB 可用性已由
-// Migrate + CheckSchema 把关；这里失败多半是竞态，不值得 fail）。
+// scanEndpoints fetches all endpoints and validates them row by row. A DB
+// error here only warns (startup-time DB availability is already gated by
+// Migrate + CheckSchema; a failure here is most likely a race and not worth
+// failing over).
 func scanEndpoints(ctx context.Context, reader repo.EndpointReader, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

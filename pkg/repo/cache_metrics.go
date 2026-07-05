@@ -1,21 +1,23 @@
 package repo
 
-// Metrics 让外部观测 cache 命中率（不绑死 Prometheus）。
+// Metrics lets external code observe cache hit rate (not tied to Prometheus).
 //
-// **实现责任**：cmd 在装配期创建一个 prometheus.CounterVec（label = table / result），
-// wrap 成本接口，喂给每个 cached wrapper。
+// **Implementation responsibility**: cmd creates a prometheus.CounterVec at
+// assembly time (label = table / result), wraps it in this interface, and
+// feeds it to each cached wrapper.
 //
-// **result 维度**：
-//   - "hit"  ── GetOrLoad 命中缓存（未调 loader）
-//   - "miss" ── GetOrLoad miss 但 loader 成功
-//   - "error" ── loader 返 err
+// **result values**:
+//   - "hit"   -- GetOrLoad hit the cache (loader not called)
+//   - "miss"  -- GetOrLoad missed but the loader succeeded
+//   - "error" -- the loader returned err
 //
-// 默认实现 NoopMetrics（cmd 没装时不报）；指标契约见 docs/08 §3 表格。
+// The default implementation is NoopMetrics (no reporting when cmd doesn't
+// wire one up); the metrics contract is in the docs/08 §3 table.
 type Metrics interface {
 	Record(table, result string)
 }
 
-// NoopMetrics 永不报告——给单测 / 不开启指标时用。
+// NoopMetrics never reports — used by unit tests / when metrics aren't enabled.
 type NoopMetrics struct{}
 
 func (NoopMetrics) Record(table, result string) {}

@@ -9,36 +9,42 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// DualWriteOutbox 把同一个 OutboxEvent 写到两个 sink：
+// DualWriteOutbox writes the same OutboxEvent to two sinks:
 //
-//   - file (sync, source of truth)——写成功就算 commit
-//   - kafka (async best-effort)——提供低延迟广播给计费/对账/配额 consumer
+//   - file (sync, source of truth) — a successful write counts as commit
+//   - kafka (async best-effort) — provides low-latency broadcast to
+//     billing/reconciliation/quota consumers
 //
-// 这是 Transactional Outbox Pattern 的实现：file 是真理，Kafka 是镜像。broker
-// 挂了仍然能 commit；事件落地不依赖 Kafka 健康。后续由外部 replay 工具读
-// file 把缺的事件补发到 Kafka（consumer 侧按 event_id 幂等去重）。
+// This is an implementation of the Transactional Outbox Pattern: file is the
+// source of truth, Kafka is a mirror. If the broker goes down, commits still
+// succeed; landing an event does not depend on Kafka being healthy. An
+// external replay tool later reads the file and re-sends any missing events
+// to Kafka (consumers dedupe idempotently by event_id).
 //
-// 跟 AsyncKafkaOutbox + DLQ 的对比：
+// Comparison with AsyncKafkaOutbox + DLQ:
 //
-//   - AsyncKafkaOutbox + DLQ：主 topic 失败转写 DLQ topic；但 DLQ 跟主 topic 在
-//     同一个 broker 集群上，broker 整个挂了 DLQ 也失败。
-//   - DualWriteOutbox：file 在本地磁盘，broker 故障域跟 disk 故障域独立；除非
-//     gateway 进程所在机器的盘满 / 损坏，否则不会丢数据。
+//   - AsyncKafkaOutbox + DLQ: on main-topic failure, writes go to a DLQ
+//     topic instead; but the DLQ shares the same broker cluster as the main
+//     topic, so if the whole broker goes down, the DLQ fails too.
+//   - DualWriteOutbox: file lives on local disk, so the broker failure
+//     domain is independent of the disk failure domain; data is only lost
+//     if the disk on the gateway process's own machine is full or damaged.
 //
-// 详见 docs/architecture/05-metering-billing.md §5（usage outbox）。
+// See docs/architecture/05-metering-billing.md §5 (usage outbox) for details.
 type DualWriteOutbox struct {
 	file  OutboxPublisher
 	kafka OutboxPublisher
 	log   *slog.Logger
 }
 
-// NewDualWriteOutbox 用现成的 file + kafka publisher 组合。
+// NewDualWriteOutbox composes ready-made file + kafka publishers.
 //
-// 调用方负责构造各子 publisher（典型：FileOutbox + AsyncKafkaOutbox）。
-// Close 只会关闭 file 句柄；kafka producer 的生命周期由 pkg/server 统一管理，
-// 不在本类型内关闭——避免双关。
+// The caller is responsible for constructing each sub-publisher (typically:
+// FileOutbox + AsyncKafkaOutbox). Close only closes the file handle; the
+// kafka producer's lifecycle is managed centrally by pkg/server and is not
+// closed by this type — avoiding a double-close.
 //
-// log == nil 时用 slog.Default()。
+// If log == nil, slog.Default() is used.
 func NewDualWriteOutbox(file, kafka OutboxPublisher, log *slog.Logger) *DualWriteOutbox {
 	if log == nil {
 		log = slog.Default()
@@ -46,20 +52,25 @@ func NewDualWriteOutbox(file, kafka OutboxPublisher, log *slog.Logger) *DualWrit
 	return &DualWriteOutbox{file: file, kafka: kafka, log: log}
 }
 
-// Publish 实现 OutboxPublisher.Publish。
+// Publish implements OutboxPublisher.Publish.
 //
-// 流程：
-//  1. file.Publish (sync, blocking)——durability commit
-//  2. kafka.Publish (async, best-effort)——失败不影响返回值
+// Flow:
+//  1. file.Publish (sync, blocking) — durability commit
+//  2. kafka.Publish (async, best-effort) — failure does not affect the return value
 //
-// **file ok + kafka 失败**：返回 nil（事件已落地；kafka 失败由 replay 工具补）。
-// 仅记录 warn 日志 + outbox_kafka_publish_error metric。
+// **file ok + kafka fails**: returns nil (the event has already landed;
+// the replay tool backfills the kafka failure). Only a warn log +
+// outbox_kafka_publish_error metric are recorded.
 //
-// **file 失败：不发 kafka，直接返错**。这是 "file ⊇ kafka" 不变量——kafka 里
-// 出现的事件必须在 file 里也存在，否则 consumer-vs-file 对账没法区分
-// "kafka 幻影事件" 和 "file 丢数据"，file 也不再是 source of truth。
-// （旧行为 "file 失败仍发 kafka 给一线希望" 恰好破坏这个不变量；如需双活容灾
-// 应该显式换 AsyncKafkaOutbox+DLQ 模式，而不是悄悄反转信任关系。）
+// **file fails: kafka is not sent, and the error is returned directly.**
+// This upholds the "file ⊇ kafka" invariant — any event that shows up in
+// kafka must also exist in file, otherwise consumer-vs-file reconciliation
+// cannot distinguish a "kafka phantom event" from "file data loss", and file
+// stops being the source of truth.
+// (The old behavior of "still sending to kafka as a last resort even when
+// file fails" broke exactly this invariant; if active-active disaster
+// recovery is needed, switch explicitly to the AsyncKafkaOutbox+DLQ mode
+// instead of silently inverting the trust relationship.)
 func (d *DualWriteOutbox) Publish(ctx context.Context, evt *OutboxEvent) error {
 	if evt == nil {
 		return errors.New("usage: DualWriteOutbox.Publish: nil event")
@@ -78,7 +89,7 @@ func (d *DualWriteOutbox) Publish(ctx context.Context, evt *OutboxEvent) error {
 	return nil
 }
 
-// Close 关闭 file sink；kafka producer 由 srv 统一管理。
+// Close closes the file sink; the kafka producer is managed centrally by srv.
 func (d *DualWriteOutbox) Close() error {
 	if c, ok := d.file.(io.Closer); ok {
 		return c.Close()

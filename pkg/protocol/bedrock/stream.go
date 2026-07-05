@@ -13,12 +13,15 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// DecodeTransport 实现 protocol.TransportDecoder：Bedrock 流式响应是 AWS event-stream
-// 二进制分帧（Content-Type vnd.amazon.eventstream），本函数把它解成 **Anthropic SSE**
-// 字节流,交给 openai_anthropic 的 ResponseStream 做 shape 翻译——传输层(解帧)跟协议层
-// (Anthropic→OpenAI)干净分离,复用现成的 Anthropic 流式翻译。
+// DecodeTransport implements protocol.TransportDecoder: Bedrock's streaming response
+// is AWS event-stream binary framing (Content-Type vnd.amazon.eventstream); this
+// function decodes it into an **Anthropic SSE** byte stream, which is then handed to
+// openai_anthropic's ResponseStream for shape translation — the transport layer
+// (frame decoding) is cleanly separated from the protocol layer (Anthropic→OpenAI),
+// reusing the existing Anthropic streaming translation.
 //
-// 非流式(JSON)响应返 nil：无需解帧,字节直接进 handler。
+// For non-streaming (JSON) responses this returns nil: no decoding is needed, the
+// bytes go straight to the handler.
 func (Factory) DecodeTransport(resp *http.Response) io.Reader {
 	if !strings.Contains(resp.Header.Get("Content-Type"), "vnd.amazon.eventstream") {
 		return nil
@@ -26,24 +29,26 @@ func (Factory) DecodeTransport(resp *http.Response) io.Reader {
 	return &eventStreamReader{dec: eventstream.NewDecoder(), src: resp.Body}
 }
 
-// eventStreamReader 逐帧解码 AWS event-stream,把每帧内的 Anthropic 事件还原成
-// `data: <json>\n\n` 的 SSE 行(openai_anthropic handler 认这个格式)。
+// eventStreamReader decodes an AWS event-stream frame by frame, restoring the
+// Anthropic event inside each frame into a `data: <json>\n\n` SSE line (the format
+// the openai_anthropic handler expects).
 //
-// **帧 payload 形态**（Bedrock InvokeModelWithResponseStream）：
+// **Frame payload shape** (Bedrock InvokeModelWithResponseStream):
 //
 //	{"bytes":"<base64(anthropic event json)>"}
 //
-// base64 解出来就是 Anthropic 原生流事件(message_start / content_block_delta / ...)。
+// Base64-decoding that yields the native Anthropic stream event
+// (message_start / content_block_delta / ...).
 type eventStreamReader struct {
 	dec     *eventstream.Decoder
 	src     io.Reader
-	pending []byte // 已解出、待 Read 消费的 SSE 字节
+	pending []byte // decoded SSE bytes awaiting consumption by Read
 	err     error
 }
 
 func (r *eventStreamReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
-		return 0, nil // io.Reader 约定：len(p)==0 不应返回 (0,nil) 以外的东西
+		return 0, nil // io.Reader convention: len(p)==0 should not return anything other than (0,nil)
 	}
 	for len(r.pending) == 0 {
 		if r.err != nil {
@@ -52,18 +57,21 @@ func (r *eventStreamReader) Read(p []byte) (int, error) {
 		msg, err := r.dec.Decode(r.src, nil)
 		if err != nil {
 			r.err = err
-			// 极端情形：若解码在给出数据的同时返回错误（如末帧 payload + io.EOF），
-			// 先把数据转出去，err 留到下次 Read 再抛，避免丢最后一帧。
+			// Edge case: if decoding returns data alongside an error (e.g. the final
+			// frame's payload plus io.EOF), emit the data first and defer the error to
+			// the next Read, so we don't drop the last frame.
 			if sse := frameToSSE(msg.Payload); sse != nil {
 				r.pending = sse
 				break
 			}
 			return 0, err
 		}
-		// Bedrock 把 mid-stream 故障（throttling / modelStreamErrorException / …）
-		// 作为 :message-type=exception 的帧下发，smithy 不会当成 Go error 返回。
-		// 必须显式识别并转成 error，否则会被当成干净截断——客户端收不到错误、
-		// FeedErr 不置位、截断流可能被计费/缓存成成功（error-propagation 盲区）。
+		// Bedrock delivers mid-stream failures (throttling / modelStreamErrorException /
+		// …) as frames with :message-type=exception, which smithy does not surface as a
+		// Go error. These must be explicitly detected and converted into an error —
+		// otherwise they'd be mistaken for a clean truncation: the client would get no
+		// error, FeedErr wouldn't be set, and the truncated stream could be billed/cached
+		// as a success (an error-propagation blind spot).
 		if exErr := frameException(msg); exErr != nil {
 			r.err = exErr
 			return 0, exErr
@@ -71,20 +79,21 @@ func (r *eventStreamReader) Read(p []byte) (int, error) {
 		if sse := frameToSSE(msg.Payload); sse != nil {
 			r.pending = sse
 		}
-		// 空/无关帧（如 metrics）→ 继续解下一帧
+		// Empty/irrelevant frames (e.g. metrics) → keep decoding the next frame
 	}
 	n := copy(p, r.pending)
 	r.pending = r.pending[n:]
 	return n, nil
 }
 
-// frameException 检查一帧是否是 AWS event-stream 的异常/错误帧（:message-type
-// 为 exception 或 error）；是则返回携带异常类型 + payload 的 error 供上层中止流。
-// 普通事件帧（:message-type=event）返 nil。
+// frameException checks whether a frame is an AWS event-stream exception/error
+// frame (:message-type is exception or error); if so, returns an error carrying the
+// exception type + payload so the caller can abort the stream. Normal event frames
+// (:message-type=event) return nil.
 func frameException(msg eventstream.Message) error {
 	mt := msg.Headers.Get(":message-type")
 	if mt == nil {
-		return nil // 无 message-type 头：当普通帧处理（frameToSSE 兜底）
+		return nil // no message-type header: treat as a normal frame (frameToSSE handles it)
 	}
 	switch mt.String() {
 	case "exception", "error":
@@ -100,13 +109,13 @@ func frameException(msg eventstream.Message) error {
 	}
 }
 
-// frameToSSE 把一帧 payload 转成一行 Anthropic SSE。
+// frameToSSE converts a frame payload into a single line of Anthropic SSE.
 func frameToSSE(payload []byte) []byte {
 	if len(payload) == 0 {
 		return nil
 	}
 	b64 := gjson.GetBytes(payload, "bytes").String()
-	event := payload // 兜底：帧不含 bytes 包装(异常帧)时原样透
+	event := payload // fallback: pass through as-is when the frame lacks the bytes wrapper (exception frames)
 	if b64 != "" {
 		if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 			event = raw
@@ -119,5 +128,5 @@ func frameToSSE(payload []byte) []byte {
 	return out
 }
 
-// 编译期断言：Factory 实现 TransportDecoder。
+// Compile-time assertion: Factory implements TransportDecoder.
 var _ protocol.TransportDecoder = Factory{}

@@ -104,7 +104,7 @@ func TestRewriteBody_SetDefault_DoesNotOverwrite(t *testing.T) {
 	out, _ := r.RewriteBody([]byte(`{"max_tokens":1024}`))
 	got := jsonObj(t, out)
 	if v := string(got["max_tokens"]); v != "1024" {
-		t.Errorf("set_default 不该覆写：max_tokens=%s", v)
+		t.Errorf("set_default should not overwrite: max_tokens=%s", v)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestRewriteBody_SetDefault_AddsMissing(t *testing.T) {
 	}
 }
 
-// 真实 quirks 场景集成测试
+// Real-world quirks scenario integration test
 func TestRewriteBody_OpenAIReasoningModel(t *testing.T) {
 	r := Compile(Spec{Body: BodySpec{
 		Rename: map[string]string{"max_tokens": "max_completion_tokens"},
@@ -185,7 +185,7 @@ func TestRewriteHeader_Rename(t *testing.T) {
 }
 
 func TestRewriteHeader_Rename_CaseInsensitive(t *testing.T) {
-	// 配置里写小写 / 大写都该 work（http.Header 用 canonical key）
+	// Lowercase / uppercase in config should both work (http.Header uses canonical keys)
 	r := Compile(Spec{Headers: HeadersSpec{
 		Rename: map[string]string{"x-request-id": "x-trace-id"},
 	}})
@@ -266,10 +266,10 @@ func TestRewriteHeader_NoopOnEmptySpec(t *testing.T) {
 
 func TestRewriteHeader_NilHeaderSafe(t *testing.T) {
 	r := Compile(Spec{Headers: HeadersSpec{Set: map[string]string{"X-K": "v"}}})
-	r.RewriteHeader(nil) // 不该 panic
+	r.RewriteHeader(nil) // should not panic
 }
 
-// 真实场景：trace id header rename
+// Real-world scenario: trace id header rename
 func TestRewriteHeader_VendorTraceIdRename(t *testing.T) {
 	r := Compile(Spec{Headers: HeadersSpec{
 		Rename: map[string]string{"X-Request-Id": "X-Ark-Trace-Id"},
@@ -290,7 +290,7 @@ func TestRewriteHeader_VendorTraceIdRename(t *testing.T) {
 		t.Error("Content-Type lost")
 	}
 	if h.Get("X-Request-Id") != "" {
-		t.Error("X-Request-Id 应被 rename 删掉")
+		t.Error("X-Request-Id should have been removed by rename")
 	}
 }
 

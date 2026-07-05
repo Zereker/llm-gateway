@@ -1,10 +1,11 @@
-// Package cohere 是 Cohere v2 的 vendor 实现（HTTP 层）。
+// Package cohere is the vendor implementation (HTTP layer) for Cohere v2.
 //
-// 协议 shape 转换在 pkg/translator/openai_cohere（endpoint protocol 填 cohere）。
-// 本包只管 HTTP：Bearer 鉴权 + routing.url（Cohere /v2/chat 端点）。
+// Protocol shape translation lives in pkg/translator/openai_cohere (endpoint
+// protocol set to cohere). This package only handles HTTP: Bearer auth +
+// routing.url (the Cohere /v2/chat endpoint).
 //
-// 接入：endpoint `vendor: cohere` + `protocol: cohere` + `auth.type: bearer`
-// （payload.api_key = Cohere key）。cmd/gateway blank import 本包 + openai_cohere。
+// Wiring: endpoint `vendor: cohere` + `protocol: cohere` + `auth.type: bearer`
+// (payload.api_key = Cohere key). cmd/gateway blank-imports this package plus openai_cohere.
 package cohere
 
 import (
@@ -18,11 +19,11 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// Factory 实现 protocol.Factory。无自定义 Classify——Cohere 错误走 DefaultClassifier
-// 的 status-based 分类兜底。
+// Factory implements protocol.Factory. No custom Classify — Cohere errors fall back
+// to DefaultClassifier's status-based classification.
 type Factory struct{}
 
-// Metadata 静态元信息。
+// Metadata returns static metadata.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
 		Vendor:              "cohere",
@@ -30,7 +31,7 @@ func (Factory) Metadata() protocol.Metadata {
 	}
 }
 
-// NewSession 构造本次请求的 session。
+// NewSession constructs the session for this request.
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	return &session{ctx: c, ep: ep}, nil
 }
@@ -44,7 +45,7 @@ type session struct {
 	ep  *domain.Endpoint
 }
 
-// BuildRequest：Bearer 鉴权 + routing.url。
+// BuildRequest: Bearer auth + routing.url.
 func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("cohere: ep.routing.url empty")
@@ -61,19 +62,19 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
-	for k, vs := range extraHeaders { // 先 quirks
+	for k, vs := range extraHeaders { // quirks first
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
-	req.Header.Set("Content-Type", "application/json") // 再协议必需（覆盖）
+	req.Header.Set("Content-Type", "application/json") // then protocol-required (overrides)
 	if bearer.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer.APIKey)
 	}
 	return req, nil
 }
 
-// Close 幂等 no-op。
+// Close is an idempotent no-op.
 func (s *session) Close() error { return nil }
 
 var _ protocol.Session = (*session)(nil)

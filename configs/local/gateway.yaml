@@ -1,10 +1,10 @@
-# gateway.yaml — llm-gateway 本地启动配置
+# gateway.yaml — llm-gateway local startup configuration
 #
-# 所有字段都可省略；省略时取 pkg/config.ApplyDefaults 中的默认值。
-# 运行：
+# All fields are optional; when omitted, defaults from pkg/config.ApplyDefaults apply.
+# Run:
 #   go run ./cmd/gateway -config ./configs/local/gateway.yaml
 #
-# 前置：起本地 stack（mysql + redis + redpanda）：
+# Prerequisite: start the local stack (mysql + redis + redpanda):
 #   docker compose up -d
 
 server:
@@ -13,123 +13,134 @@ server:
   shutdown_timeout: 30s
 
 database:
-  # ModelService / Endpoint / APIKey 的存储；gateway 启动跑 infra.Migrate 建表 + CheckSchema 防御性校验；业务数据 SQL 直接维护。
-  # docker-compose 起的 MySQL：root 无密码、库名 llm_gateway
+  # Storage for ModelService / Endpoint / APIKey; gateway startup runs infra.Migrate
+  # to create tables + CheckSchema as a defensive check; business data is maintained
+  # directly via SQL.
+  # MySQL started via docker-compose: root with no password, database name llm_gateway
   driver: mysql
   dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
 
 redis:
-  # M6 RateLimit 限流计数 + 未来 hot-path cache 共享 Redis。
-  # gateway 启动期 ping fail-fast，配错立即可见。
-  # 生产配主备 / sentinel；本地 docker-compose 起的单实例。
+  # Shared Redis for M6 RateLimit counters + a future hot-path cache.
+  # gateway fail-fasts on ping at startup, so misconfiguration is immediately visible.
+  # Production uses primary/replica or sentinel; local uses the single instance from docker-compose.
   addr: "localhost:6379"
   db: 0
   password: ""
 
-# data_key: AES-256-GCM 加密 endpoints.auth 列的 KEK（hex-encoded 32 字节）。
-# deployer 用 SQL 写 endpoints.auth 时必须用同一个 KEK；生产从 secret manager 注入。
-# 本地 dev 用一个固定值方便调试；**绝不能上生产**。
+# data_key: the KEK (hex-encoded 32 bytes) used for AES-256-GCM encryption of the endpoints.auth column.
+# The deployer must use the same KEK when writing endpoints.auth via SQL; in prod it's injected from a secret manager.
+# Local dev uses a fixed value for convenience; **must never be used in production**.
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 request:
-  # per-request HTTP 默认限制（历史上叫 middleware:，实际跟 M1-M10 链无关；详见 pkg/config RequestConfig 文档）
-  body_limit_bytes: 10485760  # 10 MiB；M1 之前 router 层就拒掉
-  timeout: 60s                # gin TimeoutMiddleware 包整条 M1-M10 链的全局兜底
+  # per-request HTTP defaults (historically named middleware:, but actually unrelated to the M1-M10 chain; see the pkg/config RequestConfig docs)
+  body_limit_bytes: 10485760  # 10 MiB; rejected at the router layer before M1
+  timeout: 60s                # gin TimeoutMiddleware's global fallback wrapping the whole M1-M10 chain
 
 budget:
-  # M4 Budget Gate driver：
-  #   alwayspass — 默认；永远放行（开发 / 无付费体系）
-  #   inmemory   — 进程内余额跟踪（demo / 单主账号；丢内存重启清零）
+  # M4 Budget Gate driver:
+  #   alwayspass — default; always allows through (dev / no billing system)
+  #   inmemory   — in-process balance tracking (demo / single primary account; resets on restart since it's in-memory)
   driver: alwayspass
-  # inmemory 时新 user 首次出现给的初始余额（USD）。0 = safe-by-default 拒绝
+  # Initial balance (USD) given to a new user on first appearance when using inmemory. 0 = safe-by-default rejection
   default_balance: 0
 
 moderation:
-  # M8 Content Moderation driver：
-  #   none   — 默认；不审核（pass-through）
-  #   openai — 调 OpenAI /v1/moderations endpoint
+  # M8 Content Moderation driver:
+  #   none   — default; no moderation (pass-through)
+  #   openai — calls the OpenAI /v1/moderations endpoint
   driver: none
-  # openai 时必填；生产从 secret manager 注入
+  # required when using openai; injected from a secret manager in prod
   # api_key: ""
-  # base_url 留空走 OpenAI 官方
+  # leave base_url empty to use the official OpenAI endpoint
   # base_url: ""
-  # 可选正则内容护栏（guard 链的一环，跟 driver 的 moderator 组合成 Chain）；
-  # 命中任一 pattern 即 400 拒绝。patterns 空 = 不加此 guard。
+  # Optional regex content guardrail (one link in the guard chain, combined
+  # with the driver's moderator into a Chain); hitting any pattern is a 400
+  # rejection. Empty patterns = this guard is not added.
   denylist:
-    patterns: []          # 如 ['(?i)\bpassword\b', '\d{3}-\d{2}-\d{4}']
-    check_output: false   # true 时也逐 chunk 扫响应
+    patterns: []          # e.g. ['(?i)\bpassword\b', '\d{3}-\d{2}-\d{4}']
+    check_output: false   # when true, also scans the response chunk by chunk
 
 selector:
-  # M7 端点选路 Filter chain（顺序就是执行顺序；weighted_random 必须放最后）
+  # M7 endpoint routing Filter chain (order is execution order; weighted_random must be last)
   filters: [cooldown, limit_read, weighted_random]
 
-  # endpoint 失败后冷却时长（按 ErrorClass 分；0 = 不冷却）
+  # Cooldown duration after an endpoint failure (keyed by ErrorClass; 0 = no cooldown)
   cooldown:
-    transient: 30s     # 上游 5xx / 网络错 / timeout
-    capacity:  60s     # 上游 429 / overloaded
-    permanent: 5m      # 上游 401 / 配置错
-    invalid:   0s      # 客户端 400-class，不该冷却 endpoint
-    unknown:   10s     # 分类不出来时
+    transient: 30s     # upstream 5xx / network error / timeout
+    capacity:  60s     # upstream 429 / overloaded
+    permanent: 5m      # upstream 401 / config error
+    invalid:   0s      # client 400-class; should not cool down the endpoint
+    unknown:   10s     # when it can't be classified
 
-  # 全局尝试上限；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
+  # Global max attempts; the client's X-Gateway-Max-Attempts header can override (only to a smaller value)
   max_attempts: 3
 
-  # 会话亲和（sticky routing）：客户端 X-Gateway-Session 头带 session id，网关把该
-  # session 粘到同一上游 endpoint（prefix/KV cache 命中）。软亲和——pinned endpoint
-  # 被 cooldown/排除时自动重选。Redis-backed（多副本共享）。
+  # Session affinity (sticky routing): the client's X-Gateway-Session header carries a
+  # session id, and the gateway pins that session to the same upstream endpoint
+  # (for prefix/KV cache hits). This is soft affinity — the pinned endpoint is
+  # automatically re-selected if it's on cooldown/excluded. Redis-backed (shared across replicas).
   session_affinity:
     enabled: false
     ttl: 10m
 
 cache:
-  # 响应缓存（M6 之后、M7 之前）：命中直接返回、跳过上游，省钱降延迟。Redis-backed。
-  # 默认只缓存非流式 + temperature=0 的确定性请求；客户端 X-Gateway-Cache: on/off 覆盖。
+  # Response cache (after M6, before M7): a hit returns directly and skips the
+  # upstream, saving cost and reducing latency. Redis-backed.
+  # By default only caches non-streaming + temperature=0 deterministic requests;
+  # the client's X-Gateway-Cache: on/off header overrides this.
   enabled: false
   ttl: 5m
-  # 语义缓存：按 prompt 向量相似度命中（paraphrase 也命中），启用时取代精确缓存。
+  # Semantic cache: hits based on prompt vector similarity (paraphrases also
+  # hit); when enabled it replaces the exact-match cache.
   semantic:
     enabled: false
-    threshold: 0.9        # cosine 命中阈值
-    max_entries: 500      # 每 (protocol|model) namespace 条目上限
+    threshold: 0.9        # cosine hit threshold
+    max_entries: 500      # entry cap per (protocol|model) namespace
     embedder:
       driver: openai      # OpenAI-compatible /v1/embeddings
       api_key: ""
-      base_url: ""        # 空走 OpenAI 官方
+      base_url: ""        # empty uses the official OpenAI endpoint
       model: text-embedding-3-small
 
 scoring:
-  # Runtime Scoring（按 endpoint 运行时质量 soft 调权）；默认关。见 docs/03 §8。
+  # Runtime Scoring (soft weight adjustment based on per-endpoint runtime quality); off by default. See docs/03 §8.
   enabled: false
-  driver: inmemory        # inmemory=每副本独立 | redis=多副本共享（生产多副本用）
+  driver: inmemory        # inmemory = independent per replica | redis = shared across replicas (use in multi-replica prod)
   min_samples: 5
   latency_baseline: 200ms
   ema_decay: 0.2
-  stats_ttl: 1h           # 仅 redis driver
+  stats_ttl: 1h           # redis driver only
 
 usage_events:
-  # Transactional Outbox Pattern：file 是 source of truth（sync commit），
-  # Kafka 是 best-effort 异步广播。broker 挂了仍能 commit；外部 replay 工具
-  # 读 file 把缺的事件补发到 Kafka（详见 docs/05 §5）。
-  # topic 按"领域.实体.事件.版本"命名，跟生产者服务名解耦。
+  # Transactional Outbox Pattern: file is the source of truth (sync commit),
+  # Kafka is the best-effort async broadcast. Commits still succeed even if the
+  # broker is down; an external replay tool reads the file to redeliver missing
+  # events to Kafka (see docs/05 §5 for details).
+  # Name topics as "domain.entity.event.version", decoupled from the producer service name.
   driver: file_and_kafka
   file:
-    path: /tmp/llm-gateway-usage.jsonl   # source of truth；外部 logrotate 管轮转
+    path: /tmp/llm-gateway-usage.jsonl   # source of truth; rotation handled by external logrotate
   kafka:
     brokers: ["localhost:9092"]
     topic: billing.usage.recorded.v1
     async: true
     buffer_size: 1024
     max_retries: 3
-    # dlq_topic 可选：file 已是真理，DLQ 只用于单消息级问题（msg too large / schema invalid）
+    # dlq_topic is optional: file is already the source of truth, DLQ is only for
+    # per-message issues (msg too large / schema invalid)
     dlq_topic: billing.usage.recorded.v1.dlq
 
 content_log:
-  # 内容记录通道（docs/05 §2 + docs/08 §6）。
-  # gateway 只写本地 JSONL；下游分流（S3 归档 / Loki 检索 / Kafka 内容安全后审 /
-  # 训练数据回流）交给 fluent-bit / vector 这类日志收集器，gateway 不内嵌 Kafka producer。
-  # 文件本身的轮转 / 压缩 / 清理由外部 logrotate 或日志收集器负责。
+  # Content logging channel (docs/05 §2 + docs/08 §6).
+  # gateway only writes to a local JSONL; downstream fan-out (S3 archival / Loki
+  # indexing / Kafka post-hoc content safety review / training data reflow) is
+  # handled by log collectors like fluent-bit / vector — gateway does not embed a
+  # Kafka producer.
+  # Rotation / compression / cleanup of the file itself is handled by external logrotate or the log collector.
   driver: file
-  sample_rate: 1.0       # e2e 测试全采；生产按 account / 模型 / 错误状态降采样
+  sample_rate: 1.0       # full sampling for e2e tests; downsample in prod by account / model / error status
   buffer_size: 1024
   backpressure: drop_oldest
   file:

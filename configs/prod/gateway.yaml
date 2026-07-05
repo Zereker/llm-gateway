@@ -1,42 +1,46 @@
-# gateway.yaml — production 模板
+# gateway.yaml — production template
 #
-# **不要把真实密钥提交到 git**：所有业务记录（model_services / endpoints /
-# api_keys）由 deployer 直接 SQL 维护；本目录只持有 yaml + README。
+# **Do not commit real secrets to git**: all business records (model_services /
+# endpoints / api_keys) are maintained directly via SQL by the deployer; this
+# directory only holds the yaml + README.
 #
-# 部署：
-#   1. 把本 yaml 拷到目标机：/etc/llm-gateway/gateway.yaml
-#   2. 启动 gateway 自跑 infra.Migrate 建表，然后 SQL INSERT 录入 model_services / endpoints / api_keys
-#   3. 启动 gateway：llm-gateway -config /etc/llm-gateway/gateway.yaml
+# Deployment:
+#   1. Copy this yaml to the target machine: /etc/llm-gateway/gateway.yaml
+#   2. Start gateway, which auto-runs infra.Migrate to create tables, then SQL
+#      INSERT the model_services / endpoints / api_keys records
+#   3. Start gateway: llm-gateway -config /etc/llm-gateway/gateway.yaml
 
 server:
   addr: ":8080"
   read_header_timeout: 10s
-  shutdown_timeout: 60s         # 生产留更长 drain 时间给长连接
+  shutdown_timeout: 60s         # leave more drain time in prod for long-lived connections
 
 request:
-  # per-request HTTP 默认限制（M1 之前的 router 层 body 拒 + 包整条 M1-M10 链的全局 timeout）
-  body_limit_bytes: 5242880     # 5 MiB（生产保守）
-  timeout: 90s                  # 长 LLM 响应留余量
+  # per-request HTTP defaults (router-level body rejection before M1 + the global timeout wrapping the whole M1-M10 chain)
+  body_limit_bytes: 5242880     # 5 MiB (conservative for prod)
+  timeout: 90s                  # extra headroom for long LLM responses
 
 database:
-  # 生产 MySQL；用户名密码从 secret 注入（环境变量 / k8s Secret 渲染）。
+  # Production MySQL; username/password are injected from secrets (env vars / k8s Secret rendering).
   driver: mysql
   dsn: "llm_gateway:CHANGE_ME@tcp(db:3306)/llm_gateway?parseTime=true&charset=utf8mb4&tls=preferred"
 
 usage_events:
-  # 生产推荐 dual-write（Transactional Outbox Pattern）：file 是 source of truth，
-  # Kafka 是异步广播。broker 故障域 ⊥ disk 故障域，不会同时丢；broker 挂了
-  # 由外部 replay 工具读 file 补发（详见 docs/05 §5）。
-  # topic 按"领域.实体.事件.版本"命名，跟生产者服务名解耦。
+  # dual-write (Transactional Outbox Pattern) is recommended for prod: file is the
+  # source of truth, Kafka is the async broadcast. The broker failure domain is
+  # orthogonal to the disk failure domain, so both won't be lost at once; if the
+  # broker goes down, an external replay tool reads the file to redeliver
+  # (see docs/05 §5 for details).
+  # Name topics as "domain.entity.event.version", decoupled from the producer service name.
   driver: file_and_kafka
   file:
-    path: /var/log/llm-gateway/usage.jsonl   # 生产挂 PV / EBS；外部 logrotate 管轮转
+    path: /var/log/llm-gateway/usage.jsonl   # mount a PV / EBS volume in prod; rotation handled by external logrotate
   kafka:
     brokers: ["broker1:9092", "broker2:9092", "broker3:9092"]
     topic: billing.usage.recorded.v1
     async: true
     dlq_topic: billing.usage.recorded.v1.dlq
-  # 想本地起步也可用 file：
+  # To get started locally you can also use file:
   # driver: file
   # file:
   #   path: /var/log/llm-gateway/usage.log

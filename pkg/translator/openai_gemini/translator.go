@@ -1,17 +1,19 @@
-// Package openai_gemini OpenAI 客户端 → Gemini 上游的 Translator。
+// Package openai_gemini is the Translator for OpenAI clients -> Gemini upstream.
 //
-// 客户端按 OpenAI ChatCompletion 格式发请求；本 translator 翻成 Gemini generateContent
-// 格式给 adapter 转发；上游响应再翻回 OpenAI 格式给客户端。
+// Clients send requests in OpenAI ChatCompletion format; this translator converts them
+// to Gemini generateContent format for the adapter to forward upstream, then translates
+// the upstream response back to OpenAI format for the client.
 //
-// **支持**：
-//   - chat（system/user/assistant/text content）
-//   - streaming：客户端 stream:true 时上游走 :streamGenerateContent?alt=sse，
-//     responseHandler 增量把 Gemini SSE chunk 翻成 OpenAI SSE chunk（见下）。
-//     非流式则 buffer-then-translate（Flush 一次性翻）。
+// **Supported**:
+//   - chat (system/user/assistant/text content)
+//   - streaming: when the client sends stream:true, the upstream call goes through
+//     :streamGenerateContent?alt=sse, and responseHandler incrementally translates
+//     Gemini SSE chunks into OpenAI SSE chunks (see below). Non-streaming uses
+//     buffer-then-translate (translated all at once in Flush).
 //
-// **不支持**：function calling / tool_use / vision（parts 只 text）。
+// **Not supported**: function calling / tool_use / vision (parts only support text).
 //
-// 字段映射详见 translateRequest / translateResponse。
+// See translateRequest / translateResponse for the field mapping.
 package openai_gemini
 
 import (
@@ -43,13 +45,16 @@ func (openaiGemini) NewResponseHandler() translator.ResponseHandler {
 	return &responseHandler{ex: extractor.NewGemini()}
 }
 
-// responseHandler 自适应上游格式：
-//   - JSON（非流式）：buffer-then-translate，Flush 一次性翻成 OpenAI ChatCompletion。
-//   - SSE（流式，:streamGenerateContent?alt=sse）：增量把 Gemini SSE chunk 翻成
-//     OpenAI chat.completion.chunk SSE。
+// responseHandler adapts to the upstream format:
+//   - JSON (non-streaming): buffer-then-translate, Flush translates it all at once into
+//     OpenAI ChatCompletion.
+//   - SSE (streaming, :streamGenerateContent?alt=sse): incrementally translates Gemini
+//     SSE chunks into OpenAI chat.completion.chunk SSE.
 //
-// 首个非空字节嗅探：'{' → JSON；否则 → SSE。usage：JSON 模式走 extractor.Gemini
-// 旁路；SSE 模式从末 chunk 的 usageMetadata 直接抽（extractor 不解 SSE）。
+// Detected by sniffing the first non-whitespace byte: '{' -> JSON; otherwise -> SSE.
+// usage: in JSON mode it goes through the extractor.Gemini side channel; in SSE mode
+// it's extracted directly from the usageMetadata of the last chunk (the extractor
+// doesn't parse SSE).
 type respMode int
 
 const (
@@ -59,14 +64,14 @@ const (
 )
 
 type responseHandler struct {
-	requestModel string // 翻回 OpenAI 时填到 response.model
+	requestModel string // filled into response.model when translating back to OpenAI
 	ex           extractor.Session
 
 	mode     respMode
-	buf      []byte // JSON 模式累积 / 未定模式暂存
-	lineBuf  []byte // SSE 模式行缓冲（跨 Feed 保留半行）
+	buf      []byte // accumulates in JSON mode / staging buffer while mode is undetermined
+	lineBuf  []byte // line buffer for SSE mode (keeps a half-line across Feed calls)
 	id       string
-	roleSent bool // SSE：是否已发过 role delta
+	roleSent bool // SSE: whether the role delta has already been sent
 	usage    *domain.Usage
 }
 
@@ -79,18 +84,19 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	case modeSSE:
 		h.lineBuf = append(h.lineBuf, chunk...)
 		return h.drainSSE(), nil
-	default: // 未定：嗅探首个非空字节
+	default: // undetermined: sniff the first non-whitespace byte
 		h.buf = append(h.buf, chunk...)
 		t := bytes.TrimLeft(h.buf, " \t\r\n")
 		if len(t) == 0 {
-			return nil, nil // 还没拿到非空字节
+			return nil, nil // no non-whitespace byte yet
 		}
-		// '{'（单对象）或 '['（Gemini 非 alt=sse 的 JSON 数组流）都当 JSON 走
-		// buffer 模式——只有真正的 SSE（data: 行）才进 modeSSE。否则数组会被误判成
-		// SSE，drainSSE 找不到 data: 行 → 静默空响应。
+		// Both '{' (single object) and '[' (Gemini's non-alt=sse JSON array stream)
+		// take the buffer path as JSON — only genuine SSE (data: lines) enters
+		// modeSSE. Otherwise an array would be misdetected as SSE, drainSSE would
+		// find no data: lines -> silently empty response.
 		if t[0] == '{' || t[0] == '[' {
 			h.mode = modeJSON
-			h.ex.Feed(h.buf) // 把已暂存的喂给 extractor
+			h.ex.Feed(h.buf) // feed what's already staged to the extractor
 			return nil, nil
 		}
 		h.mode = modeSSE
@@ -103,7 +109,8 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	if h.mode == modeSSE {
 		out := h.drainSSE()
-		// 末帧无结尾换行兜底（上游 abrupt close）：把残留行当最后一行补处理。
+		// Fallback for a last frame with no trailing newline (upstream abrupt close):
+		// treat the leftover line as the final line and process it.
 		if rest := bytes.TrimSpace(h.lineBuf); len(rest) > 0 {
 			h.lineBuf = nil
 			if bytes.HasPrefix(rest, []byte("data:")) {
@@ -112,32 +119,37 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 				}
 			}
 		}
-		out = append(out, "data: [DONE]\n\n"...) // OpenAI 流终止符
+		out = append(out, "data: [DONE]\n\n"...) // OpenAI stream terminator
 		return out, h.usage, nil
 	}
-	// JSON / 空
+	// JSON / empty
 	if len(h.buf) == 0 {
-		// 上游空 body（4xx/5xx + 空 body 可能性）；没东西可透；不报错让 M7 静默
+		// Upstream returned an empty body (possible with 4xx/5xx + empty body); nothing
+		// to pass through; don't error so M7 stays silent.
 		return nil, nil, nil
 	}
 	if isGeminiError(h.buf) {
-		// **error path**：upstream 返了 4xx/5xx + 错误 JSON body。
-		// 不翻译（错误 schema 跟成功响应不同）；直接把原 body 透给客户端，保 error visibility。
-		// status 码已经是 upstream 的 4xx/5xx（M7 forwarded），客户端看到非 2xx + Gemini 错误 JSON。
-		// 唯一遗憾：错误格式不是 OpenAI shape；将来需要可以加 errorTranslate。
+		// **error path**: the upstream returned a 4xx/5xx with an error JSON body.
+		// Don't translate (the error schema differs from the success response); pass
+		// the raw body through to the client as-is to preserve error visibility.
+		// The status code is already the upstream's 4xx/5xx (forwarded by M7), so the
+		// client sees a non-2xx status plus the Gemini error JSON.
+		// The one downside: the error format isn't OpenAI shape; an errorTranslate can
+		// be added later if needed.
 		return h.buf, nil, nil
 	}
 	body, err := translateResponse(h.buf, h.requestModel)
 	return body, h.ex.Final(), err
 }
 
-// drainSSE 从 lineBuf 抽出完整行，把 Gemini `data:` 事件翻成 OpenAI SSE chunk。
+// drainSSE extracts complete lines from lineBuf, translating Gemini `data:` events into
+// OpenAI SSE chunks.
 func (h *responseHandler) drainSSE() []byte {
 	var out []byte
 	for {
 		i := bytes.IndexByte(h.lineBuf, '\n')
 		if i < 0 {
-			break // 半行，留到下次
+			break // half a line, keep it for next time
 		}
 		line := bytes.TrimRight(h.lineBuf[:i], "\r")
 		h.lineBuf = h.lineBuf[i+1:]
@@ -153,8 +165,9 @@ func (h *responseHandler) drainSSE() []byte {
 	return out
 }
 
-// translateChunk 单个 Gemini SSE chunk（一个完整 geminiResponse JSON，含增量
-// candidates）→ OpenAI chat.completion.chunk SSE。usageMetadata 只在末 chunk 出现。
+// translateChunk translates a single Gemini SSE chunk (a complete geminiResponse JSON
+// containing incremental candidates) into an OpenAI chat.completion.chunk SSE.
+// usageMetadata only appears in the last chunk.
 func (h *responseHandler) translateChunk(data []byte) []byte {
 	ev := gjson.ParseBytes(data)
 	if um := ev.Get("usageMetadata"); um.Exists() {
@@ -168,8 +181,9 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 	}
 	cand := ev.Get("candidates.0")
 	if !cand.Exists() {
-		// 无 candidate：若 prompt 被拦截（blockReason 非空），合成 content_filter 收尾
-		// chunk，别让客户端收到完全空的流（无内容、无 finish_reason）。
+		// No candidate: if the prompt was blocked (blockReason non-empty), synthesize a
+		// content_filter closing chunk so the client doesn't get a completely empty
+		// stream (no content, no finish_reason).
 		if br := ev.Get("promptFeedback.blockReason").String(); br != "" {
 			var out []byte
 			if !h.roleSent {
@@ -193,14 +207,15 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 	if t := text.String(); t != "" {
 		out = append(out, h.chunk(map[string]any{"content": t}, "")...)
 	}
-	// finishReason 只在末 chunk 非空——非空时才发带 finish_reason 的收尾 chunk。
+	// finishReason is only non-empty on the last chunk — only send a closing chunk with
+	// finish_reason when it's non-empty.
 	if raw := cand.Get("finishReason").String(); raw != "" {
 		out = append(out, h.chunk(map[string]any{}, mapFinishReason(raw))...)
 	}
 	return out
 }
 
-// chunk 构造一个 OpenAI chat.completion.chunk 的 SSE 行。
+// chunk builds one SSE line for an OpenAI chat.completion.chunk.
 func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
 	if h.id == "" {
 		h.id = "chatcmpl-" + randID()
@@ -217,7 +232,7 @@ func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
 }
 
 // =============================================================================
-// OpenAI 输入端 shape（最小必要字段）
+// OpenAI request-side shape (minimal required fields)
 // =============================================================================
 
 type openAIRequest struct {
@@ -236,7 +251,7 @@ type openAIMessage struct {
 }
 
 // =============================================================================
-// Gemini 上游端 shape
+// Gemini upstream-side shape
 // =============================================================================
 
 type geminiRequest struct {
@@ -282,7 +297,7 @@ type geminiUsageMeta struct {
 }
 
 // =============================================================================
-// OpenAI 输出端 shape（翻回客户端）
+// OpenAI response-side shape (translated back to the client)
 // =============================================================================
 
 type openAIResponse struct {
@@ -307,22 +322,22 @@ type openAIUsage struct {
 }
 
 // =============================================================================
-// 翻译函数
+// Translation functions
 // =============================================================================
 
-// translateRequest OpenAI body → Gemini body。
+// translateRequest translates an OpenAI body -> Gemini body.
 //
-// 字段映射：
+// Field mapping:
 //
-//	messages[role=system]           → systemInstruction
-//	messages[role=user]             → contents[role=user, parts[].text]
-//	messages[role=assistant]        → contents[role=model, parts[].text]
-//	max_tokens                      → generationConfig.maxOutputTokens
-//	temperature                     → generationConfig.temperature
-//	top_p                           → generationConfig.topP
-//	stop (string or []string)       → generationConfig.stopSequences []string
+//	messages[role=system]           -> systemInstruction
+//	messages[role=user]             -> contents[role=user, parts[].text]
+//	messages[role=assistant]        -> contents[role=model, parts[].text]
+//	max_tokens                      -> generationConfig.maxOutputTokens
+//	temperature                     -> generationConfig.temperature
+//	top_p                           -> generationConfig.topP
+//	stop (string or []string)       -> generationConfig.stopSequences []string
 //
-// 不支持的 role（tool / function）返回 err。
+// Unsupported roles (tool / function) return an error.
 func translateRequest(rawBody []byte) ([]byte, error) {
 	var in openAIRequest
 	if err := json.Unmarshal(rawBody, &in); err != nil {
@@ -378,7 +393,8 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// parseStopField OpenAI stop 字段可能是 string 或 []string；都归一成 []string。
+// parseStopField normalizes the OpenAI stop field (which may be a string or []string)
+// into a []string.
 func parseStopField(raw json.RawMessage) []string {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -391,20 +407,22 @@ func parseStopField(raw json.RawMessage) []string {
 	return nil
 }
 
-// translateResponse Gemini body → OpenAI body。
+// translateResponse translates a Gemini body -> OpenAI body.
 //
-// 字段映射：
+// Field mapping:
 //
-//	candidates[0].content.parts[].text  → choices[0].message.content (concat)
-//	candidates[].finishReason           → choices[].finish_reason (lowercase)
-//	usageMetadata.promptTokenCount      → usage.prompt_tokens
-//	usageMetadata.candidatesTokenCount  → usage.completion_tokens
-//	usageMetadata.totalTokenCount       → usage.total_tokens
+//	candidates[0].content.parts[].text  -> choices[0].message.content (concat)
+//	candidates[].finishReason           -> choices[].finish_reason (lowercase)
+//	usageMetadata.promptTokenCount      -> usage.prompt_tokens
+//	usageMetadata.candidatesTokenCount  -> usage.completion_tokens
+//	usageMetadata.totalTokenCount       -> usage.total_tokens
 //
-// requestModel 写到 response.model（Gemini 不返回 model 名）。
+// requestModel is written into response.model (Gemini doesn't return a model name).
 //
-// 返 *domain.Usage 给 caller 的职责已移出（走 extractor.NewGemini 旁路）；本函数
-// 只负责把 usageMetadata 翻进 OpenAI body 的 usage 字段（OpenAI 客户端期待的形态）。
+// The responsibility of returning *domain.Usage to the caller has been moved out (it
+// goes through the extractor.NewGemini side channel); this function is only responsible
+// for translating usageMetadata into the OpenAI body's usage field (the shape OpenAI
+// clients expect).
 func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 	var in geminiResponse
 	if err := json.Unmarshal(rawBody, &in); err != nil {
@@ -433,9 +451,11 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 		})
 	}
 
-	// 无 candidates（如 prompt 被 SAFETY 拦截：{"promptFeedback":{"blockReason":...}}）：
-	// OpenAI 客户端期待 choices 是**非空数组**，marshal nil slice 会出 "choices":null →
-	// SDK 反序列化失败。合成一个空 content 的 choice；被拦截时 finish_reason=content_filter。
+	// No candidates (e.g. the prompt was blocked by SAFETY:
+	// {"promptFeedback":{"blockReason":...}}): OpenAI clients expect choices to be a
+	// **non-empty array** — marshaling a nil slice produces "choices":null, which
+	// fails SDK deserialization. Synthesize a choice with empty content;
+	// finish_reason=content_filter when blocked.
 	if len(out.Choices) == 0 {
 		finish := "stop"
 		if in.PromptFeedback != nil && in.PromptFeedback.BlockReason != "" {
@@ -478,10 +498,13 @@ func mapFinishReason(g string) string {
 	}
 }
 
-// isGeminiError 判断 body 是不是 Gemini 错误响应。Gemini 错误 shape 是顶层
-// {"error":{"code":...,"message":...,"status":...}}——用**结构化**判断 top-level
-// error 是不是对象，而非扫字节找 `"error"` 子串。后者会把成功响应里正文含 error 的
-// body 误判成错误（如模型回复恰好是 "error"），进而不翻译 + 丢 usage（计费漏记）。
+// isGeminiError checks whether body is a Gemini error response. The Gemini error shape
+// is a top-level {"error":{"code":...,"message":...,"status":...}} — this uses a
+// **structural** check of whether the top-level error is an object, rather than
+// scanning bytes for an `"error"` substring. The latter would misdetect a success
+// response whose content happens to contain "error" (e.g. the model's reply is
+// literally "error") as an error, causing it to skip translation and drop usage
+// (a billing under-count).
 func isGeminiError(body []byte) bool {
 	return gjson.GetBytes(body, "error").IsObject()
 }

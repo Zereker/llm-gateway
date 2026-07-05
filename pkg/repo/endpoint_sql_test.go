@@ -7,12 +7,13 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// seedEndpoint 用 NamedExec 插测试 endpoint。
+// seedEndpoint inserts a test endpoint via NamedExec.
 //
-// 走 NamedExec 是为了让 Auth/Routing/Quota/Capabilities 字段经 Valuer 接口
-// 转 JSON / 加密——raw INSERT 字符串拿不到这层魔法。
+// NamedExec is used so the Auth/Routing/Quota/Capabilities fields go through
+// the Valuer interface for JSON conversion / encryption — a raw INSERT string
+// doesn't get that magic.
 //
-// **v0.3 改动**：endpoint 表去掉 account_id（全局上游池）。
+// **v0.3 change**: the endpoint table dropped account_id (global upstream pool).
 func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 	t.Helper()
 	if ep.Group == "" {
@@ -23,7 +24,7 @@ func seedEndpoint(t *testing.T, db *sqlx.DB, ep *Endpoint) {
 	}
 	ep.Enabled = true
 	if ep.Protocol == "" {
-		ep.Protocol = "openai" // 默认值；测试不关心协议细节时省略
+		ep.Protocol = "openai" // default value; omitted when the test doesn't care about protocol details
 	}
 	if ep.Auth.Type == "" {
 		auth, err := EncodePayload(AuthTypeBearer, BearerAuth{APIKey: "sk-test"})
@@ -84,30 +85,31 @@ func TestSQLEndpointReader_PickForModel(t *testing.T) {
 	if bearer.APIKey != "sk-xxx" {
 		t.Errorf("APIKey = %q (encryption broken?)", bearer.APIKey)
 	}
-	// 非空 quirks 应原样回来（NULL-safe rawJSON 的非 NULL 分支）。
+	// a non-empty quirks value should come back unchanged (the non-NULL branch of NULL-safe rawJSON).
 	if len(got.Quirks) == 0 {
-		t.Error("Quirks 丢失：非空 quirks 列未回读")
+		t.Error("Quirks lost: non-empty quirks column was not read back")
 	}
 }
 
-// TestSQLEndpointReader_NullableJSONColumns 回归：quirks / extra 是 DEFAULT NULL
-// 列，不配 quirks 的 endpoint（Quirks/Extra 都为 NULL）必须能正常读出来——裸
-// json.RawMessage 会在此处 "unsupported Scan" 崩掉，rawJSON 修复它。
+// TestSQLEndpointReader_NullableJSONColumns regression: quirks / extra are
+// DEFAULT NULL columns, and an endpoint with no quirks configured (both
+// Quirks/Extra are NULL) must still read back cleanly — a bare
+// json.RawMessage would blow up here with "unsupported Scan"; rawJSON fixes it.
 func TestSQLEndpointReader_NullableJSONColumns(t *testing.T) {
 	db := newTestDB(t)
-	// 全程不设 Quirks / Extra → 两列写 NULL
+	// Quirks / Extra are never set -> both columns are written as NULL
 	seedEndpoint(t, db, &Endpoint{Name: "no_quirks", Vendor: "openai", Model: "m-null", Group: "default"})
 
 	r := NewSQLEndpointReader(db)
 	got, err := r.PickForModel(context.Background(), "m-null", "default")
 	if err != nil {
-		t.Fatalf("PickForModel（NULL quirks/extra 应可读）: %v", err)
+		t.Fatalf("PickForModel (NULL quirks/extra should be readable): %v", err)
 	}
 	if len(got.Quirks) != 0 {
-		t.Errorf("NULL quirks 应扫成 nil，got %q", got.Quirks)
+		t.Errorf("NULL quirks should scan to nil, got %q", got.Quirks)
 	}
 	if len(got.Extra) != 0 {
-		t.Errorf("NULL extra 应扫成 nil，got %q", got.Extra)
+		t.Errorf("NULL extra should scan to nil, got %q", got.Extra)
 	}
 }
 

@@ -2,61 +2,62 @@ package domain
 
 import "time"
 
-// SchedulingDecision 调度决策的完整 trace。
+// SchedulingDecision is the full trace of a scheduling decision.
 //
-// 由 M7 在执行过程中累积填充，最终写到 RequestContext.SchedulingDecision。
+// Accumulated by M7 during execution, and finally written to
+// RequestContext.SchedulingDecision.
 type SchedulingDecision struct {
-	Model             string         // 原始请求 model
-	RoutedModel       string         // 实际成功的 model；未 fallback 时 = Model
+	Model             string         // the original requested model
+	RoutedModel       string         // the model actually succeeded; = Model when no fallback occurred
 	UserGroup         string         // UserIdentity.Group
-	CandidatesInitial int            // LoadEndpoints 后的数量
-	CandidatesFinal   int            // 所有 Filter 后剩余数量
-	Selected          *Endpoint      // 首次选中的 endpoint（nil 表示无可用）
-	Filters           []FilterRecord // 每个 Filter 的产出
-	Attempts          []Attempt      // 实际请求尝试链（含 retry / fallback）
-	DurationMs        int64          // 调度本身耗时（不含上游耗时）
+	CandidatesInitial int            // count after LoadEndpoints
+	CandidatesFinal   int            // count remaining after all Filters
+	Selected          *Endpoint      // the first endpoint selected (nil means none available)
+	Filters           []FilterRecord // output of each Filter
+	Attempts          []Attempt      // the actual request attempt chain (including retry / fallback)
+	DurationMs        int64          // time spent on scheduling itself (excludes upstream time)
 }
 
-// FilterRecord 单个 Filter 的产出。
+// FilterRecord is the output of a single Filter.
 type FilterRecord struct {
 	Name      string   // "CooldownFilter" / "GroupFilter" / "HealthFilter" / ...
-	Removed   []string // 被淘汰的 endpoint ID 列表
-	Reason    string   // 一行说明
-	Preferred string   // PrefixCacheScheduler 等"打分倾向"产出（可选）
+	Removed   []string // list of eliminated endpoint IDs
+	Reason    string   // one-line explanation
+	Preferred string   // output of a "scoring preference" like PrefixCacheScheduler (optional)
 }
 
-// AttemptRole 标识本次 attempt 对应的 model 角色。
+// AttemptRole identifies the model role this attempt corresponds to.
 //
-// 来源 docs/architecture/03-endpoint-scheduling.md §11；用作 trace /
-// metric attempt_role label 的同一信息源。
+// Sourced from docs/architecture/03-endpoint-scheduling.md §11; used as the
+// single source of truth for the trace / metric attempt_role label.
 type AttemptRole string
 
 const (
-	AttemptRolePrimary  AttemptRole = "primary"  // 原始请求 model
-	AttemptRoleFallback AttemptRole = "fallback" // 来自 X-Gateway-Fallback-Models
+	AttemptRolePrimary  AttemptRole = "primary"  // the original requested model
+	AttemptRoleFallback AttemptRole = "fallback" // from X-Gateway-Fallback-Models
 )
 
-// Attempt 单次请求尝试。
+// Attempt is a single request attempt.
 type Attempt struct {
-	Index       int             // 第几次尝试（1 起）
-	Model       string          // 本次 attempt 对应的 model（跨 fallback 时不同）
+	Index       int    // which attempt number (starting at 1)
+	Model       string // the model this attempt corresponds to (differs across fallback)
 	EndpointID  string
-	AttemptRole AttemptRole     // primary | fallback
+	AttemptRole AttemptRole // primary | fallback
 	Outcome     AttemptOutcome
 	LatencyMs   int64
 	ErrorClass  string // ErrorClass.String() / selector.ErrorClass.String()
 	Started     time.Time
 }
 
-// AttemptOutcome 尝试的结果分类。
+// AttemptOutcome classifies the outcome of an attempt.
 type AttemptOutcome int
 
 const (
 	AttemptUnknown  AttemptOutcome = iota
-	AttemptSuccess                 // 上游返回成功
-	AttemptRetry                   // 同 endpoint 重试中（中间状态）
-	AttemptFallback                // 失败，已切到下一 endpoint
-	AttemptFail                    // 终态失败
+	AttemptSuccess                 // upstream returned success
+	AttemptRetry                   // retrying on the same endpoint (intermediate state)
+	AttemptFallback                // failed, already switched to the next endpoint
+	AttemptFail                    // terminal failure
 )
 
 func (o AttemptOutcome) String() string {

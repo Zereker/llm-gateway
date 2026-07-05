@@ -9,21 +9,25 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// QuotaPolicyProvider M6 RateLimit middleware 用：按 ID 加载限流策略。
+// QuotaPolicyProvider is used by M6 RateLimit middleware: loads a rate-limit
+// policy by ID.
 //
-// 只声明读方法——写直接走 SQL（quota_policies 表）。
+// Only read methods are declared here — writes go straight through SQL (the quota_policies table).
 //
-// **v0.5 直查 DB，无缓存**——M6 每请求 2 次（ account + apikey policy）。
-// 真上量后加 LRU + TTL；schema 不变。
+// **v0.5 queries the DB directly, no cache** — M6 does 2 lookups per request
+// (account + apikey policy). Add an LRU + TTL once volume actually demands
+// it; the schema stays the same.
 //
-// Implementations MUST be safe for concurrent use。
+// Implementations MUST be safe for concurrent use.
 type QuotaPolicyProvider interface {
-	// GetByID 取指定 policy；找不到 / 已软删 / disabled 都返回 (nil, nil)
-	// 让 M6 当作"该层不限"——避免 deployer 临时禁用 policy 时锁死所有引用方。
+	// GetByID fetches the given policy; not found / soft-deleted / disabled
+	// all return (nil, nil), letting M6 treat it as "this layer isn't
+	// limited" — avoiding a deadlock for all referencing callers when the
+	// deployer temporarily disables a policy.
 	GetByID(ctx context.Context, id int64) (*QuotaPolicy, error)
 }
 
-// SQLQuotaPolicyProvider sqlx 实现。
+// SQLQuotaPolicyProvider is the sqlx implementation.
 type SQLQuotaPolicyProvider struct {
 	db *sqlx.DB
 }
@@ -35,9 +39,10 @@ func NewSQLQuotaPolicyProvider(db *sqlx.DB) *SQLQuotaPolicyProvider {
 const qpColumns = `id, name, description, rule_json, enabled,
 	created_at, updated_at, deleted_at`
 
-// GetByID 实现 QuotaPolicyProvider.GetByID。
+// GetByID implements QuotaPolicyProvider.GetByID.
 //
-// 找不到 / 软删 / disabled 都返回 (nil, nil)。M6 看到 nil 当"该层不限"处理。
+// Not found / soft-deleted / disabled all return (nil, nil). M6 treats a nil
+// result as "this layer isn't limited".
 func (p *SQLQuotaPolicyProvider) GetByID(ctx context.Context, id int64) (*QuotaPolicy, error) {
 	if id == 0 {
 		return nil, nil
@@ -58,5 +63,5 @@ func (p *SQLQuotaPolicyProvider) GetByID(ctx context.Context, id int64) (*QuotaP
 	return &pv, nil
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ QuotaPolicyProvider = (*SQLQuotaPolicyProvider)(nil)

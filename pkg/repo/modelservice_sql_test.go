@@ -7,9 +7,9 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// seedModelService 把测试数据写进 db。
+// seedModelService writes test data into the db.
 //
-// **v0.3 改动**：model_services 删 account_id/group_name/spec_detail。
+// **v0.3 change**: model_services dropped account_id/group_name/spec_detail.
 func seedModelService(t *testing.T, db *sqlx.DB, ms *ModelService) {
 	t.Helper()
 	res, err := db.NamedExec(
@@ -47,8 +47,8 @@ func TestSQLModelServiceReader_GetByModel(t *testing.T) {
 
 func TestSQLModelServiceReader_GetNotFound(t *testing.T) {
 	r := NewSQLModelServiceReader(newTestDB(t))
-	// docs/01 §7：not-found 返 (nil, nil) 让 M5 走自己的 404 路径，
-	// SQL 错才返 err（fail-closed 503）。
+	// docs/01 §7: not-found returns (nil, nil) so M5 takes its own 404 path;
+	// only a SQL error returns err (fail-closed 503).
 	ms, err := r.GetByModel(context.Background(), "missing")
 	if err != nil {
 		t.Fatalf("not-found should not be an error: %v", err)
@@ -86,7 +86,7 @@ func TestSQLModelServiceReader_SkipsDeleted(t *testing.T) {
 	}
 
 	r := NewSQLModelServiceReader(db)
-	// 软删 = 找不到 = (nil, nil)
+	// soft-deleted = not found = (nil, nil)
 	ms, err := r.GetByModel(context.Background(), "m")
 	if err != nil {
 		t.Errorf("soft-deleted lookup should not error: %v", err)

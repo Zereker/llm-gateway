@@ -1,13 +1,13 @@
-# gateway.yaml — examples/full-config 完整功能演示
+# gateway.yaml — full-feature demo for examples/full-config
 #
-# 跟 configs/local/gateway.yaml 的差别：
-#   - 启用 Kafka outbox（生产形态）+ 注释保留 file driver 作回退
-#   - 显式列出所有 selector filter（含 limit_read 用 redis 限流计数）
-#   - cooldown 按 ErrorClass 分维度配
-#   - 多 model + 多 endpoint 的典型配置（数据由 deployer 写 SQL，本文件只配运行时）
+# Differences from configs/local/gateway.yaml:
+#   - Enables the Kafka outbox (production shape) + keeps the file driver commented out as a fallback
+#   - Explicitly lists all selector filters (including limit_read, which uses redis for rate-limit counting)
+#   - Cooldown is configured per ErrorClass dimension
+#   - A typical multi-model + multi-endpoint setup (data is written via SQL by the deployer; this file only configures runtime behavior)
 #
-# 配套 seed：seed.sql（多 account / model_services / pricing_versions / quota_policies）
-# 启动顺序：docker compose up -d → 启动 gateway（自跑 infra.Migrate）→ mysql < seed.sql
+# Paired seed file: seed.sql (multiple accounts / model_services / pricing_versions / quota_policies)
+# Startup order: docker compose up -d -> start gateway (runs infra.Migrate automatically) -> mysql < seed.sql
 
 server:
   addr: ":8080"
@@ -15,69 +15,69 @@ server:
   shutdown_timeout: 30s
 
 request:
-  # per-request HTTP 默认限制（历史上叫 middleware:，实际跟 M1-M10 链无关）
-  body_limit_bytes: 10485760  # 10 MiB；生产建议按业务 Body 大小调
-  timeout: 120s               # 长 chat 流式可能超 60s；按 SLA 调
+  # Default per-request HTTP limits (historically named "middleware:", but actually unrelated to the M1-M10 chain)
+  body_limit_bytes: 10485760  # 10 MiB; in production, tune this to the actual body size for your workload
+  timeout: 120s               # Long streaming chats can exceed 60s; tune to your SLA
 
 database:
   driver: mysql
-  # 生产 DSN：开 multiStatements + connection pool（pkg/infra 默认 maxOpenConns=20）
+  # Production DSN: enable multiStatements + connection pool (pkg/infra defaults to maxOpenConns=20)
   dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/llm_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
 
 redis:
-  # 生产配主备 / sentinel；本文件只示意单实例。M6 限流的 hard dependency。
+  # In production, configure primary/replica or sentinel; this file only illustrates a single instance. Hard dependency for M6 rate limiting.
   addr: "redis.internal:6379"
   db: 0
-  password: ""    # 生产从 secret manager 注入
+  password: ""    # Injected from a secret manager in production
 
-# data_key：AES-256-GCM 加密 endpoints.auth 列的 KEK（hex-encoded 32 字节）。
-# deployer 用 SQL 写 endpoints 时必须用同一个 KEK 加密 auth 列。
-# **生产强约束**：从 secret manager / KMS 注入，绝不 commit 真实值。
+# data_key: the KEK (hex-encoded 32 bytes) used for AES-256-GCM encryption of the endpoints.auth column.
+# When the deployer writes endpoints via SQL, it must encrypt the auth column with this same KEK.
+# **Strict production requirement**: inject from a secret manager / KMS, never commit the real value.
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 usage_events:
-  # usage 事件下游通道（Transactional Outbox Pattern 实现，pkg/usage.DualWriteOutbox）。
-  # 生产推荐 file_and_kafka：file 是 source of truth，Kafka 异步广播；broker 挂不丢数据。
-  # 其他可选 driver：file（仅本地）/ kafka（仅 Kafka，不推荐）/ async_kafka（Kafka + retry + DLQ）
+  # Downstream channel for usage events (Transactional Outbox Pattern implementation, pkg/usage.DualWriteOutbox).
+  # Production recommendation: file_and_kafka — file is the source of truth, Kafka broadcasts asynchronously; no data loss if the broker goes down.
+  # Other available drivers: file (local only) / kafka (Kafka only, not recommended) / async_kafka (Kafka + retry + DLQ)
   driver: file_and_kafka
   file:
     path: /var/log/llm-gateway/usage.jsonl
   kafka:
     brokers: ["kafka-1.internal:9092", "kafka-2.internal:9092", "kafka-3.internal:9092"]
-    # topic 按"领域.实体.事件.版本"命名，跟生产者服务名解耦
+    # Topic naming follows "domain.entity.event.version", decoupled from the producer service name
     topic: billing.usage.recorded.v1
     async: true
     dlq_topic: billing.usage.recorded.v1.dlq
-  # 切回 file 的话注释 driver 改成 file 即可：
+  # To switch back to file, just comment out driver and set it to file:
   # driver: file
   # file:
   #   path: /var/log/llm-gateway/usage.log
 
 budget:
-  # 生产单实例 demo：用 inmemory + 默认余额 100 USD；要调拨需自行调 SetBalance API。
-  # 多副本生产请用 alwayspass + 外部计费系统对接（v0.5 没有 Redis-backed 实现）。
+  # Single-instance production demo: use inmemory with a default balance of 100 USD; call the SetBalance API yourself to adjust it.
+  # For multi-replica production, use alwayspass and integrate with an external billing system (v0.5 has no Redis-backed implementation).
   driver: inmemory
   default_balance: 100
 
 moderation:
-  # 生产推荐启用 openai moderation（免费 endpoint，~100ms 延迟）。
-  # API key 从 secret manager / env 注入；不要 commit 真值。
+  # Production recommendation: enable openai moderation (free endpoint, ~100ms latency).
+  # Inject the API key from a secret manager / env; do not commit the real value.
   driver: openai
   api_key: "sk-CHANGEME-moderation-key"
-  # base_url 留空走 OpenAI 官方
+  # Leave base_url empty to use the official OpenAI endpoint
   # base_url: "https://api.openai.com"
 
 selector:
-  # 生产推荐 filter chain：cooldown（隔离故障 ep）→ limit_read（read-only 避开已限流 ep）
-  #                       → weighted_random（按权重抽样）。
-  # weighted_random 必须放最后（其它 filter 是 prune；它是 select）。
+  # Production recommendation for the filter chain: cooldown (isolate failing endpoints) -> limit_read (read-only, avoids already-throttled endpoints)
+  #                       -> weighted_random (weighted sampling).
+  # weighted_random must come last (the other filters prune candidates; this one selects).
   filters: [cooldown, limit_read, weighted_random]
 
   cooldown:
-    transient: 30s    # 上游 5xx / 网络错 / timeout
-    capacity:  60s    # 上游 429 / overloaded（可短一点 vs 5xx）
-    permanent: 5m     # 上游 401 / 配置错（人工修才能恢复）
-    invalid:   0s     # 客户端 400-class，**不该 cooldown endpoint**
-    unknown:   10s    # 兜底；分类不出来的错都按 transient 处理但短时
+    transient: 30s    # Upstream 5xx / network error / timeout
+    capacity:  60s    # Upstream 429 / overloaded (can be shorter than 5xx)
+    permanent: 5m     # Upstream 401 / config error (needs a manual fix to recover)
+    invalid:   0s     # Client 400-class errors — **should not cool down the endpoint**
+    unknown:   10s    # Fallback; errors that can't be classified are treated as transient but with a shorter duration
 
-  max_attempts: 3       # 全局尝试上限；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
+  max_attempts: 3       # Global attempt cap; clients may override via X-Gateway-Max-Attempts (only to a smaller value)

@@ -7,34 +7,42 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// InMemoryBudgetGate 进程内余额跟踪：按 subAccountID 维度维护 remaining_balance（USD 金额）。
+// InMemoryBudgetGate tracks balance in-process: maintains remaining_balance
+// (a USD amount) keyed by subAccountID.
 //
-// **适用场景**：单实例 demo / 单主账号私有部署 / 开发期联调。生产多副本部署需要外部存储
-// （Redis / DB），本实现不能跨进程共享余额。
+// **Applicable scenarios**: single-instance demo / single-tenant private
+// deployment / dev-time integration testing. Production multi-replica
+// deployments need external storage (Redis / DB); this implementation cannot
+// share balance across processes.
 //
-// **deduction 不在本组件**：BudgetGate.Check 是 pre-flight gate（请求进来时判余额），
-// 真正的 cost 计算在 M10 Tracing 完成（按 usage × pricing）。本 Gate 暴露 Deduct
-// 方法供外部 deducter（订阅 outbox 事件 / 定时 batch 调）回填——v0.5 这部分先不接，
-// Gate 维持每个 user 配置的初始余额作为 hard cap。
+// **Deduction is not part of this component**: BudgetGate.Check is a
+// pre-flight gate (checks balance when a request comes in); the actual cost
+// calculation happens in M10 Tracing (usage × pricing). This Gate exposes a
+// Deduct method for an external deducter (subscribing to outbox events / a
+// scheduled batch job) to feed back — not wired up yet in v0.5, the Gate
+// currently just holds each user's configured initial balance as a hard cap.
 //
-// **配置方式**：
-//   - 全局默认余额：用 NewInMemoryBudgetGate(default)，新 subAccountID 首次出现时分配
-//   - 显式按 user 设置：SetBalance(subAccountID, balance)，覆盖默认
-//   - 余额 ≤ 0 → BudgetInactive；> 0 → BudgetActive
+// **Configuration**:
+//   - Global default balance: use NewInMemoryBudgetGate(default); assigned the
+//     first time a new subAccountID appears
+//   - Explicit per-user setting: SetBalance(subAccountID, balance), overrides the default
+//   - Balance ≤ 0 → BudgetInactive; > 0 → BudgetActive
 //
-// **零余额行为**：默认余额 0 = 所有未显式 SetBalance 的 user 都被拒绝（safe-by-default）。
-// 想"无限制"用 AlwaysPassGate，不要传一个巨大的 default。
+// **Zero-balance behavior**: default balance of 0 = every user without an
+// explicit SetBalance is rejected (safe-by-default). Use AlwaysPassGate for
+// "unlimited"; don't pass a huge default instead.
 //
-// Concurrent-safe（RWMutex 保护内部 map）。
+// Concurrent-safe (RWMutex protects the internal map).
 type InMemoryBudgetGate struct {
 	mu             sync.RWMutex
 	balances       map[string]float64
 	defaultBalance float64
 }
 
-// NewInMemoryBudgetGate 构造一个进程内余额 Gate。
+// NewInMemoryBudgetGate constructs an in-process balance Gate.
 //
-// defaultBalance：未在 SetBalance 显式配过的 subAccountID 用这个值。0 = 默认拒绝（safe-by-default）。
+// defaultBalance: used for any subAccountID not explicitly configured via
+// SetBalance. 0 = reject by default (safe-by-default).
 func NewInMemoryBudgetGate(defaultBalance float64) *InMemoryBudgetGate {
 	return &InMemoryBudgetGate{
 		balances:       make(map[string]float64),
@@ -42,9 +50,10 @@ func NewInMemoryBudgetGate(defaultBalance float64) *InMemoryBudgetGate {
 	}
 }
 
-// Check 实现 BudgetGate.Check：余额 > 0 返回 BudgetActive，否则 BudgetInactive。
+// Check implements BudgetGate.Check: returns BudgetActive if balance > 0,
+// otherwise BudgetInactive.
 //
-// 不修改余额；纯读判断。
+// Does not modify the balance; read-only check.
 func (g *InMemoryBudgetGate) Check(_ context.Context, subAccountID string) (domain.BudgetStatus, error) {
 	g.mu.RLock()
 	balance, ok := g.balances[subAccountID]
@@ -58,19 +67,23 @@ func (g *InMemoryBudgetGate) Check(_ context.Context, subAccountID string) (doma
 	return domain.BudgetInactive, nil
 }
 
-// SetBalance 设置 / 覆盖某 user 的余额。运维 / 测试 seed 用。
+// SetBalance sets / overrides a user's balance. For ops / test seeding.
 func (g *InMemoryBudgetGate) SetBalance(subAccountID string, balance float64) {
 	g.mu.Lock()
 	g.balances[subAccountID] = balance
 	g.mu.Unlock()
 }
 
-// Deduct 从 subAccountID 余额扣 cost；不存在的 subAccountID 按 defaultBalance 起算。
+// Deduct subtracts cost from subAccountID's balance; a subAccountID that
+// doesn't exist yet starts from defaultBalance.
 //
-// 返回扣完后的剩余余额；负数说明这次请求把余额打穿了（M10 完成后调用，事后扣账，
-// 当前请求不会被拒；下次 Check 才生效）。
+// Returns the balance remaining after the deduction; a negative value means
+// this request pushed the balance below zero (called after M10 completes,
+// deducting after the fact — the current request is not rejected; it only
+// takes effect on the next Check).
 //
-// 没接订阅 outbox 事件之前不会被自动调用——v0.5 留为公共 API 让外部脚本 / 测试可以模拟。
+// Not called automatically until outbox event subscription is wired up —
+// left as a public API in v0.5 so external scripts / tests can simulate it.
 func (g *InMemoryBudgetGate) Deduct(subAccountID string, cost float64) float64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -83,7 +96,7 @@ func (g *InMemoryBudgetGate) Deduct(subAccountID string, cost float64) float64 {
 	return balance
 }
 
-// GetBalance 读当前余额（运维 / 测试）。
+// GetBalance reads the current balance (for ops / tests).
 func (g *InMemoryBudgetGate) GetBalance(subAccountID string) float64 {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -94,5 +107,5 @@ func (g *InMemoryBudgetGate) GetBalance(subAccountID string) float64 {
 	return balance
 }
 
-// 编译期断言：InMemoryBudgetGate 满足 BudgetGate。
+// Compile-time assertion: InMemoryBudgetGate satisfies BudgetGate.
 var _ BudgetGate = (*InMemoryBudgetGate)(nil)

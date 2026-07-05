@@ -10,16 +10,17 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// BudgetGate M4 Budget middleware 的依赖接口。
+// BudgetGate is the dependency interface for the M4 Budget middleware.
 //
-// 默认实现 AlwaysPassGate（永远放行）；接入外部计费系统时实现自定义 BudgetGate。
+// Default implementation AlwaysPassGate (always allows); implement a custom
+// BudgetGate when integrating with an external billing system.
 //
-// Implementations MUST be safe for concurrent use。
+// Implementations MUST be safe for concurrent use.
 type BudgetGate interface {
 	Check(c context.Context, subAccountID string) (domain.BudgetStatus, error)
 }
 
-// BudgetOption 配置 Budget middleware（otelgin v0.68.0 同款 interface-Option）。
+// BudgetOption configures the Budget middleware (same interface-Option pattern as otelgin v0.68.0).
 type BudgetOption interface {
 	apply(*budgetConfig)
 }
@@ -32,25 +33,27 @@ type budgetConfig struct {
 	gate BudgetGate
 }
 
-// WithBudgetGate 注入 BudgetGate 实现。不传 = M4 静默 pass-through。
+// WithBudgetGate injects a BudgetGate implementation. Not passing one means
+// M4 silently passes through.
 func WithBudgetGate(g BudgetGate) BudgetOption {
 	return budgetOptionFunc(func(c *budgetConfig) { c.gate = g })
 }
 
-// Budget 是 M4：调 BudgetGate 判断当前 subAccountID 是否仍可消费。
+// Budget is M4: calls BudgetGate to check whether the current subAccountID
+// can still spend.
 //
-// 失败行为：
-//   - Gate 报错 → 502 / ErrUnknown / "budget check error: <err>"
-//   - 状态非 Active → 402 / ErrPermanent / "budget inactive"
+// Failure behavior:
+//   - Gate returns an error → 502 / ErrUnknown / "budget check error: <err>"
+//   - Status is not Active → 402 / ErrPermanent / "budget inactive"
 //
-// 未注入 Gate 时直接 c.Next()（视同 alwayspass）。
+// If no Gate is injected, calls c.Next() directly (equivalent to alwayspass).
 func Budget(opts ...BudgetOption) gin.HandlerFunc {
 	cfg := budgetConfig{}
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
 	if cfg.gate == nil {
-		// pass-through 快路径：连 tracer 都不开。
+		// pass-through fast path: doesn't even open a tracer.
 		return func(c *gin.Context) { c.Next() }
 	}
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)

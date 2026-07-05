@@ -1,13 +1,17 @@
-// Package identity 提供"同协议"translator：客户端协议 = 上游协议时用，
-// request 几乎透传，response 仅做 SSE 透传 + usage 提取。
+// Package identity provides "same-protocol" translators: used when the
+// client protocol equals the upstream protocol, where the request is nearly
+// pass-through and the response only does SSE pass-through + usage extraction.
 //
-// init() 注册 ProtoOpenAI ↔ ProtoOpenAI（OpenAI client → OpenAI-compatible upstream，
-// 涵盖真 OpenAI / DeepSeek / ARK / Qwen 等所有 OpenAI 协议族 vendor）。
+// init() registers ProtoOpenAI ↔ ProtoOpenAI (OpenAI client → OpenAI-compatible
+// upstream, covering the real OpenAI as well as DeepSeek / ARK / Qwen and other
+// vendors in the OpenAI protocol family).
 //
-// 后续加 Anthropic ↔ Anthropic / Gemini ↔ Gemini 等纯透传场景同样在本包扩展。
+// Future pure pass-through cases such as Anthropic ↔ Anthropic / Gemini ↔ Gemini
+// are likewise extended within this package.
 //
-// **usage 提取**走 pkg/usage/extractor 的 OpenAI Session（v0.5 G6 抽出来的）；
-// 本 handler 主路径只管 chunk 透传。
+// **Usage extraction** goes through the OpenAI Session in pkg/usage/extractor
+// (factored out in v0.5 G6); this handler's main path only handles chunk
+// pass-through.
 package identity
 
 import (
@@ -18,12 +22,14 @@ import (
 	"github.com/zereker/llm-gateway/pkg/usage/extractor"
 )
 
-// openaiTranslator OpenAI ↔ OpenAI identity 翻译。
+// openaiTranslator is the OpenAI ↔ OpenAI identity translator.
 //
-// **request 端**：自动给 stream=true 的请求注入 stream_options.include_usage = true，
-// 让上游必返回 usage chunk。
+// **Request side**: automatically injects stream_options.include_usage = true
+// into requests with stream=true, so the upstream is guaranteed to return a
+// usage chunk.
 //
-// **response 端**：handler 透传 chunk 给客户端 + 走 extractor 旁路提取 usage。
+// **Response side**: the handler passes chunks through to the client and
+// extracts usage on the side via the extractor.
 type openaiTranslator struct{}
 
 func (openaiTranslator) Source() domain.Protocol { return domain.ProtoOpenAI }
@@ -46,7 +52,7 @@ func (h *openaiResponseHandler) Feed(chunk []byte) ([]byte, error) {
 		return nil, nil
 	}
 	h.ex.Feed(chunk)
-	// 同协议透传：原样返回 chunk 给客户端
+	// Same-protocol pass-through: return the chunk to the client unchanged
 	return chunk, nil
 }
 
@@ -54,26 +60,28 @@ func (h *openaiResponseHandler) Flush() ([]byte, *domain.Usage, error) {
 	return nil, h.ex.Final(), nil
 }
 
-// ensureStreamUsage 在流式 body 中保证 stream_options.include_usage = true。
+// ensureStreamUsage ensures stream_options.include_usage = true in a
+// streaming body.
 //
-// 失败（JSON 不合法 / 非流式）时返回原 body —— translator 不应因这个增强失败而中止。
+// Returns the original body on failure (invalid JSON / non-streaming) —
+// the translator should not abort just because this enhancement failed.
 func ensureStreamUsage(body []byte) []byte {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
 	}
-	// 非流式不动
+	// Leave non-streaming requests untouched
 	if streamRaw, ok := m["stream"]; ok {
 		var stream bool
 		if err := json.Unmarshal(streamRaw, &stream); err == nil && !stream {
 			return body
 		}
 	} else {
-		// 没 stream 字段 = 默认 false（OpenAI 行为），不注入
+		// No stream field = defaults to false (OpenAI behavior), don't inject
 		return body
 	}
 
-	// 解 stream_options 子对象
+	// Parse the stream_options sub-object
 	var so map[string]json.RawMessage
 	if raw, ok := m["stream_options"]; ok {
 		_ = json.Unmarshal(raw, &so)

@@ -19,9 +19,10 @@ import (
 // fakes
 // =============================================================================
 
-// testSender 把 Send 调用所需的 protocol.Handler 提前固化，避免每个测试都
-// 重复写 5 参数。handler 可以是 protocol.Combine 出来的真组合，也可以是 nil
-// （测试"handler 缺失"路径）。
+// testSender fixes the protocol.Handler needed for a Send call up front, so
+// each test doesn't have to repeat all 5 parameters. handler can be a real
+// composition produced by protocol.Combine, or nil (to test the "missing
+// handler" path).
 type testSender struct {
 	*Sender
 	handler protocol.Handler
@@ -30,7 +31,6 @@ type testSender struct {
 func (ts *testSender) Send(ctx context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope, body []byte) (Outcome, error) {
 	return ts.Sender.Send(ctx, ep, env, body, ts.handler)
 }
-
 
 type fakeFactory struct {
 	meta       protocol.Metadata
@@ -48,7 +48,8 @@ func (f *fakeFactory) NewSession(_ context.Context, ep *domain.Endpoint, _ *doma
 	return &fakeSession{buildErr: f.buildErr, ep: ep}, nil
 }
 
-// Classify：只在显式装了 classifier 时按它返；否则不实现 Classifier interface。
+// Classify: returns via the classifier only when one is explicitly set;
+// otherwise it does not implement the Classifier interface.
 func (f *fakeFactory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	if f.classifier == nil {
 		return nil
@@ -99,7 +100,7 @@ func (h *fakeRespHandler) Flush() ([]byte, *domain.Usage, error) {
 	return nil, &domain.Usage{Input: 1, Output: 2}, nil
 }
 
-// stubClassifier 强制返回 ErrPermanent。
+// stubClassifier always returns ErrPermanent.
 type stubClassifier struct{}
 
 func (stubClassifier) Classify(_ int, _ []byte) *domain.AdapterError {
@@ -125,9 +126,10 @@ func registerOpenAITranslator(t *testing.T, tr translator.Translator) {
 	t.Cleanup(translator.Reset)
 }
 
-// newSender 构造 testSender。target 指明 factory HTTP 层 produces 的协议，
-// 用于 translator.Find(OpenAI, target) 查找 translator。target == ProtoUnknown
-// 或 factory == nil → handler = nil（测试 Send 的"无 handler"分支）。
+// newSender constructs a testSender. target specifies the protocol the
+// factory's HTTP layer produces, used to look up a translator via
+// translator.Find(OpenAI, target). target == ProtoUnknown or factory == nil
+// → handler = nil (to test Send's "no handler" branch).
 func newSender(t *testing.T, factory protocol.Factory, target domain.Protocol, opts ...Option) *testSender {
 	t.Helper()
 	var h protocol.Handler
@@ -140,7 +142,7 @@ func newSender(t *testing.T, factory protocol.Factory, target domain.Protocol, o
 }
 
 // =============================================================================
-// Send 用例
+// Send test cases
 // =============================================================================
 
 func TestSend_Success(t *testing.T) {
@@ -198,7 +200,7 @@ func TestSend_NoTranslator(t *testing.T) {
 	if err != nil || out.Class != selector.ClassPermanent {
 		t.Fatalf("want Permanent / nil err; got class=%v err=%v", out.Class, err)
 	}
-	// v0.6 融合后：translator 缺失 → composeHandler 返 nil → Send 报 "no handler"
+	// After the v0.6 merge: missing translator → composeHandler returns nil → Send reports "no handler"
 	if !strings.Contains(out.Reason, "no handler") {
 		t.Fatalf("reason = %q", out.Reason)
 	}
@@ -288,7 +290,8 @@ func TestSend_NetworkError(t *testing.T) {
 	}
 }
 
-// 注入 HTTPDoer 测试：不实际起 server，只验依赖注入路径
+// Test injecting HTTPDoer: doesn't actually start a server, only verifies
+// the dependency-injection path.
 type stubDoer struct {
 	resp *http.Response
 	err  error
@@ -316,7 +319,7 @@ func TestSend_WithCustomHTTPDoer(t *testing.T) {
 		WithHTTPClient(doer),
 	)
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
-	ep.Routing.URL = "http://stub" // 不会真发，doer 接管
+	ep.Routing.URL = "http://stub" // never actually sent, the doer takes over
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
 	if err != nil {
@@ -332,7 +335,7 @@ func TestSend_WithCustomHTTPDoer(t *testing.T) {
 }
 
 // =============================================================================
-// Forward 用例
+// Forward test cases
 // =============================================================================
 
 func TestForward_StreamsBodyToWriter(t *testing.T) {
@@ -389,7 +392,7 @@ func TestForward_StripsContentLength(t *testing.T) {
 }
 
 // =============================================================================
-// 内部 helper 单元
+// Internal helper units
 // =============================================================================
 
 func TestClassifyHTTPStatus(t *testing.T) {
@@ -416,10 +419,11 @@ func TestClassifyHTTPStatus(t *testing.T) {
 }
 
 // =============================================================================
-// Hook 用例
+// Hook test cases
 // =============================================================================
 
-// recordingHook 同时实现 5 个 Observer 接口，记录全部回调供断言。
+// recordingHook implements all 5 Observer interfaces at once, recording
+// every callback for assertions.
 type recordingHook struct {
 	clientReq    [][]byte
 	upstreamReq  [][]byte
@@ -464,22 +468,22 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 	ep := &domain.Endpoint{ID: 7, Vendor: "fakev"}
 	ep.Routing.URL = srv.URL
 
-	clientBody := []byte(`{"model":"x","msg":"原始客户端 body"}`)
+	clientBody := []byte(`{"model":"x","msg":"original client body"}`)
 	out, err := sender.Send(context.Background(), ep, newEnv(), clientBody)
 	if err != nil || !out.Success() {
 		t.Fatalf("Send failed: out=%+v err=%v", out, err)
 	}
 
-	// ClientRequest：在 Send 一开始 fire；body 是 caller 传进来的字节
+	// ClientRequest: fires at the very start of Send; body is the bytes the caller passed in
 	if len(hook.clientReq) != 1 || string(hook.clientReq[0]) != string(clientBody) {
 		t.Fatalf("ClientRequest got %v", hook.clientReq)
 	}
-	// UpstreamRequest：identity translator 下与 ClientRequest 同
+	// UpstreamRequest: identical to ClientRequest under the identity translator
 	if len(hook.upstreamReq) != 1 || string(hook.upstreamReq[0]) != string(clientBody) {
 		t.Fatalf("UpstreamRequest got %v", hook.upstreamReq)
 	}
 
-	// 走 Forward 拿响应；之后再断言 chunk 类 hook
+	// Go through Forward to get the response; then assert the chunk-related hooks
 	w := httptest.NewRecorder()
 	stream := out.Handler.NewResponseStream()
 	res := sender.Forward(context.Background(), w, ep, out.Response, stream)
@@ -493,7 +497,7 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 	if len(hook.clientChk) == 0 {
 		t.Fatalf("ClientChunk never fired")
 	}
-	// identity 路径下两侧 chunk 应该一致
+	// under the identity path, chunks on both sides should match
 	upJoined := joinChunks(hook.upstreamChk)
 	clJoined := joinChunks(hook.clientChk)
 	if upJoined != clJoined {
@@ -503,7 +507,7 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 		t.Fatalf("chunks reassembled = %q", upJoined)
 	}
 
-	// AttemptComplete 触发一次（success）
+	// AttemptComplete fires once (success)
 	if len(hook.completes) != 1 || hook.completes[0].Class != selector.ClassSuccess {
 		t.Fatalf("AttemptComplete got %v", hook.completes)
 	}
@@ -516,21 +520,21 @@ func TestHooks_AttemptCompleteFiredOnFailure(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 
 	hook := &recordingHook{}
-	// 让 factory 返 nil 触发 Permanent 失败路径
+	// let the factory return nil to trigger the Permanent failure path
 	sender := newSender(t, nil, domain.ProtoUnknown, WithHooks(hook))
 	ep := &domain.Endpoint{ID: 8, Vendor: "missing"}
 
 	out, _ := sender.Send(context.Background(), ep, newEnv(), []byte("body"))
 
-	// ClientRequest：早于 factory 查询，仍触发
+	// ClientRequest: precedes the factory lookup, still fires
 	if len(hook.clientReq) != 1 {
 		t.Fatalf("ClientRequest should fire even when factory missing; got %d", len(hook.clientReq))
 	}
-	// UpstreamRequest：factory 没找到走不到，不应触发
+	// UpstreamRequest: unreachable since the factory wasn't found, must not fire
 	if len(hook.upstreamReq) != 0 {
 		t.Fatalf("UpstreamRequest must not fire when factory missing; got %d", len(hook.upstreamReq))
 	}
-	// AttemptComplete：失败路径必须触发，且 outcome 是 Permanent
+	// AttemptComplete: must fire on the failure path, and the outcome must be Permanent
 	if len(hook.completes) != 1 || hook.completes[0].Class != selector.ClassPermanent {
 		t.Fatalf("AttemptComplete on failure: %v", hook.completes)
 	}
@@ -539,7 +543,8 @@ func TestHooks_AttemptCompleteFiredOnFailure(t *testing.T) {
 	}
 }
 
-// 只实现部分接口的 Hook —— 验证 type-assert 分桶是否按需触发。
+// A Hook implementing only part of the interface -- verifies that
+// type-assert bucketing fires only as needed.
 type onlyClientReqHook struct{ count int }
 
 func (h *onlyClientReqHook) OnClientRequest(_ context.Context, _ *domain.Endpoint, _ []byte) {
@@ -550,7 +555,7 @@ func TestHooks_PartialInterfaceIsAllowed(t *testing.T) {
 	registerOpenAITranslator(t, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 
 	partial := &onlyClientReqHook{}
-	// factory 缺失走 Permanent 路径
+	// missing factory takes the Permanent path
 	sender := newSender(t, nil, domain.ProtoUnknown, WithHooks(partial))
 	ep := &domain.Endpoint{ID: 9}
 	_, _ = sender.Send(context.Background(), ep, newEnv(), []byte("x"))
@@ -578,7 +583,7 @@ func TestHooks_MultipleHooksFireInOrder(t *testing.T) {
 	}
 }
 
-// clientReqHookFunc adapter：让 closure 直接当作 ClientRequestObserver。
+// clientReqHookFunc adapter: lets a closure act directly as a ClientRequestObserver.
 type clientReqHookFunc func(ctx context.Context, ep *domain.Endpoint, body []byte)
 
 func (f clientReqHookFunc) OnClientRequest(ctx context.Context, ep *domain.Endpoint, body []byte) {

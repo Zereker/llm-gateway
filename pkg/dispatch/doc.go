@@ -1,17 +1,19 @@
-// Package dispatch 协调 Selector + Invoker，把一次请求路由到合适的 endpoint
-// 并执行（含 model fallback 链 + attempt cap + retry 策略）。
+// Package dispatch coordinates Selector + Invoker to route a request to the
+// right endpoint and execute it (including the model fallback chain, attempt
+// cap, and retry policy).
 //
-// **设计精神**：M7 middleware 是 framework-thin adapter；业务编排（retry /
-// fallback / verdict 决策）全部在本包内，与 gin/echo/chi 无关。
+// **Design philosophy**: the M7 middleware is a framework-thin adapter; all
+// business orchestration (retry / fallback / verdict decisions) lives inside
+// this package and has nothing to do with gin/echo/chi.
 //
-// **四个角色**：
+// **Four roles**:
 //
-//	Dispatcher  ── 业务编排 + Action 消费循环（本包）
-//	Selector    ── 选 endpoint 抽象（pkg/selector，目前 = pkg/schedule）
-//	Invoker     ── 调下游抽象（pkg/invoker，目前 = pkg/upstream）
-//	Policy×3    ── 决策点策略：AttemptCap / RetryPolicy / FallbackPolicy（本包）
+//	Dispatcher  ── business orchestration + Action consumption loop (this package)
+//	Selector    ── endpoint-selection abstraction (pkg/selector, currently = pkg/schedule)
+//	Invoker     ── downstream-call abstraction (pkg/invoker, currently = pkg/upstream)
+//	Policy×3    ── decision-point policies: AttemptCap / RetryPolicy / FallbackPolicy (this package)
 //
-// **driver loop 形态**：
+// **Driver loop shape**:
 //
 //	for {
 //	    switch a := dispatcher.step(...).(type) {
@@ -22,8 +24,10 @@
 //	    }
 //	}
 //
-// 业务真相分布在 Policy 实现里。Dispatcher 只是 Action 的 reducer。
+// The business truth lives in the Policy implementations. Dispatcher is
+// merely the reducer for Action.
 //
-// 详见 docs/architecture/03a-schedule-overview.md（调度 + dispatch 编排总览）
-// 和 docs/architecture/03-endpoint-scheduling.md（endpoint 选择 / cooldown / retry）。
+// See docs/architecture/03a-schedule-overview.md (scheduling + dispatch
+// orchestration overview) and docs/architecture/03-endpoint-scheduling.md
+// (endpoint selection / cooldown / retry) for details.
 package dispatch
