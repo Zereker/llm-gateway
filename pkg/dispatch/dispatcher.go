@@ -322,17 +322,22 @@ func annotateVerdict(span trace.Span, v Verdict) {
 	}
 }
 
-// quotaVerdictToAttempt 把 EndpointQuota.Reserve 的拒绝结果（QuotaVerdict）翻成
-// dispatch.Verdict（attempt-level 报告，用于 retry / Selector.Report）。
+// quotaVerdictToAttempt translates EndpointQuota.Reserve's rejection
+// (QuotaVerdict) into a dispatch.Verdict (an attempt-level report used for
+// retry / Selector.Report).
 //
-// **Class 语义**（docs/04 §8）：
-//   - ClassCapacity ── 真配额拒绝：retry 换 ep + 该 ep 写 capacity cooldown
-//   - ClassUnknown  ── 依赖故障（Redis 错等）：retry 换 ep，但 **不写 cooldown**
-//     ——不能把"Redis 抖动"误标成"endpoint 坏了"，否则一次抖动把路径上每个
-//     健康 endpoint 都打进冷却，恢复后污染还残留一个 TTL
+// **Class semantics** (docs/04 §8):
+//   - ClassCapacity ── a genuine quota rejection: retry with a different
+//     endpoint + write a capacity cooldown for this endpoint
+//   - ClassUnknown  ── a dependency failure (e.g. Redis error): retry with a
+//     different endpoint, but **do not write a cooldown** — we must not
+//     mislabel "Redis is flaky" as "the endpoint is broken", or a single
+//     blip would push every healthy endpoint on the path into cooldown,
+//     leaving a lingering TTL of contamination even after recovery
 //
-// denied.Class 由 EndpointQuota 实现显式填；denied == nil 但 qerr != nil
-// （实现直接返错）同样按依赖故障（Unknown）处理。
+// denied.Class must be filled explicitly by the EndpointQuota implementation;
+// denied == nil but qerr != nil (the implementation returned an error
+// directly) is likewise treated as a dependency failure (Unknown).
 func quotaVerdictToAttempt(denied *QuotaVerdict, qerr error) Verdict {
 	if denied != nil {
 		reason := denied.Reason
