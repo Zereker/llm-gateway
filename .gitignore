@@ -34,3 +34,6 @@ bin/
 
 # Flink build artifacts (built via `make flink-jar`)
 flink/billing-aggregator/target/
+
+# local redis-server dump (dev)
+dump.rdb
