@@ -387,8 +387,8 @@ func buildCacheMiddleware(cfg config.CacheConfig, rdb *redis.Client) gin.Handler
 //
 // embeddings 天然确定（无采样），精确缓存纯收益（RAG 反复 embed 同批文本命中率高）；
 // 语义缓存对 embedding 无意义（必须精确匹配）。所以不复用 buildCacheMiddleware（可能
-// 是语义）——任一缓存开关打开就给 embeddings 上精确缓存，共用同一 Redis store（key
-// 含 protocol|model|body，与 chat key 天然不撞）。
+// 是语义）——任一缓存开关打开就给 embeddings 上精确缓存，共用同一 Redis store。
+// cacheKey 已折入 modality，chat 与 embeddings 即便 body 全同也不撞 key。
 func buildEmbeddingCache(cfg config.CacheConfig, rdb *redis.Client) gin.HandlerFunc {
 	if cfg.Enabled || cfg.Semantic.Enabled {
 		return middleware.ResponseCache(respcache.NewRedisStore(rdb, "llm-gateway:respcache"), cfg.TTL)
