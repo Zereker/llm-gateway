@@ -48,9 +48,9 @@ type Deps struct {
 	// EndpointReader / Scheduler / Sender / MaxAttempts 等细节。
 	Dispatcher *dispatch.Dispatcher
 
-	// 响应缓存（M6 之后、M7 之前）；nil = 不缓存（中间件 no-op）。
-	ResponseCache middleware.ResponseCacheStore
-	CacheTTL      time.Duration
+	// 响应缓存中间件（M6 之后、M7 之前），由 cmd 装配（精确 / 语义 / no-op）。
+	// nil 时各模态文件跳过挂载。
+	Cache gin.HandlerFunc
 
 	// M8 Moderation
 	Moderator middleware.Moderator

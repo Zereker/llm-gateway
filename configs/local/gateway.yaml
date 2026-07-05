@@ -86,6 +86,16 @@ cache:
   # 默认只缓存非流式 + temperature=0 的确定性请求；客户端 X-Gateway-Cache: on/off 覆盖。
   enabled: false
   ttl: 5m
+  # 语义缓存：按 prompt 向量相似度命中（paraphrase 也命中），启用时取代精确缓存。
+  semantic:
+    enabled: false
+    threshold: 0.9        # cosine 命中阈值
+    max_entries: 500      # 每 (protocol|model) namespace 条目上限
+    embedder:
+      driver: openai      # OpenAI-compatible /v1/embeddings
+      api_key: ""
+      base_url: ""        # 空走 OpenAI 官方
+      model: text-embedding-3-small
 
 scoring:
   # Runtime Scoring（按 endpoint 运行时质量 soft 调权）；默认关。见 docs/03 §8。

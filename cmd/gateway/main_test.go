@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/zereker/llm-gateway/pkg/config"
 	"github.com/zereker/llm-gateway/pkg/infra"
@@ -103,6 +106,73 @@ func strconvItoa(n int64) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// e2e: 语义缓存——两个措辞不同但同语义(mock embedder 给相同向量)的确定性请求，
+// 第二个语义命中,不打上游 + X-Gateway-Cache: hit。证明 embedder→向量→相似度命中的
+// 全链路。需 REDIS_ADDR。
+func TestE2E_SemanticCacheHit(t *testing.T) {
+	if os.Getenv("REDIS_ADDR") == "" {
+		t.Skip("REDIS_ADDR not set")
+	}
+	// mock embeddings：weather 相关 → [1,0,0]，否则 [0,1,0]。
+	embSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		vec := "[0,1,0]"
+		if strings.Contains(strings.ToLower(string(b)), "weather") {
+			vec = "[1,0,0]"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":` + vec + `}]}`))
+	}))
+	defer embSrv.Close()
+
+	var chatCalls int
+	chat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"sunny"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer chat.Close()
+
+	// 清掉可能残留的语义索引，保证首次必 miss。
+	rdb := redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
+	defer rdb.Close()
+	rdb.Del(context.Background(), "llm-gateway:respcache:sem:openai|gpt-4o")
+
+	cfg := writeTestConfig(t, chat.URL)
+	cfg.Cache.TTL = time.Minute
+	cfg.Cache.Semantic = config.SemanticCacheConfig{
+		Enabled: true, Threshold: 0.95, MaxEntries: 100,
+		Embedder: config.EmbedderConfig{Driver: "openai", APIKey: "x", BaseURL: embSrv.URL},
+	}
+	engine, srv, err := buildEngine(cfg)
+	if err != nil {
+		t.Fatalf("buildEngine: %v", err)
+	}
+	defer srv.Close()
+
+	send := func(content string) *httptest.ResponseRecorder {
+		body := `{"model":"gpt-4o","stream":false,"temperature":0,"messages":[{"role":"user","content":"` + content + `"}]}`
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test-alice")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := send("what is the weather today"); w.Code != 200 || chatCalls != 1 {
+		t.Fatalf("first = %d chatCalls=%d, want 200/1", w.Code, chatCalls)
+	}
+	// 措辞不同、同语义 → 语义命中，不打上游
+	w2 := send("how is the weather right now")
+	if w2.Header().Get("X-Gateway-Cache") != "hit" {
+		t.Errorf("paraphrase 应语义命中, header=%q", w2.Header().Get("X-Gateway-Cache"))
+	}
+	if chatCalls != 1 {
+		t.Errorf("语义命中不该打上游, chatCalls=%d want 1", chatCalls)
+	}
 }
 
 // e2e: denylist guard 开启时，body 命中 pattern → M8 拒 400；干净 body → 200。
