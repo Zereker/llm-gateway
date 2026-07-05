@@ -19,4 +19,8 @@ const (
 	HeaderGatewayMaxAttempts    = "X-Gateway-Max-Attempts"
 	HeaderGatewayFallbackModels = "X-Gateway-Fallback-Models"
 	HeaderGatewaySession        = "X-Gateway-Session"
+	// X-Gateway-Cache（请求）：off = 本次不查/不写缓存；on = 强制缓存（即使 temperature≠0，
+	// 客户端自负非确定性风险）。缺省：仅缓存非流式 + temperature=0 的确定性请求。
+	// X-Gateway-Cache（响应）：hit = 本次响应来自缓存。
+	HeaderGatewayCache = "X-Gateway-Cache"
 )

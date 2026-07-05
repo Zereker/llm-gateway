@@ -35,6 +35,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/pkg/respcache"
 	"github.com/zereker/llm-gateway/pkg/router"
 	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/server"
@@ -244,6 +245,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		// M7 Schedule (Dispatcher 编排：fallback / retry / streaming 在 pkg/dispatch 内)
 		Dispatcher: dispatcher,
 
+		// 响应缓存（M6 之后、M7 之前）；未启用 = nil no-op
+		ResponseCache: buildResponseCache(cfg.Cache, rdb),
+		CacheTTL:      cfg.Cache.TTL,
+
 		// M8 Moderation
 		Moderator: buildModerator(cfg.Moderation),
 
@@ -346,6 +351,15 @@ func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.Endpoin
 	}
 	scorer := selector.NewDefaultScorer(store, cfg.MinSamples, baselineMs)
 	return store, scorer
+}
+
+// buildResponseCache 构造响应缓存 store（Redis-backed，多副本共享）。
+// 未启用返回 nil —— ResponseCache 中间件 no-op。
+func buildResponseCache(cfg config.CacheConfig, rdb *redis.Client) middleware.ResponseCacheStore {
+	if !cfg.Enabled {
+		return nil
+	}
+	return respcache.NewRedisStore(rdb, "llm-gateway:respcache")
 }
 
 // buildAffinity 构造会话亲和 store（Redis-backed，多副本共享）。

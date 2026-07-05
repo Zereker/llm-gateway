@@ -25,6 +25,86 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// e2e: 响应缓存开启时，确定性请求（temperature=0，非流式）第二次命中缓存——不再打
+// 上游，且带 X-Gateway-Cache: hit。用 body 里的唯一 nonce 保证首次必 miss。
+func TestE2E_ResponseCacheHit(t *testing.T) {
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := writeTestConfig(t, upstream.URL)
+	cfg.Cache.Enabled = true
+	cfg.Cache.TTL = time.Minute
+	engine, srv, err := buildEngine(cfg)
+	if err != nil {
+		t.Fatalf("buildEngine: %v", err)
+	}
+	defer srv.Close()
+
+	nonce := time.Now().UnixNano()
+	body := `{"model":"gpt-4o","stream":false,"temperature":0,"user":"cachetest-` +
+		strconvItoa(nonce) + `","messages":[{"role":"user","content":"hi"}]}`
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test-alice")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+
+	w1 := send()
+	if w1.Code != 200 {
+		t.Fatalf("first = %d, body=%s", w1.Code, w1.Body.String())
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("first should hit upstream once, got %d", upstreamCalls)
+	}
+	if w1.Header().Get("X-Gateway-Cache") == "hit" {
+		t.Error("first should be a miss, not hit")
+	}
+
+	w2 := send()
+	if w2.Code != 200 {
+		t.Fatalf("second = %d", w2.Code)
+	}
+	if w2.Header().Get("X-Gateway-Cache") != "hit" {
+		t.Errorf("second should be X-Gateway-Cache: hit, got %q", w2.Header().Get("X-Gateway-Cache"))
+	}
+	if upstreamCalls != 1 {
+		t.Errorf("second should NOT hit upstream, upstreamCalls=%d want 1", upstreamCalls)
+	}
+	if w1.Body.String() != w2.Body.String() {
+		t.Errorf("cached body differs:\n1=%s\n2=%s", w1.Body.String(), w2.Body.String())
+	}
+}
+
+func strconvItoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [24]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
 // e2e: 用 httptest 模拟 OpenAI 上游，把 gateway 的全套 middleware 串起来跑一遍。
 func TestE2E_OpenAIChatCompletions(t *testing.T) {
 	var capturedAuth string
