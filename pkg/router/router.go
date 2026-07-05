@@ -48,6 +48,10 @@ type Deps struct {
 	// EndpointReader / Scheduler / Sender / MaxAttempts 等细节。
 	Dispatcher *dispatch.Dispatcher
 
+	// 响应缓存（M6 之后、M7 之前）；nil = 不缓存（中间件 no-op）。
+	ResponseCache middleware.ResponseCacheStore
+	CacheTTL      time.Duration
+
 	// M8 Moderation
 	Moderator middleware.Moderator
 

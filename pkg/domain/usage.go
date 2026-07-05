@@ -46,6 +46,7 @@ const (
 	UsageSourceUpstream  UsageSource = "upstream"  // 上游返回了原生 usage
 	UsageSourceExtracted UsageSource = "extracted" // translator 解析 response 字段
 	UsageSourceEstimated UsageSource = "estimated" // tokenizer / char 估算
+	UsageSourceCache     UsageSource = "cache"     // 响应缓存命中，透传原始 usage（下游可据此零成本计费）
 )
 
 // UsageEstimator 估算时使用的算法（Source=estimated 时填）。

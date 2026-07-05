@@ -39,6 +39,7 @@ type Config struct {
 	ContentLog ContentLogConfig  `yaml:"content_log"` // 内容记录通道（docs/05 §2 + docs/08 §6）
 	Health     HealthConfig      `yaml:"health"`      // Health Probing（docs/03 §10）
 	Scoring    ScoringConfig     `yaml:"scoring"`     // Runtime Scoring（docs/03 §8）
+	Cache      CacheConfig       `yaml:"cache"`       // 响应缓存（M6 之后、M7 之前）
 
 	// DataKey 是 AES-256-GCM 的 KEK（hex-encoded 32 字节 = 64 字符）。
 	// gateway 启动期调 repo.SetDataKey 装载；用于解密 endpoints.auth 列。
@@ -246,6 +247,13 @@ type SelectorConfig struct {
 	MaxAttempts     int                   `yaml:"max_attempts"`
 	MaxPerEndpoint  int                   `yaml:"max_per_endpoint"`
 	SessionAffinity SessionAffinityConfig `yaml:"session_affinity"`
+}
+
+// CacheConfig 响应缓存：命中直接返回、跳过上游。Redis-backed（多副本共享）。
+// 默认只缓存非流式 + temperature=0 的确定性请求；客户端 X-Gateway-Cache 头可覆盖。
+type CacheConfig struct {
+	Enabled bool          `yaml:"enabled"`
+	TTL     time.Duration `yaml:"ttl"` // 默认 5m
 }
 
 // SessionAffinityConfig 会话亲和（sticky routing）：客户端 X-Gateway-Session 头带

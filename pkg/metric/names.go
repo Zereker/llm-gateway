@@ -83,6 +83,11 @@ const (
 	EndpointMisconfiguredTotal = "llm_gateway_endpoint_misconfigured_total" // vendor / reason
 )
 
+// === Response Cache (docs/08) ===
+const (
+	ResponseCacheTotal = "llm_gateway_response_cache_total" // result = hit | miss | store | bypass
+)
+
 // === Repo Cache (docs/08) ===
 const (
 	RepoCacheTotal = "llm_gateway_repo_cache_total" // counter: table / result (hit / miss / error)
