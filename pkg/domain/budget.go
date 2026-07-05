@@ -1,12 +1,12 @@
 package domain
 
-// BudgetStatus M4 Budget middleware 的产物。
+// BudgetStatus is the product of the M4 Budget middleware.
 type BudgetStatus int
 
 const (
 	BudgetUnknown BudgetStatus = iota
 	BudgetActive
-	BudgetInactive // 欠费 / 订阅过期 / 配额耗尽
+	BudgetInactive // in arrears / subscription expired / quota exhausted
 )
 
 func (s BudgetStatus) String() string {

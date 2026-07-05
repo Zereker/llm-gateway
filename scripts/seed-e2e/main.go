@@ -1,10 +1,11 @@
-// Command seed-e2e: e2e smoke 用的一次性 seed 工具。
+// Command seed-e2e: a one-shot seed tool for e2e smoke tests.
 //
-// 跑 gateway 之前先跑 infra.Migrate；本工具往 MySQL 写一份能 curl 通的最小
-// 业务数据：1 account / 1 quota_policy / 1 model_service / 1 subscription /
-// 1 endpoint（指向 mockupstream:9090，bearer auth）/ 1 api_key。
+// Run infra.Migrate before starting the gateway; this tool writes the
+// minimal business data to MySQL needed for a curl smoke test: 1 account /
+// 1 quota_policy / 1 model_service / 1 subscription / 1 endpoint (pointing
+// at mockupstream:9090, bearer auth) / 1 api_key.
 //
-// 用法：
+// Usage:
 //
 //	go run ./scripts/seed-e2e \
 //	  -dsn "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4" \
@@ -12,7 +13,8 @@
 //	  -upstream "http://localhost:9090/v1/chat/completions" \
 //	  -api-key "sk-test-alice"
 //
-// 输出：把客户端要 Bearer 的 plaintext api key 直接 stdout（smoke 脚本拿来 curl）。
+// Output: the plaintext api key the client should use as Bearer, printed
+// directly to stdout (for the smoke script to curl with).
 package main
 
 import (
@@ -23,8 +25,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/jmoiron/sqlx"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/infra"
@@ -35,8 +37,8 @@ func main() {
 	dsn := flag.String("dsn", "", "MySQL DSN")
 	dataKey := flag.String("data-key", "", "endpoints.auth KEK (hex 32 bytes)")
 	upstream := flag.String("upstream", "http://localhost:9090/v1/chat/completions", "upstream URL")
-	apiKey := flag.String("api-key", "sk-test-alice", "plaintext api key（要写到 Bearer 头里的）")
-	model := flag.String("model", "gpt-4o", "model 名（client body 里写的）")
+	apiKey := flag.String("api-key", "sk-test-alice", "plaintext api key (written into the Bearer header)")
+	model := flag.String("model", "gpt-4o", "model name (written into the client request body)")
 	flag.Parse()
 
 	if *dsn == "" || *dataKey == "" {
@@ -75,7 +77,7 @@ func seed(ctx context.Context, db *sqlx.DB, upstreamURL, apiKey, model string) e
 	}
 	policyID, _ := res.LastInsertId()
 	if policyID == 0 {
-		// ON DUPLICATE KEY 没插入；查一下
+		// ON DUPLICATE KEY meant nothing was inserted; look it up.
 		if err := db.GetContext(ctx, &policyID, `SELECT id FROM quota_policies WHERE name='e2e-smoke'`); err != nil {
 			return fmt.Errorf("re-fetch policy id: %w", err)
 		}
@@ -141,7 +143,7 @@ func seed(ctx context.Context, db *sqlx.DB, upstreamURL, apiKey, model string) e
 		return fmt.Errorf("endpoints: %w", err)
 	}
 
-	// 6) api_key — 明文 sk-test-alice → sha256 hex hash 入库
+	// 6) api_key — store the sha256 hex hash of the plaintext (e.g. sk-test-alice)
 	hash := repo.HashAPIKey(apiKey)
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO api_keys
@@ -151,7 +153,8 @@ func seed(ctx context.Context, db *sqlx.DB, upstreamURL, apiKey, model string) e
 		  ('e2e-acme', ?, ?, 'ak_e2e_alice', 'alice@e2e', 'default', ?, 1)
 		ON DUPLICATE KEY UPDATE account_id=account_id`,
 		hash, apiKeyPrefix(apiKey), policyID); err != nil {
-		// MySQL ErrDup 在 sql.ErrNoRows 之外；用 SQLState 检查太重，直接忽略 dup
+		// MySQL's ErrDup is distinct from sql.ErrNoRows; checking SQLState is
+		// overkill here, so just ignore duplicates.
 		if !isDuplicateErr(err) {
 			return fmt.Errorf("api_keys: %w", err)
 		}
@@ -168,7 +171,8 @@ func apiKeyPrefix(plain string) string {
 }
 
 func isDuplicateErr(err error) bool {
-	// MySQL duplicate entry：error 1062；这里粗略字符串匹配避免引入 mysql-specific 类型
+	// MySQL duplicate entry: error 1062; do a rough string match here to
+	// avoid pulling in a mysql-specific error type.
 	if err == nil || err == sql.ErrNoRows {
 		return false
 	}

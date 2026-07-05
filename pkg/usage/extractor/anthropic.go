@@ -7,13 +7,14 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// NewAnthropic 构造一个 Anthropic 协议 usage Session。
+// NewAnthropic constructs a usage Session for the Anthropic protocol.
 //
-// 适用场景（按上游协议匹配）：
-//   - identity/anthropic：上游 Anthropic
-//   - openai_anthropic：上游 Anthropic（OpenAI 客户端 → Anthropic 上游）
+// Applicable scenarios (matched by upstream protocol):
+//   - identity/anthropic: upstream is Anthropic
+//   - openai_anthropic: upstream is Anthropic (OpenAI client -> Anthropic upstream)
 //
-// **Anthropic SSE event 形态**（input_tokens 在开头，output_tokens 在结尾）：
+// **Anthropic SSE event shape** (input_tokens at the start, output_tokens at the
+// end):
 //
 //	event: message_start
 //	data: {"type":"message_start","message":{...,"usage":{"input_tokens":10,"output_tokens":1}}}
@@ -21,11 +22,13 @@ import (
 //	event: message_delta
 //	data: {"type":"message_delta","delta":{...},"usage":{"output_tokens":25}}
 //
-// **取值策略**：
-//   - message_start.message.usage.input_tokens → input（终值；不会再变）
-//   - message_delta.usage.output_tokens → output（持续 overwrite，最后一次是终值）
+// **Value strategy**:
+//   - message_start.message.usage.input_tokens -> input (final value; never changes
+//     again)
+//   - message_delta.usage.output_tokens -> output (keeps getting overwritten; the
+//     last one is the final value)
 //
-// 非流式：完整 body 顶层 usage{input_tokens, output_tokens}。
+// Non-streaming: the complete body's top-level usage{input_tokens, output_tokens}.
 func NewAnthropic() Session { return &anthropicSession{} }
 
 type anthropicSession struct {
@@ -117,12 +120,14 @@ func (s *anthropicSession) parseFullBody() {
 	}
 }
 
-// tryExtract 单 SSE event payload；按 type 分发：
+// tryExtract handles a single SSE event payload; dispatched by type:
 //
-//	message_start  → message.usage.input_tokens（output_tokens 在 start 时通常是 1，跳过）
-//	message_delta  → usage.output_tokens（持续 overwrite）
+//	message_start  -> message.usage.input_tokens (output_tokens at start is
+//	                  usually 1, so it's skipped)
+//	message_delta  -> usage.output_tokens (keeps getting overwritten)
 //
-// 其它事件（content_block_*, ping, message_stop）不带 usage，跳过。
+// Other events (content_block_*, ping, message_stop) carry no usage, so they're
+// skipped.
 func (s *anthropicSession) tryExtract(payload []byte) {
 	var ev struct {
 		Type    string `json:"type"`

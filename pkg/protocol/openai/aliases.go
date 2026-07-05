@@ -2,21 +2,24 @@ package openai
 
 import "github.com/zereker/llm-gateway/pkg/protocol"
 
-// init 注册一组 OpenAI-compatible 的 vendor 别名。
+// init registers a set of OpenAI-compatible vendor aliases.
 //
-// 这些 vendor 都跑 OpenAI 协议（同样的 /v1/chat/completions、同样的请求/响应格式
-// 和 Bearer token 鉴权），区别只在 endpoint URL / API key / 实际模型名。
-// 共用 Factory{} 即可，不需要复制实现。
+// These vendors all run the OpenAI protocol (same /v1/chat/completions, same
+// request/response format, and Bearer token auth); the only differences are
+// the endpoint URL / API key / actual model name. They can share Factory{}
+// without duplicating the implementation.
 //
-// **协议归属**：deployer 写 endpoint SQL 时显式填 `protocol: openai`；DefaultLookup
-// 拿 endpoint 时按 ep.Protocol 取 translator，跟 vendor 解耦。
+// **Protocol ownership**: when the deployer writes endpoint SQL, they set
+// `protocol: openai` explicitly; DefaultLookup picks the translator by
+// ep.Protocol, decoupled from vendor.
 //
-// 当某个 vendor 出现专属处理需求时（例如 DeepSeek-R1 响应里的 reasoning_content
-// 字段、或 Anthropic 那种完全不同的协议），把它从这个列表里抽出去独立成子包。
+// When a vendor needs dedicated handling (e.g. the reasoning_content field in
+// DeepSeek-R1 responses, or a fully different protocol like Anthropic's),
+// pull it out of this list into its own subpackage.
 func init() {
 	aliases := []string{
-		"ark", // 火山方舟（Volcengine Ark）—— 字节跳动的模型托管平台，承载 DeepSeek / GLM / Qwen 等
-		// 后续可加：moonshot（月之暗面）/ zhipu（智谱）/ qwen（阿里）/ doubao（豆包）等
+		"ark", // Volcengine Ark — ByteDance's model hosting platform, serving DeepSeek / GLM / Qwen etc.
+		// Can add later: moonshot / zhipu / qwen / doubao etc.
 	}
 	for _, v := range aliases {
 		protocol.RegisterFactory(v, Factory{})

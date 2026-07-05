@@ -22,10 +22,10 @@ This directory is the single source of truth for `llm-gateway`'s architecture an
 - The single entry point is `cmd/gateway` (the data plane); this repo carries no control plane, and business data is managed via direct SQL.
 - Catalog, endpoint, API key, subscription, and quota policy data all live in SQL schema tables; on startup the gateway runs `infra.Migrate` to create tables and `repo.CheckSchema` as a defensive check.
 - The gateway depends on Redis for M6 rate limiting and scheduler cooldowns.
-- SQL writes propagate to the gateway through the [repo in-process TTL LRU cache](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播) (default 30s) rather than querying the same tables per request; the data plane is 100% read-only, so the TTL window is sufficient.
+- SQL writes propagate to the gateway through the [repo in-process TTL LRU cache](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) (default 30s) rather than querying the same tables per request; the data plane is 100% read-only, so the TTL window is sufficient.
 - Client-facing entry points cover OpenAI Chat, Anthropic Messages, OpenAI Responses, Images, Audio, and Embeddings routes; Gemini is supported as an upstream protocol only and is not exposed as a client entry point.
 - The `pkg/protocol` package is both the Handler facade and the home of vendor Factory / Session implementations (the HTTP-layer factories) plus the endpoint-level quirks DSL; protocol shape translation lives in `pkg/translator`, and usage extraction lives in `pkg/usage`. Consumers only see `protocol.Handler` / `protocol.Lookup` and never type-assert Factory.
-- All middleware wiring uses the interface-Option pattern (aligned with otelgin v0.68.0); see [06 §6](./06-pluggable-infra.md#6-middleware-options) and [01 §10](./01-request-pipeline.md#10-middleware-装配契约otelgin-v0680-对齐).
+- All middleware wiring uses the interface-Option pattern (aligned with otelgin v0.68.0); see [06 §6](./06-pluggable-infra.md#6-middleware-options) and [01 §10](./01-request-pipeline.md#10-middleware-assembly-contract-aligned-with-otelgin-v0680).
 
 ## Maintenance Conventions
 

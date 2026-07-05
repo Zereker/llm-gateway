@@ -9,26 +9,31 @@ import (
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
-// EndpointQuotaAdapter 实现 dispatch.EndpointQuota——把 ratelimit.Store + 端点
-// bucket key 派生 helper 包成 dispatch port。
+// EndpointQuotaAdapter implements dispatch.EndpointQuota — wraps
+// ratelimit.Store plus the endpoint bucket-key derivation helpers as a
+// dispatch port.
 //
-// **职责**：
-//   - Reserve: 拉 endpoint 的 RPM/RPS bucket 列表，调 store.ReserveBatch；超限返
-//     QuotaVerdict（Class=ClassCapacity）
-//   - ChargeUsage: 成功 stream 后用真实 usage.Total 写 TPM bucket（fire-and-forget；
-//     超限只标 metric，不阻塞响应）
+// **Responsibilities**:
+//   - Reserve: fetches the endpoint's RPM/RPS bucket list and calls
+//     store.ReserveBatch; returns a QuotaVerdict (Class=ClassCapacity) when
+//     over limit
+//   - ChargeUsage: after a successful stream, writes the TPM bucket using the
+//     real usage.Total (fire-and-forget; going over limit only marks a
+//     metric, it never blocks the response)
 //
-// **store == nil**：构造时退化为 noop——可以"没配 ratelimit 就跑空"。
+// **store == nil**: degrades to a no-op at construction time — lets the
+// gateway run fine with ratelimit unconfigured.
 type EndpointQuotaAdapter struct {
 	store ratelimit.Store
 }
 
-// NewEndpointQuota 构造一个 EndpointQuotaAdapter。store == nil 时 Reserve / ChargeUsage 都 noop。
+// NewEndpointQuota constructs an EndpointQuotaAdapter. When store == nil,
+// both Reserve and ChargeUsage are no-ops.
 func NewEndpointQuota(store ratelimit.Store) *EndpointQuotaAdapter {
 	return &EndpointQuotaAdapter{store: store}
 }
 
-// Reserve 实现 dispatch.EndpointQuota.Reserve。
+// Reserve implements dispatch.EndpointQuota.Reserve.
 func (q *EndpointQuotaAdapter) Reserve(ctx context.Context, ep *domain.Endpoint) (*dispatch.QuotaVerdict, error) {
 	if q == nil || q.store == nil || ep == nil {
 		return nil, nil
@@ -39,11 +44,15 @@ func (q *EndpointQuotaAdapter) Reserve(ctx context.Context, ep *domain.Endpoint)
 	}
 	allowed, violated, err := q.store.ReserveBatch(ctx, buckets)
 	if err != nil {
-		// **依赖故障 ≠ 容量拒绝**：Redis 错误翻成 ClassUnknown——retryable（换下
-		// 一个 endpoint 试）但 Scheduler.Report 对 unknown **不写 cooldown**。
-		// 如果翻成 ClassCapacity，一次 Redis 抖动会把路径上每个健康 endpoint 都
-		// 打进 capacity 冷却，Redis 恢复后污染还残留一个 TTL（docs/04 §8：endpoint
-		// ReserveBatch 错 → 当前 endpoint 视为不可用换下一个，不能误标坏 endpoint）。
+		// **A dependency failure is not a capacity rejection**: a Redis error
+		// translates to ClassUnknown — retryable (try the next endpoint), but
+		// Scheduler.Report never writes a cooldown for unknown.
+		// Translating it to ClassCapacity instead would, on a single Redis
+		// blip, push every healthy endpoint on the path into a capacity
+		// cooldown, and the contamination would linger for a full TTL even
+		// after Redis recovers (docs/04 §8: an endpoint ReserveBatch error
+		// means the current endpoint is treated as unavailable and we try the
+		// next one — it must not be mistakenly flagged as a bad endpoint).
 		return &dispatch.QuotaVerdict{
 			Class:  dispatch.ClassUnknown,
 			Reason: "endpoint reserve (store error): " + err.Error(),
@@ -62,10 +71,12 @@ func (q *EndpointQuotaAdapter) Reserve(ctx context.Context, ep *domain.Endpoint)
 	return nil, nil
 }
 
-// ChargeUsage 实现 dispatch.EndpointQuota.ChargeUsage——TPM 后扣（fire-and-forget）。
+// ChargeUsage implements dispatch.EndpointQuota.ChargeUsage — charges TPM
+// after the fact (fire-and-forget).
 //
-// usage.Total <= 0 时 no-op。自带短 timeout 的 background ctx
-// （响应已 stream 完，客户端 ctx 可能 cancel）。
+// No-op when usage.Total <= 0. Uses its own short-timeout background ctx
+// (the response has already finished streaming, and the client's ctx may
+// have been cancelled).
 func (q *EndpointQuotaAdapter) ChargeUsage(_ context.Context, ep *domain.Endpoint, usage *domain.Usage) {
 	if q == nil || q.store == nil || ep == nil || usage == nil || usage.Total <= 0 {
 		return
@@ -79,5 +90,5 @@ func (q *EndpointQuotaAdapter) ChargeUsage(_ context.Context, ep *domain.Endpoin
 	_, _ = q.store.ChargeBatch(bgCtx, []ratelimit.Bucket{*b})
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ dispatch.EndpointQuota = (*EndpointQuotaAdapter)(nil)

@@ -60,7 +60,7 @@ func TestAuth_RejectsInvalidCreds(t *testing.T) {
 		t.Errorf("body = %s", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), "revoked") {
-		t.Errorf("内部错误细节不该出现在响应 body：%s", w.Body.String())
+		t.Errorf("internal error details should not appear in the response body: %s", w.Body.String())
 	}
 }
 
@@ -79,13 +79,13 @@ func TestAuth_DependencyFailureFailsClosed503(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != 503 {
-		t.Errorf("status = %d, want 503 (DB 故障不能伪装成 401)", w.Code)
+		t.Errorf("status = %d, want 503 (a DB failure must not masquerade as 401)", w.Code)
 	}
 	if w.Header().Get("Retry-After") == "" {
-		t.Error("503 应带 Retry-After")
+		t.Error("503 should carry Retry-After")
 	}
 	if strings.Contains(w.Body.String(), "dial tcp") {
-		t.Errorf("SQL 错误细节不该出现在响应 body：%s", w.Body.String())
+		t.Errorf("SQL error details should not appear in the response body: %s", w.Body.String())
 	}
 }
 

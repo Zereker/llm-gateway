@@ -11,22 +11,24 @@ import (
 )
 
 // =============================================================================
-// fakeSelector / fakeInvokerFactory / fakeResult — 通用 test doubles
+// fakeSelector / fakeInvokerFactory / fakeResult — generic test doubles
 // =============================================================================
 
-// fakeCandidates 永远返一个 dummy 候选（让 filterEligible / fakeSelector 跑通）。
-// dispatcher 拿到 ep 后会传给 fakeSelector.Pick 决定真返哪个。
+// fakeCandidates always returns one dummy candidate (so filterEligible /
+// fakeSelector can run through). Once the dispatcher has the ep, it passes it
+// to fakeSelector.Pick to decide which one is actually returned.
 type fakeCandidates struct{}
 
 func (fakeCandidates) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
 	return []*domain.Endpoint{{ID: 999, Vendor: "stub", Enabled: true, Weight: 1}}, nil
 }
 
-// fakeSelector 顺序消费 responses；out-of-range → panic（防止测试漏配 fixture）。
+// fakeSelector consumes responses in order; out-of-range → panic (catches a
+// test that forgot to configure a fixture).
 type fakeSelector struct {
 	responses []selResp
 	calls     int
-	reports   []Verdict // Report 收到的全部反馈
+	reports   []Verdict // all feedback received via Report
 }
 
 type selResp struct {
@@ -47,12 +49,12 @@ func (f *fakeSelector) Pick(_ context.Context, _ []*domain.Endpoint, _ PickQuery
 	return r.ep, r.err
 }
 
-// Report 记录所有反馈（cooldown 语义断言用）。
+// Report records all feedback (used for cooldown semantics assertions).
 func (f *fakeSelector) Report(_ context.Context, _ *domain.Endpoint, v Verdict) {
 	f.reports = append(f.reports, v)
 }
 
-// fakeInvokerFactory 顺序消费 results。
+// fakeInvokerFactory consumes results in order.
 type fakeInvokerFactory struct {
 	results []*fakeResult
 	calls   int
@@ -84,18 +86,18 @@ func (f *fakeInvoker) Invoke(_ context.Context) (Result, error) {
 	return f.res, nil
 }
 
-// fakeResult 实现 dispatch.Result。
+// fakeResult implements dispatch.Result.
 type fakeResult struct {
 	ep        *domain.Endpoint
 	verdict   Verdict
 	streamRep StreamReport
-	invokeErr error // 让 fakeInvoker.Invoke 直接返 err（不返 fakeResult）
+	invokeErr error // makes fakeInvoker.Invoke return err directly (not a fakeResult)
 	streamed  bool
 	closed    bool
 }
 
-func (r *fakeResult) Verdict() Verdict             { return r.verdict }
-func (r *fakeResult) Endpoint() *domain.Endpoint   { return r.ep }
+func (r *fakeResult) Verdict() Verdict           { return r.verdict }
+func (r *fakeResult) Endpoint() *domain.Endpoint { return r.ep }
 func (r *fakeResult) StreamTo(_ context.Context, _ http.ResponseWriter) StreamReport {
 	r.streamed = true
 	return r.streamRep
@@ -106,7 +108,7 @@ func (r *fakeResult) Close() error {
 }
 
 // =============================================================================
-// 工厂函数：常见 verdict / endpoint / rc 构造
+// Factory functions: construct common verdicts / endpoints / rc
 // =============================================================================
 
 func successResult(usage *domain.Usage, ttftMs int64) *fakeResult {
@@ -145,8 +147,9 @@ func newTestEP(id int64) *domain.Endpoint {
 	}
 }
 
-// newTestInput 构造 dispatch.Input；handlers 永远返回 stubHandlerOK，
-// fakeInvokerFactory 不会真调它（只看 verdict），dispatcher 在 invoke 前能拿到 non-nil handler。
+// newTestInput builds a dispatch.Input; handlers always return stubHandlerOK.
+// fakeInvokerFactory never actually calls it (it only looks at verdict), but
+// this lets the dispatcher get a non-nil handler before invoke.
 func newTestInput(models ...string) Input {
 	in := Input{
 		Identity: domain.UserIdentity{AccountID: "acc-1", Group: "free", APIKeyID: "ak-1"},
@@ -160,7 +163,7 @@ func newTestInput(models ...string) Input {
 	return in
 }
 
-// stubHandlers 永远返回 stubHandlerOK；fakeInvokerFactory.For 拿到后忽略不调用。
+// stubHandlers always returns stubHandlerOK; fakeInvokerFactory.For gets it but ignores/never calls it.
 type stubHandlers struct{}
 
 func (stubHandlers) Get(_ *domain.Endpoint, _ domain.Protocol) protocol.Handler {
@@ -181,7 +184,7 @@ func (stubHandlerOK) NewResponseStream() protocol.ResponseStream { return nil }
 
 var errFakeDep = errors.New("fake dependency failure")
 
-// itoa 避免 import strconv 在 test helper 里。
+// itoa avoids importing strconv in this test helper.
 func itoa(n int64) string {
 	if n == 0 {
 		return "0"

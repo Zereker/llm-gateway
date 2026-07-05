@@ -18,7 +18,7 @@ validation.
 
 The repo layer uses an in-process TTL LRU cache (`pkg/repo/cache.go` + `pkg/repo/cached.go`); it does
 not need any external invalidation channel (CDC / Redis pub-sub, etc). See
-[06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播) for details.
+[06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details.
 
 ## 2. gateway.yaml
 
@@ -175,7 +175,7 @@ runs `infra.Migrate` on its own; since all DDL is `IF NOT EXISTS`, concurrent ru
 already-existing objects and do not conflict. If a release includes a destructive schema change
 (dropping a column / changing a type), the external deployment system should ensure the migration
 completes first during a low-traffic window, then roll out the gateway -- see
-[00 §3 process startup order](./00-overview.md#3-运行进程).
+[00 §3 process startup order](./00-overview.md#3-running-processes).
 
 ## 4. Environment variable overrides
 
@@ -218,7 +218,7 @@ Fail-fast is split into two layers, each covering a different class of error:
 - Endpoint business-data misconfiguration (protocol typo / unregistered vendor / metadata URL / quirks
   compile failure) is surfaced by the startup endpoint scan as a warning +
   `llm_gateway_endpoint_misconfigured_total` (does not block startup; see
-  [00 §3](./00-overview.md#3-运行进程) step 6).
+  [00 §3](./00-overview.md#3-running-processes) step 6).
 
 ## 6. Evolution rules
 

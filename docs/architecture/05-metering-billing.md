@@ -368,7 +368,7 @@ Content-recording toggles should support:
 ## 10. Relationship with the repo cache
 
 The Usage Event channel (gateway → downstream billing) and the SQL → gateway config propagation
-(repo's in-process TTL LRU cache, [06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播))
+(repo's in-process TTL LRU cache, [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation))
 are **two independent channels** and must not be reused for each other:
 
 | Dimension | Usage Event Outbox | Repo TTL cache |

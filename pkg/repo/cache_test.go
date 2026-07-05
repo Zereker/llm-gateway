@@ -9,9 +9,11 @@ import (
 	"time"
 )
 
-// 注：TTL / LRU 行为依赖底层 hashicorp/golang-lru v2 expirable.LRU；本文件只覆盖
-// 我们薄包装的 Get / Set / Delete / Len API 表面 + capacity fallback。
-// 不再做 time-injection（库内部时钟不可注入；TTL 用 time.Sleep 测会慢，没必要）。
+// Note: TTL / LRU behavior relies on the underlying hashicorp/golang-lru v2
+// expirable.LRU; this file only covers the surface of our thin Get / Set /
+// Delete / Len wrapper + capacity fallback. No time-injection is done here
+// (the library's internal clock isn't injectable, and testing TTL via
+// time.Sleep would be slow and unnecessary).
 
 func TestTTLCache_GetMissReturnsFalse(t *testing.T) {
 	c := NewTTLCache[string, int](10, time.Minute)
@@ -53,7 +55,7 @@ func TestTTLCache_Delete(t *testing.T) {
 
 func TestTTLCache_DeleteNonexistentNoOp(t *testing.T) {
 	c := NewTTLCache[string, int](10, time.Minute)
-	c.Delete("nope") // 不该 panic
+	c.Delete("nope") // should not panic
 }
 
 func TestTTLCache_LenTracksEntries(t *testing.T) {
@@ -66,18 +68,18 @@ func TestTTLCache_LenTracksEntries(t *testing.T) {
 }
 
 func TestTTLCache_DefaultCapacityFallback(t *testing.T) {
-	// capacity <= 0 应该 fallback 到 1024，且不 panic
+	// capacity <= 0 should fall back to 1024, without panicking
 	c := NewTTLCache[string, int](0, time.Minute)
 	for i := 0; i < 100; i++ {
 		c.Set(string(rune('a'+i%26)), i)
 	}
-	// 26 个 distinct key，全部应该还在
+	// 26 distinct keys, all should still be present
 	if got := c.Len(); got != 26 {
 		t.Errorf("Len=%d, want 26", got)
 	}
 }
 
-// GetOrLoad 测试 ------------------------------------------------------------
+// GetOrLoad tests ------------------------------------------------------------
 
 func TestTTLCache_GetOrLoad_HitSkipsLoader(t *testing.T) {
 	c := NewTTLCache[string, int](10, time.Minute)
@@ -108,7 +110,7 @@ func TestTTLCache_GetOrLoad_MissInvokesLoaderAndCaches(t *testing.T) {
 	if v != 100 {
 		t.Fatalf("got %d, want 100", v)
 	}
-	// 第二次应该走 cache 不调 loader
+	// second call should hit the cache and not invoke the loader
 	v, _ = c.GetOrLoad(context.Background(), "a", loader)
 	if v != 100 || called != 1 {
 		t.Errorf("v=%d called=%d, want 100 1", v, called)
@@ -116,7 +118,7 @@ func TestTTLCache_GetOrLoad_MissInvokesLoaderAndCaches(t *testing.T) {
 }
 
 func TestTTLCache_GetOrLoad_NoCacheFlag(t *testing.T) {
-	// loader 返回 cache=false 时不应回写
+	// when the loader returns cache=false, the result should not be written back
 	c := NewTTLCache[string, int](10, time.Minute)
 	called := 0
 	loader := func(context.Context) (int, bool, error) {
@@ -129,9 +131,9 @@ func TestTTLCache_GetOrLoad_NoCacheFlag(t *testing.T) {
 		t.Fatalf("got %d, want 7", v)
 	}
 	if _, ok := c.Get("a"); ok {
-		t.Error("cache=false 不应回填")
+		t.Error("cache=false should not populate the cache")
 	}
-	// 第二次还应该调 loader（cache 里没东西）
+	// second call should still invoke the loader (nothing was cached)
 	_, _ = c.GetOrLoad(context.Background(), "a", loader)
 	if called != 2 {
 		t.Errorf("loader called %d times, want 2", called)
@@ -151,7 +153,7 @@ func TestTTLCache_GetOrLoad_ErrorNotCached(t *testing.T) {
 		t.Errorf("got %d, want zero", v)
 	}
 	if _, ok := c.Get("a"); ok {
-		t.Error("err 不应缓存")
+		t.Error("err should not be cached")
 	}
 }
 
@@ -182,11 +184,11 @@ func TestTTLCache_Metrics_Hit_Miss_Error(t *testing.T) {
 		return 42, true, nil
 	}
 
-	// 第一次 miss
+	// first call: miss
 	_, _ = c.GetOrLoad(context.Background(), "a", loader)
-	// 第二次 hit
+	// second call: hit
 	_, _ = c.GetOrLoad(context.Background(), "a", loader)
-	// 第三次 error
+	// third call: error
 	_, _ = c.GetOrLoad(context.Background(), "b", func(context.Context) (int, bool, error) {
 		return 0, false, errors.New("boom")
 	})
@@ -208,7 +210,7 @@ func TestTTLCache_GetOrLoad_SingleflightCollapsesConcurrent(t *testing.T) {
 	var calls int32
 	loader := func(context.Context) (int, bool, error) {
 		atomic.AddInt32(&calls, 1)
-		time.Sleep(50 * time.Millisecond) // 模拟 SQL
+		time.Sleep(50 * time.Millisecond) // simulate a SQL call
 		return 99, true, nil
 	}
 
@@ -226,47 +228,49 @@ func TestTTLCache_GetOrLoad_SingleflightCollapsesConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("loader called %d times, want 1 (singleflight 失效)", got)
+		t.Errorf("loader called %d times, want 1 (singleflight not working)", got)
 	}
 }
 
-// **回归**：leader 的 ctx 被取消不能毒化 singleflight 的其他 waiter。
-// loader 必须跑在 WithoutCancel 的 ctx 上——leader 断连时 SQL 照常完成并回填。
+// **Regression**: a canceled leader ctx must not poison the other singleflight
+// waiters. The loader must run on a WithoutCancel'd ctx — when the leader
+// disconnects, the SQL call still completes normally and populates the cache.
 func TestTTLCache_GetOrLoad_CanceledLeaderDoesNotPoisonWaiters(t *testing.T) {
 	c := NewTTLCache[string, int](10, time.Minute)
 
 	canceled, cancel := context.WithCancel(context.Background())
-	cancel() // leader 的请求 ctx 已取消（模拟客户端断连）
+	cancel() // the leader's request ctx is now canceled (simulating a client disconnect)
 
 	v, err := c.GetOrLoad(canceled, "hot", func(loadCtx context.Context) (int, bool, error) {
-		// loader 拿到的 ctx 应该没被取消（已 WithoutCancel 解耦）
+		// the ctx the loader receives should not be canceled (decoupled via WithoutCancel)
 		if loadCtx.Err() != nil {
 			return 0, false, loadCtx.Err()
 		}
 		return 42, true, nil
 	})
 	if err != nil {
-		t.Fatalf("canceled leader ctx 泄漏进 loader：%v", err)
+		t.Fatalf("canceled leader ctx leaked into loader: %v", err)
 	}
 	if v != 42 {
 		t.Fatalf("v=%d, want 42", v)
 	}
-	// 且结果已回填——后续请求直接命中
+	// and the result should already be cached — subsequent requests hit directly
 	if got, ok := c.Get("hot"); !ok || got != 42 {
-		t.Errorf("cache 未回填：ok=%v got=%d", ok, got)
+		t.Errorf("cache was not populated: ok=%v got=%d", ok, got)
 	}
 }
 
-// loader ctx 带 loaderTimeout deadline（不是无限期），DB 挂死时 waiter 不会永久阻塞。
+// The loader ctx carries a loaderTimeout deadline (not unbounded), so a hung
+// DB won't block waiters forever.
 func TestTTLCache_GetOrLoad_LoaderCtxHasDeadline(t *testing.T) {
 	c := NewTTLCache[string, int](10, time.Minute)
 	_, _ = c.GetOrLoad(context.Background(), "k", func(loadCtx context.Context) (int, bool, error) {
 		dl, ok := loadCtx.Deadline()
 		if !ok {
-			t.Error("loader ctx 应带 deadline")
+			t.Error("loader ctx should carry a deadline")
 		}
 		if remain := time.Until(dl); remain > loaderTimeout {
-			t.Errorf("deadline 超过 loaderTimeout：%v", remain)
+			t.Errorf("deadline exceeds loaderTimeout: %v", remain)
 		}
 		return 1, true, nil
 	})

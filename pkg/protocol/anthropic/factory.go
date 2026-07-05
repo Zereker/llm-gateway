@@ -1,21 +1,24 @@
-// Package anthropic 是 Anthropic Messages 协议的 vendor Factory 实现。
+// Package anthropic is the vendor Factory implementation for the Anthropic Messages protocol.
 //
-// init() 注册到 protocol vendor registry，vendor 名 "anthropic"。
+// init() registers it with the protocol vendor registry under the vendor name "anthropic".
 //
-// **Auth**：anthropic 用 `x-api-key` 头（不是 Authorization Bearer）。schema 用
-// AuthTypeXAPIKey。配合公司账号或 Bedrock 转发等多种方式都靠 x-api-key。
+// **Auth**: anthropic uses the `x-api-key` header (not Authorization Bearer). The schema
+// uses AuthTypeXAPIKey. Various setups (company accounts, Bedrock relaying, etc.) all rely
+// on x-api-key.
 //
-// **Required header**：`anthropic-version: 2023-06-01`（API 版本）；adapter 自动加。
+// **Required header**: `anthropic-version: 2023-06-01` (API version); the adapter adds it
+// automatically.
 //
-// **客户端格式**：客户端按 OpenAI ChatCompletion 格式发请求；openai_anthropic
-// translator 翻译成 Anthropic Messages 格式发上游，响应再翻回 OpenAI。
+// **Client-facing format**: clients send requests in OpenAI ChatCompletion format; the
+// openai_anthropic translator converts to Anthropic Messages format for upstream, then
+// translates the response back to OpenAI format.
 //
-// **v0.5 不支持**：
-//   - Streaming（Anthropic SSE 跟 OpenAI 不同；单独迭代）
+// **Not supported as of v0.5**:
+//   - Streaming (Anthropic SSE differs from OpenAI's; handled in a separate iteration)
 //   - Function calling / tool_use
-//   - Vision / multi-block content（content 数组只取 text）
+//   - Vision / multi-block content (only the text is taken from the content array)
 //
-// 想接入时在 cmd/gateway/main.go 加 blank import：
+// To onboard, add a blank import in cmd/gateway/main.go:
 //
 //	import _ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
 package anthropic
@@ -27,11 +30,12 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Factory 实现 protocol.Factory。
+// Factory implements protocol.Factory.
 type Factory struct{}
 
-// Metadata 返回静态元信息。endpoint.Protocol（deployer 配置）决定上游说什么协议；
-// 一般配为 ProtoAnthropic（identity 透传）或 ProtoOpenAI（客户端 OpenAI → openai_anthropic 翻译）。
+// Metadata returns static metadata. endpoint.Protocol (deployer config) determines which
+// protocol the upstream speaks; it's typically set to ProtoAnthropic (identity passthrough)
+// or ProtoOpenAI (client OpenAI → openai_anthropic translation).
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
 		Vendor:              "anthropic",
@@ -39,7 +43,7 @@ func (Factory) Metadata() protocol.Metadata {
 	}
 }
 
-// NewSession 为本次请求构造 Session。
+// NewSession constructs a Session for this request.
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.RequestEnvelope) (protocol.Session, error) {
 	return newSession(c, ep), nil
 }

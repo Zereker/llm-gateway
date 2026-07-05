@@ -17,12 +17,12 @@ import (
 //     unknown) → excluded
 //  2. endpoint doesn't support env.Modality → excluded. The semantics are
 //     **narrowing only, never widening**:
-//       - endpoint non-empty + vendor non-empty → **both** must cover the
-//         current modality (intersection)
-//       - endpoint non-empty + vendor empty     → trust the endpoint
-//         (compat for test stubs that don't populate metadata)
-//       - endpoint empty     + vendor non-empty  → go by the vendor ceiling
-//       - endpoint empty     + vendor empty      → no modality restriction
+//     - endpoint non-empty + vendor non-empty → **both** must cover the
+//     current modality (intersection)
+//     - endpoint non-empty + vendor empty     → trust the endpoint
+//     (compat for test stubs that don't populate metadata)
+//     - endpoint empty     + vendor non-empty  → go by the vendor ceiling
+//     - endpoint empty     + vendor empty      → no modality restriction
 //     This also stops a deployer misconfiguration like ["tts"] on a
 //     chat-only vendor from letting the request sneak into the selector.
 //     Typical usage: the OpenAI vendor declares chat / embedding / image,

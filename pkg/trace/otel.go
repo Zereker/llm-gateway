@@ -1,13 +1,13 @@
-// Package trace's OpenTelemetry tracer 实现（v1.0 G2.7）。
+// Package trace's OpenTelemetry tracer implementation (v1.0 G2.7).
 //
-// **装配方式**：
+// **Wiring**:
 //
 //	tp, err := trace.NewOtelProvider(ctx, "my-gateway", "http://otel-collector:4317")
 //	if err != nil { ... }
 //	defer tp.Shutdown(ctx)
 //	tracer := trace.NewOtelTracer(tp)
 //
-// 把 tracer 喂给 middleware.TracingDeps.Tracer 替换 SlogTracer。
+// Feed the tracer into middleware.TracingDeps.Tracer to replace SlogTracer.
 package trace
 
 import (
@@ -24,16 +24,18 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// NewOtelProvider 构造 OTLP gRPC exporter + TracerProvider。
+// NewOtelProvider builds an OTLP gRPC exporter + TracerProvider.
 //
-// service：写到 OTel resource.service.name；推荐 "llm-gateway"。
-// endpoint：OTLP collector 的 gRPC 地址（如 "otel-collector.observability:4317"）；
-// 留空时走 OTel SDK 默认环境变量（OTEL_EXPORTER_OTLP_ENDPOINT）。
+// service: written to the OTel resource.service.name; "llm-gateway" is recommended.
+// endpoint: the OTLP collector's gRPC address (e.g. "otel-collector.observability:4317");
+// leave empty to fall back to the OTel SDK's default environment variable
+// (OTEL_EXPORTER_OTLP_ENDPOINT).
 //
-// 返回的 *TracerProvider 必须在进程退出前调 Shutdown 让缓冲 span flush 出去。
+// The returned *TracerProvider must have Shutdown called before process exit so
+// buffered spans get flushed.
 func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.TracerProvider, error) {
 	opts := []otlptracegrpc.Option{
-		otlptracegrpc.WithInsecure(), // 开箱即用；生产改 mTLS 自己改本函数
+		otlptracegrpc.WithInsecure(), // works out of the box; edit this function directly for mTLS in production
 	}
 	if endpoint != "" {
 		opts = append(opts, otlptracegrpc.WithEndpoint(endpoint))
@@ -55,14 +57,16 @@ func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.T
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
-	// 全局 propagator 设为 W3C TraceContext + Baggage：让 M1 TraceContext middleware
-	// 提取 traceparent / baggage header。
+	// Set the global propagator to W3C TraceContext + Baggage: this lets the M1
+	// TraceContext middleware extract the traceparent / baggage headers.
 	//
-	// **安全警告——不要给上游 HTTP client 套 otelhttp 之类自动注入 propagator 的
-	// transport**：baggage 里有 sub_account_id / request_id 等内部租户标识，
-	// 自动注入会把它们作为 `baggage:` header 发给 OpenAI / Anthropic / Gemini
-	// （跨组织泄漏）。当前 invoker 用自建 http.Client 不注入——保持这样；
-	// 如需给上游调用加 trace，只注入 TraceContext（traceparent），剥掉 Baggage。
+	// **Security warning — do not wrap the upstream HTTP client with an
+	// otelhttp-style transport that auto-injects the propagator**: baggage carries
+	// internal tenant identifiers such as sub_account_id / request_id, and
+	// auto-injection would send them as a `baggage:` header to OpenAI / Anthropic /
+	// Gemini (a cross-organization leak). The current invoker uses its own
+	// http.Client and does not inject — keep it that way. If upstream calls need
+	// tracing, inject only TraceContext (traceparent) and strip Baggage.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
@@ -70,33 +74,38 @@ func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.T
 	return tp, nil
 }
 
-// OtelTracer 用 go.opentelemetry.io/otel 做真 span 树。
+// OtelTracer builds a real span tree using go.opentelemetry.io/otel.
 //
-// **Log() 行为**：OTel 没有 "log" 概念；本实现把 Log call 作为 0 持续时间的 event：
-// 在当前 active span（如果有）上加一个 event；没 active span 时丢弃（OTel SDK 不
-// 支持 free-floating event）。
+// **Log() behavior**: OTel has no "log" concept; this implementation records each
+// Log call as a zero-duration event: it adds an event on the current active span
+// (if any); with no active span, it is dropped (the OTel SDK does not support
+// free-floating events).
 //
-// **StartSpan**：用 tracer.Start 开 span；返回 OtelSpan 让 SetAttribute / End 路由
-// 到 OTel SDK。
+// **StartSpan**: opens a span via tracer.Start; returns an OtelSpan so that
+// SetAttribute / End route to the OTel SDK.
 //
-// **关于 trace_id 联动**：M1 TraceContext middleware 已用 OTel propagator 解析
-// W3C traceparent header（pkg/middleware/trace_context.go），把 SpanContext 注入
-// c.Request.Context()；本 tracer 的 StartSpan(ctx, ...) 自动以当前 span 为 parent
-// 创建子 span，trace_id 跟入口 root span 一致——gateway 日志里的 trace_id 和 OTel
-// collector 看到的 trace_id 是同一个。
+// **On trace_id correlation**: the M1 TraceContext middleware already uses the
+// OTel propagator to parse the W3C traceparent header
+// (pkg/middleware/trace_context.go) and injects the SpanContext into
+// c.Request.Context(); this tracer's StartSpan(ctx, ...) automatically creates a
+// child span with the current span as parent, so the trace_id matches the entry
+// root span — the trace_id in the gateway logs is the same trace_id the OTel
+// collector sees.
 type OtelTracer struct {
 	tracer oteltrace.Tracer
 }
 
-// NewOtelTracer 用给定 TracerProvider 构造（typically 拿 NewOtelProvider 返回的）。
+// NewOtelTracer builds a tracer from the given TracerProvider (typically the one
+// returned by NewOtelProvider).
 func NewOtelTracer(tp oteltrace.TracerProvider) *OtelTracer {
 	return &OtelTracer{tracer: tp.Tracer("llm-gateway")}
 }
 
-// Log 在当前 span 上加 event；无 span 时静默忽略。
+// Log adds an event on the current span; silently ignored when there is no span.
 //
-// payload 转 attribute 的策略：试 fmt.Sprintf("%v", payload) 当 string 存。
-// 复杂结构（如 *domain.Usage）要看到细节就用 SetAttribute 在 span 上单独标。
+// Strategy for converting payload to an attribute: try fmt.Sprintf("%v", payload)
+// and store it as a string. For complex structures (e.g. *domain.Usage) where more
+// detail is needed, tag them individually on the span via SetAttribute instead.
 func (t *OtelTracer) Log(c context.Context, name string, payload any) {
 	span := oteltrace.SpanFromContext(c)
 	if !span.IsRecording() {
@@ -109,21 +118,23 @@ func (t *OtelTracer) Log(c context.Context, name string, payload any) {
 	span.AddEvent(name, oteltrace.WithAttributes(attrs...))
 }
 
-// StartSpan 开启 OTel span；返回的 ctx 内嵌 span，SetAttribute/End 路由到 OTel SDK。
+// StartSpan opens an OTel span; the returned ctx has the span embedded, and
+// SetAttribute/End route to the OTel SDK.
 func (t *OtelTracer) StartSpan(c context.Context, name string) (context.Context, Span) {
 	ctx, span := t.tracer.Start(c, name)
 	return ctx, &otelSpan{span: span}
 }
 
-// otelSpan 把 trace.Span 接口适配到 OTel span。
+// otelSpan adapts the trace.Span interface to an OTel span.
 type otelSpan struct {
 	span oteltrace.Span
 }
 
-// SetAttribute 实现 trace.Span.SetAttribute。
+// SetAttribute implements trace.Span.SetAttribute.
 //
-// value 类型分发：string / int / int64 / float64 / bool 走对应 attribute.KeyValue
-// 构造；其它类型 fmt.Sprintf 当 string。
+// Dispatch by value type: string / int / int64 / float64 / bool are built via the
+// corresponding attribute.KeyValue constructor; other types fall back to
+// fmt.Sprintf as a string.
 func (s *otelSpan) SetAttribute(key string, value any) {
 	if s.span == nil {
 		return
@@ -144,13 +155,13 @@ func (s *otelSpan) SetAttribute(key string, value any) {
 	}
 }
 
-// End 实现 trace.Span.End。
+// End implements trace.Span.End.
 func (s *otelSpan) End() {
 	if s.span != nil {
 		s.span.End()
 	}
 }
 
-// 编译期断言。
+// Compile-time assertions.
 var _ Tracer = (*OtelTracer)(nil)
 var _ Span = (*otelSpan)(nil)

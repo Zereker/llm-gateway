@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// stubPublisher 单测用 OutboxPublisher 桩；记录所有 Publish 调用 + 可注入失败。
+// stubPublisher is an OutboxPublisher stub for unit tests; records all Publish calls + can inject failures.
 type stubPublisher struct {
 	mu       sync.Mutex
 	events   []*OutboxEvent
@@ -68,7 +68,8 @@ func TestDualWrite_BothSucceed_ForwardsToBoth(t *testing.T) {
 }
 
 func TestDualWrite_FileOKKafkaFail_ReturnsNil(t *testing.T) {
-	// file 是 source of truth；kafka 失败不算失败（数据已 commit，等 replay 补发）。
+	// file is the source of truth; a kafka failure doesn't count as a failure
+	// (the data is already committed; the replay tool backfills it later).
 	file := &stubPublisher{}
 	kafka := &stubPublisher{err: errors.New("broker down")}
 	o := NewDualWriteOutbox(file, kafka, slog.Default())
@@ -82,9 +83,11 @@ func TestDualWrite_FileOKKafkaFail_ReturnsNil(t *testing.T) {
 	}
 }
 
-// **不变量（review MED#10）**：file ⊇ kafka——file 写失败时**不发** kafka。
-// 否则 kafka 里出现 file 没有的事件，consumer-vs-file 对账没法区分
-// "kafka 幻影" 和 "file 丢数据"，file 不再是 source of truth。
+// **Invariant (review MED#10)**: file ⊇ kafka — kafka is **not** sent when
+// the file write fails. Otherwise events would show up in kafka that aren't
+// in file, and consumer-vs-file reconciliation couldn't distinguish a
+// "kafka phantom" from "file data loss", and file would stop being the
+// source of truth.
 func TestDualWrite_FileFail_ReturnsError_DoesNotPublishKafka(t *testing.T) {
 	file := &stubPublisher{err: errors.New("disk full")}
 	kafka := &stubPublisher{}
@@ -98,12 +101,13 @@ func TestDualWrite_FileFail_ReturnsError_DoesNotPublishKafka(t *testing.T) {
 		t.Errorf("err = %v, want 'disk full'", err)
 	}
 	if kafka.count() != 0 {
-		t.Errorf("file 失败时不能发 kafka（file⊇kafka 不变量），kafka count=%d", kafka.count())
+		t.Errorf("kafka must not be published when file fails (file⊇kafka invariant), kafka count=%d", kafka.count())
 	}
 }
 
 func TestDualWrite_BothFail_ReturnsFileErr(t *testing.T) {
-	// 双失败时返回 file 错误（这是更严重的故障——磁盘问题；kafka 错误吞掉到 metric）。
+	// On a double failure, the file error is returned (this is the more
+	// serious fault — a disk problem; the kafka error is swallowed into a metric).
 	file := &stubPublisher{err: errors.New("disk full")}
 	kafka := &stubPublisher{err: errors.New("broker down")}
 	o := NewDualWriteOutbox(file, kafka, slog.Default())
@@ -122,7 +126,7 @@ func TestDualWrite_RejectsNilEvent(t *testing.T) {
 }
 
 func TestDualWrite_CloseClosesFileOnly(t *testing.T) {
-	// kafka producer 的生命周期由 srv 管理，不在 DualWriteOutbox.Close 内关。
+	// the kafka producer's lifecycle is managed by srv, not closed within DualWriteOutbox.Close.
 	file := &stubPublisher{}
 	kafka := &stubPublisher{}
 	o := NewDualWriteOutbox(file, kafka, slog.Default())

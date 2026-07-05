@@ -1,10 +1,12 @@
-// Package endpointcheck 是 endpoint 业务配置的合法性校验器——**控制面写入前**
-// 和**数据面启动期扫描**共用同一份逻辑，保证"什么算错配"只有一处定义。
+// Package endpointcheck is the validity checker for endpoint business config — it is shared
+// by **the control plane, before writes** and **the data plane, during startup scans**,
+// so that "what counts as misconfigured" is defined in exactly one place.
 //
-// 校验依赖 vendor Factory registry（protocol.LookupFactory）和 translator
-// registry（translator.FindVia）——调用方的 main 必须已 blank-import 对应的
-// vendor / translator 子包完成注册，否则合法 endpoint 会被误判 vendor_not_registered
-// / no_translator_path。cmd/gateway 与 cmd/console 都带这批 blank import。
+// Validation depends on the vendor Factory registry (protocol.LookupFactory) and the
+// translator registry (translator.FindVia) — the caller's main must already blank-import
+// the corresponding vendor / translator subpackages to complete registration, otherwise a
+// valid endpoint will be misjudged as vendor_not_registered / no_translator_path.
+// Both cmd/gateway and cmd/console carry this set of blank imports.
 package endpointcheck
 
 import (
@@ -19,32 +21,33 @@ import (
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
-// clientProtocols gateway 暴露的客户端入口协议（docs/02 §2）；translator 可达性
-// 按"至少有一个客户端协议能到达该 endpoint"判定。
+// clientProtocols are the client-facing entry protocols the gateway exposes (docs/02 §2);
+// translator reachability is judged by "at least one client protocol can reach this endpoint".
 var clientProtocols = []domain.Protocol{
 	domain.ProtoOpenAI,
 	domain.ProtoAnthropic,
 	domain.ProtoResponses,
 }
 
-// Validate 返回一行 endpoint 的全部错配原因（空 slice = 健康）。
+// Validate returns all misconfiguration reasons for one endpoint (empty slice = healthy).
 //
-// reason 是稳定的 snake_case 标识，既做 metric label 也做控制面 400 响应里的
-// 机器可读错误码。
+// reason is a stable snake_case identifier, used both as a metric label and as the
+// machine-readable error code in the control plane's 400 response.
 func Validate(ep *domain.Endpoint) []string {
 	var reasons []string
 
-	// 1) protocol 合法性：ProtoUnknown = ParseProtocol 没认出来（typo / 尾空格）。
+	// 1) protocol validity: ProtoUnknown means ParseProtocol didn't recognize it (typo / trailing space).
 	if ep.Protocol == domain.ProtoUnknown {
 		reasons = append(reasons, "unknown_protocol")
 	}
 
-	// 2) vendor Factory 注册检查。
+	// 2) vendor Factory registration check.
 	if protocol.LookupFactory(ep.Vendor) == nil {
 		reasons = append(reasons, "vendor_not_registered")
 	}
 
-	// 3) translator 可达性：任一客户端协议能到达（直连或 pivot 组合）即可。
+	// 3) translator reachability: reachable as long as any one client protocol can get there
+	// (direct or via a pivot combination).
 	if ep.Protocol != domain.ProtoUnknown {
 		reachable := false
 		for _, src := range clientProtocols {
@@ -58,12 +61,13 @@ func Validate(ep *domain.Endpoint) []string {
 		}
 	}
 
-	// 4) routing.url 基本校验 + metadata SSRF 防线。
+	// 4) routing.url basic validation + metadata SSRF defense.
 	if r := validateRoutingURL(ep.Routing.URL); r != "" {
 		reasons = append(reasons, r)
 	}
 
-	// 5) quirks 可编译性：typo 字段在这里暴露，而不是请求侧 PhaseQuirks 才报错。
+	// 5) quirks compilability: surface typo'd fields here, rather than erroring only at
+	// request-time PhaseQuirks.
 	if len(ep.Quirks) > 0 {
 		if _, err := quirks.CompileJSON(ep.Quirks); err != nil {
 			reasons = append(reasons, "invalid_quirks_spec")
@@ -73,13 +77,14 @@ func Validate(ep *domain.Endpoint) []string {
 	return reasons
 }
 
-// validateRoutingURL 校验上游 URL；返回错配 reason（空 = 通过）。
+// validateRoutingURL validates the upstream URL; returns a misconfiguration reason (empty = pass).
 //
-// **SSRF 边界**（有意收窄）：只挡 cloud metadata 面（169.254.0.0/16 / fe80::/10 /
-// AWS IMDSv6 + 知名 metadata 主机名）——那永远不是合法上游。**不挡私网 IP**：
-// self-hosted vLLM / Ollama 部署在内网是本项目一等场景（docs/00 §1）。这里是
-// 启动期 / 写入期**预校验**；运行期真正的拦截在 invoker 拨号钩子（按解析后 IP，
-// 挡 DNS-rebinding）。
+// **SSRF boundary** (intentionally narrow): only blocks the cloud metadata surface
+// (169.254.0.0/16 / fe80::/10 / AWS IMDSv6 + well-known metadata hostnames) — that is never
+// a legitimate upstream. **Does not block private-network IPs**: self-hosted vLLM / Ollama
+// deployed on an internal network is a first-class scenario for this project (docs/00 §1).
+// This is a **pre-check** at startup / write time; the real enforcement at runtime is in the
+// invoker dial hook (checked against the resolved IP, to block DNS-rebinding).
 func validateRoutingURL(raw string) string {
 	if raw == "" {
 		return "empty_routing_url"
@@ -95,12 +100,12 @@ func validateRoutingURL(raw string) string {
 	if host == "" {
 		return "invalid_routing_url"
 	}
-	// 知名 metadata 主机名
+	// Well-known metadata hostnames
 	switch host {
 	case "metadata.google.internal", "metadata", "instance-data":
 		return "metadata_endpoint"
 	}
-	// metadata IP（判定与 dial-time SSRF 防线共用 invoker.IsMetadataIP，单一真源）
+	// Metadata IP (shares invoker.IsMetadataIP with the dial-time SSRF defense — single source of truth)
 	if ip, err := netip.ParseAddr(host); err == nil && invoker.IsMetadataIP(ip) {
 		return "metadata_endpoint"
 	}

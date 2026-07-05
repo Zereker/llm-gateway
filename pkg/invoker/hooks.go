@@ -6,26 +6,31 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Hook 是 observer 的统一类型；按实现的 Observer 子接口被 Sender 分发。
+// Hook is the unified observer type; Sender dispatches it based on which
+// Observer sub-interface the implementation satisfies.
 //
-// 一个 Hook 实现可同时满足多个 Observer 接口（duck typing）；Sender 在 New
-// 期间一次性分桶，运行期不再 type-assert。
+// A single Hook implementation can satisfy multiple Observer interfaces
+// (duck typing); Sender buckets it once during New and does no further
+// type-assert at runtime.
 //
-// **不修改字节、不中止主流**：observer 用于审计 / 异步日志 / metric 上报这类
-// 旁观需求。要改字节 / 拦截违规请走 translator.ResponseHandler 装饰器（M8 moderator
-// 形态）。
+// **Does not mutate bytes, does not abort the main flow**: observers are for
+// bystander needs like auditing / async logging / metric reporting. To
+// mutate bytes / block violations, use the translator.ResponseHandler
+// decorator instead (the M8 moderator shape).
 //
-// **同步调用**：Sender 不 spawn goroutine、不做 buffer 池、不做 panic recover。
-// hook 慢就拖慢主流；要异步在 OnXxx 内自己 `go func() { ... }()`，并把 chunk
-// 拷贝出来（chunk 在回调 return 后会被 io.CopyBuffer / 内部 buf 复用——
-// 跟 database/sql.Rows.Scan / bufio.Scanner.Bytes() 同样的约定）。
+// **Synchronous invocation**: Sender does not spawn a goroutine, does not
+// pool buffers, and does not recover panics. A slow hook slows down the main
+// flow; to go async, spawn `go func() { ... }()` inside OnXxx yourself, and
+// copy the chunk out first (the chunk is reused by io.CopyBuffer / the
+// internal buf after the callback returns — the same convention as
+// database/sql.Rows.Scan / bufio.Scanner.Bytes()).
 type Hook any
 
 // =============================================================================
-// 5 个 Observer 接口：沿"翻译边界"成对设计
+// 5 Observer interfaces: designed in pairs along the "translation boundary"
 // =============================================================================
 //
-// Sender 的字节流：
+// Sender's byte flow:
 //
 //	   client                                            upstream
 //	     │                                                  │
@@ -38,70 +43,85 @@ type Hook any
 //	     │                                │
 //	  ClientChunk                  UpstreamChunk
 //
-// "审计原始请求 / 响应"用 Client* 系列；"看上游真实发包内容 / 真实返回"用
-// Upstream* 系列。两侧字节在 identity translator 下相同；在跨协议 translator
-// （openai_gemini 等）下不同——观察者按需选挂哪几个。
+// Use the Client* series to audit the raw request/response; use the
+// Upstream* series to see what actually gets sent to / received from the
+// upstream. The bytes on both sides are identical under the identity
+// translator; they differ under a cross-protocol translator (openai_gemini,
+// etc.) — observers pick whichever they need.
 // =============================================================================
 
-// ClientRequestObserver 在 Send 一开始触发（早于 factory / translator 查找）。
+// ClientRequestObserver fires at the very start of Send (before the
+// factory / translator lookup).
 //
-// 拿到的 body 是 caller 给 Send 的 srcBody——客户端原始请求体（未翻译）。
-// 这是网关接收到的原始字节，适合合规审计 / 用户行为分析。
+// The body received is the srcBody the caller passed to Send — the client's
+// original request body (untranslated). This is the raw bytes the gateway
+// received, suitable for compliance auditing / user behavior analysis.
 type ClientRequestObserver interface {
 	OnClientRequest(ctx context.Context, ep *domain.Endpoint, body []byte)
 }
 
-// UpstreamRequestObserver 在 sess.BuildRequest 后、httpc.Do 前触发。
+// UpstreamRequestObserver fires after sess.BuildRequest and before httpc.Do.
 //
-// 拿到的 body 是 translator.TranslateRequest 输出——准备发给上游的字节。
-// identity 协议下与 ClientRequest 相同；跨协议时是翻译后的形态（如 OpenAI
-// 客户端 → Gemini 上游会拿到 Gemini schema body）。
+// The body received is the output of translator.TranslateRequest — the
+// bytes about to be sent to the upstream. Under the identity protocol it's
+// the same as ClientRequest; across protocols it's the translated shape
+// (e.g. an OpenAI client → Gemini upstream call gets a Gemini-schema body).
 //
-// 适合调试 / 上游协议核对；合规场景一般要前者。
+// Suitable for debugging / verifying the upstream protocol; compliance
+// scenarios generally want the former instead.
 type UpstreamRequestObserver interface {
 	OnUpstreamRequest(ctx context.Context, ep *domain.Endpoint, body []byte)
 }
 
-// UpstreamChunkObserver 在 translatorWriter.Write 入口触发（Feed 之前）。
+// UpstreamChunkObserver fires at the entry of translatorWriter.Write (before
+// Feed).
 //
-// 拿到的是上游 HTTP body 直接 Read 出来的原始 chunk——未经 translator 翻译、
-// 未经 moderator 检查。
+// What it receives is the raw chunk read directly from the upstream HTTP
+// body — not yet translated, not yet moderator-checked.
 //
-// 适合调试上游真实返回 / 录制 fixtures 用作回放测试。
+// Suitable for debugging real upstream responses / recording fixtures for
+// playback tests.
 //
-// **chunk 切片在回调 return 后失效**：要持久化必须 `append([]byte(nil), chunk...)`
-// 拷贝。底层 buf 来自 chunkBufPool。
+// **The chunk slice is invalid after the callback returns**: to persist it
+// you must copy it with `append([]byte(nil), chunk...)`. The underlying buf
+// comes from chunkBufPool.
 type UpstreamChunkObserver interface {
 	OnUpstreamChunk(ctx context.Context, ep *domain.Endpoint, chunk []byte)
 }
 
-// ClientChunkObserver 在 translatorWriter inner.Write 之后触发（buffer-then-
-// translate 模式下也在 Forward 收尾的 finalOut 写入后触发）。
+// ClientChunkObserver fires after translatorWriter inner.Write (in
+// buffer-then-translate mode it also fires after the finalOut write at the
+// end of Forward).
 //
-// 拿到的是客户端真实收到的字节——已经过 translator.Feed 翻译 + 装饰器
-// （moderator 等）放行；违规被装饰器拦下的 chunk 不会触发本回调。
+// What it receives is the bytes the client actually received — already
+// translated by translator.Feed and passed through decorators (moderator,
+// etc.); a chunk blocked by a decorator for violating policy will not
+// trigger this callback.
 //
-// 适合用户视角的审计 / 与计费数据对账。
+// Suitable for user-facing auditing / reconciling against billing data.
 //
-// **chunk 切片在回调 return 后失效**：要持久化必须 copy。
+// **The chunk slice is invalid after the callback returns**: to persist it
+// you must copy it.
 type ClientChunkObserver interface {
 	OnClientChunk(ctx context.Context, ep *domain.Endpoint, chunk []byte)
 }
 
-// AttemptCompleteObserver 在 Send 单次调用收尾时触发（成功 / 失败都触发）。
+// AttemptCompleteObserver fires when a single Send call finishes (fires on
+// both success and failure).
 //
-// per-attempt 级事件，不是 per-request——一次客户端请求触发多次 Send
-// （retry / fallback）就触发多次本回调。per-request 级事件请用 M10 Tracing
-// 的 usage.OutboxPublisher。
+// This is a per-attempt event, not per-request — one client request can
+// trigger multiple Send calls (retry / fallback), each firing this callback
+// once. For per-request events use M10 Tracing's usage.OutboxPublisher.
 type AttemptCompleteObserver interface {
 	OnAttemptComplete(ctx context.Context, ep *domain.Endpoint, outcome Outcome)
 }
 
 // =============================================================================
-// 内部分桶 / fan-out
+// Internal bucketing / fan-out
 // =============================================================================
 
-// hookSet Sender 启动期分桶后的回调集合；运行期零 type-assert。
+// hookSet is the bucketed set of callbacks after Sender's startup-time
+// classification; zero type-assert at runtime.
 type hookSet struct {
 	clientReq   []ClientRequestObserver
 	upstreamReq []UpstreamRequestObserver
@@ -110,9 +130,11 @@ type hookSet struct {
 	complete    []AttemptCompleteObserver
 }
 
-// classifyHooks 把 Hook 按实现的子接口分桶；同一个 hook 可同时进多个桶。
+// classifyHooks buckets each Hook by the sub-interfaces it implements; the
+// same hook can land in multiple buckets at once.
 //
-// 顺序保留：caller 注册顺序就是回调顺序。
+// Order is preserved: the caller's registration order becomes the callback
+// order.
 func classifyHooks(hooks []Hook) hookSet {
 	var hs hookSet
 	for _, h := range hooks {

@@ -38,7 +38,7 @@ Gateway startup sequence:
    idempotent) + `repo.CheckSchema` defensive validation; exit immediately if tables are missing.
 4. Open **Redis (required)**; M6 rate limiting and scheduler cooldown both depend on Redis.
 5. Assemble SQL reader/provider (wrapped in a `repo.CachedXxxReader` TTL LRU layer, see
-   [06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)),
+   [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation)),
    Redis rate limit store, scheduler, outbox, tracer.
 6. Scan enabled endpoints, validate that the vendor adapter exists, `endpoint.Protocol` is valid, and the required translator is registered; if missing, only log a warning and emit a metric, without blocking startup.
 7. Call `router.NewEngine` to register routes and middleware.
@@ -56,7 +56,7 @@ SQL → gateway data propagation goes through the **repo layer's in-process TTL 
 MySQL → once the gateway repo cache naturally expires, a miss triggers a direct SQL lookup to fetch the new value. **There is no direct per-request
 query against the same DB** (MySQL becomes the bottleneck once QPS rises), nor is there push-based
 invalidation (the data plane is 100% read-only, so TTL is already sufficient; business table changes don't need to take effect within seconds). See
-[06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播) for details.
+[06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details.
 
 Schema changes go through `pkg/infra/schema.sql`, applied by `infra.Migrate` when the gateway starts.
 Changes must remain backward compatible: first deploy a new gateway with the new schema, letting it create the new tables/columns (keeping old fields);

@@ -11,13 +11,15 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// **Anthropic API 必需的版本头**：deployer 不需要配；adapter 自动加。
-// 升级 API 版本时在这里改。
+// **Version header required by the Anthropic API**: deployer doesn't need to configure it;
+// the adapter adds it automatically. Update here when upgrading the API version.
 const anthropicAPIVersion = "2023-06-01"
 
-// session **slim 版**：只管 HTTP 层（URL + auth + 必需 headers）。
+// session is a **slim** implementation: it only handles the HTTP layer (URL + auth +
+// required headers).
 //
-// body 翻译 / 响应翻译 / usage 提取全在 pkg/translator/openai_anthropic.translator。
+// Body translation / response translation / usage extraction all live in
+// pkg/translator/openai_anthropic.translator.
 type session struct {
 	ctx context.Context
 	ep  *domain.Endpoint
@@ -29,13 +31,14 @@ func newSession(c context.Context, ep *domain.Endpoint) *session {
 	return &session{ctx: c, ep: ep}
 }
 
-// BuildRequest 构造 *http.Request：
-//   - URL: ep.Routing.URL（约定填完整 /v1/messages 端点）
-//   - x-api-key: 从 ep.Auth.Payload (XAPIKeyAuth) 解码
-//   - anthropic-version: hard-coded（API 必需）
-//   - body: translator 已翻好（OpenAI ChatCompletion → Anthropic Messages）
+// BuildRequest constructs an *http.Request:
+//   - URL: ep.Routing.URL (by convention holds the full /v1/messages endpoint)
+//   - x-api-key: decoded from ep.Auth.Payload (XAPIKeyAuth)
+//   - anthropic-version: hard-coded (required by the API)
+//   - body: already translated by the translator (OpenAI ChatCompletion → Anthropic Messages)
 //
-// **vendor 校验**：本 Adapter 用 x-api-key auth；不是这个 type 直接拒（指引到正确 vendor）。
+// **Vendor validation**: this Adapter uses x-api-key auth; any other auth type is rejected
+// outright (pointing the caller to the correct vendor).
 func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("anthropic: ep.routing.url empty")
@@ -55,13 +58,13 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
-	// 先 quirks header
+	// quirks headers first
 	for k, vs := range extraHeaders {
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
-	// 再协议必需 header（覆盖）
+	// then protocol-required headers (override)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apikey.APIKey)
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
@@ -73,5 +76,5 @@ func (s *session) Close() error {
 	return nil
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ protocol.Session = (*session)(nil)

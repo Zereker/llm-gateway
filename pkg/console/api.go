@@ -8,24 +8,28 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// NewEngine 装配控制面 gin.Engine：ops 路由（/healthz）公开，/admin/* 全部走
-// adminAuth（认证 + 解析角色）。写路由（POST/DELETE）额外挂 requireAdmin——viewer
-// 角色只能读。所有业务 handler 只依赖 *Store。
+// NewEngine assembles the control-plane gin.Engine: the ops route (/healthz) is
+// public, everything under /admin/* goes through adminAuth (authenticate +
+// resolve role). Write routes (POST/DELETE) additionally attach
+// requireAdmin — the viewer role can only read. All business handlers depend
+// only on *Store.
 func NewEngine(store *Store, tokens []Token) *gin.Engine {
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
 	engine.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
 
-	// Web UI（Phase 3）：单文件 admin 控制台。页面本身不含机密，鉴权发生在它发起的
-	// /admin/* API 调用上（浏览器带 admin token）。
+	// Web UI (Phase 3): single-file admin console. The page itself carries no
+	// secrets; auth happens on the /admin/* API calls it issues (the browser
+	// attaches the admin token).
 	engine.GET("/", func(c *gin.Context) { c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML) })
 
 	api := &api{store: store}
-	// adminAuth 先认证 + 解析角色/actor；auditWrites 再记写操作审计（顺序不能反）。
+	// adminAuth authenticates + resolves role/actor first; auditWrites then
+	// records the write-operation audit (this order must not be reversed).
 	admin := engine.Group("/admin", adminAuth(tokens), auditWrites(store))
 	{
-		// 读：admin + viewer 都行
+		// Reads: both admin and viewer are allowed
 		admin.GET("/accounts", api.listAccounts)
 		admin.GET("/model-services", api.listModelServices)
 		admin.GET("/endpoints", api.listEndpoints)
@@ -34,9 +38,9 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/quota-policies", api.listQuotaPolicies)
 		admin.GET("/pricing", api.listPricing)
 		admin.GET("/model-aliases", api.listModelAliases)
-		admin.GET("/audit", requireAdmin, api.listAudit) // 审计只给 admin 看
+		admin.GET("/audit", requireAdmin, api.listAudit) // audit is admin-only
 
-		// 写：只有 admin
+		// Writes: admin only
 		admin.POST("/accounts", requireAdmin, api.createAccount)
 		admin.POST("/model-services", requireAdmin, api.createModelService)
 		admin.POST("/subscriptions", requireAdmin, api.subscribe)
@@ -53,9 +57,12 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 	return engine
 }
 
-// 注：用量/计量刻意不在控制面里聚合——网关只负责把 usage 事件经 outbox
-// （file source-of-truth + Kafka 广播）产出，下游 metering/billing 系统消费。
-// 控制面做成 usage 聚合会把"计费"这个独立复杂域拉进来，边界就破了。
+// Note: usage/metering aggregation is deliberately kept out of the control
+// plane — the gateway is only responsible for emitting usage events via the
+// outbox (file source-of-truth + Kafka broadcast), which downstream
+// metering/billing systems consume. Turning the control plane into a usage
+// aggregator would pull the independently complex "billing" domain in and
+// break the boundary.
 
 type api struct {
 	store *Store
@@ -212,7 +219,7 @@ func (a *api) createAPIKey(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
-	// 明文只此一次返回。
+	// The plaintext is returned only this once.
 	c.JSON(http.StatusCreated, created)
 }
 
@@ -277,7 +284,7 @@ func (a *api) deleteQuotaPolicy(c *gin.Context) {
 }
 
 // =============================================================================
-// Pricing（append-only）
+// Pricing (append-only)
 // =============================================================================
 
 func (a *api) publishPrice(c *gin.Context) {
@@ -374,7 +381,8 @@ func (a *api) listAudit(c *gin.Context) {
 // helpers
 // =============================================================================
 
-// bind 解析 JSON body；失败时已写 400，返回 false。
+// bind parses the JSON body; on failure it has already written a 400 and
+// returns false.
 func bind(c *gin.Context, dst any) bool {
 	if err := c.ShouldBindJSON(dst); err != nil {
 		abortError(c, 400, "invalid_json", err.Error())
@@ -392,8 +400,9 @@ func pathInt64(c *gin.Context, name string) (int64, bool) {
 	return v, true
 }
 
-// writeStoreErr 把 store 错误翻成 HTTP：NotFound→404，唯一键冲突→409，其余→500。
-// 内部错误细节只进日志层（gin.Recovery / slog），不回客户端 body。
+// writeStoreErr translates a store error to HTTP: NotFound -> 404, unique-key
+// conflict -> 409, everything else -> 500. Internal error details only go to
+// the log layer (gin.Recovery / slog), never into the client response body.
 func writeStoreErr(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -401,15 +410,16 @@ func writeStoreErr(c *gin.Context, err error) {
 	case isDuplicateKey(err):
 		abortError(c, 409, "conflict", "resource already exists (unique key violation)")
 	case isForeignKeyViolation(err):
-		// 引用了不存在的资源（如 subscribe 到不存在的 model、发 key 到不存在的 account）
-		// 是**客户端**输入错，不是服务端故障。
+		// Referencing a resource that doesn't exist (e.g. subscribing to a
+		// nonexistent model, issuing a key to a nonexistent account) is a
+		// **client** input error, not a server-side fault.
 		abortError(c, 400, "invalid_reference", "references a resource that does not exist")
 	default:
 		abortError(c, 500, "internal", "internal error")
 	}
 }
 
-// isForeignKeyViolation 识别 MySQL 1452 外键约束失败。
+// isForeignKeyViolation recognizes MySQL error 1452 (foreign key constraint failure).
 func isForeignKeyViolation(err error) bool {
 	if err == nil {
 		return false
@@ -418,7 +428,8 @@ func isForeignKeyViolation(err error) bool {
 	return containsAny(s, "foreign key constraint fails", "Error 1452")
 }
 
-// isDuplicateKey 识别 MySQL 1062 唯一键冲突（不依赖 driver 具体类型，匹配错误串）。
+// isDuplicateKey recognizes MySQL error 1062 (unique-key violation), by
+// matching the error string rather than depending on a concrete driver type.
 func isDuplicateKey(err error) bool {
 	if err == nil {
 		return false
@@ -445,7 +456,7 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
-// abortError 统一错误响应体 {"error":{"code","message"}}。
+// abortError writes the unified error response body {"error":{"code","message"}}.
 func abortError(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": message}})
 }

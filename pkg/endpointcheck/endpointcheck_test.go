@@ -9,17 +9,17 @@ import (
 func TestValidateRoutingURL(t *testing.T) {
 	cases := []struct {
 		url  string
-		want string // 空 = 通过
+		want string // empty = pass
 	}{
 		{"https://api.openai.com/v1/chat/completions", ""},
-		{"http://10.0.3.7:8000/v1/chat/completions", ""}, // 私网 self-hosted vLLM：合法
+		{"http://10.0.3.7:8000/v1/chat/completions", ""}, // private-network self-hosted vLLM: legal
 		{"http://vllm.internal:8000/v1", ""},
 		{"", "empty_routing_url"},
 		{"ftp://x.com/path", "invalid_routing_scheme"},
 		{"http://169.254.169.254/latest/meta-data/", "metadata_endpoint"}, // AWS metadata
 		{"http://metadata.google.internal/computeMetadata/v1/", "metadata_endpoint"},
-		{"http://METADATA.GOOGLE.INTERNAL/x", "metadata_endpoint"}, // 大小写
-		{"http://[fe80::1]/x", "metadata_endpoint"},                // IPv6 链路本地
+		{"http://METADATA.GOOGLE.INTERNAL/x", "metadata_endpoint"}, // case sensitivity
+		{"http://[fe80::1]/x", "metadata_endpoint"},                // IPv6 link-local
 		{"http://[fd00:ec2::254]/latest/", "metadata_endpoint"},    // AWS IMDSv6
 		{"http://instance-data/latest/", "metadata_endpoint"},
 	}
@@ -33,9 +33,9 @@ func TestValidateRoutingURL(t *testing.T) {
 func TestValidate_UnknownProtocolAndBadQuirks(t *testing.T) {
 	ep := &domain.Endpoint{
 		ID: 1, Vendor: "no-such-vendor",
-		Protocol: domain.ProtoUnknown, // 'openai ' 尾空格之类 parse 失败
+		Protocol: domain.ProtoUnknown, // parse failure, e.g. 'openai ' with a trailing space
 		Routing:  domain.RoutingConfig{URL: "https://ok.example.com/v1"},
-		Quirks:   []byte(`{"strips": ["x"]}`), // typo 字段
+		Quirks:   []byte(`{"strips": ["x"]}`), // typo'd field
 	}
 	reasons := Validate(ep)
 
@@ -51,7 +51,7 @@ func TestValidate_UnknownProtocolAndBadQuirks(t *testing.T) {
 	}
 	for r, hit := range want {
 		if !hit {
-			t.Errorf("应报 %q，实际 reasons=%v", r, reasons)
+			t.Errorf("expected reason %q, got reasons=%v", r, reasons)
 		}
 	}
 }

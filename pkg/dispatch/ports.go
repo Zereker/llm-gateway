@@ -9,120 +9,147 @@ import (
 )
 
 // =============================================================================
-// Selector port — 选哪个 endpoint
+// Selector port — which endpoint to pick
 // =============================================================================
 
-// Selector "已知候选集 → 选一个"——纯 picker，不拉候选不做 eligibility（那两步
-// 由 Dispatcher 内部 CandidateSource + filterEligible 完成）。
+// Selector goes from "a known candidate set → pick one" — a pure picker; it
+// doesn't fetch candidates and doesn't do eligibility filtering (those two
+// steps are handled by Dispatcher's internal CandidateSource + filterEligible).
 //
-// **Pick 返回约定**：
+// **Pick's return contract**:
 //
-//	(ep, nil)     ── 选到了（ep 必属于 eligible 输入集，已排除 query.Exclude）
-//	(nil, nil)    ── 候选耗尽（让 FallbackPolicy 决定切 model 还是 abort）
-//	(nil, err)    ── 依赖故障（如 Redis cooldown 读失败），driver 直接 abort 503
+//	(ep, nil)     ── picked one (ep is guaranteed to be in the eligible input
+//	                  set, with query.Exclude already excluded)
+//	(nil, nil)    ── candidates exhausted (let FallbackPolicy decide whether
+//	                  to switch models or abort)
+//	(nil, err)    ── dependency failure (e.g. Redis cooldown read failed);
+//	                  the driver aborts with 503 directly
 //
-// **Report**：每次 invoke / reserve 出 verdict 后，Dispatcher 调一次反馈给 Selector
-// 内部的 cooldown 状态机。
+// **Report**: after each invoke/reserve produces a verdict, Dispatcher calls
+// this once to feed it back to the Selector's internal cooldown state
+// machine.
 type Selector interface {
 	Pick(ctx context.Context, eligible []*domain.Endpoint, q PickQuery) (*domain.Endpoint, error)
 	Report(ctx context.Context, ep *domain.Endpoint, v Verdict)
 }
 
-// PickQuery Selector.Pick 的入参——只含 picker 需要的信息（不含 Envelope /
-// Identity / Handlers，这些已经被 CandidateSource 和 filterEligible 消化过）。
+// PickQuery is Selector.Pick's input — only the information the picker
+// needs (no Envelope / Identity / Handlers, which have already been
+// consumed by CandidateSource and filterEligible).
 type PickQuery struct {
-	Model      string             // 当前轮次 model（metric label / cooldown key）
-	Group      string             // endpoint 池分组（filter 用）
-	SessionKey string             // 会话亲和 key（客户端 X-Gateway-Session 头）；空 = 不粘会话
-	Exclude    map[int64]struct{} // 本请求已尝试过的 endpoint ID
+	Model      string             // the current round's model (metric label / cooldown key)
+	Group      string             // endpoint pool group (used for filtering)
+	SessionKey string             // session-affinity key (client's X-Gateway-Session header); empty = no sticky routing
+	Exclude    map[int64]struct{} // endpoint IDs already tried in this request
 }
 
 // =============================================================================
-// CandidateSource port — 按 (model, group) 拉候选 endpoints
+// CandidateSource port — fetch candidate endpoints by (model, group)
 // =============================================================================
 
-// CandidateSource 按 (model, group) 拉候选 endpoints 的 port。
+// CandidateSource is the port for fetching candidate endpoints by
+// (model, group).
 //
-// **跟 Selector 的关系**：CandidateSource 负责"endpoint 从哪里来"（DB / 缓存
-// 都可），Selector 负责"已知候选集挑一个"。Dispatcher 串联：
+// **Relationship to Selector**: CandidateSource is responsible for "where
+// endpoints come from" (DB or cache, either is fine); Selector is
+// responsible for "picking one from a known candidate set". Dispatcher
+// chains them together:
 //
 //	candidates := CandidateSource.ListForModel(ctx, model, group)
-//	eligible   := dispatch.filterEligible(candidates, env, handlers)  // 内部 helper
+//	eligible   := dispatch.filterEligible(candidates, env, handlers)  // internal helper
 //	ep         := Selector.Pick(ctx, eligible, query)
 type CandidateSource interface {
 	ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error)
 }
 
 // =============================================================================
-// Invoker port — 调一次下游
+// Invoker port — make one downstream call
 // =============================================================================
 
-// InvokerFactory 按 (endpoint, handler, envelope) 造一个待执行的 Invoker。
+// InvokerFactory builds an Invoker ready to execute from
+// (endpoint, handler, envelope).
 //
-// **不是 interface 是约定**：不同实现可以有完全不同的 For 签名（HTTPFactory.For /
-// BatchFactory.For / MockFactory.Pin 等）。Dispatcher 拿到一个 concrete factory
-// 即可——装配点（cmd/gateway）决定用哪个实现。
+// **A convention, not an interface**: different implementations can have
+// completely different For signatures (HTTPFactory.For / BatchFactory.For /
+// MockFactory.Pin, etc). Dispatcher just needs a concrete factory — the
+// wiring point (cmd/gateway) decides which implementation to use.
 //
-// **handler 入参**：请求级端到端协议处理器（dispatcher 已根据 ep + srcProto 从
-// state.Handlers().Get(ep, srcProto) 取出）。
+// **handler parameter**: the request-level end-to-end protocol handler
+// (already looked up by the dispatcher from state.Handlers().Get(ep,
+// srcProto) based on ep + srcProto).
 //
-// **body 从哪来**：env.RawBytes（不再单独传 body 参数；invoker 内部读 env）。
+// **Where the body comes from**: env.RawBytes (there's no separate body
+// parameter anymore; the invoker reads env internally).
 //
-// 这里给个最小接口，方便 Dispatcher 单测时换 fake 实现。
+// A minimal interface is given here so Dispatcher unit tests can swap in a
+// fake implementation.
 type InvokerFactory interface {
 	For(ep *domain.Endpoint, handler protocol.Handler, env *domain.RequestEnvelope) Invoker
 }
 
-// Invoker 一次已配置好的下游调用。无参执行。
+// Invoker is one already-configured downstream call. Executed with no
+// arguments.
 //
-// **职责包揽**：HTTP do、classify、handler.PrepareCall。
+// **In scope**: HTTP do, classify, handler.PrepareCall.
 //
-// **不职责**：endpoint quota reserve（由 EndpointQuota 单独负责）、Selector.Report
-// （由 Dispatcher 在 Invoke 返回后调）。这是 v0.6 把 "reserve → send → report"
-// 三件事拆 3 个 port 的结果。
+// **Out of scope**: endpoint quota reserve (owned separately by
+// EndpointQuota), Selector.Report (called by Dispatcher after Invoke
+// returns). This is the result of v0.6 splitting "reserve → send → report"
+// into 3 separate ports.
 //
-// **返回约定**：err 仅在"无法构造调用"时非 nil（极少见，如 nil endpoint）；
-// 上游错误归到 Result.Verdict().Class。
+// **Return contract**: err is non-nil only when "the call couldn't be
+// constructed" (very rare, e.g. a nil endpoint); upstream errors are
+// classified via Result.Verdict().Class.
 type Invoker interface {
 	Invoke(ctx context.Context) (Result, error)
 }
 
 // =============================================================================
-// EndpointQuota port — endpoint 级 ratelimit 前扣 + 后扣
+// EndpointQuota port — endpoint-level ratelimit pre-deduction + post-deduction
 // =============================================================================
 
-// QuotaVerdict 是 EndpointQuota.Reserve 的拒绝结果——比 Verdict 更窄，只描述
-// "为什么被拒"。Dispatcher 在拿到 QuotaVerdict 后翻成 Verdict 走 retry / Report 流程。
+// QuotaVerdict is EndpointQuota.Reserve's rejection result — narrower than
+// Verdict, describing only "why it was rejected". Once Dispatcher has a
+// QuotaVerdict, it translates it into a Verdict and runs it through the
+// retry / Report flow.
 //
-// **Class 必须显式填**（docs/04 §8）：
-//   - ClassCapacity ── 真配额拒绝：换 ep + 该 ep 写 capacity cooldown
-//   - ClassUnknown  ── 依赖故障（Redis 错等）：换 ep 但**不写 cooldown**，
-//     防止把 store 抖动误标成坏 endpoint
+// **Class must be filled explicitly** (docs/04 §8):
+//   - ClassCapacity ── a genuine quota rejection: switch endpoints + write a
+//     capacity cooldown for this endpoint
+//   - ClassUnknown  ── a dependency failure (e.g. Redis error): switch
+//     endpoints but **do not write a cooldown**, to avoid mislabeling store
+//     flakiness as a bad endpoint
 type QuotaVerdict struct {
 	Class     Class
-	BucketKey string // 哪个 bucket 拒了（rl:endpoint:<id>:rpm 等）；空 = 依赖故障
+	BucketKey string // which bucket rejected it (rl:endpoint:<id>:rpm, etc.); empty = dependency failure
 	Reason    string
 }
 
-// EndpointQuota 是 endpoint 级配额的"前扣 + 后扣"端口——dispatcher 在调 invoker
-// 之前 Reserve（RPM/RPS hold），成功 stream 之后 ChargeUsage（实际 token 用量）。
+// EndpointQuota is the "pre-deduction + post-deduction" port for
+// endpoint-level quota — the dispatcher Reserves (an RPM/RPS hold) before
+// calling the invoker, and ChargeUsage (actual token usage) after a
+// successful stream.
 //
-// **跟用户级 quota 的区别**：用户级 quota 在 M6 middleware（Limit）里做；
-// EndpointQuota 是 endpoint 一侧的硬约束（vendor 自身限制 / 自建 fleet 容量保护），
-// dispatcher 在 attempt 粒度执行。
+// **Difference from user-level quota**: user-level quota is enforced in the
+// M6 middleware (Limit); EndpointQuota is a hard constraint on the endpoint
+// side (the vendor's own limits / self-hosted fleet capacity protection),
+// enforced by the dispatcher at attempt granularity.
 type EndpointQuota interface {
-	// Reserve 试图给 ep 占用一次 attempt 配额。
-	//   返回 (nil, nil)            ── 没配置 quota 或预扣成功
-	//   返回 (*QuotaVerdict, nil)  ── 配额拒绝；Dispatcher 翻成 Verdict 走 retry
-	//   返回 (_, err)              ── 依赖故障（如 Redis 错）；同样按拒绝处理
+	// Reserve attempts to hold one attempt's worth of quota for ep.
+	//   returns (nil, nil)            ── no quota configured, or the reserve succeeded
+	//   returns (*QuotaVerdict, nil)  ── quota rejected; Dispatcher translates it into a Verdict for retry
+	//   returns (_, err)              ── dependency failure (e.g. Redis error); treated as a rejection too
 	Reserve(ctx context.Context, ep *domain.Endpoint) (denied *QuotaVerdict, err error)
 
-	// ChargeUsage 在成功 stream 之后写真实 token 用量到 TPM bucket（fire-and-forget）。
-	// usage / ep 任一为 nil 时 no-op；charge 失败只记 metric，不阻塞响应。
+	// ChargeUsage writes real token usage to the TPM bucket after a
+	// successful stream (fire-and-forget). No-op if usage or ep is nil;
+	// charge failures only get logged as a metric and never block the
+	// response.
 	ChargeUsage(ctx context.Context, ep *domain.Endpoint, usage *domain.Usage)
 }
 
-// NoopQuota 永不拒绝、永不 charge——给"没配 ratelimit"的部署用。
+// NoopQuota never rejects and never charges — for deployments with no
+// ratelimit configured.
 type NoopQuota struct{}
 
 func (NoopQuota) Reserve(_ context.Context, _ *domain.Endpoint) (*QuotaVerdict, error) {
@@ -130,13 +157,16 @@ func (NoopQuota) Reserve(_ context.Context, _ *domain.Endpoint) (*QuotaVerdict, 
 }
 func (NoopQuota) ChargeUsage(_ context.Context, _ *domain.Endpoint, _ *domain.Usage) {}
 
-// Result Invoke 的产出句柄。
+// Result is the handle produced by Invoke.
 //
-// **生命周期**：StreamTo / Close 必须二选一调用一次。
-// - StreamTo：仅 Verdict.Class == Success 时可调；开始写 w 即不可回滚。
-// - Close：释放未消费的 body + session，可在任何时候调；StreamTo 之后调是 no-op。
+// **Lifecycle**: exactly one of StreamTo / Close must be called.
+//   - StreamTo: callable only when Verdict.Class == Success; once it starts
+//     writing to w, there's no rolling back.
+//   - Close: releases the unconsumed body + session; callable at any time;
+//     calling it after StreamTo is a no-op.
 //
-// **建议用法**：driver 拿到 Result 立即 `defer res.Close()`，StreamTo 后兜底 no-op。
+// **Recommended usage**: the driver should `defer res.Close()` immediately
+// after getting a Result, which becomes a no-op fallback after StreamTo.
 type Result interface {
 	Verdict() Verdict
 	Endpoint() *domain.Endpoint
@@ -144,10 +174,12 @@ type Result interface {
 	Close() error
 }
 
-// StreamReport Result.StreamTo 的返回值。
+// StreamReport is Result.StreamTo's return value.
 //
-// **失败语义**：流式开始（header 已写）后任何错误都不能回滚状态码；Err 仅供
-// log / metric / rc.Error 写入，客户端看到的是截断流。
+// **Failure semantics**: once streaming has started (headers already
+// written), no error can roll back the status code; Err is only for
+// logging / metrics / writing to rc.Error — the client sees a truncated
+// stream.
 type StreamReport struct {
 	Usage  *domain.Usage
 	Err    error

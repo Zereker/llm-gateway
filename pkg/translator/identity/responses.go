@@ -6,33 +6,38 @@ import (
 	"github.com/zereker/llm-gateway/pkg/usage/extractor"
 )
 
-// responsesTranslator OpenAI Responses ↔ Responses identity 翻译。
+// responsesTranslator is the OpenAI Responses ↔ Responses identity translator.
 //
-// **背景**：Responses API 是 OpenAI 2024 H2 推出的新协议（/v1/responses），shape 跟
-// Chat Completions 不同：
+// **Background**: the Responses API is the new protocol OpenAI introduced in
+// 2024 H2 (/v1/responses); its shape differs from Chat Completions:
 //
 //	{
 //	  "model": "gpt-4o",
-//	  "input": "...",                  // 字符串 or message 数组
+//	  "input": "...",                  // string or message array
 //	  "instructions": "...",           // system prompt
-//	  "previous_response_id": "...",   // 有状态延续
+//	  "previous_response_id": "...",   // stateful continuation
 //	  "stream": true,
-//	  "store": true                    // 是否存
+//	  "store": true                    // whether to persist
 //	}
 //
-// **identity 用途**：客户端用 Responses SDK，上游也是 OpenAI Responses 端点的纯透传。
-// 当前 OpenAI adapter 按 ep.Routing.URL 走，deployer 把 endpoint 的 url 配成
-// `https://api.openai.com/v1/responses` 就能用本 translator 路由。
+// **Identity use case**: the client uses the Responses SDK and the upstream
+// is also an OpenAI Responses endpoint — a pure pass-through. Currently the
+// OpenAI adapter routes by ep.Routing.URL, so the deployer just needs to
+// configure the endpoint's url as `https://api.openai.com/v1/responses` to
+// route through this translator.
 //
-// **request 端**：透传（Responses 没 stream_options 这种增强字段，不像 Chat Completions
-// 需要注入 include_usage —— Responses 流式天然就在最后发 usage event）。
+// **Request side**: pass-through (Responses has no stream_options-style
+// enhancement field — unlike Chat Completions it doesn't need include_usage
+// injected, since Responses streaming naturally sends a usage event at the end).
 //
-// **response 端**：handler 透传 chunk + 走 OpenAI extractor 提取 usage。
-// Responses SSE event 结构跟 Chat Completions 不同，但 usage 字段名是 OpenAI-style
-// （prompt_tokens / completion_tokens / total_tokens），所以 OpenAI extractor 同样适用。
+// **Response side**: the handler passes chunks through and extracts usage via
+// the OpenAI extractor. The Responses SSE event structure differs from Chat
+// Completions, but the usage field names are OpenAI-style (prompt_tokens /
+// completion_tokens / total_tokens), so the OpenAI extractor works the same.
 //
-// **跨协议**（responses_chat / responses_anthropic 等）：v1.0 minimum 不做；
-// 大多数走 Responses 协议的客户端都直连 OpenAI 上游。
+// **Cross-protocol** (responses_chat / responses_anthropic etc.): out of
+// scope for the v1.0 minimum; most clients using the Responses protocol
+// connect directly to an OpenAI upstream.
 type responsesTranslator struct{}
 
 func (responsesTranslator) Source() domain.Protocol { return domain.ProtoResponses }

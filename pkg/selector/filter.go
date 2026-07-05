@@ -6,28 +6,29 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Filter 是 Filter 链的单元；输入候选 → 输出（缩减后的）候选。
+// Filter is a unit in the Filter chain; input candidates → output (narrowed) candidates.
 //
-// 实现 MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
+// Implementations MUST be safe for concurrent use (called concurrently from multiple gin handler goroutines).
 //
-// **内置 filters（v0.5）**：
-//   - cooldown        排除冷却中候选（CooldownFilter）
-//   - limit_read      排除 endpoint quota 超限候选（LimitReadFilter）
-//   - weighted_random 按 weight 概率选 1 个（WeightedRandomPicker，必须放最后）
+// **Built-in filters (v0.5)**:
+//   - cooldown        excludes candidates that are cooling down (CooldownFilter)
+//   - limit_read      excludes candidates over endpoint quota (LimitReadFilter)
+//   - weighted_random picks 1 by weighted probability (WeightedRandomPicker, must be placed last)
 //
-// 加新 filter：实现 Filter 接口；cmd 装配时按 cfg.Selector.Filters 顺序 wire。
+// To add a new filter: implement the Filter interface; cmd wires it in the order given by cfg.Selector.Filters.
 type Filter interface {
-	// Name 用于 cfg.Selector.Filters 的 string 匹配 + log/metric 标签。
+	// Name is used for string matching in cfg.Selector.Filters + log/metric labels.
 	Name() string
 
-	// Apply 输入候选 + 请求上下文 → 输出筛后候选。
-	// 返回空切片 = 全过滤掉（dispatch 走 FallbackPolicy.OnExhausted；最终 abort 503）。
+	// Apply takes candidates + request context → outputs filtered candidates.
+	// Returning an empty slice = everything was filtered out (dispatch goes through
+	// FallbackPolicy.OnExhausted; eventually aborts with 503).
 	Apply(ctx context.Context, candidates []*domain.Endpoint, req *Request) []*domain.Endpoint
 }
 
-// runChain 顺序应用 filter 链；任一 filter 返回空切片即提前退出。
+// runChain applies the filter chain in order; any filter returning an empty slice exits early.
 //
-// 不并行——filter 之间有依赖（cooldown 在 limit_read 之前更省 Redis call）。
+// Not parallel — filters have dependencies between them (cooldown before limit_read saves Redis calls).
 func runChain(ctx context.Context, filters []Filter, candidates []*domain.Endpoint, req *Request) []*domain.Endpoint {
 	for _, f := range filters {
 		candidates = f.Apply(ctx, candidates, req)

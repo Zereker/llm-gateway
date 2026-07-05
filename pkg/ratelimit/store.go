@@ -1,21 +1,27 @@
-// Package ratelimit 实现 M6 / M7 的限流后端。
+// Package ratelimit implements the rate-limiting backend for M6 / M7.
 //
-// **接口**（docs/architecture/04-rate-limiting.md §5）：
+// **Interface** (docs/architecture/04-rate-limiting.md §5):
 //
-//	ReserveBatch  : 前扣，多 key 原子 all-or-nothing；RPM/RPS 使用
-//	ChargeBatch   : 后扣，按真实 usage 写入；TPM 使用；即使超上限也不拒绝（写入成功 + over-limit 标记）
-//	SnapshotBatch : 只读，批量读多个 bucket 状态；endpoint quota read-only filter + 观测使用
+//	ReserveBatch  : pre-charge, atomic all-or-nothing across multiple keys; used for RPM/RPS
+//	ChargeBatch   : post-charge, writes real usage; used for TPM; never rejects even over the limit
+//	                (write succeeds + over-limit flag is set)
+//	SnapshotBatch : read-only, batch-reads multiple bucket states; used by the endpoint quota
+//	                read-only filter + observability
 //
-// **算法**：sliding window counter（前 + 当前窗口加权）；Cloudflare / Kong 业界标准。
+// **Algorithm**: sliding window counter (previous + current window weighted); the Cloudflare / Kong
+// industry standard.
 //
-// **TPM 后扣语义**（docs/04 §7）：
-//   - 不预估、不读 max_tokens、不预扣
-//   - M6 post-side 用 ChargeBatch 写真实 usage
-//   - 即使写入后超过上限，本次响应已完成不再拒；记 tpm_overflow_total metric
+// **TPM post-charge semantics** (docs/04 §7):
+//   - No estimation, no reading max_tokens, no pre-charge
+//   - M6's post-side uses ChargeBatch to write real usage
+//   - Even if the write pushes usage over the limit, this response has already completed and is not
+//     rejected; the tpm_overflow_total metric is recorded instead
 //
-// **不返回 X-RateLimit headers**（docs/04 §9）：多桶叠加 + TPM 后扣无法准确给出 remaining。
+// **No X-RateLimit headers returned** (docs/04 §9): with multiple stacked buckets + TPM post-charge,
+// an accurate "remaining" value cannot be computed.
 //
-// **Redis 唯一实现**：删了 MemoryStore——多实例 gateway 必须共享计数器。
+// **Redis is the only implementation**: MemoryStore was removed — multi-instance gateways must share
+// the counters.
 package ratelimit
 
 import (
@@ -23,15 +29,15 @@ import (
 	"time"
 )
 
-// Bucket 描述一个限流桶的检查参数。
+// Bucket describes the check parameters for a single rate-limit bucket.
 //
-// **Cost 语义**：
-//   - RPM/RPS：固定 1（每请求 +1）
-//   - TPM：ChargeBatch 时为真实 token 数；ReserveBatch 时不应使用
+// **Cost semantics**:
+//   - RPM/RPS: fixed at 1 (+1 per request)
+//   - TPM: the real token count when used with ChargeBatch; should not be used with ReserveBatch
 //
-// **Key 命名约定**（docs/04 §6）：
-//   - 用户侧 ：rl:quota:<layer>:<subject>:<scope>:<dim>
-//   - endpoint：rl:endpoint:<endpoint_id>:<dim>
+// **Key naming convention** (docs/04 §6):
+//   - user-facing: rl:quota:<layer>:<subject>:<scope>:<dim>
+//   - endpoint:    rl:endpoint:<endpoint_id>:<dim>
 type Bucket struct {
 	Key    string
 	Limit  uint32
@@ -39,7 +45,7 @@ type Bucket struct {
 	Window time.Duration
 }
 
-// BucketState 单 bucket 当前状态（SnapshotBatch / observability 用）。
+// BucketState is the current state of a single bucket (used by SnapshotBatch / observability).
 type BucketState struct {
 	Key       string
 	Used      uint32
@@ -48,7 +54,7 @@ type BucketState struct {
 	ResetAt   time.Time
 }
 
-// BucketViolation ReserveBatch 拒绝时返回的违规明细。
+// BucketViolation is the violation detail returned when ReserveBatch rejects a request.
 type BucketViolation struct {
 	Key        string
 	Limit      uint32
@@ -56,36 +62,38 @@ type BucketViolation struct {
 	RetryAfter time.Duration
 }
 
-// BucketChargeResult ChargeBatch 单条结果。
+// BucketChargeResult is a single result entry from ChargeBatch.
 //
-// **Overflow=true** 表示写入后超过 Limit（容量超载），调用方据此记
-// `llm_gateway_tpm_overflow_total` metric 用于观测；不影响本次响应。
+// **Overflow=true** means the write pushed usage over Limit (capacity was exceeded); the caller uses
+// this to record the `llm_gateway_tpm_overflow_total` metric for observability. It does not affect
+// this response.
 type BucketChargeResult struct {
 	Key      string
-	Used     uint32 // 写入后的累计
+	Used     uint32 // cumulative total after the write
 	Limit    uint32
 	Overflow bool // Used > Limit
 }
 
-// Store 限流后端。所有方法线程安全。
+// Store is the rate-limiting backend. All methods are thread-safe.
 //
-// **协议**：
-//   - ReserveBatch  原子 all-or-nothing；任一 bucket 超限则全不动
-//   - ChargeBatch   best-effort 写入；总会成功（除非 Redis 故障），超限只标 Overflow
-//   - SnapshotBatch 只读，无副作用
+// **Contract**:
+//   - ReserveBatch  atomic all-or-nothing; if any bucket is over the limit, none are modified
+//   - ChargeBatch   best-effort write; always succeeds (unless Redis fails), over-limit only sets Overflow
+//   - SnapshotBatch read-only, no side effects
 type Store interface {
-	// ReserveBatch 多 key 原子 check + 扣减。
+	// ReserveBatch atomically checks + decrements multiple keys.
 	//
-	// 返回 (true, nil, nil)：全过且已 +Cost
-	// 返回 (false, *BucketViolation, nil)：某 bucket 超限，未动任何 bucket
-	// 返回 (_, _, err)：Redis 错误
+	// Returns (true, nil, nil): all passed and +Cost has been applied
+	// Returns (false, *BucketViolation, nil): some bucket was over the limit, no bucket was modified
+	// Returns (_, _, err): a Redis error occurred
 	ReserveBatch(ctx context.Context, buckets []Bucket) (allowed bool, violated *BucketViolation, err error)
 
-	// ChargeBatch 后扣：写真实用量；超限不拒，标 Overflow 给调用方上报 metric。
+	// ChargeBatch post-charges: writes real usage; does not reject on over-limit, just flags Overflow
+	// for the caller to report as a metric.
 	//
-	// 返回的 []BucketChargeResult 索引对齐入参 buckets。
+	// The returned []BucketChargeResult is index-aligned with the input buckets.
 	ChargeBatch(ctx context.Context, buckets []Bucket) ([]BucketChargeResult, error)
 
-	// SnapshotBatch 批量读多 bucket 当前状态；不修改任何 bucket。
+	// SnapshotBatch batch-reads the current state of multiple buckets; does not modify any bucket.
 	SnapshotBatch(ctx context.Context, buckets []Bucket) ([]BucketState, error)
 }

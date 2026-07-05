@@ -250,7 +250,7 @@ Key constraints:
 - After SQL changes a policy, propagation happens via passive TTL: the cached item naturally expires after 30s and is
   reloaded. The data plane does
   not have an active invalidation channel; changes to business tables do not need to take effect within seconds (see
-  [06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播) for details).
+  [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details).
 
 ## 12. Evolution Rules
 

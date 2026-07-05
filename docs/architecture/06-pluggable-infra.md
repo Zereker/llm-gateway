@@ -540,7 +540,7 @@ gateway is read-only against these tables, except for audit-type fields such as 
   chain — if the KEK is suspected leaked, the only option is to stop the service and manually
   decrypt/re-encrypt all of endpoints.auth. Root-cause direction: `SetDataKeys(new, old...)` multi-key
   decryption + background re-encrypt, not yet scheduled.
-- **Rate limiting is incompatible with Redis Cluster**: see [04 §7a](./04-rate-limiting.md#7a-redis-部署形态限制).
+- **Rate limiting is incompatible with Redis Cluster**: see [04 §7a](./04-rate-limiting.md#7a-redis-deployment-shape-limitations).
 - **OTel Baggage must not be injected into upstream requests**: internal tenant identifiers live in
   baggage; the upstream client is only allowed to inject traceparent (see the comment in
   `pkg/trace/otel.go`).

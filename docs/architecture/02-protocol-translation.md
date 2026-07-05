@@ -435,7 +435,7 @@ for ep in candidates {
 
 `Capabilities.Modalities` on the endpoint is an endpoint-level allowlist that can only
 narrow the vendor's `SupportedModalities`, never widen it; for the exact intersection
-semantics see [03 §3](./03-endpoint-scheduling.md#3-候选资格过滤).
+semantics see [03 §3](./03-endpoint-scheduling.md#3-candidate-eligibility-filtering).
 
 The old v0.5 shape did two lookups (vendor / translator) plus a match check; as of
 v0.6+ this has been merged into a single Handler lookup.

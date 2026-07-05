@@ -8,7 +8,7 @@ import (
 )
 
 // =============================================================================
-// DefaultRetry 单测
+// DefaultRetry unit tests
 // =============================================================================
 
 func TestDefaultRetry_Decide(t *testing.T) {
@@ -37,13 +37,13 @@ func TestDefaultRetry_Decide(t *testing.T) {
 }
 
 // =============================================================================
-// ModelChainFallback 单测
+// ModelChainFallback unit tests
 // =============================================================================
 
 func TestModelChainFallback_OnExhausted_HasNext(t *testing.T) {
 	in := newTestInput("gpt-4", "gpt-3.5", "gpt-3")
 	s := newState(in, 3)
-	// 当前在 idx=0；remaining = [gpt-3.5, gpt-3]
+	// currently at idx=0; remaining = [gpt-3.5, gpt-3]
 	got := ModelChainFallback{}.OnExhausted(s)
 	sw, ok := got.(Switch)
 	if !ok {
@@ -68,7 +68,7 @@ func TestModelChainFallback_OnExhausted_NoMore(t *testing.T) {
 }
 
 // =============================================================================
-// HeaderAttemptCap 单测
+// HeaderAttemptCap unit tests
 // =============================================================================
 
 func TestHeaderAttemptCap_Resolve(t *testing.T) {
@@ -106,7 +106,7 @@ func TestHeaderAttemptCap_ZeroInput(t *testing.T) {
 }
 
 // =============================================================================
-// state finalize 单测——保证 attempts outcome 正确填充
+// state finalize unit tests — ensure attempts outcome is filled in correctly
 // =============================================================================
 
 func TestState_FinalizeStreamedFillsLastAsSuccess(t *testing.T) {
@@ -149,8 +149,9 @@ func TestState_FinalizeAbortFillsLastAsFail(t *testing.T) {
 	}
 }
 
-// TestState_NoAttemptsStillProducesDecision 验证 Outcome.Decision **永远填**的
-// 契约（即使 0 attempt）。下游审计 / log / metric 不需要对 nil 特判。
+// TestState_NoAttemptsStillProducesDecision verifies the contract that
+// Outcome.Decision is **always filled in** (even with 0 attempts), so
+// downstream audit / log / metric code doesn't need to special-case nil.
 func TestState_NoAttemptsStillProducesDecision(t *testing.T) {
 	in := newTestInput("gpt-4")
 	s := newState(in, 3)
@@ -171,7 +172,7 @@ func TestState_NoAttemptsStillProducesDecision(t *testing.T) {
 	}
 }
 
-// actionsEqual 简易 Action 比较——type switch 看类型 + 关键字段。
+// actionsEqual is a simple Action comparison — type switch on the concrete type + key fields.
 func actionsEqual(a, b Action) bool {
 	switch ax := a.(type) {
 	case Continue:

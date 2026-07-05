@@ -12,21 +12,26 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// AsyncKafkaOutbox 生产级 Kafka outbox：异步 + 重试 + DLQ + metric。
+// AsyncKafkaOutbox is a production-grade Kafka outbox: async + retry + DLQ + metrics.
 //
-// **跟 KafkaOutbox 的区别**：
-//   - 同步 Publish 不阻塞主路径——事件入 buffered channel 即返
-//   - worker goroutine 消费 channel，N 次重试 + 指数退避
-//   - 重试耗尽后写 DLQ topic（配置则启用，否则丢事件）
-//   - 暴露 metric：queue depth / publish 成功率 / DLQ 计数
+// **Differences from KafkaOutbox**:
+//   - Publish is synchronous but doesn't block the main path — the event is
+//     enqueued into a buffered channel and returns immediately
+//   - a worker goroutine consumes the channel, with N retries + exponential backoff
+//   - once retries are exhausted, writes to a DLQ topic (if configured, otherwise drops the event)
+//   - exposes metrics: queue depth / publish success rate / DLQ count
 //
-// **限制**：channel 满时 Publish **会阻塞**——这是有意的（让上游 backpressure）。
-// 进程崩溃时 channel 内未消费的事件会丢；如果数据完整性要求高，应配 DLQ topic
-// + 单独 sidecar / cron 重放，或者用 KafkaOutbox 走同步模式。
+// **Limitation**: Publish **blocks** when the channel is full — this is
+// intentional (to let backpressure propagate upstream). Unconsumed events
+// left in the channel are lost on process crash; if strong data integrity
+// is required, configure a DLQ topic + a separate sidecar/cron replay, or
+// use KafkaOutbox in synchronous mode.
 //
-// **lifecycle**：构造后立刻有 worker goroutine 跑；Close 等 channel drain（带 timeout）。
+// **Lifecycle**: a worker goroutine starts running immediately after
+// construction; Close waits for the channel to drain (with a timeout).
 //
-// Concurrent-safe（channel + atomic counter；inner KafkaWriter 自己保 thread-safe）。
+// Concurrent-safe (channel + atomic counter; the inner KafkaWriter is
+// responsible for its own thread-safety).
 type AsyncKafkaOutbox struct {
 	inner       KafkaWriter
 	topic       string
@@ -37,7 +42,7 @@ type AsyncKafkaOutbox struct {
 	logger      *slog.Logger
 
 	// stats
-	dropped atomic.Int64 // 写 DLQ 也失败时的真丢数
+	dropped atomic.Int64 // count of events truly lost when writing to the DLQ also fails
 
 	// shutdown
 	closeOnce sync.Once
@@ -45,21 +50,23 @@ type AsyncKafkaOutbox struct {
 	wg        sync.WaitGroup
 }
 
-// AsyncOptions 装配 AsyncKafkaOutbox 的选项。
+// AsyncOptions configures the options for assembling an AsyncKafkaOutbox.
 type AsyncOptions struct {
-	// BufferSize channel buffer 大小；0 = 默认 1024。
+	// BufferSize is the channel buffer size; 0 = default 1024.
 	BufferSize int
-	// MaxRetries 单事件最多 retry 次数；0 = 默认 3。
+	// MaxRetries is the max number of retries per event; 0 = default 3.
 	MaxRetries int
-	// BackoffBase 指数退避起始时长；0 = 默认 200ms。第 N 次 retry 等 BackoffBase * 2^(N-1)。
+	// BackoffBase is the starting duration for exponential backoff; 0 =
+	// default 200ms. The Nth retry waits BackoffBase * 2^(N-1).
 	BackoffBase time.Duration
-	// DLQTopic 重试耗尽后写的 dead-letter queue topic；空 = 直接丢。
+	// DLQTopic is the dead-letter queue topic written to once retries are
+	// exhausted; empty = drop directly.
 	DLQTopic string
-	// Logger 写错误日志；nil = slog.Default。
+	// Logger writes error logs; nil = slog.Default.
 	Logger *slog.Logger
 }
 
-// NewAsyncKafkaOutbox 构造 + 启动 worker goroutine。
+// NewAsyncKafkaOutbox constructs and starts the worker goroutine.
 func NewAsyncKafkaOutbox(w KafkaWriter, topic string, opts AsyncOptions) *AsyncKafkaOutbox {
 	if opts.BufferSize <= 0 {
 		opts.BufferSize = 1024
@@ -89,17 +96,22 @@ func NewAsyncKafkaOutbox(w KafkaWriter, topic string, opts AsyncOptions) *AsyncK
 	return o
 }
 
-// Publish 实现 OutboxPublisher.Publish；事件入 channel 即返。
+// Publish implements OutboxPublisher.Publish; returns as soon as the event
+// is enqueued into the channel.
 //
-// channel 满时 ctx 一直未 Done 会阻塞；ctx Done 时返 ctx.Err。
-// **不**保证事件最终被发出去——只保证入队成功。
+// If the channel is full, this blocks as long as ctx isn't Done; once ctx is
+// Done, it returns ctx.Err. It does **not** guarantee the event is
+// eventually sent out — only that it was successfully enqueued.
 func (o *AsyncKafkaOutbox) Publish(ctx context.Context, evt *OutboxEvent) error {
 	if evt == nil {
 		return errors.New("usage: AsyncKafkaOutbox.Publish: nil event")
 	}
-	// 已关闭优先返错：下面的三路 select 在 queue 有空位时会**随机**选中 queue-send
-	// （Go select 对多个 ready case 随机），导致 Close 后仍能入队——违反"Close 后
-	// Publish 拒绝"的契约。这里先做一次非阻塞 closed 检查兜住。
+	// Prioritize returning an error if already closed: the three-way select
+	// below could **randomly** pick the queue-send case when the queue has
+	// room (Go's select picks randomly among multiple ready cases), which
+	// would let an event get enqueued even after Close — violating the
+	// contract that "Publish rejects after Close". So do a non-blocking
+	// closed check up front to guard against that.
 	select {
 	case <-o.done:
 		return errors.New("usage: AsyncKafkaOutbox: closed")
@@ -116,12 +128,14 @@ func (o *AsyncKafkaOutbox) Publish(ctx context.Context, evt *OutboxEvent) error 
 	}
 }
 
-// worker 消费 channel；retry + DLQ。
+// worker consumes the channel; retry + DLQ.
 //
-// **不依赖 close(queue) 退出**：Close 只关 done。收到 done 后进入 drain 循环，
-// 把 buffer 里已有的事件发完（非阻塞取，取空即退）。queue 永不 close——
-// 并发 Publish 往已关 channel 发送会 panic（select 在多 case 就绪时随机选，
-// 单靠 done case 挡不住）。
+// **Does not rely on close(queue) to exit**: Close only closes done. Once
+// done is received, it enters a drain loop, sending out whatever events are
+// already in the buffer (non-blocking receive, returns once empty). queue is
+// never closed — a concurrent Publish sending on an already-closed channel
+// would panic (select picks randomly among multiple ready cases, so relying
+// on the done case alone can't prevent that).
 func (o *AsyncKafkaOutbox) worker() {
 	defer o.wg.Done()
 	for {
@@ -129,8 +143,9 @@ func (o *AsyncKafkaOutbox) worker() {
 		case evt := <-o.queue:
 			o.publishOne(evt)
 		case <-o.done:
-			// drain：清空 buffer 后退出。跟 Close 竞态挤进来的极少量事件
-			// 可能落在 drain 之后——丢弃（async 本就 best-effort），无 panic。
+			// drain: exit after emptying the buffer. A tiny number of
+			// events that race in against Close may land after drain — they
+			// are dropped (async is best-effort by design anyway), no panic.
 			for {
 				select {
 				case evt := <-o.queue:
@@ -143,7 +158,8 @@ func (o *AsyncKafkaOutbox) worker() {
 	}
 }
 
-// publishOne retry 单条事件；耗尽后 DLQ；DLQ 也失败 → 增 dropped + log。
+// publishOne retries a single event; once exhausted, sends to DLQ; if DLQ
+// also fails → increments dropped + logs.
 func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 	delay := o.backoffBase
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
@@ -168,7 +184,7 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 			delay *= 2
 			continue
 		}
-		// 重试耗尽
+		// retries exhausted
 		o.logger.Warn("usage outbox: publish exhausted retries",
 			"topic", o.topic, "key", evt.Key, "err", err)
 		metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "exhausted")
@@ -177,7 +193,7 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 	}
 }
 
-// toDLQ 写 DLQ topic；DLQ 也失败 → 增 dropped。
+// toDLQ writes to the DLQ topic; if that also fails → increments dropped.
 func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 	if o.dlqTopic == "" {
 		o.dropped.Add(1)
@@ -186,7 +202,7 @@ func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// DLQ payload：原 payload 包一层 envelope 标注原因
+	// DLQ payload: the original payload wrapped in an envelope noting the reason
 	dlqPayload := []byte(fmt.Sprintf(`{"original_topic":%q,"reason":%q,"payload":%s}`,
 		o.topic, originalErr.Error(), string(evt.Payload)))
 	if err := o.inner.Write(ctx, o.dlqTopic, []byte(evt.Key), dlqPayload); err != nil {
@@ -202,23 +218,28 @@ func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 	metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "dlq")
 }
 
-// Dropped 累计真丢失的事件数（重试耗尽 + DLQ 也失败）。仅 metric / 排障用。
+// Dropped returns the cumulative count of truly lost events (retries
+// exhausted + DLQ also failed). For metrics / troubleshooting only.
 func (o *AsyncKafkaOutbox) Dropped() int64 {
 	return o.dropped.Load()
 }
 
-// Close 通知 worker 退出并等 drain（带 timeout 防止永久阻塞）。
+// Close signals the worker to exit and waits for drain (with a timeout to
+// prevent blocking forever).
 //
-// 只 close(done)，**永不 close(queue)**——shutdown 超时路径下 handler goroutine
-// 可能仍在 Publish，往已关 channel 发送会 panic（select 多 case 就绪时随机选，
-// done case 挡不住竞态）。queue 留给 GC。
+// Only close(done) is called, **never close(queue)** — on the
+// shutdown-timeout path a handler goroutine may still be in Publish, and
+// sending on an already-closed channel would panic (select picks randomly
+// among multiple ready cases, so the done case alone can't prevent that
+// race). queue is left for the GC.
 //
-// 调用后 Publish 拒绝新事件（done case 返 "closed" err）。
-// **不** Close 内部 KafkaWriter——那个由 cmd 装配方持有引用统一关闭。
+// After this is called, Publish rejects new events (the done case returns a
+// "closed" err). This does **not** Close the inner KafkaWriter — that is
+// closed centrally by whoever assembled it in cmd, via their held reference.
 func (o *AsyncKafkaOutbox) Close() error {
 	o.closeOnce.Do(func() {
 		close(o.done)
-		// 给 worker 30s 把 buffer drain 完（drain 逻辑在 worker 的 done 分支）
+		// give the worker 30s to fully drain the buffer (drain logic lives in worker's done branch)
 		drainDone := make(chan struct{})
 		go func() {
 			o.wg.Wait()
@@ -234,5 +255,5 @@ func (o *AsyncKafkaOutbox) Close() error {
 	return nil
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ OutboxPublisher = (*AsyncKafkaOutbox)(nil)

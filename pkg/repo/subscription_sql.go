@@ -9,11 +9,11 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// SQLSubscriptionProvider 是 SubscriptionProvider 的 sqlx 实现。
+// SQLSubscriptionProvider is the sqlx implementation of SubscriptionProvider.
 //
-// **v0.3 直查 DB，无缓存**——每次 M5 都跑一次 SELECT。
-// 索引 uk_account_model (account_id, model_service_id) 直接命中，~1ms。
-// 真上量后再加 caching。
+// **v0.3 queries the DB directly, no cache** — every M5 call runs a SELECT.
+// It hits the uk_account_model (account_id, model_service_id) index directly, ~1ms.
+// Add caching once volume actually demands it.
 type SQLSubscriptionProvider struct {
 	db *sqlx.DB
 }
@@ -22,10 +22,11 @@ func NewSQLSubscriptionProvider(db *sqlx.DB) *SQLSubscriptionProvider {
 	return &SQLSubscriptionProvider{db: db}
 }
 
-// Has 实现 SubscriptionProvider.Has。
+// Has implements SubscriptionProvider.Has.
 //
-// SELECT 1 是最便宜的存在性检查；不取 row 字段。
-// 条件：enabled = 1 AND deleted_at IS NULL（软禁用 / 软删都不算订阅）。
+// SELECT 1 is the cheapest existence check; it doesn't fetch any row fields.
+// Condition: enabled = 1 AND deleted_at IS NULL (neither a soft-disable nor a
+// soft-delete counts as subscribed).
 func (p *SQLSubscriptionProvider) Has(ctx context.Context, accountID string, modelServiceID int64) (bool, error) {
 	if accountID == "" {
 		return false, errors.New("subscription: empty account_id")
@@ -50,5 +51,5 @@ func (p *SQLSubscriptionProvider) Has(ctx context.Context, accountID string, mod
 	return true, nil
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ SubscriptionProvider = (*SQLSubscriptionProvider)(nil)

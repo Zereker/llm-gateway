@@ -17,7 +17,7 @@ spec:
       labels:
         {{- include "llm-gateway.gateway.selectorLabels" . | nindent 8 }}
       annotations:
-        # rolling restart on configmap/secret 改动
+        # rolling restart on configmap/secret changes
         checksum/config: {{ include (print $.Template.BasePath "/configmap-gateway.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
@@ -29,7 +29,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          # entrypoint: 用 envsubst 把 secret 注入到 yaml，再启 gateway
+          # entrypoint: use envsubst to inject secrets into the yaml, then start the gateway
           command: ["/bin/sh", "-c"]
           args:
             - |

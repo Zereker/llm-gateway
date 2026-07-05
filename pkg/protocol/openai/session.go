@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// session **slim 版**：只管 HTTP 层（URL + auth + Content-Type）。
+// session is the **slim version**: it only handles the HTTP layer (URL +
+// auth + Content-Type).
 //
-// SSE 解析 / usage 提取 / stream_options.include_usage 注入等"协议层"任务搬到
-// pkg/translator/identity.openaiTranslator + openaiResponseHandler。
+// "Protocol layer" tasks like SSE parsing / usage extraction /
+// stream_options.include_usage injection have moved to
+// pkg/translator/identity.openaiTranslator + openaiResponseHandler.
 type session struct {
 	ctx context.Context
 	ep  *domain.Endpoint
@@ -27,16 +29,18 @@ func newSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvel
 	return &session{ctx: c, ep: ep, env: env}
 }
 
-// BuildRequest 构造 *http.Request：
-//   - URL: ep.Routing.URL（约定填完整 chat completions 端点）
-//   - 先拷贝 extraHeaders（quirks 输出的最终 header）
-//   - 再写 Authorization / Content-Type——协议必需 header **后写、可覆盖** quirks，
-//     避免 deployer 误改 Authorization 把请求打挂
-//   - Body: translator + quirks 已跑完
+// BuildRequest builds an *http.Request:
+//   - URL: ep.Routing.URL (by convention holds the full chat completions endpoint)
+//   - copies extraHeaders first (the final headers produced by quirks)
+//   - then writes Authorization / Content-Type — protocol-required headers are
+//     written **last, overriding** quirks, so the deployer can't accidentally
+//     break the request by misconfiguring Authorization
+//   - Body: already processed by translator + quirks
 //
-// **vendor 校验**：本 Adapter 复用给所有 OpenAI-compatible vendor（openai/ark/
-// deepseek/...），它们都用 Bearer 鉴权。所以 ep.Auth.Type 必须是 AuthTypeBearer；
-// 其他类型（x-api-key 给 anthropic / aws-sigv4 给 bedrock）应该走对应专属 adapter。
+// **Vendor validation**: this Adapter is reused for all OpenAI-compatible
+// vendors (openai/ark/deepseek/...), which all use Bearer auth. So
+// ep.Auth.Type must be AuthTypeBearer; other types (x-api-key for anthropic /
+// aws-sigv4 for bedrock) should go through their own dedicated adapter.
 func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("openai: ep.routing.url empty")
@@ -53,13 +57,13 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
-	// 先 quirks header
+	// quirks headers first
 	for k, vs := range extraHeaders {
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
-	// 再协议必需 header（覆盖）
+	// then protocol-required headers (override)
 	req.Header.Set("Content-Type", "application/json")
 	if bearer.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer.APIKey)
@@ -67,11 +71,11 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	return req, nil
 }
 
-// Close 释放资源；幂等。
+// Close releases resources; idempotent.
 func (s *session) Close() error {
 	s.closed = true
 	return nil
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ protocol.Session = (*session)(nil)

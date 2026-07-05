@@ -19,41 +19,43 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// Store 是控制面的写/读层，直接持有 *sqlx.DB。
+// Store is the control plane's write/read layer, holding a *sqlx.DB directly.
 //
-// 复用 pkg/repo 的 typed 结构 + Scanner/Valuer（AuthConfig 透明 KEK 加密、
-// rawJSON NULL-safe、HashAPIKey）——控制面写进去的字节，数据面读出来的语义，
-// 天然对齐，不可能漂移。
+// It reuses pkg/repo's typed structs + Scanner/Valuer (AuthConfig's
+// transparent KEK encryption, NULL-safe rawJSON, HashAPIKey) — the bytes the
+// control plane writes and the semantics the data plane reads are naturally
+// aligned and cannot drift apart.
 type Store struct {
 	db  *sqlx.DB
-	pub *cachebus.Publisher // 可选；nil = 只靠数据面 TTL 兜底
+	pub *cachebus.Publisher // optional; nil = rely solely on the data plane's TTL fallback
 }
 
-// NewStore 构造 Store。
+// NewStore constructs a Store.
 func NewStore(db *sqlx.DB) *Store { return &Store{db: db} }
 
-// WithPublisher 挂上 cachebus Publisher，让吊销 key 时精准通知数据面失效
-// （把 ≤TTL 窗口收到亚秒级）。nil 时退化成纯 TTL。
+// WithPublisher attaches a cachebus Publisher so that revoking a key notifies
+// the data plane precisely (bringing the <=TTL window down to sub-second).
+// Falls back to plain TTL when nil.
 func (s *Store) WithPublisher(p *cachebus.Publisher) *Store {
 	s.pub = p
 	return s
 }
 
-// ErrNotFound 资源不存在（handler 翻成 404）。
+// ErrNotFound indicates the resource doesn't exist (translated to 404 by the handler).
 var ErrNotFound = errors.New("not found")
 
 // =============================================================================
 // Accounts
 // =============================================================================
 
-// AccountInput 建主账号入参。
+// AccountInput is the input for creating a primary account.
 type AccountInput struct {
 	Pin           string `json:"pin"`
 	Name          string `json:"name"`
 	QuotaPolicyID *int64 `json:"quota_policy_id,omitempty"`
 }
 
-// CreateAccount 建主账号。
+// CreateAccount creates a primary account.
 func (s *Store) CreateAccount(ctx context.Context, in AccountInput) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO accounts (pin, name, quota_policy_id) VALUES (?, ?, ?)`,
@@ -61,7 +63,7 @@ func (s *Store) CreateAccount(ctx context.Context, in AccountInput) error {
 	return err
 }
 
-// AccountView 主账号只读视图。
+// AccountView is a read-only view of a primary account.
 type AccountView struct {
 	Pin           string     `db:"pin" json:"pin"`
 	Name          string     `db:"name" json:"name"`
@@ -71,7 +73,7 @@ type AccountView struct {
 	UpdatedAt     time.Time  `db:"updated_at" json:"updated_at"`
 }
 
-// ListAccounts 列全部未删主账号。
+// ListAccounts lists all non-deleted primary accounts.
 func (s *Store) ListAccounts(ctx context.Context) ([]AccountView, error) {
 	var rows []AccountView
 	err := s.db.SelectContext(ctx, &rows,
@@ -84,13 +86,13 @@ func (s *Store) ListAccounts(ctx context.Context) ([]AccountView, error) {
 // Model services + subscriptions
 // =============================================================================
 
-// ModelServiceInput 建 model catalog 入参。
+// ModelServiceInput is the input for creating a model catalog entry.
 type ModelServiceInput struct {
 	ServiceID string `json:"service_id"`
 	Model     string `json:"model"`
 }
 
-// CreateModelService 建全局 model catalog，返回自增 id。
+// CreateModelService creates a global model catalog entry, returning the auto-increment id.
 func (s *Store) CreateModelService(ctx context.Context, in ModelServiceInput) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
@@ -101,7 +103,7 @@ func (s *Store) CreateModelService(ctx context.Context, in ModelServiceInput) (i
 	return res.LastInsertId()
 }
 
-// ModelServiceView model catalog 只读视图。
+// ModelServiceView is a read-only view of a model catalog entry.
 type ModelServiceView struct {
 	ID        int64     `db:"id" json:"id"`
 	ServiceID string    `db:"service_id" json:"service_id"`
@@ -109,7 +111,7 @@ type ModelServiceView struct {
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
-// ListModelServices 列全部未删 model。
+// ListModelServices lists all non-deleted models.
 func (s *Store) ListModelServices(ctx context.Context) ([]ModelServiceView, error) {
 	var rows []ModelServiceView
 	err := s.db.SelectContext(ctx, &rows,
@@ -118,13 +120,14 @@ func (s *Store) ListModelServices(ctx context.Context) ([]ModelServiceView, erro
 	return rows, err
 }
 
-// SubscriptionInput 主账号订阅 model 入参。
+// SubscriptionInput is the input for a primary account subscribing to a model.
 type SubscriptionInput struct {
 	AccountID      string `json:"account_id"`
 	ModelServiceID int64  `json:"model_service_id"`
 }
 
-// Subscribe 让主账号订阅一个 model（M5 可见性）。幂等：已存在则更新 enabled=1。
+// Subscribe makes a primary account subscribe to a model (M5 visibility).
+// Idempotent: if it already exists, this just updates enabled=1.
 func (s *Store) Subscribe(ctx context.Context, in SubscriptionInput) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO account_model_subscriptions (account_id, model_service_id, enabled)
@@ -138,8 +141,10 @@ func (s *Store) Subscribe(ctx context.Context, in SubscriptionInput) error {
 // Endpoints
 // =============================================================================
 
-// EndpointInput 建上游 endpoint 入参。auth.payload 里带密钥——写入前经
-// repo.AuthConfig.Value() 做 AES-256-GCM 加密（跟数据面同一个 KEK）。
+// EndpointInput is the input for creating an upstream endpoint. auth.payload
+// carries the secret — before being written it goes through
+// repo.AuthConfig.Value() for AES-256-GCM encryption (the same KEK as the
+// data plane).
 type EndpointInput struct {
 	Name         string             `json:"name"`
 	Vendor       string             `json:"vendor"`
@@ -156,13 +161,13 @@ type EndpointInput struct {
 	Extra        json.RawMessage    `json:"extra,omitempty"`
 }
 
-// AuthInput endpoint 凭证入参（明文，写入即加密）。
+// AuthInput is the endpoint credential input (plaintext; encrypted on write).
 type AuthInput struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
 }
 
-// InvalidEndpointError 写前校验失败（endpointcheck.Validate 的 reasons）。
+// InvalidEndpointError is a pre-write validation failure (the reasons from endpointcheck.Validate).
 type InvalidEndpointError struct {
 	Reasons []string
 }
@@ -171,11 +176,13 @@ func (e *InvalidEndpointError) Error() string {
 	return fmt.Sprintf("endpoint invalid: %v", e.Reasons)
 }
 
-// CreateEndpoint 校验 + 加密 + 插入，返回自增 id。
+// CreateEndpoint validates + encrypts + inserts, returning the auto-increment id.
 //
-// 写前跑 endpointcheck.Validate（跟数据面启动扫描同一份逻辑）——protocol typo /
-// vendor 未注册 / translator 不可达 / routing 指 metadata / quirks 编译失败在 API
-// 层就被拒（400），而不是等数据面启动扫描 warn。
+// It runs endpointcheck.Validate before writing (the same logic as the data
+// plane's startup scan) — a protocol typo, an unregistered vendor, an
+// unreachable translator, routing pointed at metadata, or a quirks compile
+// failure gets rejected (400) right here at the API layer, instead of only
+// warning at the data plane's startup scan.
 func (s *Store) CreateEndpoint(ctx context.Context, in EndpointInput) (int64, error) {
 	auth, err := repo.EncodePayload(in.Auth.Type, in.Auth.Payload)
 	if err != nil {
@@ -206,7 +213,7 @@ func (s *Store) CreateEndpoint(ctx context.Context, in EndpointInput) (int64, er
 		}
 	}
 
-	// 写前业务校验（domain 视图，auth 不参与校验）。
+	// Pre-write business validation (domain view; auth is not part of validation).
 	if reasons := endpointcheck.Validate(repo.ToDomainEndpoint(ep)); len(reasons) > 0 {
 		return 0, &InvalidEndpointError{Reasons: reasons}
 	}
@@ -225,8 +232,9 @@ func (s *Store) CreateEndpoint(ctx context.Context, in EndpointInput) (int64, er
 	return res.LastInsertId()
 }
 
-// EndpointView endpoint 只读视图——**故意不含 auth payload**（只回 auth.type），
-// 密钥永不出 API。
+// EndpointView is a read-only view of an endpoint — **deliberately excludes
+// the auth payload** (only auth.type is returned); the secret never leaves
+// the API.
 type EndpointView struct {
 	ID        int64    `json:"id"`
 	Name      string   `json:"name"`
@@ -260,7 +268,7 @@ func endpointToView(e *repo.Endpoint) EndpointView {
 const epSelectColumns = `id, name, vendor, protocol, model, group_name, weight, enabled,
 	auth, routing, quota, capabilities, quirks, extra, created_at, updated_at, deleted_at`
 
-// ListEndpoints 列全部未删 endpoint（脱敏视图）。
+// ListEndpoints lists all non-deleted endpoints (redacted view).
 func (s *Store) ListEndpoints(ctx context.Context) ([]EndpointView, error) {
 	var rows []repo.Endpoint
 	if err := s.db.SelectContext(ctx, &rows,
@@ -274,7 +282,7 @@ func (s *Store) ListEndpoints(ctx context.Context) ([]EndpointView, error) {
 	return out, nil
 }
 
-// GetEndpoint 取单个 endpoint（脱敏视图）。
+// GetEndpoint fetches a single endpoint (redacted view).
 func (s *Store) GetEndpoint(ctx context.Context, id int64) (*EndpointView, error) {
 	var ep repo.Endpoint
 	err := s.db.GetContext(ctx, &ep,
@@ -289,7 +297,7 @@ func (s *Store) GetEndpoint(ctx context.Context, id int64) (*EndpointView, error
 	return &v, nil
 }
 
-// DeleteEndpoint 软删 endpoint（置 deleted_at）。
+// DeleteEndpoint soft-deletes an endpoint (sets deleted_at).
 func (s *Store) DeleteEndpoint(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE endpoints SET deleted_at = NOW(6) WHERE id = ? AND deleted_at IS NULL`, id)
@@ -306,7 +314,8 @@ func (s *Store) DeleteEndpoint(ctx context.Context, id int64) error {
 // API keys
 // =============================================================================
 
-// APIKeyInput 发 key 入参。plaintext 由服务端生成，只回显一次。
+// APIKeyInput is the input for issuing a key. The plaintext is generated
+// server-side and echoed back only once.
 type APIKeyInput struct {
 	AccountID     string `json:"account_id"`
 	SubAccountID  string `json:"sub_account_id"`
@@ -316,14 +325,15 @@ type APIKeyInput struct {
 	QuotaPolicyID *int64 `json:"quota_policy_id,omitempty"`
 }
 
-// APIKeyCreated 发 key 结果——**Plaintext 只此一次**返回，之后 DB 只存 hash。
+// APIKeyCreated is the result of issuing a key — **the plaintext is returned
+// only this once**; afterwards the DB only stores the hash.
 type APIKeyCreated struct {
 	APIKeyID  string `json:"api_key_id"`
 	Plaintext string `json:"api_key"`
 	Prefix    string `json:"api_key_prefix"`
 }
 
-// CreateAPIKey 生成随机 key → 存 SHA-256 hash → 返回明文一次。
+// CreateAPIKey generates a random key -> stores its SHA-256 hash -> returns the plaintext once.
 func (s *Store) CreateAPIKey(ctx context.Context, in APIKeyInput) (*APIKeyCreated, error) {
 	plain, prefix, err := generateAPIKey()
 	if err != nil {
@@ -346,7 +356,8 @@ func (s *Store) CreateAPIKey(ctx context.Context, in APIKeyInput) (*APIKeyCreate
 	return &APIKeyCreated{APIKeyID: keyID, Plaintext: plain, Prefix: prefix}, nil
 }
 
-// APIKeyView key 只读视图——**永不含 hash / 明文**，只有前缀和元数据。
+// APIKeyView is a read-only view of a key — **never includes the hash or
+// plaintext**, only the prefix and metadata.
 type APIKeyView struct {
 	APIKeyID     string     `db:"api_key_id" json:"api_key_id"`
 	AccountID    string     `db:"account_id" json:"account_id"`
@@ -359,7 +370,7 @@ type APIKeyView struct {
 	CreatedAt    time.Time  `db:"created_at" json:"created_at"`
 }
 
-// ListAPIKeys 列某主账号下的 key（脱敏）。
+// ListAPIKeys lists the keys under a primary account (redacted).
 func (s *Store) ListAPIKeys(ctx context.Context, accountID string) ([]APIKeyView, error) {
 	var rows []APIKeyView
 	err := s.db.SelectContext(ctx, &rows,
@@ -371,11 +382,15 @@ func (s *Store) ListAPIKeys(ctx context.Context, accountID string) ([]APIKeyView
 	return rows, err
 }
 
-// RevokeAPIKey 吊销 key：置 revoked_at + enabled=0，并经 cachebus 精准通知数据面
-// evict（把"吊销后仍缓存有效"窗口从 ≤30s TTL 收到亚秒级）。
+// RevokeAPIKey revokes a key: sets revoked_at + enabled=0, and notifies the
+// data plane to evict precisely via cachebus (bringing the "still cached as
+// valid after revoke" window down from <=30s TTL to sub-second).
 //
-// 先取 hash 再 UPDATE：hash 是数据面缓存键，控制面持有它即可通知失效，无需明文。
-// 发布 best-effort——Redis 挂了只 warn，DB 已落库 + TTL 兜底最终一致。
+// The hash is fetched before the UPDATE: the hash is the data plane's cache
+// key, so the control plane can notify invalidation just by holding it, with
+// no need for the plaintext. Publishing is best-effort — if Redis is down it
+// only logs a warning; the DB write plus TTL fallback still gives eventual
+// consistency.
 func (s *Store) RevokeAPIKey(ctx context.Context, accountID, apiKeyID string) error {
 	var hash string
 	err := s.db.GetContext(ctx, &hash,
@@ -397,7 +412,7 @@ func (s *Store) RevokeAPIKey(ctx context.Context, accountID, apiKeyID string) er
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound // 已经吊销过
+		return ErrNotFound // already revoked
 	}
 
 	if s.pub != nil {
@@ -409,21 +424,22 @@ func (s *Store) RevokeAPIKey(ctx context.Context, accountID, apiKeyID string) er
 }
 
 // =============================================================================
-// Model aliases（别名 → canonical model 重定向）
+// Model aliases (alias -> canonical model redirection)
 // =============================================================================
 
-// ModelAliasInput 建别名入参。
+// ModelAliasInput is the input for creating an alias.
 type ModelAliasInput struct {
 	Alias string `json:"alias"`
 	Model string `json:"model"` // canonical model_services.model
 }
 
-// InvalidAliasError 别名入参非法（如 canonical model 不存在）。
+// InvalidAliasError indicates an invalid alias input (e.g. the canonical model doesn't exist).
 type InvalidAliasError struct{ Reason string }
 
 func (e *InvalidAliasError) Error() string { return "model alias invalid: " + e.Reason }
 
-// CreateModelAlias 建别名。写前校验 canonical model 存在（避免建出死别名）。
+// CreateModelAlias creates an alias. Validates the canonical model exists
+// before writing (to avoid creating a dead alias).
 func (s *Store) CreateModelAlias(ctx context.Context, in ModelAliasInput) error {
 	if in.Alias == "" || in.Model == "" {
 		return &InvalidAliasError{Reason: "alias and model required"}
@@ -441,7 +457,7 @@ func (s *Store) CreateModelAlias(ctx context.Context, in ModelAliasInput) error 
 	return err
 }
 
-// ModelAliasView 别名只读视图。
+// ModelAliasView is a read-only view of an alias.
 type ModelAliasView struct {
 	Alias     string    `db:"alias" json:"alias"`
 	Model     string    `db:"model" json:"model"`
@@ -449,7 +465,7 @@ type ModelAliasView struct {
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
-// ListModelAliases 列全部未删别名。
+// ListModelAliases lists all non-deleted aliases.
 func (s *Store) ListModelAliases(ctx context.Context) ([]ModelAliasView, error) {
 	var rows []ModelAliasView
 	err := s.db.SelectContext(ctx, &rows,
@@ -458,7 +474,8 @@ func (s *Store) ListModelAliases(ctx context.Context) ([]ModelAliasView, error) 
 	return rows, err
 }
 
-// DeleteModelAlias 硬删别名（别名是纯重定向，无历史价值；硬删避免 PK 无法复用）。
+// DeleteModelAlias hard-deletes an alias (an alias is a pure redirect with no
+// historical value; hard delete avoids the PK becoming unreusable).
 func (s *Store) DeleteModelAlias(ctx context.Context, alias string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM model_aliases WHERE alias = ?`, alias)
 	if err != nil {
@@ -471,23 +488,24 @@ func (s *Store) DeleteModelAlias(ctx context.Context, alias string) error {
 }
 
 // =============================================================================
-// Quota policies（限流策略库；被 accounts / api_keys 引用）
+// Quota policies (rate-limit policy library; referenced by accounts / api_keys)
 // =============================================================================
 
-// QuotaPolicyInput 建限流策略入参。Rule 是 ratelimit.PolicyRule 形态
-// （{default:{rpm,tpm,rps,...}, per_model:{...}}），写前校验能解析。
+// QuotaPolicyInput is the input for creating a rate-limit policy. Rule takes
+// the shape of ratelimit.PolicyRule ({default:{rpm,tpm,rps,...},
+// per_model:{...}}); it is validated for parseability before writing.
 type QuotaPolicyInput struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Rule        json.RawMessage `json:"rule"`
 }
 
-// InvalidPolicyError rule_json 校验失败。
+// InvalidPolicyError indicates rule_json validation failed.
 type InvalidPolicyError struct{ Reason string }
 
 func (e *InvalidPolicyError) Error() string { return "quota policy invalid: " + e.Reason }
 
-// CreateQuotaPolicy 校验 rule_json 形态后插入，返回自增 id。
+// CreateQuotaPolicy validates the shape of rule_json then inserts, returning the auto-increment id.
 func (s *Store) CreateQuotaPolicy(ctx context.Context, in QuotaPolicyInput) (int64, error) {
 	if in.Name == "" {
 		return 0, &InvalidPolicyError{Reason: "name required"}
@@ -495,7 +513,8 @@ func (s *Store) CreateQuotaPolicy(ctx context.Context, in QuotaPolicyInput) (int
 	if len(in.Rule) == 0 {
 		return 0, &InvalidPolicyError{Reason: "rule required"}
 	}
-	// 校验：能解析成 PolicyRule，且至少有 default 或 per_model（空策略无意义）。
+	// Validate: must parse as a PolicyRule, and have at least default or
+	// per_model (an empty policy is meaningless).
 	var pr ratelimit.PolicyRule
 	if err := json.Unmarshal(in.Rule, &pr); err != nil {
 		return 0, &InvalidPolicyError{Reason: "rule not a valid PolicyRule: " + err.Error()}
@@ -512,7 +531,7 @@ func (s *Store) CreateQuotaPolicy(ctx context.Context, in QuotaPolicyInput) (int
 	return res.LastInsertId()
 }
 
-// QuotaPolicyView 限流策略只读视图。
+// QuotaPolicyView is a read-only view of a rate-limit policy.
 type QuotaPolicyView struct {
 	ID          int64           `db:"id" json:"id"`
 	Name        string          `db:"name" json:"name"`
@@ -522,7 +541,7 @@ type QuotaPolicyView struct {
 	CreatedAt   time.Time       `db:"created_at" json:"created_at"`
 }
 
-// ListQuotaPolicies 列全部未删策略。
+// ListQuotaPolicies lists all non-deleted policies.
 func (s *Store) ListQuotaPolicies(ctx context.Context) ([]QuotaPolicyView, error) {
 	var rows []QuotaPolicyView
 	err := s.db.SelectContext(ctx, &rows,
@@ -531,8 +550,10 @@ func (s *Store) ListQuotaPolicies(ctx context.Context) ([]QuotaPolicyView, error
 	return rows, err
 }
 
-// DeleteQuotaPolicy 软删策略。注意：被 accounts/api_keys 引用的策略软删后，数据面
-// 仍能按 id 读到（行还在）——真要停用建议改引用方的 quota_policy_id 为 NULL。
+// DeleteQuotaPolicy soft-deletes a policy. Note: after soft-deleting a policy
+// referenced by accounts/api_keys, the data plane can still read it by id
+// (the row is still there) — to actually deactivate it, change the
+// referencing side's quota_policy_id to NULL instead.
 func (s *Store) DeleteQuotaPolicy(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE quota_policies SET deleted_at = NOW(6) WHERE id = ? AND deleted_at IS NULL`, id)
@@ -546,13 +567,17 @@ func (s *Store) DeleteQuotaPolicy(ctx context.Context, id int64) error {
 }
 
 // =============================================================================
-// Pricing（append-only 价格版本；改价 = 封盘旧 + insert 新）
+// Pricing (append-only price versions; changing a price = closing out the
+// old one + inserting a new one)
 // =============================================================================
 
-// PricingInput 发布一个新价格版本入参。RuleClass 空 = "standard"。
+// PricingInput is the input for publishing a new price version. An empty
+// RuleClass means "standard".
 //
-// **rule_json 对网关不透明**：billing engine 自己定义 schema，网关不解析（docs/05
-// §6）——所以这里只校验它是合法 JSON，不强加定价形态（避免把计费域拉进网关）。
+// **rule_json is opaque to the gateway**: the billing engine defines its own
+// schema, which the gateway does not parse (docs/05 §6) — so this only
+// validates that it is legal JSON, without imposing a pricing shape (to avoid
+// pulling the billing domain into the gateway).
 type PricingInput struct {
 	AccountID      string          `json:"account_id"`
 	ModelServiceID int64           `json:"model_service_id"`
@@ -562,13 +587,14 @@ type PricingInput struct {
 	Notes          string          `json:"notes,omitempty"`
 }
 
-// InvalidPricingError 价格入参非法。
+// InvalidPricingError indicates an invalid pricing input.
 type InvalidPricingError struct{ Reason string }
 
 func (e *InvalidPricingError) Error() string { return "pricing invalid: " + e.Reason }
 
-// PublishPrice append-only 发布：一个事务里封盘当前 active 行（effective_to=NOW）
-// + insert 新行（effective_from=NOW, effective_to=NULL）。绝不 UPDATE rule_json。
+// PublishPrice publishes append-only: within a single transaction, it closes
+// out the current active row (effective_to=NOW) and inserts a new row
+// (effective_from=NOW, effective_to=NULL). It never UPDATEs rule_json.
 func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error) {
 	if in.AccountID == "" || in.ModelServiceID == 0 {
 		return 0, &InvalidPricingError{Reason: "account_id and model_service_id required"}
@@ -578,11 +604,16 @@ func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error
 	}
 	class := orDefault(in.RuleClass, "standard")
 
-	// **并发串行化**：两个并发 PublishPrice（尤其首次发布，无既有 active 行可被
-	// FOR UPDATE 锁住）都会'封盘 0 行 + 各插一行'，留下两条 active（effective_to
-	// IS NULL），billing 的"当前价"查询变不确定。用独占连接 + MySQL 咨询锁串行化同
-	// (account,model,class) 的发布。锁在连接生命周期内持有——用 Connx 拿独占连接，
-	// 提交后显式 RELEASE 再归还连接池（否则锁泄漏到复用连接上）。
+	// **Concurrency serialization**: two concurrent PublishPrice calls
+	// (especially on the first publish, when there's no existing active row
+	// for FOR UPDATE to lock) would each "close out 0 rows + insert one row",
+	// leaving two active rows (effective_to IS NULL) and making billing's
+	// "current price" query nondeterministic. We use a dedicated connection +
+	// a MySQL advisory lock to serialize publishes for the same
+	// (account,model,class). The lock is held for the connection's lifetime —
+	// Connx grabs a dedicated connection, and after commit we explicitly
+	// RELEASE before returning the connection to the pool (otherwise the lock
+	// would leak onto a reused connection).
 	conn, err := s.db.Connx(ctx)
 	if err != nil {
 		return 0, err
@@ -597,7 +628,8 @@ func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error
 	if locked != 1 {
 		return 0, fmt.Errorf("pricing: could not acquire publish lock (timeout)")
 	}
-	// RELEASE 在 Close 之前跑（defer LIFO：后注册先执行）——commit 后释放，不早放。
+	// RELEASE runs before Close (defer is LIFO: registered later, runs
+	// first) — released after commit, never earlier.
 	defer func() { _, _ = conn.ExecContext(context.WithoutCancel(ctx), "DO RELEASE_LOCK(?)", lockName) }()
 
 	tx, err := conn.BeginTxx(ctx, nil)
@@ -606,14 +638,14 @@ func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 1) 封盘当前 active（同 account+model+class 且 effective_to IS NULL）
+	// 1) Close out the current active row (same account+model+class, effective_to IS NULL)
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE pricing_versions SET effective_to = NOW(6)
 		 WHERE account_id = ? AND model_service_id = ? AND rule_class = ? AND effective_to IS NULL`,
 		in.AccountID, in.ModelServiceID, class); err != nil {
 		return 0, fmt.Errorf("pricing: close active: %w", err)
 	}
-	// 2) insert 新 active
+	// 2) Insert the new active row
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO pricing_versions
 		 (account_id, model_service_id, rule_class, effective_from, effective_to, rule_json, created_by, notes)
@@ -629,7 +661,7 @@ func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error
 	return id, nil
 }
 
-// PricingView 价格版本只读视图。
+// PricingView is a read-only view of a price version.
 type PricingView struct {
 	ID             int64           `db:"id" json:"id"`
 	AccountID      string          `db:"account_id" json:"account_id"`
@@ -642,14 +674,15 @@ type PricingView struct {
 	Notes          string          `db:"notes" json:"notes"`
 }
 
-// PricingQuery 过滤：AccountID / ModelServiceID 空/0 = 不过滤；ActiveOnly = 只看未封盘。
+// PricingQuery filters: an empty/0 AccountID / ModelServiceID means no
+// filter; ActiveOnly means only rows that haven't been closed out.
 type PricingQuery struct {
 	AccountID      string
 	ModelServiceID int64
 	ActiveOnly     bool
 }
 
-// ListPricing 列价格版本（active + 历史；effective_from 降序）。
+// ListPricing lists price versions (active + historical; ordered by effective_from descending).
 func (s *Store) ListPricing(ctx context.Context, q PricingQuery) ([]PricingView, error) {
 	sqlStr := `SELECT id, account_id, model_service_id, rule_class, effective_from, effective_to,
 	                  rule_json, created_by, notes
@@ -674,10 +707,11 @@ func (s *Store) ListPricing(ctx context.Context, q PricingQuery) ([]PricingView,
 }
 
 // =============================================================================
-// Audit log（控制面写操作审计）
+// Audit log (control-plane write-operation audit)
 // =============================================================================
 
-// RecordAudit 记一条审计（best-effort，调用方吞错只 warn）。刻意不含 request body。
+// RecordAudit records an audit entry (best-effort; the caller swallows
+// errors and only warns). The request body is deliberately excluded.
 func (s *Store) RecordAudit(ctx context.Context, actor, role, method, path string, status int) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit_log (actor, role, method, path, status_code) VALUES (?, ?, ?, ?, ?)`,
@@ -685,7 +719,7 @@ func (s *Store) RecordAudit(ctx context.Context, actor, role, method, path strin
 	return err
 }
 
-// AuditView 审计条目只读视图。
+// AuditView is a read-only view of an audit entry.
 type AuditView struct {
 	ID         int64     `db:"id" json:"id"`
 	Actor      string    `db:"actor" json:"actor"`
@@ -696,7 +730,7 @@ type AuditView struct {
 	CreatedAt  time.Time `db:"created_at" json:"created_at"`
 }
 
-// ListAudit 列最近 limit 条审计（时间倒序）。
+// ListAudit lists the most recent limit audit entries (newest first).
 func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditView, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -712,7 +746,7 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditView, error) {
 // helpers
 // =============================================================================
 
-// generateAPIKey 生成 "sk-" + 32 字节 url-safe base64 随机体，返回明文 + 前缀。
+// generateAPIKey generates "sk-" + a 32-byte url-safe base64 random body, returning the plaintext + prefix.
 func generateAPIKey() (plain, prefix string, err error) {
 	buf := make([]byte, 24)
 	if _, err = rand.Read(buf); err != nil {
@@ -726,7 +760,7 @@ func generateAPIKey() (plain, prefix string, err error) {
 	return plain, prefix, nil
 }
 
-// generateID 生成 prefix + 8 字节 url-safe base64（审计稳定 ID）。
+// generateID generates prefix + 8 bytes of url-safe base64 (a stable ID for audit purposes).
 func generateID(prefix string) (string, error) {
 	buf := make([]byte, 6)
 	if _, err := rand.Read(buf); err != nil {

@@ -12,24 +12,26 @@ import (
 	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
-// InvokerFactoryAdapter 实现 dispatch.InvokerFactory——把 *invoker.Sender 包成
-// dispatch port。
+// InvokerFactoryAdapter implements dispatch.InvokerFactory — wraps
+// *invoker.Sender as a dispatch port.
 //
-// **职责**：For(ep, handler, env) → dispatch.Invoker；Invoker.Invoke 调用
-// Sender.Send + 把 Outcome 翻成 dispatch.Verdict 包进 Result。
+// **Responsibility**: For(ep, handler, env) → dispatch.Invoker; Invoker.Invoke
+// calls Sender.Send and translates the Outcome into a dispatch.Verdict
+// wrapped in a Result.
 //
-// **不做** reserve / Report / TPM charge——v0.6 这些拆给 dispatch.EndpointQuota
-// + Dispatcher 内置。invoker 只负责一次纯调用 + forward。
+// **Not handled here**: reserve / Report / TPM charge — as of v0.6 those are
+// split out to dispatch.EndpointQuota plus built into Dispatcher. invoker is
+// only responsible for a single plain call plus forwarding.
 type InvokerFactoryAdapter struct {
 	sender *invoker.Sender
 }
 
-// NewInvokerFactory 构造一个 InvokerFactoryAdapter。
+// NewInvokerFactory constructs an InvokerFactoryAdapter.
 func NewInvokerFactory(sender *invoker.Sender) *InvokerFactoryAdapter {
 	return &InvokerFactoryAdapter{sender: sender}
 }
 
-// For 实现 dispatch.InvokerFactory.For；body 从 env.RawBytes 读。
+// For implements dispatch.InvokerFactory.For; the body is read from env.RawBytes.
 func (f *InvokerFactoryAdapter) For(ep *domain.Endpoint, handler protocol.Handler, env *domain.RequestEnvelope) dispatch.Invoker {
 	return &invokerImpl{
 		ep:      ep,
@@ -46,7 +48,7 @@ type invokerImpl struct {
 	sender  *invoker.Sender
 }
 
-// Invoke 实现 dispatch.Invoker.Invoke——纯 HTTP 调用 + classify。
+// Invoke implements dispatch.Invoker.Invoke — a plain HTTP call plus classification.
 func (i *invokerImpl) Invoke(ctx context.Context) (dispatch.Result, error) {
 	var body []byte
 	if i.env != nil {
@@ -69,7 +71,8 @@ func (i *invokerImpl) Invoke(ctx context.Context) (dispatch.Result, error) {
 	}, nil
 }
 
-// invokerResult 实现 dispatch.Result——成功路径走 sender.Forward + 顺手 wrap moderator。
+// invokerResult implements dispatch.Result — the success path goes through
+// sender.Forward and wraps the moderator along the way.
 type invokerResult struct {
 	ep       *domain.Endpoint
 	verdict  dispatch.Verdict
@@ -107,7 +110,7 @@ func (r *invokerResult) Close() error {
 }
 
 // =============================================================================
-// 跨包 Stage / Class 翻译 helpers
+// Cross-package Stage / Class translation helpers
 // =============================================================================
 
 func invokerStageToDispatch(s invoker.Stage) dispatch.Stage {
@@ -134,7 +137,7 @@ func selectorClassToDispatch(c selector.ErrorClass) dispatch.Class {
 	}
 }
 
-// 编译期断言。
+// Compile-time assertions.
 var (
 	_ dispatch.InvokerFactory = (*InvokerFactoryAdapter)(nil)
 	_ dispatch.Invoker        = (*invokerImpl)(nil)

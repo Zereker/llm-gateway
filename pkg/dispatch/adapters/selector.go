@@ -8,25 +8,29 @@ import (
 	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
-// PickerAdapter 实现 dispatch.Selector——薄壳，把 selector.Scheduler 包成
-// dispatch port。
+// PickerAdapter implements dispatch.Selector — a thin shell wrapping
+// selector.Scheduler as a dispatch port.
 //
-// **职责严格 = 选 + 反馈**：
-//   - Pick: 把 eligible 候选 + PickQuery 转成 selector.Request 调 Scheduler.Pick
-//   - Report: 把 dispatch.Verdict 翻成 selector.Result 灌进 Scheduler 的 cooldown 反馈
+// **Responsibility is strictly limited to pick + report**:
+//   - Pick: converts eligible candidates + PickQuery into a selector.Request
+//     and calls Scheduler.Pick
+//   - Report: translates dispatch.Verdict into selector.Result and feeds it
+//     into the Scheduler's cooldown feedback
 //
-// **不做**：候选拉取（CandidateSource 单独负责）、eligibility 过滤（dispatch
-// 内部 filterEligible helper 完成）。这是 v0.6 把"选 endpoint"拆 3 步的体现。
+// **Not handled here**: candidate fetching (owned separately by
+// CandidateSource) and eligibility filtering (done by dispatch's internal
+// filterEligible helper). This reflects v0.6's split of "select an endpoint"
+// into 3 steps.
 type PickerAdapter struct {
 	sched selector.Scheduler
 }
 
-// NewSelector 构造 PickerAdapter。
+// NewSelector constructs a PickerAdapter.
 func NewSelector(sched selector.Scheduler) *PickerAdapter {
 	return &PickerAdapter{sched: sched}
 }
 
-// Pick 实现 dispatch.Selector.Pick。
+// Pick implements dispatch.Selector.Pick.
 func (s *PickerAdapter) Pick(ctx context.Context, eligible []*domain.Endpoint, q dispatch.PickQuery) (*domain.Endpoint, error) {
 	if len(eligible) == 0 {
 		return nil, nil
@@ -44,7 +48,7 @@ func (s *PickerAdapter) Pick(ctx context.Context, eligible []*domain.Endpoint, q
 	})
 }
 
-// Report 实现 dispatch.Selector.Report——把 dispatch.Verdict 翻成 selector.Result。
+// Report implements dispatch.Selector.Report — translates dispatch.Verdict into selector.Result.
 func (s *PickerAdapter) Report(ctx context.Context, ep *domain.Endpoint, v dispatch.Verdict) {
 	s.sched.Report(ctx, ep, selector.Result{
 		Class:    dispatchClassToSelector(v.Class),
@@ -54,7 +58,7 @@ func (s *PickerAdapter) Report(ctx context.Context, ep *domain.Endpoint, v dispa
 	})
 }
 
-// dispatchClassToSelector dispatch.Class → selector.ErrorClass（1:1 映射）。
+// dispatchClassToSelector maps dispatch.Class → selector.ErrorClass (1:1).
 func dispatchClassToSelector(c dispatch.Class) selector.ErrorClass {
 	switch c {
 	case dispatch.ClassSuccess:
@@ -72,5 +76,5 @@ func dispatchClassToSelector(c dispatch.Class) selector.ErrorClass {
 	}
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ dispatch.Selector = (*PickerAdapter)(nil)

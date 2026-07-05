@@ -9,25 +9,30 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// 负缓存单测不方便直连 SQLAPIKeyProvider（需要 DB），这里直接测
-// CachedSubscriptionProvider 的双 TTL 语义 + CachedAPIKeyProvider 的负缓存
-// 判断逻辑（用 nil inner 会 panic，所以只测能独立测的部分）。
+// Negative-cache unit tests aren't convenient to drive directly through
+// SQLAPIKeyProvider (needs a DB); instead we test CachedSubscriptionProvider's
+// dual-TTL semantics and CachedAPIKeyProvider's negative-cache decision logic
+// here directly (a nil inner would panic, so we only test the parts that can
+// be exercised in isolation).
 
-// TestNegativeTTL_ShorterThanPositive 负缓存 TTL 必须显著短于正缓存默认 30s。
+// TestNegativeTTL_ShorterThanPositive: the negative-cache TTL must be
+// significantly shorter than the positive cache's default 30s.
 func TestNegativeTTL_ShorterThanPositive(t *testing.T) {
 	if negativeTTL >= 30*time.Second {
-		t.Fatalf("negativeTTL=%v，应显著短于正向 30s", negativeTTL)
+		t.Fatalf("negativeTTL=%v, should be significantly shorter than the positive 30s", negativeTTL)
 	}
 }
 
-// CachedAPIKeyProvider 负缓存：第一次 miss 得到 ErrInvalidCredentials 后，
-// 同 key 短期内不再打 inner（用打桩计数验证）。
+// CachedAPIKeyProvider negative cache: after the first miss returns
+// ErrInvalidCredentials, the same key must not hit inner again for a while
+// (verified via a call-count stub).
 func TestCachedAPIKeyProvider_NegativeCacheBlocksRepeatLookups(t *testing.T) {
-	// 通过组合 TTLCache 直接验证 Resolve 的负缓存分支——构造一个假的
-	// CachedAPIKeyProvider（inner 为 nil 时 Resolve 会 panic，所以这里手工搭
-	// 等价结构：negative cache 命中则直接短路，不触达 inner）。
+	// Directly verify Resolve's negative-cache branch by composing a TTLCache —
+	// build a fake CachedAPIKeyProvider (Resolve would panic if inner were nil
+	// and actually reached, so this hand-built equivalent structure ensures a
+	// negative-cache hit short-circuits and never touches inner).
 	p := &CachedAPIKeyProvider{
-		inner:    nil, // 若触达 inner 会 nil panic —— 测试即失败
+		inner:    nil, // if inner is ever reached, the nil panic fails the test
 		cache:    NewTTLCache[string, *UserIdentity](8, time.Minute),
 		negative: NewTTLCache[string, struct{}](8, time.Minute),
 	}
@@ -36,26 +41,28 @@ func TestCachedAPIKeyProvider_NegativeCacheBlocksRepeatLookups(t *testing.T) {
 
 	_, err := p.Resolve(context.Background(), &Credentials{APIKey: "sk-invalid"})
 	if !errors.Is(err, domain.ErrInvalidCredentials) {
-		t.Fatalf("负缓存命中应直接返 ErrInvalidCredentials，got %v", err)
+		t.Fatalf("a negative-cache hit should return ErrInvalidCredentials directly, got %v", err)
 	}
 }
 
-// CachedSubscriptionProvider：true 进 30s cache、false 进 5s cache、DB 错不缓存。
+// CachedSubscriptionProvider: true goes into the 30s cache, false goes into
+// the 5s cache, DB errors are not cached.
 func TestCachedSubscriptionProvider_SplitTTLCaches(t *testing.T) {
 	p := &CachedSubscriptionProvider{
 		trueCache:  NewTTLCache[string, struct{}](8, time.Minute),
 		falseCache: NewTTLCache[string, struct{}](8, time.Minute),
 	}
-	// 手工塞 true cache → Has 短路返回 true，不触达 inner（nil inner 不 panic 即证明）
+	// manually seed the true cache -> Has should short-circuit to true without touching inner
+	// (a nil inner not panicking is the proof)
 	p.trueCache.Set("acct\x001", struct{}{})
 	got, err := p.Has(context.Background(), "acct", 1)
 	if err != nil || !got {
-		t.Fatalf("trueCache 命中应返 true：got=%v err=%v", got, err)
+		t.Fatalf("trueCache hit should return true: got=%v err=%v", got, err)
 	}
-	// false cache 同理
+	// same for the false cache
 	p.falseCache.Set("acct\x002", struct{}{})
 	got, err = p.Has(context.Background(), "acct", 2)
 	if err != nil || got {
-		t.Fatalf("falseCache 命中应返 false：got=%v err=%v", got, err)
+		t.Fatalf("falseCache hit should return false: got=%v err=%v", got, err)
 	}
 }

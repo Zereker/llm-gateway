@@ -6,7 +6,8 @@ import (
 	"testing"
 )
 
-// mysqlDSN 拿环境变量；没设就 t.Skip。整个 infra 测试都走真 MySQL。
+// mysqlDSN reads the environment variable; t.Skip if unset. All infra tests
+// go through a real MySQL instance.
 func mysqlDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("MYSQL_DSN")
@@ -54,7 +55,7 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("Migrate (2nd): %v", err)
 	}
 
-	// MySQL 查 information_schema.tables 验证表存在
+	// Query information_schema.tables on MySQL to verify the tables exist
 	var tables []string
 	if err := db.Select(&tables,
 		`SELECT table_name FROM information_schema.tables
@@ -89,8 +90,8 @@ func TestMigrate_TableShape(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 
-	// 测试前清空，避免唯一约束冲突
-	// FK 引用时 MySQL 拒 TRUNCATE 父表
+	// Clear before the test to avoid unique constraint conflicts
+	// MySQL refuses TRUNCATE on a parent table when FKs reference it
 	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 0`); err != nil {
 		t.Fatalf("disable FK checks: %v", err)
 	}
@@ -110,12 +111,12 @@ func TestMigrate_TableShape(t *testing.T) {
 	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 1`); err != nil {
 		t.Fatalf("re-enable FK checks: %v", err)
 	}
-	// seed default account 让后续 FK insert 通过
+	// seed default account so subsequent FK inserts pass
 	if _, err := db.Exec(`INSERT INTO accounts (pin, name) VALUES ('default', 'Default')`); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
 
-	// model_services：精简列（v0.3 删 account_id/group_name/spec_detail）
+	// model_services: trimmed-down columns (v0.3 removed account_id/group_name/spec_detail)
 	_, err = db.Exec(
 		`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
 		"openai/gpt-4o", "gpt-4o",
@@ -124,8 +125,9 @@ func TestMigrate_TableShape(t *testing.T) {
 		t.Fatalf("insert model_services: %v", err)
 	}
 
-	// endpoints：auth 列存任意 VARCHAR 字符串（schema validation 不在 infra 层做，
-	// 真实加密走 pkg/repo Scanner/Valuer）；routing 必须是合法 JSON
+	// endpoints: the auth column stores an arbitrary VARCHAR string (schema
+	// validation is not done at the infra layer; real encryption goes
+	// through pkg/repo Scanner/Valuer); routing must be valid JSON
 	_, err = db.Exec(
 		`INSERT INTO endpoints (name, vendor, protocol, model, group_name, weight, enabled, auth, routing)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -136,7 +138,7 @@ func TestMigrate_TableShape(t *testing.T) {
 		t.Fatalf("insert endpoints: %v", err)
 	}
 
-	// api_keys：hash + prefix 形态
+	// api_keys: hash + prefix form
 	_, err = db.Exec(
 		`INSERT INTO api_keys
 		 (account_id, api_key_hash, api_key_prefix, api_key_id, sub_account_id, group_name, external_user, enabled)

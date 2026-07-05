@@ -6,13 +6,16 @@ import (
 	"github.com/zereker/llm-gateway/pkg/usage/extractor"
 )
 
-// anthropicTranslator Anthropic ↔ Anthropic identity 翻译。
+// anthropicTranslator is the Anthropic ↔ Anthropic identity translator.
 //
-// 客户端用 Anthropic SDK 发请求 → 上游也是 Anthropic（包括真 anthropic.com 或
-// Bedrock 转发的 anthropic-compatible 端点）的场景。
+// Covers the case where the client sends requests via the Anthropic SDK and
+// the upstream is also Anthropic (either the real anthropic.com endpoint or
+// a Bedrock-forwarded anthropic-compatible endpoint).
 //
-// **request 端**：透传（Anthropic 没有 stream_options 这种增强字段，无需注入）。
-// **response 端**：handler 透传 chunk + 走 extractor 旁路提取 usage（v0.5 G6 抽出）。
+// **Request side**: pass-through (Anthropic has no stream_options-style
+// enhancement field, so nothing needs to be injected).
+// **Response side**: the handler passes chunks through as-is and extracts
+// usage on the side via the extractor (factored out in v0.5 G6).
 type anthropicTranslator struct{}
 
 func (anthropicTranslator) Source() domain.Protocol { return domain.ProtoAnthropic }
@@ -35,7 +38,7 @@ func (h *anthropicResponseHandler) Feed(chunk []byte) ([]byte, error) {
 		return nil, nil
 	}
 	h.ex.Feed(chunk)
-	// 同协议透传：原样返回 chunk 给客户端
+	// Same-protocol pass-through: return the chunk to the client unchanged
 	return chunk, nil
 }
 

@@ -91,15 +91,15 @@ func TestResponseCache_DeterministicHitMiss(t *testing.T) {
 		t.Fatalf("miss: code=%d calls=%d sets=%d, want 200/1/1", w1.Code, *calls, store.sets)
 	}
 	if w1.Header().Get(HeaderGatewayCache) == "hit" {
-		t.Error("首次不该是 hit")
+		t.Error("the first call should not be a hit")
 	}
 
 	w2 := postCache(e, body, "")
 	if w2.Code != 200 || *calls != 1 { // downstream must not be called again
-		t.Fatalf("hit: code=%d calls=%d, want 200/1（命中不打 downstream）", w2.Code, *calls)
+		t.Fatalf("hit: code=%d calls=%d, want 200/1 (a hit must not call downstream)", w2.Code, *calls)
 	}
 	if w2.Header().Get(HeaderGatewayCache) != "hit" {
-		t.Error("第二次应带 X-Gateway-Cache: hit")
+		t.Error("the second call should carry X-Gateway-Cache: hit")
 	}
 	if w2.Body.String() != `{"resp":true}` {
 		t.Errorf("hit body = %q, want cached body", w2.Body.String())
@@ -120,10 +120,10 @@ func TestResponseCache_TruncatedNotCached(t *testing.T) {
 	postCache(e, body, "")
 	postCache(e, body, "")
 	if store.sets != 0 {
-		t.Errorf("截断响应(rc.Error!=nil)不该入缓存, sets=%d want 0", store.sets)
+		t.Errorf("a truncated response (rc.Error!=nil) should not be cached, sets=%d want 0", store.sets)
 	}
 	if *calls != 2 {
-		t.Errorf("既然没缓存，两次都该打 downstream, calls=%d want 2", *calls)
+		t.Errorf("since nothing was cached, both calls should hit downstream, calls=%d want 2", *calls)
 	}
 }
 
@@ -137,7 +137,7 @@ func TestResponseCache_EventStreamNotCached(t *testing.T) {
 	body := `{"model":"m","temperature":0}`
 	postCache(e, body, "")
 	if store.sets != 0 {
-		t.Errorf("text/event-stream 响应不该入缓存, sets=%d want 0", store.sets)
+		t.Errorf("a text/event-stream response should not be cached, sets=%d want 0", store.sets)
 	}
 }
 
@@ -150,7 +150,7 @@ func TestResponseCache_MalformedStreamDetected(t *testing.T) {
 	postCache(e, body, "on")
 	postCache(e, body, "on")
 	if store.sets != 0 || *calls != 2 {
-		t.Errorf("畸形 stream 应被判流式并 bypass, sets=%d calls=%d want 0/2", store.sets, *calls)
+		t.Errorf("a malformed stream field should be treated as streaming and bypassed, sets=%d calls=%d want 0/2", store.sets, *calls)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestResponseCache_NonDeterministicBypass(t *testing.T) {
 	postCache(e, body, "")
 	postCache(e, body, "")
 	if *calls != 2 || store.sets != 0 {
-		t.Errorf("non-deterministic: calls=%d sets=%d, want 2/0（每次都打 downstream，不缓存）", *calls, store.sets)
+		t.Errorf("non-deterministic: calls=%d sets=%d, want 2/0 (every call hits downstream, nothing cached)", *calls, store.sets)
 	}
 }
 
@@ -198,6 +198,6 @@ func TestResponseCache_HeaderOverrides(t *testing.T) {
 	postCache(e2, nondet, "on")
 	w := postCache(e2, nondet, "on")
 	if *calls2 != 1 || w.Header().Get(HeaderGatewayCache) != "hit" {
-		t.Errorf("on: calls=%d hit=%q, want 1/hit（强制缓存）", *calls2, w.Header().Get(HeaderGatewayCache))
+		t.Errorf("on: calls=%d hit=%q, want 1/hit (forced caching)", *calls2, w.Header().Get(HeaderGatewayCache))
 	}
 }

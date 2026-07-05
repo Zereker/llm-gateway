@@ -12,9 +12,10 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// stubIdentity 永远拒（router 这层只关心路由 + middleware 链是否注册，
-// auth 失败 401 已经能证明 middleware 跑了）。直接 satisfy middleware.IdentityProvider
-// 的窄接口，无需 wrap option。
+// stubIdentity always rejects (this router-level layer only cares whether
+// the routes + middleware chain are registered; a 401 auth failure already
+// proves the middleware ran). It directly satisfies middleware.IdentityProvider's
+// narrow interface, so no option wrapping is needed.
 type stubIdentity struct{}
 
 func (stubIdentity) Resolve(_ context.Context, _ *domain.Credentials) (*domain.UserIdentity, error) {
@@ -44,8 +45,9 @@ func (stubSubscriptions) HasModel(_ context.Context, _ string, _ int64) (bool, e
 	return false, nil
 }
 
-// panicSelector / panicInvokerFactory：M7 永远跑不到（M2 Auth 已 401 短路），
-// 用 panic 保护——一旦被调说明测试预期错了。
+// panicSelector / panicInvokerFactory: M7 should never be reached (M2 Auth
+// already short-circuits with 401); the panic guards against that — if it's
+// ever called, the test's expectations were wrong.
 type panicSelector struct{}
 
 func (panicSelector) Report(_ context.Context, _ *domain.Endpoint, _ dispatch.Verdict) {}
@@ -54,7 +56,8 @@ func (panicSelector) Pick(_ context.Context, _ []*domain.Endpoint, _ dispatch.Pi
 	panic("router test: Selector.Pick should not be reached (M2 Auth must reject first)")
 }
 
-// panicCandidates 永远 panic——M2 Auth 401 短路后 CandidateSource 不该被调。
+// panicCandidates always panics — after M2 Auth short-circuits with 401,
+// CandidateSource should never be called.
 type panicCandidates struct{}
 
 func (panicCandidates) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
@@ -75,8 +78,8 @@ func (panicInvoker) Invoke(_ context.Context) (dispatch.Result, error) {
 
 type panicResult struct{}
 
-func (panicResult) Verdict() dispatch.Verdict      { panic("not reached") }
-func (panicResult) Endpoint() *domain.Endpoint     { panic("not reached") }
+func (panicResult) Verdict() dispatch.Verdict  { panic("not reached") }
+func (panicResult) Endpoint() *domain.Endpoint { panic("not reached") }
 func (panicResult) StreamTo(context.Context, http.ResponseWriter) dispatch.StreamReport {
 	panic("not reached")
 }
@@ -89,7 +92,7 @@ func minDeps() Deps {
 		// M5
 		ModelCatalog:        stubMSProvider{},
 		SubscriptionChecker: stubSubscriptions{},
-		// M7 (dispatcher：M2 Auth 之后才会触发，本测试在 401 前短路)
+		// M7 (dispatcher: only triggers after M2 Auth, and this test short-circuits before that at 401)
 		Dispatcher: dispatch.New(
 			dispatch.WithCandidates(panicCandidates{}),
 			dispatch.WithSelector(panicSelector{}),
@@ -98,7 +101,7 @@ func minDeps() Deps {
 			dispatch.WithRetry(dispatch.DefaultRetry{}),
 			dispatch.WithFallback(dispatch.ModelChainFallback{}),
 		),
-		// M4 / M6 / M8 / M10 留空：各 middleware 在 nil/empty 时走 no-op pass-through
+		// M4 / M6 / M8 / M10 left empty: each middleware takes a no-op pass-through path when nil/empty
 	}
 }
 
@@ -140,8 +143,10 @@ func TestNewEngine_OpsEndpointsBypassMiddleware(t *testing.T) {
 	}
 }
 
-// TestNewEngine_AllModalityRoutes 验证按模态拆分的所有路由都注册了。
-// 没有 Authorization → 期望 401（说明请求进了 middleware 链；不是 404）。
+// TestNewEngine_AllModalityRoutes verifies that all modality-split routes are
+// registered.
+// No Authorization -> expect 401 (proving the request entered the middleware
+// chain; not a 404).
 func TestNewEngine_AllModalityRoutes(t *testing.T) {
 	engine := NewEngine(minDeps())
 
@@ -176,6 +181,7 @@ func TestNewEngine_AllModalityRoutes(t *testing.T) {
 	}
 }
 
-// 删除 TestBuildChain_*：buildChain 已废弃（每个 modality 自己列 middleware）。
-// 通过 TestNewEngine_AllModalityRoutes 间接验证各模态注册了 middleware（
-// 没有 Authorization → 401 而非 404，说明 Auth middleware 跑了）。
+// TestBuildChain_* removed: buildChain is deprecated (each modality lists its
+// own middleware). TestNewEngine_AllModalityRoutes indirectly verifies that
+// each modality registers its middleware (no Authorization -> 401 rather
+// than 404, proving the Auth middleware ran).

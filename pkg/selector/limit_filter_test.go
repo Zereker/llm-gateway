@@ -11,9 +11,9 @@ import (
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
-// localStubStore SnapshotBatch-only stub；reserve / charge 全部不实现（不会被调）。
+// localStubStore is a SnapshotBatch-only stub; reserve / charge are all unimplemented (never called).
 type localStubStore struct {
-	// 按 ep ID 决定 SnapshotBatch 返回的 Used；超出 Limit 触发剔除
+	// decides the Used value SnapshotBatch returns, keyed by ep ID; exceeding Limit triggers exclusion
 	usedFor map[int64]uint32
 	err     error
 	calls   atomic.Int32
@@ -91,7 +91,7 @@ func TestLimitReadFilter_NilStore_Passthrough(t *testing.T) {
 func TestLimitReadFilter_NoQuotaConfig_Passthrough(t *testing.T) {
 	store := &localStubStore{}
 	f := NewLimitReadFilter(store)
-	cands := []*domain.Endpoint{ep(1, 100)} // 无 quota
+	cands := []*domain.Endpoint{ep(1, 100)} // no quota
 	got := f.Apply(context.Background(), cands, &Request{})
 	if len(got) != 1 {
 		t.Errorf("got=%d, want 1", len(got))
@@ -102,7 +102,7 @@ func TestLimitReadFilter_NoQuotaConfig_Passthrough(t *testing.T) {
 }
 
 func TestLimitReadFilter_OverLimit_Excluded(t *testing.T) {
-	// ep2 已用满 60/60 → 应剔除
+	// ep2 already used up 60/60 → should be excluded
 	store := &localStubStore{usedFor: map[int64]uint32{1: 0, 2: 60}}
 	f := NewLimitReadFilter(store)
 	cands := []*domain.Endpoint{epWithQuota(1, 60, 0), epWithQuota(2, 60, 0)}
@@ -134,7 +134,7 @@ func TestEndpointReserveBuckets_RPMOnly(t *testing.T) {
 }
 
 func TestEndpointReserveBuckets_NoTPMInReserve(t *testing.T) {
-	// docs/04 §10：endpoint TPM 不在 reserve；只在 ChargeBatch 出现
+	// docs/04 §10: endpoint TPM is not part of reserve; it only appears in ChargeBatch
 	e := epWithQuota(7, 0, 100000)
 	bs := ratelimit.EndpointReserveBuckets(e)
 	if len(bs) != 0 {

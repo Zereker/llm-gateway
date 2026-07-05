@@ -6,20 +6,23 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// NewGemini 构造一个 Gemini 协议 usage Session。
+// NewGemini constructs a usage Session for the Gemini protocol.
 //
-// 适用场景（按上游协议匹配）：
-//   - openai_gemini：上游 Gemini（OpenAI 客户端 → Gemini 上游，目前 buffer-then-translate）
+// Applicable scenarios (matched by upstream protocol):
+//   - openai_gemini: upstream is Gemini (OpenAI client -> Gemini upstream,
+//     currently buffer-then-translate)
 //
-// **Gemini usage shape**（顶层 usageMetadata）：
+// **Gemini usage shape** (top-level usageMetadata):
 //
 //	{ "candidates": [...],
 //	  "usageMetadata": {
 //	      "promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15
 //	  } }
 //
-// **v0.5 限制**：只支持非流式 body 模式。Gemini SSE 流式（streamGenerateContent）
-// 在 v0.5 不支持，所以这里也不实现 SSE 解析。v0.6 加流式翻译时再补 SSE 路径。
+// **v0.5 limitation**: only non-streaming body mode is supported. Gemini SSE
+// streaming (streamGenerateContent) is not supported in v0.5, so SSE parsing
+// isn't implemented here either. The SSE path will be added when streaming
+// translation lands in v0.6.
 func NewGemini() Session { return &geminiSession{} }
 
 type geminiSession struct {

@@ -11,8 +11,8 @@ func TestCooldownKey(t *testing.T) {
 	}
 }
 
-// RedisCooldownManager 的 SET/MGET 由 ratelimit/redis_test.go 用 miniredis 跑通；
-// 这里只测纯函数与 fallback 行为。
+// RedisCooldownManager's SET/MGET are exercised via miniredis in ratelimit/redis_test.go;
+// here we only test pure functions and fallback behavior.
 
 func TestNewRedisCooldownManager_ImplementsInterface(t *testing.T) {
 	var _ CooldownManager = NewRedisCooldownManager(nil, CooldownDurations{})

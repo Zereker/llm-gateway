@@ -14,26 +14,28 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// SQLAPIKeyProvider 是 IdentityProvider 的 MySQL 实现：
+// SQLAPIKeyProvider is the MySQL implementation of IdentityProvider:
 //
-// **v0.3 改动**：JOIN accounts 一次拿全 (api_keys.quota_policy_id, accounts.quota_policy_id)，
-// M6 RateLimit 不需要再额外 2 次 SELECT。
+// **v0.3 change**: JOIN accounts to get both (api_keys.quota_policy_id,
+// accounts.quota_policy_id) in one shot, so M6 RateLimit no longer needs
+// 2 extra SELECTs.
 //
-// **v0.2 改动**：DB 不再存明文 api_key——存 SHA-256 hash。Resolve 时把入参
-// 先 hash 再查表。
+// **v0.2 change**: the DB no longer stores the plaintext api_key — it stores
+// the SHA-256 hash. Resolve hashes the input before looking it up.
 //
-// **v0.1 直查 DB，无缓存**——每次 Resolve 都跑一次 SELECT。
-// api_key_hash 列上有 UNIQUE 索引，~1ms。
+// **v0.1 queries the DB directly, no cache** — every Resolve runs a SELECT.
+// The api_key_hash column has a UNIQUE index, ~1ms.
 type SQLAPIKeyProvider struct {
 	db *sqlx.DB
 }
 
-// NewSQLAPIKeyProvider 构造一个直查 DB 的 provider；不做启动期 load。
+// NewSQLAPIKeyProvider builds a provider that queries the DB directly; it does
+// no startup-time load.
 func NewSQLAPIKeyProvider(db *sqlx.DB) *SQLAPIKeyProvider {
 	return &SQLAPIKeyProvider{db: db}
 }
 
-// resolveRow JOIN 后的行；只在本文件内部用。
+// resolveRow is the row shape after the JOIN; used only within this file.
 type resolveRow struct {
 	AccountID            string `db:"account_id"`
 	SubAccountID         string `db:"sub_account_id"`
@@ -44,18 +46,20 @@ type resolveRow struct {
 	AccountQuotaPolicyID *int64 `db:"account_quota_policy_id"`
 }
 
-// Resolve 实现 IdentityProvider.Resolve。
+// Resolve implements IdentityProvider.Resolve.
 //
-// SQL 一次 JOIN 拿两个 quota_policy_id；M6 RateLimit 直接消费 rc.Identity 不需要再查。
+// The SQL JOINs both quota_policy_id values in one go; M6 RateLimit consumes
+// rc.Identity directly and doesn't need to query again.
 //
-// 查询条件：
+// Query conditions:
 //   - api_key_hash = SHA256(creds.APIKey) hex-encoded
 //   - api_keys.enabled = 1, revoked_at IS NULL, deleted_at IS NULL
 //   - expires_at IS NULL OR expires_at > NOW()
-//   - accounts.enabled = 1, accounts.deleted_at IS NULL（隐含的 pin 级别禁用）
+//   - accounts.enabled = 1, accounts.deleted_at IS NULL (an implicit pin-level disable)
 //
-// **不更新 last_used_at**：v0.3 不做（每请求 INSERT/UPDATE 等于 doubling 写压力）；
-// 后续可改异步 batch update 走单独 goroutine。
+// **Does not update last_used_at**: skipped in v0.3 (an INSERT/UPDATE on every
+// request would double the write load); could later become an async batch
+// update running in its own goroutine.
 func (p *SQLAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) (*UserIdentity, error) {
 	if creds == nil || creds.APIKey == "" {
 		return nil, fmt.Errorf("apikey: missing api key: %w", domain.ErrInvalidCredentials)
@@ -87,11 +91,13 @@ func (p *SQLAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) (*U
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// unknown / disabled / expired / revoked / account disabled 统一走
-			// ErrInvalidCredentials sentinel（M2 → 401）；不细分防枚举。
+			// unknown / disabled / expired / revoked / account disabled all map to
+			// the ErrInvalidCredentials sentinel (M2 -> 401); kept coarse-grained
+			// to avoid enabling enumeration.
 			return nil, fmt.Errorf("apikey: %w", domain.ErrInvalidCredentials)
 		}
-		// SQL 层故障（连接 / 超时 / schema 等）——不 wrap sentinel，M2 fail-closed → 503。
+		// SQL-layer failure (connection / timeout / schema, etc.) — not wrapped in
+		// the sentinel; M2 fails closed -> 503.
 		return nil, fmt.Errorf("apikey: lookup: %w", err)
 	}
 
@@ -106,11 +112,12 @@ func (p *SQLAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) (*U
 	}, nil
 }
 
-// HashAPIKey SHA-256 hex-encode 入参；deployer SQL INSERT 计算 hash 时 / gateway Resolve 时共用。
+// HashAPIKey SHA-256 hex-encodes the input; shared between the deployer's SQL
+// INSERT hash computation and the gateway's Resolve.
 func HashAPIKey(plain string) string {
 	sum := sha256.Sum256([]byte(plain))
 	return hex.EncodeToString(sum[:])
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ IdentityProvider = (*SQLAPIKeyProvider)(nil)
