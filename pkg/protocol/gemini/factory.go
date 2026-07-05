@@ -11,8 +11,12 @@
 // **客户端格式**：客户端按 OpenAI ChatCompletion 格式发请求；adapter 内部翻译成
 // Gemini 格式发上游，响应再翻回 OpenAI 格式。客户端无感切 vendor。
 //
-// **v0.5 不支持**：
-//   - Streaming（Gemini 用 :streamGenerateContent + 不同 chunk 格式，单独迭代）
+// **支持**：
+//   - Chat（system/user/assistant/text content）
+//   - Streaming（客户端 stream:true → :streamGenerateContent?alt=sse，SSE chunk
+//     翻成 OpenAI SSE，见 openai_gemini responseHandler）
+//
+// **不支持**：
 //   - Function calling / tool_use
 //   - Vision / multimodal（parts 只支持 text）
 //
@@ -23,6 +27,8 @@ package gemini
 
 import (
 	"context"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
@@ -42,14 +48,16 @@ func (Factory) Metadata() protocol.Metadata {
 
 // NewSession 为本次请求构造 Session。
 //
-// envelope 在 slim adapter 模型里不需要——translator 已经吃 raw body 翻译完。
-// 保留参数为了 protocol.Factory 接口兼容；session 不存它。
-func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.RequestEnvelope) (protocol.Session, error) {
+// 从 envelope 的**原始客户端 body** 读 stream 标志决定走流式端点——翻译后的 Gemini
+// body 不带 stream，所以这里从翻译前的 RawBytes 判定（OpenAI/Anthropic/Responses 都
+// 用 stream:true，gjson 读 bool 协议无关）。
+func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	tp, err := newTokenProvider(c, ep.Auth)
 	if err != nil {
 		return nil, err
 	}
-	return newSession(c, ep, tp), nil
+	streaming := env != nil && gjson.GetBytes(env.RawBytes, "stream").Bool()
+	return newSession(c, ep, tp, streaming), nil
 }
 
 func init() {

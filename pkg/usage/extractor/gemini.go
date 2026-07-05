@@ -18,8 +18,10 @@ import (
 //	      "promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15
 //	  } }
 //
-// **v0.5 限制**：只支持非流式 body 模式。Gemini SSE 流式（streamGenerateContent）
-// 在 v0.5 不支持，所以这里也不实现 SSE 解析。v0.6 加流式翻译时再补 SSE 路径。
+// **只解非流式 JSON body**：这是设计选择,不是缺口。Gemini SSE 流式
+// （streamGenerateContent）的 usage 由 openai_gemini responseHandler 直接从末帧的
+// usageMetadata 抽（见该包 translateChunk），不走本 extractor——所以本 Session 保持
+// JSON-only,Final() 把整个 buf 当一个 JSON 解析。JSON 路径才用它。
 func NewGemini() Session { return &geminiSession{} }
 
 type geminiSession struct {
