@@ -11,7 +11,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/trace"
 )
 
-// captureTracer 把 StartSpan / SetAttribute / End / Log 全记录下来供断言用。
+// captureTracer records every StartSpan / SetAttribute / End / Log call for assertions.
 type captureTracer struct {
 	mu     sync.Mutex
 	spans  []*captureSpan
@@ -61,10 +61,10 @@ func (h *captureSpanHandle) End() {
 }
 
 // =============================================================================
-// Dispatcher 端到端行为测试
+// Dispatcher end-to-end behavior tests
 // =============================================================================
 
-// TestDispatcher_HappyPath: 首次 select 成功，verdict success → Stream。
+// TestDispatcher_HappyPath: first select succeeds, verdict success → Stream.
 func TestDispatcher_HappyPath(t *testing.T) {
 	ep := newTestEP(1)
 	d := New(
@@ -100,7 +100,7 @@ func TestDispatcher_HappyPath(t *testing.T) {
 	}
 }
 
-// TestDispatcher_InvalidAbortsImmediately: invalid → 400，无重试。
+// TestDispatcher_InvalidAbortsImmediately: invalid → 400, no retry.
 func TestDispatcher_InvalidAbortsImmediately(t *testing.T) {
 	ep := newTestEP(1)
 	d := New(
@@ -166,7 +166,7 @@ func TestDispatcher_RetryUntilSuccess(t *testing.T) {
 	}
 }
 
-// TestDispatcher_AttemptsExhausted: 一直 transient 到 cap → NoEndpoint 503。
+// TestDispatcher_AttemptsExhausted: transient all the way to cap → NoEndpoint 503.
 func TestDispatcher_AttemptsExhausted(t *testing.T) {
 	d := New(
 		WithCandidates(fakeCandidates{}),
@@ -194,14 +194,14 @@ func TestDispatcher_AttemptsExhausted(t *testing.T) {
 	}
 }
 
-// TestDispatcher_FallbackToNextModel: primary 候选耗尽 → switch fallback → success。
+// TestDispatcher_FallbackToNextModel: primary candidates exhausted → switch fallback → success.
 func TestDispatcher_FallbackToNextModel(t *testing.T) {
 	ep := newTestEP(10)
 	d := New(
 		WithCandidates(fakeCandidates{}),
 		WithSelector(newFakeSelector(
-			selResp{ep: nil}, // primary 候选耗尽
-			selResp{ep: ep},  // fallback 模型有候选
+			selResp{ep: nil}, // primary candidates exhausted
+			selResp{ep: ep},  // fallback model has candidates
 		)),
 		WithInvokerFactory(newFakeInvokerFactory(successResult(&domain.Usage{Total: 200}, 80))),
 		WithCap(HeaderAttemptCap{Default: 3}),
@@ -226,7 +226,7 @@ func TestDispatcher_FallbackToNextModel(t *testing.T) {
 	}
 }
 
-// TestDispatcher_AllModelsExhausted: 所有 model 候选都耗尽 → NoEndpoint 503。
+// TestDispatcher_AllModelsExhausted: all model candidates exhausted → NoEndpoint 503.
 func TestDispatcher_AllModelsExhausted(t *testing.T) {
 	d := New(
 		WithCandidates(fakeCandidates{}),
@@ -234,7 +234,7 @@ func TestDispatcher_AllModelsExhausted(t *testing.T) {
 			selResp{ep: nil},
 			selResp{ep: nil},
 		)),
-		WithInvokerFactory(newFakeInvokerFactory()), // 不会被调用
+		WithInvokerFactory(newFakeInvokerFactory()), // never invoked
 		WithCap(HeaderAttemptCap{Default: 3}),
 		WithRetry(DefaultRetry{}),
 		WithFallback(ModelChainFallback{}),
@@ -251,7 +251,7 @@ func TestDispatcher_AllModelsExhausted(t *testing.T) {
 	}
 }
 
-// TestDispatcher_SelectorDepFail: Selector.Select 返 err → DepFail 503。
+// TestDispatcher_SelectorDepFail: Selector.Select returns err → DepFail 503.
 func TestDispatcher_SelectorDepFail(t *testing.T) {
 	d := New(
 		WithCandidates(fakeCandidates{}),
@@ -273,14 +273,16 @@ func TestDispatcher_SelectorDepFail(t *testing.T) {
 	}
 }
 
-// TestDispatcher_InvokerDepFail: Invoker.Invoke 返 err → 按 transient 走 retry
-// 流程（Record + Report + Continue），候选耗尽后 NoEndpoint 503。
-// （旧行为是直接 Abort DepFail，绕过 cooldown / retry——review 修复后不再如此。）
+// TestDispatcher_InvokerDepFail: Invoker.Invoke returns err → goes through the
+// transient retry flow (Record + Report + Continue); once candidates are
+// exhausted → NoEndpoint 503.
+// (The old behavior was to Abort DepFail directly, bypassing cooldown / retry
+// — fixed after review, no longer the case.)
 func TestDispatcher_InvokerDepFail(t *testing.T) {
 	r := &fakeResult{invokeErr: errFakeDep}
 	sel := newFakeSelector(
 		selResp{ep: newTestEP(1)},
-		selResp{ep: nil}, // retry 后候选耗尽
+		selResp{ep: nil}, // candidates exhausted after retry
 	)
 	d := New(
 		WithCandidates(fakeCandidates{}),
@@ -302,10 +304,12 @@ func TestDispatcher_InvokerDepFail(t *testing.T) {
 	}
 }
 
-// TestDispatcher_TerminalNonRetryable: 永久错被 DefaultRetry 当 retryable 处理（换 ep 继续）。
+// TestDispatcher_TerminalNonRetryable: a permanent error is treated as retryable
+// by DefaultRetry (switch endpoint and continue).
 //
-// 注意：在 DefaultRetry 的语义下，permanent 是 retryable（换 ep 可能成功）；
-// 只有 invalid 才直接 abort。所以这个 case 实际上会重试，直到 attempts 用完。
+// Note: under DefaultRetry's semantics, permanent is retryable (switching ep
+// might succeed); only invalid aborts directly. So this case actually retries
+// until attempts are exhausted.
 func TestDispatcher_TerminalNonRetryable(t *testing.T) {
 	d := New(
 		WithCandidates(fakeCandidates{}),
@@ -327,7 +331,7 @@ func TestDispatcher_TerminalNonRetryable(t *testing.T) {
 	}
 }
 
-// TestDispatcher_PanicsOnMissingDeps: New() 缺依赖应 panic。
+// TestDispatcher_PanicsOnMissingDeps: New() should panic when a dependency is missing.
 func TestDispatcher_PanicsOnMissingDeps(t *testing.T) {
 	cases := []struct {
 		name string

@@ -2,63 +2,69 @@ package dispatch
 
 import "github.com/zereker/llm-gateway/pkg/trace"
 
-// Option 装配 Dispatcher 的可选项。
+// Option configures optional settings on a Dispatcher.
 type Option func(*Dispatcher)
 
-// WithCandidates 注入 CandidateSource 实现。必填。
+// WithCandidates injects a CandidateSource implementation. Required.
 //
-// 典型实现：cmd/gateway/middleware_adapters.go adaptEndpoints
-// 把 repo.EndpointReader 桥接成 dispatch.CandidateSource。
+// Typical implementation: cmd/gateway/middleware_adapters.go's
+// adaptEndpoints bridges repo.EndpointReader into dispatch.CandidateSource.
 func WithCandidates(c CandidateSource) Option {
 	return func(d *Dispatcher) { d.candidates = c }
 }
 
-// WithSelector 注入 Selector 实现。必填。
+// WithSelector injects a Selector implementation. Required.
 //
-// 默认实现见 pkg/dispatch/adapters.PickerAdapter（wrap selector.Scheduler.Pick + Report）。
+// See pkg/dispatch/adapters.PickerAdapter for the default implementation
+// (wraps selector.Scheduler.Pick + Report).
 func WithSelector(s Selector) Option {
 	return func(d *Dispatcher) { d.selector = s }
 }
 
-// WithInvokerFactory 注入 InvokerFactory 实现。必填。
+// WithInvokerFactory injects an InvokerFactory implementation. Required.
 func WithInvokerFactory(f InvokerFactory) Option {
 	return func(d *Dispatcher) { d.invokerFactory = f }
 }
 
-// WithCap 注入 AttemptCap 策略。必填。
+// WithCap injects an AttemptCap policy. Required.
 //
-// 默认实现见 HeaderAttemptCap（cap_header.go）。
+// See HeaderAttemptCap (cap_header.go) for the default implementation.
 func WithCap(c AttemptCap) Option {
 	return func(d *Dispatcher) { d.cap = c }
 }
 
-// WithRetry 注入 RetryPolicy。必填。
+// WithRetry injects a RetryPolicy. Required.
 //
-// 默认实现见 DefaultRetry（retry_default.go）。
+// See DefaultRetry (retry_default.go) for the default implementation.
 func WithRetry(r RetryPolicy) Option {
 	return func(d *Dispatcher) { d.retry = r }
 }
 
-// WithFallback 注入 FallbackPolicy。必填。
+// WithFallback injects a FallbackPolicy. Required.
 //
-// 默认实现见 ModelChainFallback（fallback_chain.go）。
+// See ModelChainFallback (fallback_chain.go) for the default implementation.
 func WithFallback(f FallbackPolicy) Option {
 	return func(d *Dispatcher) { d.fallback = f }
 }
 
-// WithQuota 注入 EndpointQuota 实现。**可选**——不调 = NoopQuota 永不拒绝。
+// WithQuota injects an EndpointQuota implementation. **Optional** — not
+// calling this leaves NoopQuota, which never rejects.
 //
-// 典型实现见 pkg/dispatch/adapters.EndpointQuotaAdapter（包装 ratelimit.Store +
-// ratelimit 自带的 endpoint bucket key 派生 helper，pkg/ratelimit/endpoint_buckets.go）。
+// See pkg/dispatch/adapters.EndpointQuotaAdapter for a typical implementation
+// (wraps ratelimit.Store plus ratelimit's own endpoint bucket-key derivation
+// helper, pkg/ratelimit/endpoint_buckets.go).
 func WithQuota(q EndpointQuota) Option {
 	return func(d *Dispatcher) { d.quota = q }
 }
 
-// WithTracer 注入 trace.Tracer。可选——不调 = NewSlogTracer(nil) NoOp span。
+// WithTracer injects a trace.Tracer. Optional — not calling this leaves
+// NewSlogTracer(nil), a NoOp span.
 //
-// 接入 OTel：cmd/gateway 把 trace.NewOtelTracer 喂进来，dispatcher 会在每次
-// Dispatch / attempt 上开 span（dispatch.request → dispatch.attempt 子 span），
-// span attribute 含 model / endpoint / verdict / outcome，事件含 fallback 切换。
+// To wire up OTel: cmd/gateway feeds in trace.NewOtelTracer, and the
+// dispatcher opens a span on every Dispatch / attempt (dispatch.request →
+// dispatch.attempt child span), with span attributes covering
+// model / endpoint / verdict / outcome and events covering fallback
+// switches.
 func WithTracer(t trace.Tracer) Option {
 	return func(d *Dispatcher) { d.tracer = t }
 }

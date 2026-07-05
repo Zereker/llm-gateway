@@ -5,22 +5,26 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// Input Dispatch 的只读输入——所有 dispatch driver loop 需要的请求级信息。
+// Input is Dispatch's read-only input — all the request-level information
+// the dispatch driver loop needs.
 //
-// **设计动机**：把 dispatch 从 *domain.RequestContext 解耦。RC 是 middleware
-// 链的状态载体；dispatch 是协调器，只需要"这次请求要做什么"的纯数据视图。
+// **Design motivation**: decouples dispatch from *domain.RequestContext. RC
+// is the state carrier for the middleware chain; dispatch is an
+// orchestrator that only needs a pure data view of "what this request needs
+// to do".
 //
-// **构造点**：middleware/schedule.go 在调 Dispatch 之前从 rc 抽出来；不要在
-// dispatch 内部创建。
+// **Construction point**: middleware/schedule.go extracts this from rc
+// before calling Dispatch; don't construct it inside dispatch.
 //
-// **字段语义**：
+// **Field semantics**:
 //
-//	Envelope            ── M3 写：客户端 body + srcProto + modality
-//	Identity            ── M2 写：account / api key / group
-//	ModelChain          ── M5 写：[0]=primary，后续 = X-Gateway-Fallback-Models 校验过的
-//	Handlers            ── M3 写：protocol.Lookup（DefaultLookup 或 tenant 覆盖）
-//	AttemptCapOverride  ── 客户端 X-Gateway-Max-Attempts header 原始值；Policy 解析
-//	SessionKey          ── 客户端 X-Gateway-Session header；会话亲和（sticky routing）
+//	Envelope            ── written by M3: client body + srcProto + modality
+//	Identity            ── written by M2: account / api key / group
+//	ModelChain          ── written by M5: [0]=primary, followed by models
+//	                        validated from X-Gateway-Fallback-Models
+//	Handlers            ── written by M3: protocol.Lookup (DefaultLookup or tenant override)
+//	AttemptCapOverride  ── raw value of the client's X-Gateway-Max-Attempts header; parsed by Policy
+//	SessionKey          ── client's X-Gateway-Session header; session affinity (sticky routing)
 type Input struct {
 	Envelope           *domain.RequestEnvelope
 	Identity           domain.UserIdentity
@@ -30,7 +34,8 @@ type Input struct {
 	SessionKey         string
 }
 
-// PrimaryModel ModelChain 第一个；为空时返 nil（dispatcher 应早期校验 ModelChain 非空）。
+// PrimaryModel returns the first entry of ModelChain; returns nil when
+// empty (the dispatcher should validate ModelChain is non-empty early on).
 func (in Input) PrimaryModel() *domain.ModelService {
 	if len(in.ModelChain) == 0 {
 		return nil
@@ -38,7 +43,8 @@ func (in Input) PrimaryModel() *domain.ModelService {
 	return in.ModelChain[0]
 }
 
-// SourceProtocol envelope.SourceProtocol；Envelope nil 时返 ProtoUnknown。
+// SourceProtocol returns envelope.SourceProtocol; returns ProtoUnknown when
+// Envelope is nil.
 func (in Input) SourceProtocol() domain.Protocol {
 	if in.Envelope == nil {
 		return domain.ProtoUnknown
