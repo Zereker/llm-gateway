@@ -162,6 +162,55 @@ func TestResponseCache_NonDeterministicBypass(t *testing.T) {
 	}
 }
 
+// embeddings 天然确定：无 temperature 也默认缓存（Modality==ModalityEmbedding 覆盖）。
+func TestResponseCache_EmbeddingsDeterministicByDefault(t *testing.T) {
+	store := newFakeCacheStore()
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	calls := 0
+	e.POST("/v1/embeddings",
+		func(c *gin.Context) {
+			rc := &domain.RequestContext{
+				Envelope: &domain.RequestEnvelope{
+					RawBytes: readBody(c), Model: "text-embedding-3-small",
+					SourceProtocol: domain.ProtoOpenAI, Modality: domain.ModalityEmbedding,
+				},
+				ModelService: &domain.ModelService{Model: "text-embedding-3-small"},
+			}
+			AttachRequestContext(c, rc)
+			c.Next()
+		},
+		ResponseCache(store, time.Minute),
+		func(c *gin.Context) {
+			calls++
+			rc := GetRequestContext(c)
+			rc.Usage = &domain.Usage{Input: 4, Total: 4}
+			c.Data(http.StatusOK, "application/json", []byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+		},
+	)
+	// 无 temperature、无 stream —— 换成 chat 会走 non-deterministic bypass，
+	// embeddings 应默认缓存。
+	body := `{"model":"text-embedding-3-small","input":"hello world"}`
+	req := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, r)
+		return w
+	}
+	w1 := req()
+	if w1.Code != 200 || calls != 1 || store.sets != 1 {
+		t.Fatalf("miss: code=%d calls=%d sets=%d, want 200/1/1", w1.Code, calls, store.sets)
+	}
+	w2 := req()
+	if w2.Code != 200 || calls != 1 {
+		t.Fatalf("hit: code=%d calls=%d, want 200/1（命中不打 downstream）", w2.Code, calls)
+	}
+	if w2.Header().Get(HeaderGatewayCache) != "hit" {
+		t.Error("embeddings 第二次应命中")
+	}
+}
+
 // 流式：永不缓存。
 func TestResponseCache_StreamBypass(t *testing.T) {
 	store := newFakeCacheStore()

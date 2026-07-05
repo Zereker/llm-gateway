@@ -23,6 +23,10 @@ import (
 // 缓存会返回旧结果、行为诡异,所以默认跳过;客户端可用 X-Gateway-Cache: on 强制缓存
 // (自负风险),off 完全绕过。流式**从不**缓存(v1)。
 //
+// **embeddings 例外**:embedding 请求无采样参数,同 input 恒定同 vector,天然确定
+// (Modality==ModalityEmbedding)→ 默认可缓存,不需要 temperature=0。高命中场景
+// (RAG 反复 embed 同批文本)收益很大。
+//
 // **key** = SHA256(sourceProtocol | canonical model | 请求 body)。同协议 + 同 model +
 // 同 body → 同响应字节。跨账号共享(响应是 model 的输出,与账号无关),命中率更高。
 //
@@ -57,6 +61,12 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 		if stream {
 			c.Next() // 流式从不缓存
 			return
+		}
+		// embeddings 无采样参数（temperature/top_p 不参与）——同 input 恒定同 vector，
+		// 天然确定，默认就该缓存（不必 temperature=0 / X-Gateway-Cache: on）。命中率高、
+		// 收益大（embedding 常对同一批文本反复算）。
+		if rc.Envelope.Modality == domain.ModalityEmbedding {
+			deterministic = true
 		}
 		if mode != "on" && !deterministic {
 			metric.Inc(metric.ResponseCacheTotal, "result", "bypass")

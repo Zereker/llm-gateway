@@ -49,8 +49,12 @@ type Deps struct {
 	Dispatcher *dispatch.Dispatcher
 
 	// 响应缓存中间件（M6 之后、M7 之前），由 cmd 装配（精确 / 语义 / no-op）。
-	// nil 时各模态文件跳过挂载。
+	// chat 模态用；nil 时各模态文件跳过挂载。
 	Cache gin.HandlerFunc
+
+	// EmbeddingCache embedding 模态专用缓存——**只精确**（语义相似度对 embedding
+	// 无意义，必须精确）。由 cmd 独立装配（任一缓存开关打开就上精确缓存）。
+	EmbeddingCache gin.HandlerFunc
 
 	// M8 Moderation
 	Moderator middleware.Moderator
