@@ -10,14 +10,16 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// testutil_test.go 提供本包所有 _test.go 共享的 stub 与构造 helper。
+// testutil_test.go provides the stubs and construction helpers shared by all
+// _test.go files in this package.
 //
-// 风格约定（对齐 auth_test.go / tracing_test.go）：
-//   - 手写 stub，零外部 mock 库依赖
-//   - 每个 stub 内嵌可配置「返回值字段 + 调用计数」便于断言
-//   - 并发场景用 sync.Mutex / atomic 保护
+// Style conventions (aligned with auth_test.go / tracing_test.go):
+//   - hand-written stubs, zero dependency on external mock libraries
+//   - each stub embeds configurable "return-value fields + call counters" for
+//     easy assertions
+//   - concurrent scenarios are protected with sync.Mutex / atomic
 //
-// **不要**在 testutil_test.go 里写业务断言；它只提供工具。
+// **Do not** write business assertions in testutil_test.go; it only provides tools.
 
 // =============================================================================
 // Stub: BudgetGate
@@ -40,7 +42,7 @@ func (g *stubBudgetGate) Check(_ context.Context, subAccountID string) (domain.B
 }
 
 // =============================================================================
-// Stub: ModelCatalog / SubscriptionChecker（M5 用，middleware-owned 接口）
+// Stub: ModelCatalog / SubscriptionChecker (used by M5, middleware-owned interfaces)
 // =============================================================================
 
 type stubCatalog struct {
@@ -65,19 +67,21 @@ func (s stubSubs) HasModel(_ context.Context, _ string, _ int64) (bool, error) {
 // Stub: ratelimit.Store
 // =============================================================================
 
-// stubStore 可配置 ReserveBatch / ChargeBatch / SnapshotBatch 返回值。
+// stubStore lets ReserveBatch / ChargeBatch / SnapshotBatch return values be
+// configured.
 //
-// 默认行为：ReserveBatch allowed=true；ChargeBatch 无错；SnapshotBatch 返回零值。
+// Default behavior: ReserveBatch allowed=true; ChargeBatch has no error;
+// SnapshotBatch returns zero values.
 type stubStore struct {
 	reserveAllowed bool
 	reserveViol    *ratelimit.BucketViolation
 	reserveErr     error
 
-	chargeResults []ratelimit.BucketChargeResult
-	chargeErr     error
-	chargeCalls   atomic.Int32
+	chargeResults  []ratelimit.BucketChargeResult
+	chargeErr      error
+	chargeCalls    atomic.Int32
 	chargeCaptured [][]ratelimit.Bucket
-	chargeMu      sync.Mutex
+	chargeMu       sync.Mutex
 
 	snapshotResults []ratelimit.BucketState
 	snapshotErr     error
@@ -111,7 +115,7 @@ func (s *stubStore) ChargeBatch(_ context.Context, buckets []ratelimit.Bucket) (
 	if s.chargeResults != nil {
 		return s.chargeResults, s.chargeErr
 	}
-	// 默认每个 bucket 返一条 ok 结果（Overflow=false）
+	// by default return one ok result per bucket (Overflow=false)
 	out := make([]ratelimit.BucketChargeResult, len(buckets))
 	for i, b := range buckets {
 		out[i] = ratelimit.BucketChargeResult{Key: b.Key, Used: b.Cost, Limit: b.Limit}
@@ -131,7 +135,7 @@ func (s *stubStore) SnapshotBatch(_ context.Context, buckets []ratelimit.Bucket)
 }
 
 // =============================================================================
-// Stub: QuotaPolicyProvider（PolicyCache 上游）
+// Stub: QuotaPolicyProvider (PolicyCache's upstream)
 // =============================================================================
 
 type stubQPProvider struct {

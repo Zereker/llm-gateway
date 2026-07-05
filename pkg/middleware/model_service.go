@@ -10,19 +10,21 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// ModelCatalog M5 用：按 model 字符串查全局 catalog。
+// ModelCatalog is used by M5: looks up the global catalog by model string.
 //
-// 该接口是 middleware-owned 契约，repo 实现层把 SQL 行映射为 domain.ModelService。
+// This interface is a middleware-owned contract; the repo implementation
+// layer maps SQL rows to domain.ModelService.
 type ModelCatalog interface {
 	GetByModel(c context.Context, model string) (*domain.ModelService, error)
 }
 
-// SubscriptionChecker M5 用：判定主账号是否订阅了某 model_service。
+// SubscriptionChecker is used by M5: determines whether an account is
+// subscribed to a given model_service.
 type SubscriptionChecker interface {
 	HasModel(c context.Context, accountID string, modelServiceID int64) (bool, error)
 }
 
-// ModelServiceOption 配置 ModelService middleware（otelgin v0.68.0 同款 interface-Option）。
+// ModelServiceOption configures the ModelService middleware (same interface-Option pattern as otelgin v0.68.0).
 type ModelServiceOption interface {
 	apply(*modelServiceConfig)
 }
@@ -36,28 +38,29 @@ type modelServiceConfig struct {
 	subscriptions SubscriptionChecker
 }
 
-// WithModelCatalog 注入 ModelCatalog 实现。必填。
+// WithModelCatalog injects a ModelCatalog implementation. Required.
 func WithModelCatalog(c ModelCatalog) ModelServiceOption {
 	return modelServiceOptionFunc(func(cfg *modelServiceConfig) { cfg.catalog = c })
 }
 
-// WithSubscriptionChecker 注入 SubscriptionChecker 实现。必填。
+// WithSubscriptionChecker injects a SubscriptionChecker implementation. Required.
 func WithSubscriptionChecker(s SubscriptionChecker) ModelServiceOption {
 	return modelServiceOptionFunc(func(cfg *modelServiceConfig) { cfg.subscriptions = s })
 }
 
-// ModelService 是 M5：rc.Envelope.Model → catalog → 验订阅 → rc.ModelService。
+// ModelService is M5: rc.Envelope.Model → catalog → verify subscription → rc.ModelService.
 //
-// 同时解析 X-Gateway-Fallback-Models（docs/03 §5）：把 primary + 已校验过的
-// fallback model 写入 rc.ModelChain 供 M7 直接消费。fallback 不存在或未订阅
-// 时静默剔除，不影响主请求。
+// Also parses X-Gateway-Fallback-Models (docs/03 §5): writes the primary +
+// already-validated fallback models into rc.ModelChain for M7 to consume
+// directly. A fallback that doesn't exist or isn't subscribed is silently
+// dropped, without affecting the primary request.
 //
-// 失败行为（docs/01 §7）：
-//   - rc.Envelope nil（M3 没跑）→ 500
-//   - catalog SQL 错 → 503 / dependency_unavailable
-//   - catalog 找不到 primary → 404 / model_not_found
-//   - 主账号没订阅 primary → 403 / model_not_subscribed
-//   - fallback 解析失败 → 静默剔除，不阻断（仅 primary 必须成功）
+// Failure behavior (docs/01 §7):
+//   - rc.Envelope nil (M3 didn't run) → 500
+//   - catalog SQL error → 503 / dependency_unavailable
+//   - catalog can't find primary → 404 / model_not_found
+//   - account not subscribed to primary → 403 / model_not_subscribed
+//   - fallback resolution fails → silently dropped, not blocking (only primary must succeed)
 func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 	cfg := modelServiceConfig{}
 	for _, opt := range opts {
@@ -114,10 +117,12 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 	}
 }
 
-// resolveModelChain 把 primary + 已校验过的 fallback 拼成 rc.ModelChain。
+// resolveModelChain assembles primary + already-validated fallbacks into rc.ModelChain.
 //
-// fallback 路径上**任何**校验失败（catalog 找不到 / subs 拒绝 / 依赖故障）都只是
-// 静默跳过该 fallback——primary 已经成功，不应该让 fallback 解析失败拖累主请求。
+// **Any** validation failure on the fallback path (catalog miss / subscription
+// denied / dependency failure) simply skips that fallback silently — the
+// primary already succeeded, so a fallback resolution failure shouldn't drag
+// down the main request.
 func resolveModelChain(
 	ctx context.Context,
 	cfg modelServiceConfig,
@@ -152,9 +157,11 @@ func resolveModelChain(
 	return chain
 }
 
-// parseFallbackModels 读 X-Gateway-Fallback-Models header（逗号分隔，去重保序）；
-// docs/03 §5：去重保序、空 model 忽略、数量上限 MaxFallbackModels。
-// primary 自身从结果里剔除——chain 里不允许它和 primary 同名。
+// parseFallbackModels reads the X-Gateway-Fallback-Models header (comma-separated,
+// dedup while preserving order); docs/03 §5: dedup while preserving order, ignore
+// empty models, cap count at MaxFallbackModels.
+// The primary itself is excluded from the result — the chain must not contain
+// an entry with the same name as primary.
 func parseFallbackModels(c *gin.Context, primary string) []string {
 	hdr := c.GetHeader(HeaderGatewayFallbackModels)
 	if hdr == "" {
@@ -179,7 +186,7 @@ func parseFallbackModels(c *gin.Context, primary string) []string {
 	return out
 }
 
-// 旧的 AdaptRepoCatalog / AdaptRepoSubscriptions 已迁到 cmd/gateway/middleware_adapters.go
-// （adaptCatalog / adaptSubscriptions）；放在 composition root 是为了避免
-// middleware → ratelimit → repo → middleware 的 import cycle。middleware 现在
-// 不再 import pkg/repo。
+// The old AdaptRepoCatalog / AdaptRepoSubscriptions have moved to
+// cmd/gateway/middleware_adapters.go (adaptCatalog / adaptSubscriptions);
+// placed at the composition root to avoid a middleware → ratelimit → repo →
+// middleware import cycle. middleware no longer imports pkg/repo.

@@ -8,11 +8,11 @@ import (
 	"github.com/zereker/llm-gateway/pkg/moderation"
 )
 
-// Moderator 是 moderation.Moderator 的别名，保留旧 import 路径。
-// 新代码请直接用 pkg/moderation.Moderator。
+// Moderator is an alias for moderation.Moderator, kept for the old import path.
+// New code should use pkg/moderation.Moderator directly.
 type Moderator = moderation.Moderator
 
-// ModerationOption 配置 Moderation middleware（otelgin v0.68.0 同款 interface-Option）。
+// ModerationOption configures the Moderation middleware (same interface-Option pattern as otelgin v0.68.0).
 type ModerationOption interface {
 	apply(*moderationConfig)
 }
@@ -25,26 +25,28 @@ type moderationConfig struct {
 	moderator Moderator
 }
 
-// WithModerator 注入 Moderator 实现。不传 = M8 静默 pass-through。
+// WithModerator injects a Moderator implementation. Not passing one means M8
+// silently passes through.
 func WithModerator(m Moderator) ModerationOption {
 	return moderationOptionFunc(func(c *moderationConfig) { c.moderator = m })
 }
 
-// Moderation 是 M8：对请求 body 做 input 审核 + 把 Moderator 注入 ctx 让
-// invoker 在构造 response stream 时通过 moderation.WrapStream 接 output 审核。
+// Moderation is M8: performs input moderation on the request body + injects
+// the Moderator into ctx so the invoker can hook into output moderation via
+// moderation.WrapStream when constructing the response stream.
 //
-// 失败行为：
-//   - Envelope 缺失 → 500（防御性，不应发生）
-//   - CheckInput 报错 → 400 / content_rejected
+// Failure behavior:
+//   - Envelope missing → 500 (defensive, should not happen)
+//   - CheckInput errors → 400 / content_rejected
 //
-// Moderator 不注入时 → c.Next() 直接放行。
+// When no Moderator is injected → c.Next() passes through directly.
 func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 	cfg := moderationConfig{}
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
 	if cfg.moderator == nil {
-		// pass-through 快路径：连 tracer 都不开。
+		// pass-through fast path: doesn't even open a tracer.
 		return func(c *gin.Context) { c.Next() }
 	}
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
@@ -67,7 +69,8 @@ func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 			return
 		}
 
-		// 把 Moderator 装进 ctx，让 invoker 包 ResponseStream 时拿到。
+		// Stash the Moderator in ctx so the invoker can retrieve it when
+		// wrapping the ResponseStream.
 		c.Request = c.Request.WithContext(moderation.ContextWithModerator(ctx, cfg.moderator))
 
 		c.Next()

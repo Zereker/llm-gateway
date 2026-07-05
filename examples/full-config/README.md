@@ -1,68 +1,69 @@
-# examples/full-config — 完整功能配置示例
+# examples/full-config — Full-featured config example
 
-跟 `configs/local/` 的"最小起步"不同，本目录展示**生产形态**的配置：
-Kafka outbox + 多 model + 多 endpoint + 多 quota_policy + pricing_version。
+Unlike the "minimal starting point" of `configs/local/`, this directory demonstrates a **production-shaped** configuration:
+Kafka outbox + multiple models + multiple endpoints + multiple quota_policies + pricing_version.
 
-## 文件
+## Files
 
-| 文件 | 用途 |
+| File | Purpose |
 |---|---|
-| `gateway.yaml` | 数据面（接 LLM 客户端请求）配置 |
-| `seed.sql`     | DB 示例数据（quota / account / model / pricing 等） |
+| `gateway.yaml` | Data plane (handles LLM client requests) config |
+| `seed.sql`     | DB sample data (quota / account / model / pricing, etc.) |
 
-## 启动顺序
+## Startup order
 
 ```bash
-# 1) 起本地 stack（mysql + redis + redpanda）
+# 1) Start the local stack (mysql + redis + redpanda)
 docker compose up -d
 
-# 2) 起 gateway（启动期自跑 infra.Migrate 建表）
+# 2) Start gateway (infra.Migrate runs automatically at startup to create tables)
 go run ./cmd/gateway -config ./examples/full-config/gateway.yaml
 
-# 3) seed 示例数据（quota_policies / accounts / model_services / subscriptions /
-#    pricing）。endpoints + api_keys 的加密 / hash 列需要自己用脚本算或参考
-#    pkg/repo 里的 EncodePayload / HashAPIKey 自己生成密文 / hash 再 INSERT。
+# 3) Seed sample data (quota_policies / accounts / model_services / subscriptions /
+#    pricing). The encrypted / hash columns for endpoints + api_keys need to be
+#    computed yourself via a script or by referencing EncodePayload / HashAPIKey
+#    in pkg/repo to generate the ciphertext / hash before INSERTing.
 docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < examples/full-config/seed.sql
 
-# 4) 调
+# 4) Try it
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer <自己 hash + 入库的 api_key 明文>" \
+  -H "Authorization: Bearer <plaintext api_key you hashed + inserted yourself>" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-## 数据管理
+## Data management
 
-本项目**只做数据面**——不提供控制面 REST API。业务表（accounts / model_services /
-endpoints / api_keys / quota_policies / subscriptions / pricing_versions）由
-deployer 直接 SQL 插入 / 更新 / 删除维护。
+This project is **data plane only** — it does not provide a control plane REST API. Business tables (accounts / model_services /
+endpoints / api_keys / quota_policies / subscriptions / pricing_versions) are maintained by the
+deployer via direct SQL insert / update / delete.
 
-加密 / hash 列的处理：
+Handling of encrypted / hash columns:
 
-- **endpoints.auth**：AES-256-GCM 加密的 AuthConfig；用 `repo.EncodePayload` +
-  `repo.SetDataKey(cfg.DataKey)` 算出密文（`v1:base64...`）再 INSERT。
-- **api_keys.api_key_hash**：`repo.HashAPIKey(plaintext)` 算 SHA-256 hex；
-  明文不入库，发给用户保管。
+- **endpoints.auth**: AuthConfig encrypted with AES-256-GCM; compute the ciphertext (`v1:base64...`) with `repo.EncodePayload` +
+  `repo.SetDataKey(cfg.DataKey)`, then INSERT it.
+- **api_keys.api_key_hash**: compute the SHA-256 hex with `repo.HashAPIKey(plaintext)`;
+  the plaintext is never stored in the DB, and is given to the user to keep.
 
-数据写入后 gateway 通过 repo 层的进程内 TTL LRU 缓存（默认 30s）逐渐看到新值。
-deployer 不需要做任何失效操作；接受这个延迟，因为业务表变更不需要秒级生效。
+After data is written, the gateway gradually picks up the new values through the repo layer's in-process TTL LRU cache (30s by default).
+The deployer does not need to perform any invalidation; accept this delay, since business table changes don't need to take effect within seconds.
 
-## 跟 configs/local 的差别
+## Differences from configs/local
 
-| 维度 | configs/local | examples/full-config |
+| Dimension | configs/local | examples/full-config |
 |---|---|---|
-| outbox | file（JSONL 追加） | kafka |
+| outbox | file (JSONL append) | kafka |
 | middleware.timeout | 60s | 120s |
 | scheduler.max_attempts | 3 | 3 |
-| seed 数据 | 无 | 多 account/model/pricing |
-| MySQL host | localhost | mysql.internal（生产 hostname） |
+| seed data | none | multiple accounts/models/pricing |
+| MySQL host | localhost | mysql.internal (production hostname) |
 
-## 排错
+## Troubleshooting
 
-- **gateway 启动报 "schema check failed"**：gateway 启动期跑 `infra.Migrate`；
-  如果 MySQL 权限不足建不了表，手动跑 `pkg/infra/schema.sql`
-- **请求 401**：检查 `api_keys.api_key_hash` 是否跟客户端 `Authorization` header
-  的 `repo.HashAPIKey()` 一致
-- **请求 503 "no endpoint succeeded"**：检查 endpoint 的 auth/routing 是否配对，
-  endpoint.protocol 是否跟客户端协议匹配（v0.6 加的字段）
-- **没看到 usage event**：检查 Kafka topic 是否存在，或确认是否切回了 file outbox
+- **gateway startup reports "schema check failed"**: gateway runs `infra.Migrate` at startup;
+  if MySQL permissions are insufficient to create tables, run `pkg/infra/schema.sql` manually
+- **request returns 401**: check whether `api_keys.api_key_hash` matches the client's `Authorization` header
+  as computed by `repo.HashAPIKey()`
+- **request returns 503 "no endpoint succeeded"**: check whether the endpoint's auth/routing are paired correctly,
+  and whether endpoint.protocol matches the client protocol (a field added in v0.6)
+- **no usage event seen**: check whether the Kafka topic exists, or confirm whether it was switched back to file outbox

@@ -12,16 +12,20 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// WithSourceProtocol 把客户端协议钉在路由注册期。
+// WithSourceProtocol pins the client protocol at route-registration time.
 //
-// 路由本身告诉下游"这条路径=哪个协议"，Envelope 不再需要做 path 启发式匹配，
-// 改名 / 加路径 / 多协议复用同一前缀都不会再因 Detector 误判出问题。
+// The route itself tells downstream "this path = which protocol", so Envelope
+// no longer needs to do path-based heuristic matching, and renaming a path /
+// adding a path / reusing the same prefix across multiple protocols can no
+// longer break due to Detector misjudgment.
 //
-// 调用顺序：必须排在 Envelope 之前。本 middleware 在 RequestContext 上预创建
-// 一个 RequestEnvelope shell（只填 SourceProtocol / Modality），Envelope 中间件
-// 之后填 RawBytes / Parsed / RequestTime。
+// Call order: must come before Envelope. This middleware pre-creates a
+// RequestEnvelope shell on the RequestContext (filling only SourceProtocol /
+// Modality); the Envelope middleware fills in RawBytes / Parsed / RequestTime
+// afterward.
 //
-// proto == ProtoUnknown 视为非法（路由注册期就该明确）；不做兜底。
+// proto == ProtoUnknown is treated as invalid (it should be unambiguous at
+// route-registration time); no fallback is applied.
 func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -34,26 +38,28 @@ func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerF
 	}
 }
 
-// Envelope 是 M3：读 body → 提取 model → 写 rc.Envelope。
+// Envelope is M3: reads the body → extracts model → writes rc.Envelope.
 //
-// **职责严格收窄**：
-//   - 读 body 一次，存进 rc.Envelope.RawBytes 给下游共用
-//   - 从 body 顶层提 `model` 字段
-//   - 写 rc.Envelope.{RawBytes, Model}
+// **Responsibilities are strictly narrowed**:
+//   - Reads the body once, storing it in rc.Envelope.RawBytes for downstream to share
+//   - Extracts the top-level `model` field from the body
+//   - Writes rc.Envelope.{RawBytes, Model}
 //
-// **不做**的事（明确职责边界）：
-//   - 参数解析 / 字段翻译——下放给 pkg/translator/<src>_<tgt>/
-//   - 校验 body 合法性——translator 在 TranslateRequest 内部失败即可
-//   - 流式判断——translator 内部从 body 自己读 stream 字段
+// **Does NOT** do the following (clear responsibility boundary):
+//   - Parameter parsing / field translation — delegated to pkg/translator/<src>_<tgt>/
+//   - Body validity checking — the translator can just fail inside TranslateRequest
+//   - Stream detection — the translator reads the stream field from the body itself
 //
-// **不重置 c.Request.Body**：所有 body 消费者（M8 / M6 / M7 / token estimator /
-// translator）都走 rc.Envelope.RawBytes；adapter 已 slim 化只构 HTTP request from
-// translator 输出，不读 c.Request.Body。0 个真消费者后 NopCloser 重置就是 noise。
+// **Does not reset c.Request.Body**: all body consumers (M8 / M6 / M7 / token
+// estimator / translator) go through rc.Envelope.RawBytes; the adapter has
+// already been slimmed down to only build the HTTP request from the translator
+// output, never reading c.Request.Body. With zero real consumers left, resetting
+// via NopCloser would just be noise.
 //
-// 失败行为（统一走 abort → M9 写出 JSON）：
-//   - 路由忘挂 WithSourceProtocol → 500 / ErrUnknown
-//   - 读 body 失败 → 400 / ErrInvalid / "envelope: read body: <err>"
-//   - 缺 model 字段 → 400 / ErrInvalid / "envelope: ..."
+// Failure behavior (all go through abort → M9 writes out JSON):
+//   - Route forgot to attach WithSourceProtocol → 500 / ErrUnknown
+//   - Reading the body failed → 400 / ErrInvalid / "envelope: read body: <err>"
+//   - Missing model field → 400 / ErrInvalid / "envelope: ..."
 func Envelope() gin.HandlerFunc {
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
@@ -84,9 +90,10 @@ func Envelope() gin.HandlerFunc {
 		rc.Envelope.RawBytes = raw
 		rc.Envelope.Model = model
 
-		// 请求级 lookup 默认值：包装全局 adapter + translator registry，按
-		// (endpoint, srcProto) 动态组合 Handler。后续 middleware（如多租户 /
-		// 灰度策略）可覆盖 rc.Handlers 走自定义 Handler 集。
+		// Request-level lookup default: wraps the global adapter + translator
+		// registry, dynamically composing a Handler by (endpoint, srcProto).
+		// Later middleware (e.g. multi-tenant / canary policies) can override
+		// rc.Handlers with a custom Handler set.
 		if rc.Handlers == nil {
 			rc.Handlers = protocol.DefaultLookup{}
 		}
@@ -95,14 +102,16 @@ func Envelope() gin.HandlerFunc {
 	}
 }
 
-// extractModel 从客户端 body 顶层提 `model` 字段。
+// extractModel extracts the top-level `model` field from the client body.
 //
-// 三个支持的客户端协议（OpenAI Chat / Anthropic Messages / OpenAI Responses）顶层
-// 字段名都是 `model`，所以不需要按 protocol 分发。
+// All three supported client protocols (OpenAI Chat / Anthropic Messages /
+// OpenAI Responses) use `model` as the top-level field name, so no per-protocol
+// dispatch is needed.
 //
-// **用 gjson**（不是 encoding/json）：schema-less 提取单字段，跳过整个 messages /
-// tools 数组的 unmarshal——典型 4KB chat body 上 ~5x 快、1 alloc（vs stdlib 3 alloc）。
-// stdlib `json.Unmarshal` 是 schema-based + 完整 tokenize；这个场景下纯浪费。
+// **Uses gjson** (not encoding/json): schema-less extraction of a single field,
+// skipping the unmarshal of the whole messages / tools array — ~5x faster, 1
+// alloc (vs 3 stdlib allocs) on a typical 4KB chat body. stdlib `json.Unmarshal`
+// is schema-based and fully tokenizes; pure waste for this use case.
 func extractModel(raw []byte) (string, error) {
 	if len(raw) == 0 {
 		return "", errors.New("empty body")

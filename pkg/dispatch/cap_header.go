@@ -5,23 +5,25 @@ import (
 	"strings"
 )
 
-// HeaderAttemptCap attempts 上限语义：
+// HeaderAttemptCap defines the semantics of the attempts ceiling:
 //
-//	cfg.Default = cfg.Selector.MaxAttempts（默认 3）
-//	客户端 X-Gateway-Max-Attempts header 仅允许往**更紧**（更小）的方向覆盖；
-//	不能比 Default 更大（防恶意拉高网关 attempts 上限）。
+//	cfg.Default = cfg.Selector.MaxAttempts (default 3)
+//	the client's X-Gateway-Max-Attempts header may only override it in the
+//	**tighter** (smaller) direction; it can never exceed Default (to prevent
+//	maliciously raising the gateway's attempts ceiling).
 //
-// **header 解析**：middleware/schedule.go 在调 Dispatch 之前读
-// c.GetHeader("X-Gateway-Max-Attempts")，把原始字符串塞进
-// Input.AttemptCapOverride；本 Policy 解析 + clamp。
+// **Header parsing**: middleware/schedule.go reads
+// c.GetHeader("X-Gateway-Max-Attempts") before calling Dispatch and stuffs
+// the raw string into Input.AttemptCapOverride; this Policy parses + clamps
+// it.
 type HeaderAttemptCap struct {
-	Default int // 全局默认；必须 > 0
+	Default int // global default; must be > 0
 }
 
-// Resolve 计算本请求的 attempt cap。
+// Resolve computes the attempt cap for this request.
 //
 //	override > 0 && override < Default → override
-//	否则 → Default
+//	otherwise → Default
 func (h HeaderAttemptCap) Resolve(in Input) int {
 	def := h.Default
 	if def <= 0 {

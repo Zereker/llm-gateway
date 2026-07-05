@@ -15,14 +15,16 @@ import (
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
-// QuotaPolicies M6 拉取主账号 / api-key 两层 quota policy 的 port。
+// QuotaPolicies is the port through which M6 pulls the two quota-policy
+// layers (account + api-key).
 //
-// 实现者（pkg/ratelimit.PolicyCache）按自己的领域实现 + 缓存。
+// Implementers (pkg/ratelimit.PolicyCache) implement it + caching for their
+// own domain.
 type QuotaPolicies interface {
 	Get(ctx context.Context, id int64) (*ratelimit.PolicyRule, error)
 }
 
-// LimitOption 配置 Limit middleware（otelgin v0.68.0 同款 interface-Option）。
+// LimitOption configures the Limit middleware (same interface-Option pattern as otelgin v0.68.0).
 type LimitOption interface {
 	apply(*limitConfig)
 }
@@ -36,38 +38,39 @@ type limitConfig struct {
 	policies QuotaPolicies
 }
 
-// WithLimitStore 注入 ratelimit.Store 实现。必填。
+// WithLimitStore injects a ratelimit.Store implementation. Required.
 func WithLimitStore(s ratelimit.Store) LimitOption {
 	return limitOptionFunc(func(c *limitConfig) { c.store = s })
 }
 
-// WithLimitPolicies 注入 QuotaPolicies 实现。必填。
+// WithLimitPolicies injects a QuotaPolicies implementation. Required.
 func WithLimitPolicies(p QuotaPolicies) LimitOption {
 	return limitOptionFunc(func(c *limitConfig) { c.policies = p })
 }
 
-// Limit 是 M6：用户侧两层（account + apikey）+ additive RPM/RPS 前扣 + TPM 后扣。
+// Limit is M6: two user-side layers (account + apikey) with additive RPM/RPS
+// pre-deduction + TPM post-deduction.
 //
-// **顺序**：M5（拿到 ModelService）之后；M7（调上游）之前。
+// **Order**: after M5 (ModelService obtained); before M7 (calls upstream).
 //
-// **流程**（docs/04 §2 §7）：
-//  1. 从 PolicyCache 拉两层 PolicyRule
-//  2. 按 additive 语义展开 buckets（default + per_model 都消耗）
-//  3. **只构造 RPM / RPS bucket** 给 ReserveBatch；TPM bucket 单独存给 post-side
-//  4. ReserveBatch 原子检查 RPM/RPS
-//  5. 拒绝 → 429 + Retry-After header（**不**写 X-RateLimit-*）+ details 带超限维度
-//  6. 通过 → c.Next()
-//  7. post-side：rc.Usage 就绪 → ChargeBatch(TPM, cost=Usage.Total)；超限标 tpm_overflow metric
+// **Flow** (docs/04 §2 §7):
+//  1. Pull two PolicyRule layers from PolicyCache
+//  2. Expand into buckets with additive semantics (both default and per_model consume)
+//  3. **Only build RPM / RPS buckets** for ReserveBatch; TPM buckets are stashed separately for post-side
+//  4. ReserveBatch atomically checks RPM/RPS
+//  5. Reject → 429 + Retry-After header (does **not** write X-RateLimit-*) + details carry the exceeded dimension
+//  6. Pass → c.Next()
+//  7. post-side: once rc.Usage is ready → ChargeBatch(TPM, cost=Usage.Total); overflow tags the tpm_overflow metric
 //
-// **TPM 后扣失败语义**（docs/04 §7）：
-//   - rc.Usage == nil → 不扣 TPM（usage extractor 覆盖率问题）
-//   - Charge 写入超限 → 不改本次响应；记 llm_gateway_tpm_overflow_total
+// **TPM post-deduction failure semantics** (docs/04 §7):
+//   - rc.Usage == nil → TPM not deducted (usage extractor coverage gap)
+//   - Charge write exceeds limit → does not change this response; records llm_gateway_tpm_overflow_total
 func Limit(opts ...LimitOption) gin.HandlerFunc {
 	cfg := limitConfig{}
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
-	// 没有 Store 或 Policies → no-op pass-through（适合 dev / 无限流部署）
+	// No Store or Policies → no-op pass-through (suitable for dev / rate-limit-free deployments)
 	if cfg.store == nil || cfg.policies == nil {
 		return func(c *gin.Context) { c.Next() }
 	}
@@ -85,7 +88,7 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 			return
 		}
 
-		// 展开两层 policy → (reserve buckets = RPM/RPS, charge buckets = TPM)
+		// Expand the two policy layers → (reserve buckets = RPM/RPS, charge buckets = TPM)
 		reserveBuckets, tpmBuckets, err := buildUserBuckets(ctx, cfg.policies, &rc.Identity, rc.ModelService.Model)
 		if err != nil {
 			metric.Inc(metric.PolicyCacheTotal, "layer", "any", "result", "error")
@@ -94,19 +97,21 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 			return
 		}
 
-		// 没绑任何 policy → 跳过限流；只把 tpm buckets 留给 post-side（其实也为空）
+		// No policy bound at all → skip rate limiting; only leave tpm buckets for
+		// post-side (which is empty too in this case)
 		if len(reserveBuckets) == 0 && len(tpmBuckets) == 0 {
 			c.Next()
 			return
 		}
 
-		// RPM/RPS 前扣（docs/04 §5）
+		// RPM/RPS pre-deduction (docs/04 §5)
 		if len(reserveBuckets) > 0 {
 			allowed, violated, rerr := cfg.store.ReserveBatch(ctx, reserveBuckets)
 			if rerr != nil {
-				// fail-closed（docs/04 §8）。细节只进日志，不进响应 body——跟 auth
-				// 依赖故障一致，避免把 Redis / driver 内部错误（host / 拓扑）泄漏给
-				// 客户端。
+				// fail-closed (docs/04 §8). Details go to logs only, never the
+				// response body — consistent with auth dependency failures, to
+				// avoid leaking Redis / driver internal errors (host / topology)
+				// to the client.
 				metric.Inc(metric.RateLimitDecisionsTotal, "scope", "user", "dimension", "any", "result", "error")
 				slog.ErrorContext(ctx, "ratelimit: reserve failed", "err", rerr)
 				abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
@@ -131,7 +136,8 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 			metric.Inc(metric.RateLimitDecisionsTotal, "scope", "user", "dimension", "rpm_rps", "result", "allowed")
 		}
 
-		// 暂存 TPM bucket key 给 post-side（rc.RateLimit 也带过去给 metric / observability）
+		// Stash the TPM bucket keys for post-side (rc.RateLimit also carries this
+		// along for metric / observability)
 		if len(tpmBuckets) > 0 {
 			if rc.RateLimit == nil {
 				rc.RateLimit = &domain.RateLimitState{}
@@ -141,18 +147,18 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 			}
 		}
 
-		// 执行下游 + post-side TPM charge
+		// Run downstream + post-side TPM charge
 		c.Next()
 		chargeTPM(rc, cfg.store, tpmBuckets)
 	}
 }
 
-// chargeTPM 后扣 TPM bucket：cost = rc.Usage.Total。
+// chargeTPM does the TPM bucket post-deduction: cost = rc.Usage.Total.
 //
-// 失败语义（docs/04 §7 §8）：
-//   - rc.Usage == nil → 不扣（usage extractor 没拿到）
-//   - Charge 失败 → 不改响应；记 metric
-//   - 写入后超限 → 记 tpm_overflow_total；不影响本次
+// Failure semantics (docs/04 §7 §8):
+//   - rc.Usage == nil → not deducted (usage extractor didn't get one)
+//   - Charge fails → does not change the response; records a metric
+//   - Exceeds limit after write → records tpm_overflow_total; does not affect this request
 func chargeTPM(rc *domain.RequestContext, store ratelimit.Store, tpmBuckets []ratelimit.Bucket) {
 	if rc.Usage == nil || rc.Usage.Total <= 0 || len(tpmBuckets) == 0 {
 		return
@@ -161,7 +167,7 @@ func chargeTPM(rc *domain.RequestContext, store ratelimit.Store, tpmBuckets []ra
 	if cost == 0 {
 		return
 	}
-	// cost 注入到每个 bucket
+	// Inject cost into each bucket
 	for i := range tpmBuckets {
 		tpmBuckets[i].Cost = cost
 	}
@@ -184,21 +190,23 @@ func chargeTPM(rc *domain.RequestContext, store ratelimit.Store, tpmBuckets []ra
 }
 
 // =============================================================================
-// buildUserBuckets：按 additive 语义展开两层 policy → (RPM/RPS 桶, TPM 桶)
+// buildUserBuckets: expands the two policy layers into (RPM/RPS buckets, TPM buckets)
+// using additive semantics
 // =============================================================================
 
-// buildUserBuckets 拿两层 PolicyRule 展开成：
-//   - reserveBuckets：RPM + RPS，用于 ReserveBatch（cost=1）
-//   - tpmBuckets：    TPM，用于 post-side ChargeBatch（cost 由 chargeTPM 注入真实值）
+// buildUserBuckets takes the two PolicyRule layers and expands them into:
+//   - reserveBuckets: RPM + RPS, used by ReserveBatch (cost=1)
+//   - tpmBuckets:     TPM, used by post-side ChargeBatch (cost is injected with
+//     the real value by chargeTPM)
 //
-// 命名（docs/04 §6）：rl:quota:<layer>:<subject>:<scope>:<dim>
+// Naming (docs/04 §6): rl:quota:<layer>:<subject>:<scope>:<dim>
 func buildUserBuckets(
 	ctx context.Context,
 	policies QuotaPolicies,
 	id *domain.UserIdentity,
 	model string,
 ) (reserveBuckets, tpmBuckets []ratelimit.Bucket, err error) {
-	// 第 1 层：主账号
+	// Layer 1: account
 	if id.AccountQuotaPolicyID != nil {
 		rule, err := policies.Get(ctx, *id.AccountQuotaPolicyID)
 		if err != nil {
@@ -206,7 +214,7 @@ func buildUserBuckets(
 		}
 		reserveBuckets, tpmBuckets = appendLayer(reserveBuckets, tpmBuckets, "account", id.AccountID, rule, model)
 	}
-	// 第 2 层：apikey
+	// Layer 2: apikey
 	if id.APIKeyQuotaPolicyID != nil {
 		rule, err := policies.Get(ctx, *id.APIKeyQuotaPolicyID)
 		if err != nil {
@@ -217,9 +225,9 @@ func buildUserBuckets(
 	return reserveBuckets, tpmBuckets, nil
 }
 
-// appendLayer 把一层 rule 展开（per_model + default additive）：
+// appendLayer expands a single rule layer (per_model + default additive):
 //   - RPM / RPS → reserveBuckets
-//   - TPM       → tpmBuckets（cost 在 chargeTPM 时注入真实值）
+//   - TPM       → tpmBuckets (cost injected with the real value at chargeTPM time)
 func appendLayer(
 	reserve, tpm []ratelimit.Bucket,
 	layer, subject string,
@@ -249,7 +257,7 @@ func appendLayer(
 			tpm = append(tpm, ratelimit.Bucket{
 				Key:    fmt.Sprintf("rl:quota:%s:%s:%s:tpm", layer, subject, sr.Scope),
 				Limit:  *sr.Quota.TPM,
-				Cost:   0, // 占位；chargeTPM 注入 rc.Usage.Total
+				Cost:   0, // placeholder; chargeTPM injects rc.Usage.Total
 				Window: time.Minute,
 			})
 		}
@@ -257,9 +265,9 @@ func appendLayer(
 	return reserve, tpm
 }
 
-// layerFromKey 从 bucket key 抠 layer（account | apikey | endpoint）。
+// layerFromKey extracts the layer (account | apikey | endpoint) from a bucket key.
 //
-// key 形如 "rl:quota:account:..." / "rl:quota:apikey:..." / "rl:endpoint:..."
+// key looks like "rl:quota:account:..." / "rl:quota:apikey:..." / "rl:endpoint:..."
 func layerFromKey(key string) string {
 	if len(key) >= 14 && key[:9] == "rl:quota:" {
 		if key[9:16] == "account" {
@@ -275,7 +283,7 @@ func layerFromKey(key string) string {
 	return "unknown"
 }
 
-// dimensionFromKey 从 bucket key 抠 dimension（rpm | rps | tpm）。
+// dimensionFromKey extracts the dimension (rpm | rps | tpm) from a bucket key.
 func dimensionFromKey(key string) string {
 	switch {
 	case len(key) >= 4 && key[len(key)-4:] == ":rpm":

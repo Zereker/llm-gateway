@@ -114,5 +114,5 @@ func TestTimeout_NegativeHeaderIgnored(t *testing.T) {
 	}
 }
 
-// 防止意外引入 gin import 没用
+// prevent an accidental unused gin import
 var _ = gin.New

@@ -6,13 +6,15 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// TraceIDFromCtx 从 ctx 拿 W3C trace_id 字符串（32 hex）；缺失返空串。
+// TraceIDFromCtx gets the W3C trace_id string (32 hex) from ctx; returns an
+// empty string if absent.
 //
-// 数据源：M1 TraceContext middleware 注入的 oteltrace.SpanContext。
+// Data source: the oteltrace.SpanContext injected by the M1 TraceContext middleware.
 //
-// **使用场景**：序列化层需要 string 形态的 trace_id（写 JSON 响应、写 outbox 事件、
-// 当 logger label 等）。**不要**把返回值缓存到 RC 字段后到处传——直接 call 即可，
-// SpanContext 在 ctx 里是单源真相。
+// **Use case**: the serialization layer needs the string form of trace_id
+// (writing JSON responses, writing outbox events, as a logger label, etc.).
+// **Do not** cache the return value into an RC field and pass it around —
+// just call this directly; the SpanContext in ctx is the single source of truth.
 func TraceIDFromCtx(ctx context.Context) string {
 	if ctx == nil {
 		return ""

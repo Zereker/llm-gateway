@@ -14,24 +14,27 @@ import (
 	"github.com/zereker/llm-gateway/pkg/usage"
 )
 
-// UsageOutbox M10 计量事件发布的 port——middleware-owned。
+// UsageOutbox is the port for M10 metering-event publishing — middleware-owned.
 //
-// 实现者（pkg/usage.FileOutbox / KafkaOutbox / AsyncKafkaOutbox / DualWriteOutbox）
-// 按自己的领域写代码、顺便满足这个 port。usage.OutboxEvent 是 value type，留在 usage 包。
+// Implementers (pkg/usage.FileOutbox / KafkaOutbox / AsyncKafkaOutbox /
+// DualWriteOutbox) write code for their own domain and happen to satisfy this
+// port. usage.OutboxEvent is a value type, kept in the usage package.
 type UsageOutbox interface {
 	Publish(ctx context.Context, evt *usage.OutboxEvent) error
 }
 
-// AuditTracer M10 内部审计 trace 的 port——middleware-owned。窄到只有 Log 一个方法
-// （ISP）；pkg/trace.Tracer 实际还有 StartSpan，但 middleware 当前只用 Log。
+// AuditTracer is the port for M10's internal audit trace — middleware-owned.
+// Deliberately narrowed to a single Log method (ISP); pkg/trace.Tracer
+// actually also has StartSpan, but middleware currently only uses Log.
 //
-// 不要混淆 OTel TracerProvider：那是分布式 trace；这是把 SchedulingDecision
-// 写到日志 / 异步事件的内部审计通道（pkg/trace.SlogTracer / OtelTracer 实现）。
+// Don't confuse this with the OTel TracerProvider: that's distributed
+// tracing; this is the internal audit channel that writes SchedulingDecision
+// to logs / async events (implemented by pkg/trace.SlogTracer / OtelTracer).
 type AuditTracer interface {
 	Log(ctx context.Context, name string, payload any)
 }
 
-// TracingOption 配置 Tracing middleware（otelgin v0.68.0 同款 interface-Option）。
+// TracingOption configures the Tracing middleware (same interface-Option pattern as otelgin v0.68.0).
 type TracingOption interface {
 	apply(*tracingConfig)
 }
@@ -42,30 +45,33 @@ func (f tracingOptionFunc) apply(c *tracingConfig) { f(c) }
 
 type tracingConfig struct {
 	outbox UsageOutbox
-	tracer AuditTracer // 业务审计 trace（写 scheduling_decision），≠ OTel tracer
+	tracer AuditTracer // business audit trace (writes scheduling_decision), ≠ OTel tracer
 }
 
-// WithUsageOutbox 注入 Usage Event outbox publisher。
+// WithUsageOutbox injects a Usage Event outbox publisher.
 //
-// 不传 = M10 不发 usage event（仅记 metric / trace）。
+// Not passing one means M10 does not emit usage events (only records metrics / trace).
 func WithUsageOutbox(o UsageOutbox) TracingOption {
 	return tracingOptionFunc(func(c *tracingConfig) { c.outbox = o })
 }
 
-// WithTracer 注入审计 AuditTracer（写 scheduling_decision 日志）；不传 = 跳过。
+// WithTracer injects an audit AuditTracer (writes scheduling_decision logs);
+// not passing one means it's skipped.
 //
-// 注意：跟 OTel TracerProvider 是两回事——这里是网关内部审计通道
-// （pkg/trace.SlogTracer / OtelTracer 实现），用于把 SchedulingDecision 写到日志 / outbox。
+// Note: this is a different thing from the OTel TracerProvider — this is the
+// gateway's internal audit channel (implemented by pkg/trace.SlogTracer /
+// OtelTracer), used to write SchedulingDecision to logs / outbox.
 func WithTracer(t AuditTracer) TracingOption {
 	return tracingOptionFunc(func(c *tracingConfig) { c.tracer = t })
 }
 
-// Tracing 是 M10：聚合 metric + 发计量事件 + 写 SchedulingDecision trace。
-// 在 c.Next() 之后执行（defer 模式）。
+// Tracing is M10: aggregates metrics + emits metering events + writes the
+// SchedulingDecision trace. Runs after c.Next() (defer pattern).
 //
-// 发布失败不影响业务返回（best-effort）。
-// 用 context.Background()（带超时）发 Outbox，避免 client 已断开时
-// 还是要把 usage 落出（docs/05 §3）。
+// Publish failures don't affect the business response (best-effort).
+// Uses context.Background() (with a timeout) to publish to the Outbox, so
+// usage still gets flushed out even if the client has already disconnected
+// (docs/05 §3).
 func Tracing(opts ...TracingOption) gin.HandlerFunc {
 	cfg := tracingConfig{}
 	for _, opt := range opts {
@@ -84,7 +90,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 		now := time.Now().UTC()
 		elapsed := now.Sub(rc.StartTime)
 
-		// HTTP latency metric（docs/08 §3）
+		// HTTP latency metric (docs/08 §3)
 		// labels: method / route / status / model / routed_model
 		var model, routedModel string
 		if rc.ModelService != nil {
@@ -154,17 +160,18 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 	}
 }
 
-// fillUsageMeta 把 rc 全链路状态聚合到 rc.Usage.Meta。
+// fillUsageMeta aggregates rc's end-to-end state into rc.Usage.Meta.
 //
-// 按 docs/05 §4 字段来源表。RoutedModelService 优先；fallback 时
-// usage.meta.Model = 实际成功的 model（不是请求的 model）。
+// Follows the field source table in docs/05 §4. RoutedModelService takes
+// priority; on fallback, usage.meta.Model = the model that actually
+// succeeded (not the requested model).
 func fillUsageMeta(rc *domain.RequestContext, ctx context.Context, endTime time.Time, totalLatencyMs int64) {
 	m := &rc.Usage.Meta
 
 	m.StartTime = rc.StartTime
 	m.EndTime = endTime
 	m.TotalLatency = totalLatencyMs
-	// TTFTMs 由 upstream/forward.go 在首字节流出时回写
+	// TTFTMs is written back by upstream/forward.go when the first byte streams out
 
 	m.RequestID = rc.RequestID
 	m.TraceID = TraceIDFromCtx(ctx)
@@ -173,7 +180,7 @@ func fillUsageMeta(rc *domain.RequestContext, ctx context.Context, endTime time.
 	m.SubAccountID = rc.Identity.SubAccountID
 	m.APIKeyID = rc.Identity.APIKeyID
 
-	// 路由后的 model（docs/05 §4）；fallback 时不同于请求 model
+	// The routed model (docs/05 §4); differs from the requested model on fallback
 	routed := rc.RoutedModelService
 	if routed == nil {
 		routed = rc.ModelService
@@ -191,9 +198,11 @@ func fillUsageMeta(rc *domain.RequestContext, ctx context.Context, endTime time.
 	}
 }
 
-// buildUsageEvent 按 docs/05 §5 + docs/08 §5 的 envelope 形态打包 Usage Event。
+// buildUsageEvent packages a Usage Event following the envelope shape in
+// docs/05 §5 + docs/08 §5.
 //
-// request_id / trace_id 不在 envelope 顶层——权威值在 rc.Usage.Meta（由 fillUsageMeta 写入）。
+// request_id / trace_id are not at the envelope top level — the authoritative
+// values live in rc.Usage.Meta (written by fillUsageMeta).
 func buildUsageEvent(rc *domain.RequestContext) usage.UsageEvent {
 	return usage.UsageEvent{
 		SchemaVersion: usage.SchemaVersionV1,
@@ -203,7 +212,7 @@ func buildUsageEvent(rc *domain.RequestContext) usage.UsageEvent {
 	}
 }
 
-// newEventID 简单 UUID 形态。
+// newEventID is a simple UUID-like form.
 func newEventID() string {
 	return "evt_" + randHex(8)
 }

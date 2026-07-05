@@ -1,47 +1,47 @@
 # 05 — Recording, Metering & Billing
 
-本文记录网关需要沉淀的数据及其通道。网关要记录三类东西：
+This document records the data the gateway needs to persist and the channels for it. The gateway needs to record three kinds of things:
 
-1. **内容记录**：request / response 内容，用于审计、排障、回放、合规。
-2. **Usage 计量**：token / 音频 / 图片等资源消耗，用于发送给计费平台。
-3. **请求响应指标**：latency、status、endpoint、重试链路等，用于监控、调度和排障。
+1. **Content recording**: request / response content, for auditing, troubleshooting, replay, compliance.
+2. **Usage metering**: token / audio / image and other resource consumption, sent to the billing platform.
+3. **Request/response metrics**: latency, status, endpoint, retry chain, etc., for monitoring, scheduling, and troubleshooting.
 
-三类数据不能混成一个事件。它们的体积、敏感性、可靠性要求、消费方都不同。
+These three kinds of data must not be merged into a single event. They differ in volume, sensitivity, reliability requirements, and consumers.
 
-## 1. 三条记录通道
+## 1. Three recording channels
 
-| 通道 | 内容 | 主要消费者 | 可靠性要求 |
+| Channel | Content | Primary consumer | Reliability requirement |
 |------|------|------------|------------|
-| Content Log | 请求体、响应体、上游请求/响应，可选脱敏/采样 | 审计、排障、合规、回放 | 可配置；通常异步，允许采样 |
-| Usage Event | `domain.Usage` + 身份/模型/endpoint/time meta | 计费平台、用量报表、TPM 后扣 | 高；失败不阻塞响应，但必须有补偿/重试 |
-| Metrics / Trace | duration、status、error class、attempts、decision | Prometheus、日志、调度评分 | 高吞吐低成本；不记录大 body |
+| Content Log | Request body, response body, upstream request/response, optionally redacted/sampled | Auditing, troubleshooting, compliance, replay | Configurable; usually async, sampling allowed |
+| Usage Event | `domain.Usage` + identity/model/endpoint/time meta | Billing platform, usage reports, TPM post-charge | High; failure must not block the response, but must have compensation/retry |
+| Metrics / Trace | duration, status, error class, attempts, decision | Prometheus, logs, scheduling scores | High throughput, low cost; no large bodies recorded |
 
-设计原则：
+Design principles:
 
-- request / response 内容不进入 usage 事件。
-- usage 事件不携带完整 prompt / completion。
-- metrics 不携带大 payload，只记录标签和数值。
-- 三条通道都用 `request_id` / `trace_id` 关联。
+- Request / response content does not enter usage events.
+- Usage events do not carry the full prompt / completion.
+- Metrics do not carry large payloads, only labels and numeric values.
+- All three channels are correlated via `request_id` / `trace_id`.
 
 ## 2. Content Log
 
-内容记录是可选能力，默认不应假设所有部署都开启完整 body 记录。原因：
+Content recording is an optional capability; it should not be assumed by default that all deployments enable full body recording. Reasons:
 
-- request / response 可能包含敏感数据。
-- 响应流可能很大。
-- 流式场景需要边读边写，不能为了记录阻塞主链路。
+- Request / response may contain sensitive data.
+- The response stream may be very large.
+- Streaming scenarios need to read and write concurrently, and must not block the main chain for the sake of recording.
 
-内容记录建议基于 `pkg/invoker` hooks：
+Content recording should be based on `pkg/invoker` hooks:
 
-| Hook | 记录内容 | 用途 |
+| Hook | Content recorded | Purpose |
 |------|----------|------|
-| `ClientRequestObserver` | 客户端原始请求 body | 用户视角审计 |
-| `UpstreamRequestObserver` | 翻译后发给上游的 body | 上游协议排障 |
-| `UpstreamChunkObserver` | 上游原始响应 chunk | 上游回放 / fixture |
-| `ClientChunkObserver` | 客户端实际收到的响应 chunk | 用户视角审计 / 对账 |
-| `AttemptCompleteObserver` | 单次上游尝试结果 | attempt 级排障 |
+| `ClientRequestObserver` | Client's original request body | User-perspective auditing |
+| `UpstreamRequestObserver` | Translated body sent to the upstream | Upstream protocol troubleshooting |
+| `UpstreamChunkObserver` | Original upstream response chunk | Upstream replay / fixture |
+| `ClientChunkObserver` | Response chunk actually received by the client | User-perspective auditing / reconciliation |
+| `AttemptCompleteObserver` | Result of a single upstream attempt | Attempt-level troubleshooting |
 
-推荐记录形态：
+Recommended recording shape:
 
 ```go
 type ContentRecord struct {
@@ -59,7 +59,7 @@ type ContentRecord struct {
     Modality    string
     ContentType string
 
-    Body        []byte // 或 object storage pointer
+    Body        []byte // or object storage pointer
     BodySHA256  string
     Truncated   bool
     Redacted    bool
@@ -67,46 +67,46 @@ type ContentRecord struct {
 }
 ```
 
-实现约束：
+Implementation constraints:
 
-- hook 内如需持久化 chunk，必须 copy bytes；hook 回调收到的 slice 可能复用。
-- 记录器必须支持异步 buffer / backpressure 策略，不能无限阻塞响应流。
-- 默认 backpressure 策略为 drop oldest，并记录 dropped counter；需要强审计时可配置为 block 或写 object storage pointer，但不能作为默认主链路行为。
-- 必须支持按账号、模型、endpoint、状态码、采样率开关。
-- 必须支持 max body size；超出后截断或写 object storage pointer。
-- 需要合规时先脱敏再落盘；脱敏失败按配置选择 drop 或写摘要。
+- If a hook needs to persist a chunk, it must copy the bytes; the slice received by the hook callback may be reused.
+- The recorder must support an async buffer / backpressure strategy, and must not block the response stream indefinitely.
+- The default backpressure strategy is drop-oldest, with a dropped counter recorded; when strong auditing is needed it can be configured to block or write an object storage pointer, but that must not be the default main-chain behavior.
+- Must support toggles by account, model, endpoint, status code, and sampling rate.
+- Must support max body size; truncate or write an object storage pointer beyond that.
+- When compliance is required, redact before persisting; on redaction failure, choose drop or write-summary per configuration.
 
-输出后端（driver）只支持 `none` / `file`：
+Output backend (driver) only supports `none` / `file`:
 
-- `none`：完全关闭，零开销。
-- `file`：JSONL append 写本地文件。
+- `none`: fully disabled, zero overhead.
+- `file`: JSONL append to a local file.
 
-故意**不**在 gateway 进程里内嵌 Kafka / S3 / Loki / ES 等 producer。Content Log 在性质上是日志/审计通道，不是业务事件（区别于 §3 的 Usage Event）；典型部署里它有多个下游消费者——归档（S3 / OSS）、检索（Loki / ES）、内容安全后审（Kafka）、训练数据回流。让 gateway 同时承担多 sink 投递会把所有下游的可用性耦合到主链路。
+Deliberately **not** embedding Kafka / S3 / Loki / ES or other producers inside the gateway process. Content Log is by nature a logging/auditing channel, not a business event (as distinct from the Usage Event in §3); in a typical deployment it has multiple downstream consumers — archiving (S3 / OSS), search (Loki / ES), content-safety post-review (Kafka), training data feedback. Having the gateway handle multi-sink delivery would couple the availability of all those downstreams into the main chain.
 
-正确的形态是把 file 作为唯一出口，由 fluent-bit / vector 这类成熟日志收集器负责扇出 + 重试 + sink 适配：
+The correct shape is to make `file` the sole exit, with a mature log collector such as fluent-bit / vector responsible for fan-out + retry + sink adaptation:
 
 ```text
-gateway ──→ content.jsonl ──→ fluent-bit / vector ──┬─→ S3 / OSS         (归档 + 训练数据)
-                                                    ├─→ Loki / ES        (排障检索 / 合规)
-                                                    ├─→ Kafka topic      (内容安全后审 pipeline)
+gateway ──→ content.jsonl ──→ fluent-bit / vector ──┬─→ S3 / OSS         (archiving + training data)
+                                                    ├─→ Loki / ES        (troubleshooting search / compliance)
+                                                    ├─→ Kafka topic      (content-safety post-review pipeline)
                                                     └─→ ...
 ```
 
-文件本身的轮转 / 压缩 / 清理由外部 logrotate 或日志收集器（fluent-bit tail 输入支持 inode 跟随）负责，不在网关进程内做。需要新增/调整 sink 时改 fluent-bit 配置即可，gateway 不发版。
+Rotation / compression / cleanup of the file itself is handled by an external logrotate or log collector (fluent-bit's tail input supports inode following), not inside the gateway process. Adding/adjusting sinks only requires changing the fluent-bit config; the gateway does not need a release.
 
-跟 Usage Event 的对比：
+Comparison with Usage Event:
 
-| 维度 | Usage Event（§3-5） | Content Log（本节） |
+| Dimension | Usage Event (§3-5) | Content Log (this section) |
 |------|---------------------|---------------------|
-| 性质 | 业务事件，财务对账依赖 | 日志/审计 |
-| 后端 | `file` / `kafka` / `async_kafka` | `file`（gateway 唯一出口） |
-| 下游 | 计费平台（单一消费者） | 多 sink，由 fluent-bit 扇出 |
-| 丢失代价 | 严重（漏计费） | 可容忍采样 / 丢最老 |
-| schema 演进 | `schema_version` + 双写切 topic | 按 JSONL 字段演进，consumer 容忍未知字段 |
+| Nature | Business event, relied on for financial reconciliation | Log/audit |
+| Backend | `file` / `kafka` / `async_kafka` | `file` (gateway's sole exit) |
+| Downstream | Billing platform (single consumer) | Multiple sinks, fanned out by fluent-bit |
+| Cost of loss | Severe (missed billing) | Sampling / dropping the oldest is tolerable |
+| Schema evolution | `schema_version` + dual-write to switch topics | Evolves by JSONL field; consumers tolerate unknown fields |
 
 ## 3. Usage Event
 
-Usage 是计费平台消费的资源消耗事件。来源是 translator / usage extractor：
+Usage is the resource-consumption event consumed by the billing platform. Its source is the translator / usage extractor:
 
 ```go
 type Usage struct {
@@ -124,48 +124,48 @@ type Usage struct {
 }
 ```
 
-字段语义：
+Field semantics:
 
-- `Input` / `Output` / `Total` 是网关尽量提取的通用 token 字段，用于基础统计和 TPM 后扣。
-- `Truncated` 表示响应未完整完成，例如客户端断开或流式响应中途停止。
-- `Raw` 是上游原始 usage 对象，原样发送给计费平台。
-- `Source` / `Estimator` / `Confidence` 标识 usage 来源和可信度，避免把估算值伪装成上游真实值。
-- 复杂计费维度由下游计费平台通过规则解析 `Raw`，网关不维护厂商专有字段枚举。
+- `Input` / `Output` / `Total` are the generic token fields the gateway extracts as best it can, used for basic statistics and TPM post-charge.
+- `Truncated` indicates the response did not complete fully, e.g. the client disconnected or the streaming response stopped midway.
+- `Raw` is the upstream's original usage object, forwarded as-is to the billing platform.
+- `Source` / `Estimator` / `Confidence` identify the origin and trustworthiness of the usage, to avoid disguising an estimated value as genuine upstream data.
+- Complex billing dimensions are parsed from `Raw` by the downstream billing platform via rules; the gateway does not maintain an enum of vendor-specific fields.
 
-不再在网关定义 `Details map[MetricKey]int64` 这类扩展 key。原因是 usage 维度由厂商持续演进，放在网关枚举会让计费规则变化依赖网关发版。下游可以根据 `vendor` / `model` / `protocol` / 请求发生时间选择解析规则。
+An extension key like `Details map[MetricKey]int64` is no longer defined in the gateway. The reason is that usage dimensions keep evolving per vendor; enumerating them in the gateway would make billing-rule changes depend on gateway releases. Downstreams can choose parsing rules based on `vendor` / `model` / `protocol` / the time the request occurred.
 
-Usage 来源优先级：
+Usage source priority:
 
-1. 上游返回原始 usage：填 `Raw`，通用字段可从 Raw 提取，`Source=upstream`，`Confidence=exact`。
-2. 上游没有标准 usage，但 translator 能稳定解析响应里的等价字段：填通用字段，`Source=extracted`，`Confidence=derived`。
-3. 上游没有 usage：使用 tokenizer 或字符数兜底估算，`Source=estimated`，`Estimator=tiktoken` 或 `naive_chars`，`Confidence=approximate`。
+1. Upstream returns raw usage: fill `Raw`; generic fields can be extracted from Raw, `Source=upstream`, `Confidence=exact`.
+2. Upstream has no standard usage, but the translator can reliably parse equivalent fields from the response: fill the generic fields, `Source=extracted`, `Confidence=derived`.
+3. Upstream has no usage: fall back to a tokenizer or character-count estimate, `Source=estimated`, `Estimator=tiktoken` or `naive_chars`, `Confidence=approximate`.
 
-tiktoken 只做兜底估算：
+tiktoken is only a fallback estimate:
 
-- 不能覆盖上游真实 usage。
-- 不能保证适配所有 vendor tokenizer。
-- 多模态、tool call、reasoning token 可能不准。
-- 估算结果可用于 TPM 后扣和保底用量，计费平台可按规则决定是否采信。
+- It cannot override genuine upstream usage.
+- It cannot guarantee coverage of every vendor's tokenizer.
+- Multimodal, tool calls, and reasoning tokens may be inaccurate.
+- The estimate can be used for TPM post-charge and floor usage; the billing platform may decide by rule whether to trust it.
 
-`naive_chars` 表示按字符数做粗略估算，具体除数由配置决定；不要把 `chars/4` 这类特定英文经验值固化成枚举语义。
+`naive_chars` means a rough estimate based on character count, with the specific divisor determined by configuration; do not hardcode an English-specific heuristic like `chars/4` into enum semantics.
 
-M7 在响应 forward 结束后写：
+M7 writes after the response forward completes:
 
 ```go
 rc.Usage = fwd.Usage
 ```
 
-M10 在 `c.Next()` 后补齐 meta 并发布 usage outbox。若发生跨 model fallback，usage meta 中的 `Model` 必须是实际成功 endpoint 对应的 model，而不是原始请求 model。
+M10 fills in the remaining meta after `c.Next()` and publishes the usage outbox. If a cross-model fallback occurred, the `Model` in the usage meta must be the model of the endpoint that actually succeeded, not the original request model.
 
-异常路径下的 Usage：
+Usage on exception paths:
 
-- 流式响应中途客户端断开时，若已经能统计部分 token，则发布截断前累计 usage，`Truncated=true`，`Confidence=approximate`；若完全无法统计，则不构造通用 token 字段，但仍可发布带错误状态的 meta 事件。
-- 上游 5xx / 网络错误后切换到下一个 endpoint 的失败 attempt 不产生 Usage；最终成功 attempt 产生 Usage。
-- 响应已经开始后发生错误，M10 仍使用 `context.Background()` 加超时发布已知 Usage，避免客户端断开导致 usage 丢失。
+- If the client disconnects mid-stream and partial token counts are already available, publish the accumulated usage before the cutoff, with `Truncated=true`, `Confidence=approximate`; if no counting is possible at all, do not construct the generic token fields, but a meta event with an error status may still be published.
+- A failed attempt that switches to the next endpoint after an upstream 5xx / network error does not produce Usage; the eventually successful attempt produces Usage.
+- If an error occurs after the response has already started, M10 still publishes the known Usage using `context.Background()` with a timeout, to avoid losing usage due to client disconnect.
 
 ## 4. Usage Meta
 
-`UsageMeta` 用于计费平台关联身份、模型、路由和请求发生时间：
+`UsageMeta` is used by the billing platform to correlate identity, model, routing, and the time the request occurred:
 
 ```go
 type UsageMeta struct {
@@ -176,8 +176,8 @@ type UsageMeta struct {
     SubAccountID      string
     APIKeyID          string
     ServiceID         string
-    ModelServiceID    int64       // pricing 查询指纹；与 ServiceID 同源 RoutedModelService
-    ServiceUpdateTime time.Time   // model_services.updated_at 快照
+    ModelServiceID    int64       // pricing lookup fingerprint; same source as ServiceID's RoutedModelService
+    ServiceUpdateTime time.Time   // snapshot of model_services.updated_at
     RequestID         string
     TraceID           string
     StartTime         time.Time
@@ -187,25 +187,25 @@ type UsageMeta struct {
 }
 ```
 
-字段来源：
+Field origins:
 
-| Meta 字段 | 来源 |
+| Meta field | Origin |
 |-----------|------|
 | `RequestID` | M1 `rc.RequestID` |
 | `TraceID` | `TraceIDFromCtx(c.Request.Context())` |
 | `AccountID` / `SubAccountID` / `APIKeyID` | M2 `rc.Identity` |
-| `Model` / `ServiceID` / `ModelServiceID` / `ServiceUpdateTime` | M7 `rc.RoutedModelService`，未 fallback 时等于 M5 `rc.ModelService` |
+| `Model` / `ServiceID` / `ModelServiceID` / `ServiceUpdateTime` | M7 `rc.RoutedModelService`, equal to M5 `rc.ModelService` when there was no fallback |
 | `Vendor` / `EndpointID` | M7 `rc.Endpoint` |
 | `StartTime` | M1 `rc.StartTime` |
-| `EndTime` / `TotalLatency` | M10 当前时间 |
+| `EndTime` / `TotalLatency` | M10 current time |
 
-`TTFTMs` 当前暂未捕获。
+`TTFTMs` is not yet captured.
 
-**关于 `ModelServiceID` / `ServiceUpdateTime`**：这是下游 billing aggregator 的 pricing 查询指纹。M5 拿到 ModelService 后就已经在 `rc.ModelService` 上持有了 ID + UpdatedAt；M10 `fillUsageMeta` 与 `Model / ServiceID` 一道按"routed 优先"拷贝到 Meta，确保 fallback 后 4 个字段描述同一个被计费的模型。**网关侧仍然不查 active pricing**（§6 原则不变），仅透传两个 model_service 字段作为下游查价的稳定指针。
+**On `ModelServiceID` / `ServiceUpdateTime`**: this is a pricing lookup fingerprint for the downstream billing aggregator. Once M5 obtains the ModelService, it already holds the ID + UpdatedAt on `rc.ModelService`; M10's `fillUsageMeta`, together with `Model` / `ServiceID`, copies them into Meta on a "routed takes priority" basis, ensuring that after a fallback all 4 fields describe the same model being billed. **The gateway side still does not query active pricing** (the principle in §6 is unchanged); it only passes through the two model_service fields as a stable pointer for downstream price lookups.
 
 ## 5. Usage Outbox
 
-当前接口：
+Current interface:
 
 ```go
 type OutboxPublisher interface {
@@ -218,186 +218,187 @@ type OutboxEvent struct {
 }
 ```
 
-Usage Event payload 使用 JSON，建议 envelope 形态：
+The Usage Event payload uses JSON, in the following recommended envelope shape:
 
 ```go
 type UsageEvent struct {
     SchemaVersion string    `json:"schema_version"` // "usage.v1"
     EventID       string    `json:"event_id"`
-    Usage         Usage     `json:"usage"`          // 含 Meta；request_id / trace_id 在 Meta 内
+    Usage         Usage     `json:"usage"`          // includes Meta; request_id / trace_id are inside Meta
     CreatedAt     time.Time `json:"created_at"`
 }
 ```
 
-Kafka topic 建议默认 `billing.usage.recorded.v1`。topic 命名遵循**领域.实体.事件.版本**约定，跟生产者服务名解耦——topic 描述的是"这是什么业务事件"（计费用量已记录），而不是"谁发的"。这样下游计费/对账/配额服务按业务域订阅；以后若多个 service 都产生 usage 事件，仍是同一 topic，不会出现 `llm-gateway.usage` / `embedding-gateway.usage` / `image-gateway.usage` 之类碎片化。
+The recommended default Kafka topic is `billing.usage.recorded.v1`. Topic naming follows the **domain.entity.event.version** convention, decoupled from the producing service's name — the topic describes "what business event this is" (billing usage has been recorded), not "who sent it". This lets downstream billing/reconciliation/quota services subscribe by business domain; if multiple services later produce usage events, they still use the same topic, avoiding fragmentation like `llm-gateway.usage` / `embedding-gateway.usage` / `image-gateway.usage`.
 
-partition key 使用 `AccountID`，让同一计费主体的事件尽量保持顺序；没有 AccountID 时退化为 `Usage.Meta.RequestID`。`request_id` / `trace_id` 只放在 `Usage.Meta` 内——envelope 顶层不再重复，杜绝双写不一致的潜在 bug。`CreatedAt` 表示 outbox 入队时间，不等同于请求完成时间；请求时序分析应使用 `Usage.Meta.StartTime` / `Usage.Meta.EndTime`。
+The partition key uses `AccountID`, so events for the same billing subject stay ordered as much as possible; when there is no AccountID it falls back to `Usage.Meta.RequestID`. `request_id` / `trace_id` are placed only inside `Usage.Meta` — not duplicated at the envelope top level, to eliminate the potential bug of dual writes going out of sync. `CreatedAt` is the time the event was enqueued into the outbox, not equivalent to when the request completed; timing analysis of the request should use `Usage.Meta.StartTime` / `Usage.Meta.EndTime`.
 
-schema 演进通过 `schema_version` 做向后兼容分支，不在同一版本中删除字段。破坏性变更必须显式迁移：优先切新 topic（`billing.usage.recorded.v2`）并经历双写期和 consumer 切换；若继续使用同一 topic，必须允许多 schema 共存，consumer 按 `schema_version` 路由解析。topic 名里的 `.v1` 是 topic-level 物理隔离，跟 envelope `schema_version` 是两层独立机制：topic 升级换 broker 路由，schema 升级换字段解析。
+Schema evolution proceeds via backward-compatible branching on `schema_version`; fields are not removed within the same version. Breaking changes must be migrated explicitly: prefer switching to a new topic (`billing.usage.recorded.v2`) with a dual-write period and consumer cutover; if the same topic continues to be used, multiple schemas must be allowed to coexist, with consumers routing/parsing by `schema_version`. The `.v1` in the topic name is topic-level physical isolation, a separate mechanism from the envelope `schema_version`: a topic upgrade changes broker routing, a schema upgrade changes field parsing.
 
-M10 使用 `context.Background()` 加超时发布，避免客户端断开导致 usage 不写出。发布失败不影响业务响应。
+M10 publishes using `context.Background()` with a timeout, to avoid client disconnect preventing usage from being written out. Publish failure does not affect the business response.
 
-实现：
+Implementations:
 
-- `file`：JSONL append，仅适合本地开发 / 单机部署。
-- `kafka`：同步 producer，无本地副本（broker 挂直接丢；不推荐）。
-- `async_kafka`：buffer、重试、backoff、DLQ topic；broker 短抖动可救，长时挂仍丢。
-- `file_and_kafka`：**生产推荐**——Transactional Outbox Pattern。file 是 source of truth
-  （sync commit），Kafka 是异步广播（best-effort）。broker 故障域 ⊥ disk 故障域，不会
-  同时丢；broker 挂时 file 已经 commit，由外部 replay 工具读 file 把缺的事件补发到
-  Kafka（consumer 侧按 `event_id` 幂等去重）。
+- `file`: JSONL append, suitable only for local development / single-machine deployment.
+- `kafka`: synchronous producer, no local copy (if the broker goes down it's simply lost; not recommended).
+- `async_kafka`: buffer, retry, backoff, DLQ topic; short broker blips can be rescued, but it's still lost during a long outage.
+- `file_and_kafka`: **recommended for production** — Transactional Outbox Pattern. file is the source of truth
+  (sync commit), Kafka is an asynchronous broadcast (best-effort). The broker failure domain is orthogonal to the
+  disk failure domain, so they won't fail simultaneously; when the broker is down, the file has already been
+  committed, and an external replay tool reads the file to resend the missing events to
+  Kafka (the consumer side deduplicates idempotently by `event_id`).
 
-故障语义：
+Failure semantics:
 
-| Driver | 故障模式 | 默认行为 | 可观测 |
+| Driver | Failure mode | Default behavior | Observability |
 |--------|----------|----------|--------|
-| `file` | 磁盘满 / IO error | drop event + error log | `llm_gateway_usage_publish_total{backend="file",result="error"}` |
-| `kafka` | broker / leader / 网络不可用 | retry 到 publish timeout，失败后 drop event + error log | `llm_gateway_usage_publish_total{backend="kafka",result="error"}` |
-| `async_kafka` | buffer 满 | 默认 drop oldest；可配置 block，但必须有 timeout | `llm_gateway_outbox_dropped_total{driver="async_kafka"}` / buffer depth |
-| `async_kafka` | 重试耗尽 | 写 DLQ topic；DLQ 失败则 error log + metric | `llm_gateway_outbox_dlq_total` |
-| `file_and_kafka` | broker / 网络不可用 | file 已 commit；Kafka 异步重试耗尽后写 DLQ（如配）或仅 metric；**数据不丢** | `llm_gateway_outbox_kafka_publish_error_total` |
-| `file_and_kafka` | 磁盘满 / IO error | **严重**——file commit 失败；仍尝试 Kafka 但返回 error；M10 计 `usage.publish.error` | `llm_gateway_outbox_file_error_total` |
-| `file_and_kafka` | 双失败 | file 错误返回给 M10；Kafka 错误吞掉到 metric | 上面两个 metric 同时升 |
+| `file` | Disk full / IO error | drop event + error log | `llm_gateway_usage_publish_total{backend="file",result="error"}` |
+| `kafka` | broker / leader / network unavailable | retry until publish timeout, then drop event + error log on failure | `llm_gateway_usage_publish_total{backend="kafka",result="error"}` |
+| `async_kafka` | buffer full | drop-oldest by default; can be configured to block, but must have a timeout | `llm_gateway_outbox_dropped_total{driver="async_kafka"}` / buffer depth |
+| `async_kafka` | retries exhausted | write to DLQ topic; if DLQ fails, error log + metric | `llm_gateway_outbox_dlq_total` |
+| `file_and_kafka` | broker / network unavailable | file already committed; Kafka retries asynchronously, then writes to DLQ (if configured) or just a metric after retries are exhausted; **no data loss** | `llm_gateway_outbox_kafka_publish_error_total` |
+| `file_and_kafka` | disk full / IO error | **severe** — file commit fails; still attempts Kafka but returns an error; M10 counts `usage.publish.error` | `llm_gateway_outbox_file_error_total` |
+| `file_and_kafka` | double failure | file error returned to M10; Kafka error swallowed into a metric | both metrics above increment simultaneously |
 
-为什么不复用 `async_kafka + DLQ` 而要 `file_and_kafka`：DLQ 跟主 topic 在**同一个 broker 集群**上，broker 整个挂了 DLQ 一样写不进去。`file_and_kafka` 让 file 跟 broker 在不同故障域，broker 故障不丢数据。DLQ 在 dual-write 下退化成"单消息级错误兜底"（msg too large、schema invalid、ACL 拒绝等 broker 在线、消息本身有问题的场景），可选不必需。
+Why not reuse `async_kafka + DLQ` instead of `file_and_kafka`: the DLQ sits on the **same broker cluster** as the main topic, so if the broker is entirely down the DLQ can't be written either. `file_and_kafka` puts file and broker in different failure domains, so a broker failure doesn't lose data. Under dual-write, the DLQ degrades to a "single-message-level error fallback" (broker online, but the message itself has a problem — too large, invalid schema, ACL rejection, etc.), which is optional, not required.
 
-可靠性要求：
+Reliability requirements:
 
-- Usage event 是计费输入，必须优先保证可补偿。
-- 网关不能因为 outbox 短暂失败阻塞用户响应。
-- `file` driver 仅适合本地开发或临时排障。
-- 生产必须使用 `file_and_kafka`：file 提供持久性兜底，Kafka 提供低延迟广播；并监控
-  `outbox_file_error_total`（严重，磁盘问题）、`outbox_kafka_publish_error_total`（数据
-  安全但需要 replay）、Kafka consumer lag。
+- Usage events are billing input, and must prioritize being compensable.
+- The gateway must not block the user response because of a brief outbox failure.
+- The `file` driver is only suitable for local development or temporary troubleshooting.
+- Production must use `file_and_kafka`: file provides a durability fallback, Kafka provides low-latency broadcast; and monitor
+  `outbox_file_error_total` (severe, disk issue), `outbox_kafka_publish_error_total` (data
+  safe but needs replay), and Kafka consumer lag.
 
 ## 6. Pricing
 
-目标设计里，网关不做计价，也不需要在请求路径上查询 active price。
+In the target design, the gateway does not do pricing, nor does it need to query active price on the request path.
 
-网关只产生计费所需的事实数据：
+The gateway only produces the factual data needed for billing:
 
-- account / API key / sub account。
-- model / service id。
-- vendor / endpoint。
-- request_id / trace_id。
-- request start time / end time。
-- usage 数值。
+- account / API key / sub account.
+- model / service id.
+- vendor / endpoint.
+- request_id / trace_id.
+- request start time / end time.
+- usage values.
 
-具体价格匹配和金额计算由下游计费平台完成。计费平台根据 usage event 中的请求发生时间（通常使用 `StartTime`，必要时可结合 `EndTime`）去匹配当时生效的价格版本。
+Concrete price matching and amount calculation are done by the downstream billing platform. The billing platform matches the price version in effect at the time based on the request-occurrence time in the usage event (usually `StartTime`, combined with `EndTime` if needed).
 
-这样做的好处：
+Benefits of this approach:
 
-- 网关不感知复杂价格规则，避免请求路径依赖 pricing 查询。
-- 改价、补账、重算都在计费平台完成。
-- usage event 是事实记录，不是金额结算结果。
+- The gateway is unaware of complex pricing rules, avoiding a pricing-query dependency on the request path.
+- Price changes, corrections, and recalculations all happen on the billing platform.
+- The usage event is a factual record, not a settlement result in currency.
 
-网关不做：
+The gateway does not do:
 
-- 小时/天级账单聚合。
-- 账户余额扣费。
-- pricing rule 在线计算。
-- active price 查询。
-- 金额生成。
+- Hourly/daily bill aggregation.
+- Account balance deduction.
+- Online pricing-rule calculation.
+- Active price lookup.
+- Amount generation.
 
 ## 7. Metrics / Trace
 
-指标记录请求响应的运行状态，不记录大 payload。
+Metrics record the runtime status of requests and responses, without recording large payloads.
 
-当前 M10 记录：
+M10 currently records:
 
 - `llm_gateway_http_request_duration_seconds`
 - scheduling decision trace
 
-建议指标维度：
+Recommended metric dimensions:
 
-| 指标 | 维度 | 用途 |
+| Metric | Dimensions | Purpose |
 |------|------|------|
-| request duration | method, path, status, model, vendor, endpoint_id | SLA / 延迟 |
-| upstream duration | vendor, endpoint_id, model, result, error_class | 调度评分 / 排障 |
-| usage publish | result, backend | 计费链路健康 |
-| content log publish | result, backend, sampled | 内容记录链路健康 |
-| scheduler attempt | model, routed_model, vendor, endpoint_id, class, attempt_role | fallback / cooldown 分析 |
-| scheduling duration | model, attempts | 调度 filter / pick / report 总耗时 |
-| eligibility filter duration | model | 资格过滤性能 |
-| policy cache hit | layer, result | quota policy 缓存命中率 |
-| outbox publish latency | driver, result | outbox 写入延迟 |
-| outbox buffer depth | driver | `async_kafka` buffer 占用 |
-| ratelimit charge result | dimension, result | TPM 后扣失败可见度 |
-| tpm overflow | layer, dimension | TPM 后扣超过配置上限的次数 |
+| request duration | method, path, status, model, vendor, endpoint_id | SLA / latency |
+| upstream duration | vendor, endpoint_id, model, result, error_class | scheduling score / troubleshooting |
+| usage publish | result, backend | billing chain health |
+| content log publish | result, backend, sampled | content-recording chain health |
+| scheduler attempt | model, routed_model, vendor, endpoint_id, class, attempt_role | fallback / cooldown analysis |
+| scheduling duration | model, attempts | total time for scheduling filter / pick / report |
+| eligibility filter duration | model | eligibility filtering performance |
+| policy cache hit | layer, result | quota policy cache hit rate |
+| outbox publish latency | driver, result | outbox write latency |
+| outbox buffer depth | driver | `async_kafka` buffer occupancy |
+| ratelimit charge result | dimension, result | visibility into TPM post-charge failures |
+| tpm overflow | layer, dimension | number of times TPM post-charge exceeds the configured cap |
 
-指标用于 runtime scoring 时，只读聚合后的轻量统计，不读取 Content Log。
+When metrics are used for runtime scoring, only lightweight aggregated statistics are read, never the Content Log.
 
-## 8. 与限流的关系
+## 8. Relationship with rate limiting
 
-限流不依赖 Content Log。
+Rate limiting does not depend on the Content Log.
 
-RPM / RPS 在请求前 reserve；TPM 在 usage 产出后按 `Usage.Total` charge。若 `Usage.Total` 来自 tiktoken 估算，后扣也必须保留 `Source=estimated` / `Confidence=approximate` 标记，供下游识别。
+RPM / RPS is reserved before the request; TPM is charged based on `Usage.Total` after usage is produced. If `Usage.Total` comes from a tiktoken estimate, the post-charge must still retain the `Source=estimated` / `Confidence=approximate` markers, so downstreams can identify it.
 
-若 translator / extractor 只拿到上游原始 usage 但无法稳定提取 `Total`，仍然发布 usage event 给下游计费平台，但本次请求不做网关侧 TPM 后扣。
+If the translator / extractor only obtains the upstream's raw usage but cannot reliably extract `Total`, the usage event is still published to the downstream billing platform, but this request does not undergo gateway-side TPM post-charge.
 
-因此 usage 捕获和通用字段提取覆盖率直接影响：
+Therefore, usage capture and generic-field extraction coverage directly affect:
 
-- 计费完整性。
-- TPM 后扣准确性。
-- 用量报表准确性。
+- Billing completeness.
+- TPM post-charge accuracy.
+- Usage report accuracy.
 
-新增协议或 translator 时，必须尽量保留上游原始 usage 到 `Raw`。如果能稳定提取通用 `Total`，则填充 `Input` / `Output` / `Total`；如果不能提取，仍应把 `Raw` 交给下游计费规则处理。
+When adding a new protocol or translator, the original upstream usage must be preserved into `Raw` as much as possible. If the generic `Total` can be reliably extracted, fill `Input` / `Output` / `Total`; if it cannot, `Raw` should still be handed to downstream billing rules.
 
-## 9. 记录策略
+## 9. Recording policy
 
-不同通道的默认策略应不同：
+Different channels should have different defaults:
 
-| 数据 | 默认策略 |
+| Data | Default policy |
 |------|----------|
-| Usage Event | 默认开启 |
-| Metrics / Trace | 默认开启 |
-| Client request body | 默认关闭或采样 |
-| Client response body | 默认关闭或采样 |
-| Upstream request / response | 默认关闭，仅排障开启 |
+| Usage Event | On by default |
+| Metrics / Trace | On by default |
+| Client request body | Off or sampled by default |
+| Client response body | Off or sampled by default |
+| Upstream request / response | Off by default, enabled only for troubleshooting |
 
-内容记录的开关建议支持：
+Content-recording toggles should support:
 
-- 按 account / API key。
-- 按 model / endpoint / vendor。
-- 按错误状态。
-- 按采样率。
-- 按最大 body 大小。
-- 按字段脱敏规则。
+- By account / API key.
+- By model / endpoint / vendor.
+- By error status.
+- By sampling rate.
+- By max body size.
+- By field redaction rule.
 
-## 10. 与 repo 缓存的关系
+## 10. Relationship with the repo cache
 
-Usage Event 通道（gateway → 下游计费）与 SQL → gateway 配置传播（repo 进程内
-TTL LRU 缓存，[06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)）
-是**两条独立通道**，不要互相复用：
+The Usage Event channel (gateway → downstream billing) and the SQL → gateway config propagation
+(repo's in-process TTL LRU cache, [06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播))
+are **two independent channels** and must not be reused for each other:
 
-| 维度 | Usage Event Outbox | Repo TTL 缓存 |
+| Dimension | Usage Event Outbox | Repo TTL cache |
 |------|--------------------|---------------|
-| 数据流向 | gateway → 下游计费 | SQL → gateway |
-| 触发源 | 请求完成后 M10 主动 publish | 请求查表 miss 时 SQL 直查 |
-| 传输 | Kafka topic `billing.usage.recorded.v1` | 进程内 LRU；无跨进程通道 |
-| 可靠性 | DLQ + 重试，失败不阻塞响应 | TTL 过期回源；MySQL 故障时直接返回 503 |
-| schema 演进 | `schema_version` + 切新 topic | repo struct 演进 |
+| Data direction | gateway → downstream billing | SQL → gateway |
+| Trigger | M10 actively publishes after request completion | SQL direct lookup on cache miss |
+| Transport | Kafka topic `billing.usage.recorded.v1` | in-process LRU; no cross-process channel |
+| Reliability | DLQ + retry, failure does not block the response | TTL expiry falls back to source; MySQL failure returns 503 directly |
+| Schema evolution | `schema_version` + switching to a new topic | repo struct evolution |
 
-repo 缓存仅是**配置数据**的读路径优化，不承载 usage / 内容。把 usage 写到
-repo cache 是 mismatch（usage 是事件流不是查表数据）；反过来把 SQL 配置变更走 usage
-outbox 也不对（计费 consumer 不应该看到 schema 类事件）。
+The repo cache is only a read-path optimization for **configuration data**; it does not carry usage / content. Writing usage to
+the repo cache is a mismatch (usage is an event stream, not lookup data); conversely, routing SQL config changes through the usage
+outbox is also wrong (the billing consumer should not see schema-type events).
 
-## 11. 演进规则
+## 11. Evolution rules
 
-- 修改 usage 原始字段传递策略时同步更新本文档、usage extractor / translator 和下游计费平台 schema。
-- 修改 usage meta 字段时同步更新下游 billing pipeline schema。
-- Usage outbox 发布必须保持“失败不影响业务响应”的语义；需要强一致计费时应在下游补偿，而不是阻塞 M10。
-- Content Log 不能复用 Usage Event schema；两者必须独立演进。
-- 指标标签不得包含 request / response body 或高基数字段。
-- 网关不得在请求路径上计算金额；价格匹配由下游按请求发生时间完成。
-- 不要把 Usage Event 与 repo 缓存通道互相复用（§10）。
+- When changing the strategy for passing through raw usage fields, update this document, the usage extractor / translator, and the downstream billing platform schema together.
+- When changing usage meta fields, update the downstream billing pipeline schema together.
+- Usage outbox publishing must preserve the semantics of "failure does not affect the business response"; if strongly consistent billing is required, compensate downstream rather than blocking M10.
+- Content Log must not reuse the Usage Event schema; the two must evolve independently.
+- Metric labels must not contain request / response body or high-cardinality fields.
+- The gateway must not compute amounts on the request path; price matching is done downstream based on the time the request occurred.
+- Do not reuse the Usage Event and repo cache channels for each other (§10).
 
-## 12. 下游消费侧
+## 12. Downstream consumers
 
-§6 已声明网关不做"账单聚合 / 余额扣费 / 在线价格查询 / 金额生成"。这些是下游计费
-平台的职责，**不在本仓库范围**——本仓库只产 Kafka `billing.usage.recorded.v1`
-事件，下游 consumer 自己实现聚合 + 查价 + 出账。
+§6 already states that the gateway does not do "bill aggregation / balance deduction / online price lookup / amount generation". These are the responsibility of the downstream
+billing platform, and **out of scope for this repo** — this repo only produces Kafka `billing.usage.recorded.v1`
+events; downstream consumers implement aggregation + price lookup + billing themselves.
 
-本文档定义 usage event 是什么、网关怎么产出、Outbox driver 与可靠性语义、网关侧
-的 Pricing 边界（"网关不做"清单）。任何改动到 usage event schema 都要触发下游
-consumer 同步评估。
+This document defines what a usage event is, how the gateway produces it, the Outbox driver and reliability semantics, and the gateway-side
+Pricing boundary (the "what the gateway does not do" list). Any change to the usage event schema must trigger a synchronized
+evaluation by the downstream consumers.

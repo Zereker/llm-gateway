@@ -1,17 +1,20 @@
-// Command mockupstream 是 E2E 测试用的假上游：模拟 OpenAI Chat Completions /
-// Anthropic Messages 协议，固定响应 + 带 usage 字段，让 gateway M10 + Flink
-// 计费聚合链路能跑通而不依赖真 OpenAI/Anthropic key。
+// Command mockupstream is a fake upstream for E2E tests: it emulates the
+// OpenAI Chat Completions / Anthropic Messages protocols with fixed
+// responses that include usage fields, so the gateway M10 + Flink billing
+// aggregation pipeline can be exercised without depending on real
+// OpenAI/Anthropic keys.
 //
-// 路由：
+// Routes:
 //
-//	POST /v1/chat/completions  → OpenAI Chat（含 usage{prompt_tokens, completion_tokens, total_tokens}）
-//	POST /v1/messages          → Anthropic Messages（含 usage{input_tokens, output_tokens}）
+//	POST /v1/chat/completions  → OpenAI Chat (includes usage{prompt_tokens, completion_tokens, total_tokens})
+//	POST /v1/messages          → Anthropic Messages (includes usage{input_tokens, output_tokens})
 //	POST /v1beta/models/{model}:generateContent  → Gemini generateContent
 //	GET  /health               → "ok"
 //
-// 流式（请求 body 里 stream=true 时）按各协议的 SSE 格式吐 chunk + 末尾 usage。
+// Streaming (when stream=true in the request body) emits chunks in each
+// protocol's SSE format, followed by a trailing usage chunk.
 //
-// 监听地址：MOCK_ADDR（默认 :9090）。
+// Listen address: MOCK_ADDR (default :9090).
 package main
 
 import (
@@ -242,7 +245,7 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 
 func handleGemini(w http.ResponseWriter, r *http.Request) {
-	// path 形如 /v1beta/models/gemini-1.5-pro:generateContent 或 :streamGenerateContent
+	// path looks like /v1beta/models/gemini-1.5-pro:generateContent or :streamGenerateContent
 	streaming := strings.Contains(r.URL.Path, ":streamGenerateContent")
 	model := "gemini-1.5-pro"
 	if i := strings.LastIndex(r.URL.Path, "/"); i >= 0 {

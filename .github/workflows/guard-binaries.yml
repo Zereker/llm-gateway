@@ -39,7 +39,7 @@ jobs:
           head="${{ steps.range.outputs.head }}"
           violations=$(git diff --name-only --diff-filter=AM "$base" "$head" -- 'bin/**' || true)
           if [ -n "$violations" ]; then
-            echo "::error::禁止提交 bin/ 目录下的文件 (build artifacts 应该走 make build 本地生成)："
+            echo "::error::Committing files under bin/ is forbidden (build artifacts should be generated locally via make build):"
             echo "$violations" | sed 's/^/  - /'
             exit 1
           fi
@@ -56,7 +56,7 @@ jobs:
             [ ! -f "$f" ] && continue
             size=$(wc -c <"$f" | tr -d ' ')
             if [ "$size" -gt "$max" ]; then
-              echo "::error file=$f::$f 大小 ${size} 字节，超过 5 MB 限制"
+              echo "::error file=$f::$f is ${size} bytes, exceeding the 5 MB limit"
               fail=1
             fi
           done < <(git diff --name-only --diff-filter=AM "$base" "$head")

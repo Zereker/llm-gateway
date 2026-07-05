@@ -10,16 +10,17 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// **回归（review HIGH#8）**：M10 Tracing 挂在 Recover 外层后，abort 路径
-// （401/429/…）也必须产生 llm_gateway_http_requests_total——旧版挂链尾时
-// abort 一律跳过 M10，撞库 / 限流风暴在请求指标里隐身。
+// **Regression (review HIGH#8)**: once M10 Tracing is hung on Recover's outer layer,
+// abort paths (401/429/...) must also produce llm_gateway_http_requests_total -- in
+// the old version, hanging it at the end of the chain meant aborts always skipped
+// M10, so credential-stuffing / rate-limit storms went invisible in request metrics.
 func TestTracing_RunsOnAbortPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	// 生产链序（chat.go）：TraceContext → Tracing → Recover → (abort 的 middleware)
+	// production chain order (chat.go): TraceContext -> Tracing -> Recover -> (the aborting middleware)
 	r.GET("/x",
 		TraceContext(),
-		Tracing(), // 无 outbox / tracer——只验证 metric 收尾执行
+		Tracing(), // no outbox / tracer -- only verifies the metric tail-call runs
 		Recover(),
 		func(c *gin.Context) {
 			abortWithCode(c, 429, domain.ErrRateLimit, domain.ErrCodeRateLimitExceeded, "quota exceeded")
@@ -40,7 +41,8 @@ func TestTracing_RunsOnAbortPath(t *testing.T) {
 	}
 }
 
-// panic 路径：Recover（内层）恢复并写 500，Tracing（外层）收尾仍执行且看到 500。
+// panic path: Recover (inner) recovers and writes 500; Tracing's (outer) tail-call
+// still runs and observes the 500.
 func TestTracing_RunsAfterRecoveredPanic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -64,8 +66,8 @@ func TestTracing_RunsAfterRecoveredPanic(t *testing.T) {
 	}
 }
 
-// counterValue 从 prometheus default registry 按 label 子集匹配取 counter 当前值；
-// 不存在返回 0。
+// counterValue reads a counter's current value from the prometheus default registry,
+// matching by a subset of labels; returns 0 if not found.
 func counterValue(t *testing.T, name string, want map[string]string) float64 {
 	t.Helper()
 	families, err := prometheus.DefaultGatherer.Gather()
@@ -92,4 +94,3 @@ func counterValue(t *testing.T, name string, want map[string]string) float64 {
 	}
 	return sum
 }
-

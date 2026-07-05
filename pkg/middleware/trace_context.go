@@ -22,10 +22,12 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// ScopeName 是 M1 root span 的 instrumentation scope 名（OTel collector 按此过滤）。
+// ScopeName is the instrumentation scope name for M1's root span (the OTel
+// collector filters by this).
 const ScopeName = "github.com/zereker/llm-gateway/pkg/middleware"
 
-// defaultSpanNameFormatter 与 otelgin 一致："{METHOD} {fullpath}"；未匹配路由时退到 "{METHOD}"。
+// defaultSpanNameFormatter matches otelgin: "{METHOD} {fullpath}"; falls back
+// to "{METHOD}" when the route isn't matched.
 func defaultSpanNameFormatter(c *gin.Context) string {
 	method := strings.ToUpper(c.Request.Method)
 	if !slices.Contains([]string{
@@ -43,27 +45,29 @@ func defaultSpanNameFormatter(c *gin.Context) string {
 	return method
 }
 
-
-// TraceContext 是 M1：root span + RequestContext 注入 + W3C trace context 提取。
+// TraceContext is M1: root span + RequestContext injection + W3C trace
+// context extraction.
 //
-// **设计参考**：opentelemetry-go-contrib / otelgin v0.68.0
-// （instrumentation/github.com/gin-gonic/gin/otelgin/gin.go）—— 启动期固化 +
-// 每请求 tracer.Start/defer span.End。
+// **Design reference**: opentelemetry-go-contrib / otelgin v0.68.0
+// (instrumentation/github.com/gin-gonic/gin/otelgin/gin.go) — set up once at
+// startup + per-request tracer.Start/defer span.End.
 //
-// **职责**（按时序）：
+// **Responsibilities** (in order):
 //
-//  1. 从 request headers 提取上游 traceparent → ctx 里若有 valid SpanContext 续传
-//  2. 没 traceparent → 自己构造 parent SpanContext，兜底生成 trace_id
-//  3. request_id 注入 OTel baggage（trace.CtxHandler 自动加到所有 log record，跨 service 透传）
-//  4. tracer.Start("{METHOD} {route}", SpanKindServer, 初始 attrs) → root span
-//  5. 构造 *domain.RequestContext，挂到 c.Request.Context() 和 *gin.Context
-//  6. c.Next() 跑业务链
-//  7. End 时：写 http.status_code / gen_ai.* / llm_gateway.* attrs；SetStatus；记 request.end 日志
+//  1. Extract the upstream traceparent from request headers → continues if ctx already has a valid SpanContext
+//  2. No traceparent → constructs its own parent SpanContext, generating a fallback trace_id
+//  3. Injects request_id into OTel baggage (trace.CtxHandler automatically adds it to every log record, propagated across services)
+//  4. tracer.Start("{METHOD} {route}", SpanKindServer, initial attrs) → root span
+//  5. Constructs *domain.RequestContext, attaches it to c.Request.Context() and *gin.Context
+//  6. c.Next() runs the business chain
+//  7. On End: writes http.status_code / gen_ai.* / llm_gateway.* attrs; SetStatus; logs request.end
 //
-// **trace_id / span_id 不存 RC 字段**——单源真相是 ctx 里的 SpanContext；
-// string 形态 trace_id 用 middleware.TraceIDFromCtx 提取。
+// **trace_id / span_id are not stored as RC fields** — the single source of
+// truth is the SpanContext in ctx; the string form of trace_id is extracted
+// via middleware.TraceIDFromCtx.
 //
-// **必须最先注册**（在 Recover / Auth 之前），否则 GetRequestContext 会 panic。
+// **Must be registered first** (before Recover / Auth), otherwise
+// GetRequestContext will panic.
 func TraceContext() gin.HandlerFunc {
 	propagators := defaultPropagator()
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
@@ -72,14 +76,18 @@ func TraceContext() gin.HandlerFunc {
 		savedCtx := c.Request.Context()
 		defer func() { c.Request = c.Request.WithContext(savedCtx) }()
 
-		// 1. 提取上游 traceparent（W3C）
+		// 1. Extract the upstream traceparent (W3C)
 		ctx := propagators.Extract(savedCtx, propagation.HeaderCarrier(c.Request.Header))
 
-		// 2. 兜底生成 trace_id。
-		//    必须保证调 tracer.Start 之前 ctx 里有 valid SpanContext，原因有二：
-		//      (a) driver=slog 时 tracer 是 noop，自己不会生成 trace_id；
-		//      (b) 不论 driver 如何，trace_id 是日志关联 / outbox event 的强依赖。
-		//    实 OTel SDK 时 tracer.Start 会以这个 parent 为基准生成新 span_id（trace_id 续传）。
+		// 2. Fallback trace_id generation.
+		//    Must guarantee ctx has a valid SpanContext before calling
+		//    tracer.Start, for two reasons:
+		//      (a) with driver=slog the tracer is a noop and won't generate a
+		//          trace_id on its own;
+		//      (b) regardless of driver, trace_id is a hard dependency for log
+		//          correlation / outbox events.
+		//    With a real OTel SDK, tracer.Start generates a new span_id based
+		//    on this parent (trace_id carries through).
 		if !oteltrace.SpanContextFromContext(ctx).IsValid() {
 			parentSC := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
 				TraceID:    newRandTraceID(),
@@ -90,7 +98,9 @@ func TraceContext() gin.HandlerFunc {
 			ctx = oteltrace.ContextWithSpanContext(ctx, parentSC)
 		}
 
-		// 3. request_id 注入 baggage（gateway-only 概念，跟 trace_id 互补：trace_id 跨 service，request_id 标识单次入口）
+		// 3. Inject request_id into baggage (a gateway-only concept,
+		//    complementary to trace_id: trace_id spans services, request_id
+		//    identifies a single entry point)
 		requestID := genRequestID()
 		if m, err := baggage.NewMember("request_id", requestID); err == nil {
 			if newBag, err := baggage.FromContext(ctx).SetMember(m); err == nil {
@@ -98,7 +108,7 @@ func TraceContext() gin.HandlerFunc {
 			}
 		}
 
-		// 4. 计算 span name 并开 root span
+		// 4. Compute the span name and open the root span
 		spanName := defaultSpanNameFormatter(c)
 		if spanName == "" {
 			spanName = fmt.Sprintf("HTTP %s route not found", c.Request.Method)
@@ -117,18 +127,19 @@ func TraceContext() gin.HandlerFunc {
 		)
 		defer span.End()
 
-		// 5. 构造并挂 RequestContext
+		// 5. Construct and attach RequestContext
 		rc := &domain.RequestContext{
 			RequestID: requestID,
 			StartTime: time.Now(),
 			Extras:    make(map[string]any),
 		}
-		// AttachRequestContext 把当前 ctx + rc value 一起写回 c.Request.Context()。
-		// 之后下游 middleware 从 c.Request.Context() 拿 ctx，不要绕开。
+		// AttachRequestContext writes the current ctx + rc value back onto
+		// c.Request.Context() together. Downstream middleware should always
+		// get ctx from c.Request.Context() afterward, never bypass this.
 		c.Request = c.Request.WithContext(ctx)
 		AttachRequestContext(c, rc)
 
-		// 6. request.start 日志（debug；docs/08 §2）
+		// 6. request.start log (debug; docs/08 §2)
 		slog.DebugContext(ctx, "request.start",
 			"method", c.Request.Method,
 			"path", c.FullPath(),
@@ -137,7 +148,7 @@ func TraceContext() gin.HandlerFunc {
 
 		c.Next()
 
-		// 7. End 时收尾
+		// 7. Finalize on End
 		statusCode := c.Writer.Status()
 		elapsedMs := time.Since(rc.StartTime).Milliseconds()
 
@@ -177,7 +188,8 @@ func TraceContext() gin.HandlerFunc {
 			}
 		}
 
-		// SetStatus：rc.Error 优先；否则按 HTTP 状态码（5xx → Error，4xx 默认 Unset 与 otelgin 一致）
+		// SetStatus: rc.Error takes priority; otherwise based on HTTP status
+		// code (5xx → Error, 4xx defaults to Unset, consistent with otelgin)
 		switch {
 		case rc.Error != nil:
 			span.SetAttributes(
@@ -189,7 +201,7 @@ func TraceContext() gin.HandlerFunc {
 			span.SetStatus(codes.Error, http.StatusText(statusCode))
 		}
 
-		// gin.Context.Errors 同步到 span（仿 otelgin）
+		// Sync gin.Context.Errors to the span (mirrors otelgin)
 		if len(c.Errors) > 0 {
 			for _, e := range c.Errors {
 				span.RecordError(e.Err)
@@ -213,7 +225,7 @@ func TraceContext() gin.HandlerFunc {
 	}
 }
 
-// schemeOf 返回 "https"（TLS）或 "http"。
+// schemeOf returns "https" (TLS) or "http".
 func schemeOf(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
@@ -221,10 +233,13 @@ func schemeOf(r *http.Request) string {
 	return "http"
 }
 
-// defaultPropagator 拿 OTel global propagator；空 / noop 时退到 W3C TraceContext。
+// defaultPropagator gets the OTel global propagator; falls back to W3C
+// TraceContext when empty / noop.
 //
-// 一次性 lazy 初始化，避免每请求 lookup。OtelTracer 装配时已经 otel.SetTextMapPropagator
-// 覆盖了 global，所以装配 OTel 的进程拿到的是真 propagator；driver=slog 的进程拿到 W3C 兜底。
+// One-time lazy init, avoiding a per-request lookup. When OtelTracer is wired
+// up it has already called otel.SetTextMapPropagator to override the global,
+// so a process with OTel wired up gets the real propagator; a process with
+// driver=slog gets the W3C fallback.
 var (
 	defaultPropagatorOnce sync.Once
 	defaultPropagatorVal  propagation.TextMapPropagator
@@ -241,25 +256,27 @@ func defaultPropagator() propagation.TextMapPropagator {
 	return defaultPropagatorVal
 }
 
-// newRandTraceID 生成 W3C 标准 32-hex trace ID。
+// newRandTraceID generates a W3C-standard 32-hex trace ID.
 func newRandTraceID() oteltrace.TraceID {
 	tid, _ := oteltrace.TraceIDFromHex(randHex(16))
 	return tid
 }
 
-// newRandSpanID 生成 W3C 标准 16-hex span ID。
+// newRandSpanID generates a W3C-standard 16-hex span ID.
 func newRandSpanID() oteltrace.SpanID {
 	sid, _ := oteltrace.SpanIDFromHex(randHex(8))
 	return sid
 }
 
-// genRequestID 生成形如 "req_<12 hex>" 的网关内部请求 ID（48 bit 随机；与 trace_id 互补）。
+// genRequestID generates a gateway-internal request ID of the form
+// "req_<12 hex>" (48-bit random; complementary to trace_id).
 func genRequestID() string {
 	return "req_" + randHex(6)
 }
 
-// randHex 返回 byteLen 字节随机数据的 hex 字符串（长度 = 2 * byteLen）。
-// crypto/rand 失败时退到 timestamp 兜底（极少发生；让请求别 panic）。
+// randHex returns the hex string of byteLen bytes of random data (length =
+// 2 * byteLen). Falls back to a timestamp when crypto/rand fails (rare;
+// keeps the request from panicking).
 func randHex(byteLen int) string {
 	b := make([]byte, byteLen)
 	if _, err := rand.Read(b); err != nil {

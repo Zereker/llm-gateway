@@ -9,20 +9,23 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// repoCacheMetrics 把 repo.Metrics 接口桥接到 Prometheus counter。
+// repoCacheMetrics bridges the repo.Metrics interface to a Prometheus counter.
 //
-// 指标 docs/08 §3：llm_gateway_repo_cache_total{table, result}。
-// result ∈ hit / miss / error。
+// Metric docs/08 §3: llm_gateway_repo_cache_total{table, result}.
+// result ∈ hit / miss / error.
 type repoCacheMetrics struct {
 	counter *prometheus.CounterVec
 }
 
-// newRepoCacheMetrics 注册 Prom counter 到默认 registry。
+// newRepoCacheMetrics registers a Prometheus counter with the default registry.
 //
-// **幂等注册**：同进程内二次 buildEngine（e2e 测试逐 case 建 engine / 未来热重启）
-// 会撞到 default registry 里已存在的同名 collector。promauto.MustRegister 那会
-// 直接 panic；这里用 Register + AlreadyRegisteredError 复用已有 collector，让
-// buildEngine 可重入。其它注册错误仍 fail-fast panic（暴露真正的指标定义冲突）。
+// **Idempotent registration**: calling buildEngine a second time within the
+// same process (e2e tests build an engine per case / future hot restarts)
+// collides with the same-named collector already in the default registry.
+// promauto.MustRegister would panic outright; here we use Register +
+// AlreadyRegisteredError to reuse the existing collector, making buildEngine
+// re-entrant. Any other registration error still fails fast via panic
+// (surfacing a genuine metric-definition conflict).
 func newRepoCacheMetrics() *repoCacheMetrics {
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: metric.RepoCacheTotal,
@@ -46,5 +49,5 @@ func (m *repoCacheMetrics) Record(table, result string) {
 	m.counter.WithLabelValues(table, result).Inc()
 }
 
-// 编译期断言：满足 repo.Metrics。
+// Compile-time assertion: satisfies repo.Metrics.
 var _ repo.Metrics = (*repoCacheMetrics)(nil)

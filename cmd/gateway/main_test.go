@@ -15,7 +15,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// devDataKey 是 e2e tests 用的 AES KEK；TestMain 装载，供 endpoints.auth 加解密。
+// devDataKey is the AES KEK used by the e2e tests; TestMain loads it for encrypting/decrypting endpoints.auth.
 const devDataKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestMain(m *testing.M) {
@@ -25,8 +25,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// e2e: 响应缓存开启时，确定性请求（temperature=0，非流式）第二次命中缓存——不再打
-// 上游，且带 X-Gateway-Cache: hit。用 body 里的唯一 nonce 保证首次必 miss。
+// e2e: with response cache enabled, a deterministic request (temperature=0,
+// non-streaming) hits the cache on the second call—no upstream call, and the
+// X-Gateway-Cache: hit header is set. A unique nonce in the body guarantees
+// the first call is always a miss.
 func TestE2E_ResponseCacheHit(t *testing.T) {
 	var upstreamCalls int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +107,7 @@ func strconvItoa(n int64) string {
 	return string(b[i:])
 }
 
-// e2e: 用 httptest 模拟 OpenAI 上游，把 gateway 的全套 middleware 串起来跑一遍。
+// e2e: uses httptest to simulate an OpenAI upstream and runs the gateway's full middleware chain end to end.
 func TestE2E_OpenAIChatCompletions(t *testing.T) {
 	var capturedAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -200,10 +202,11 @@ func TestE2E_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// writeTestConfig 准备好 outbox 输出路径，把 Database 段指向本地 MySQL（MYSQL_DSN env），
-// 然后 seedDB 直接 INSERT 进 model_services / endpoints / api_keys 三张表。
+// writeTestConfig prepares the outbox output path, points the Database
+// section at local MySQL (the MYSQL_DSN env var), then seedDB directly
+// INSERTs into the model_services / endpoints / api_keys tables.
 //
-// 没设 MYSQL_DSN 直接 t.Skip 整组 e2e 测试。
+// If MYSQL_DSN isn't set, t.Skip the whole e2e test suite.
 func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	t.Helper()
 
@@ -234,13 +237,16 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	return cfg
 }
 
-// seedDB 连本地 MySQL，Migrate + TRUNCATE + 写测试用 ModelService + Endpoint + APIKey。
+// seedDB connects to local MySQL, Migrates + TRUNCATEs, and writes a test
+// ModelService + Endpoint + APIKey.
 //
-// **endpoint 的 auth/routing 走 NamedExec**，让 AuthConfig.Value() 加密、
-// RoutingConfig.Value() 序列化 JSON——raw SQL 字符串拿不到这层魔法。
+// **endpoint's auth/routing go through NamedExec** so that AuthConfig.Value()
+// encrypts and RoutingConfig.Value() serializes to JSON—a raw SQL string
+// wouldn't get that magic.
 //
-// **api_key 走 hash**：SHA-256(plaintext) 落 api_key_hash 列，gateway Resolve
-// 时入参 hash 后能查到。
+// **api_key goes through a hash**: SHA-256(plaintext) lands in the
+// api_key_hash column, so the gateway's Resolve can look it up after hashing
+// the incoming value.
 func seedDB(t *testing.T, dsn, upstreamURL string) {
 	t.Helper()
 	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
@@ -253,8 +259,8 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	if err := infra.Migrate(ctx, db); err != nil {
 		t.Fatalf("infra.Migrate seed: %v", err)
 	}
-	// FK 引用时 MySQL 拒 TRUNCATE 父表（pricing_versions → model_services）；
-	// 关 FK check 一把扫
+	// MySQL refuses to TRUNCATE a parent table while an FK references it
+	// (pricing_versions → model_services); disable FK checks and sweep through all at once
 	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 0`); err != nil {
 		t.Fatalf("disable FK checks: %v", err)
 	}
@@ -275,7 +281,8 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("re-enable FK checks: %v", err)
 	}
 
-	// 必须先有 accounts("default")（FK 锚点；schema.sql seed 已 INSERT IGNORE 但 TRUNCATE 清掉了）
+	// accounts("default") must exist first (FK anchor; schema.sql's seed does
+	// INSERT IGNORE but TRUNCATE just wiped it out)
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO accounts (pin, name) VALUES (?, ?)`,
 		"default", "Default Account",
@@ -283,7 +290,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("seed account: %v", err)
 	}
 
-	// model_services 全局 catalog（无 account_id / group_name / spec_detail）
+	// model_services is a global catalog (no account_id / group_name / spec_detail)
 	res, err := db.ExecContext(ctx,
 		`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
 		"openai/gpt-4o", "gpt-4o",
@@ -293,7 +300,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	}
 	msID, _ := res.LastInsertId()
 
-	// account 必须订阅 model 才能用（不然 M5 → 403）
+	// the account must be subscribed to the model to use it (otherwise M5 → 403)
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO account_model_subscriptions (account_id, model_service_id, enabled) VALUES (?, ?, 1)`,
 		"default", msID,
@@ -301,7 +308,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("seed subscription: %v", err)
 	}
 
-	// M5 强制要求 active price，否则 503；e2e 必须 seed 价格
+	// M5 requires an active price or it returns 503; the e2e test must seed a price
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO pricing_versions
 		 (account_id, model_service_id, rule_class, effective_from, effective_to, rule_json, created_by, notes)
