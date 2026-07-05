@@ -16,6 +16,14 @@ import (
 //
 // **不泄漏命中的 pattern**：阻断错误只说"blocked by content policy",避免把 deny
 // 规则通过 400 body 暴露给客户端探测(M8 会把错误串拼进响应)。命中细节进 span/log。
+//
+// **流式输出是 best-effort，不是硬保证**：check_output 逐 chunk 扫的是**已翻译的
+// SSE 分帧字节**（data: {...}\n\n），不是解码后的正文。流式里每个 token 各自成一
+// 帧，帧与帧之间夹着 JSON/SSE framing，所以跨帧拆分的模式（如正文 "kill" 被切成
+// "ki"/"ll" 两帧）扫不出来——即便跨 chunk 缓冲也拼不回连续正文。要**完全阻止**违规
+// 输出，必须走非流式（buffer-then-scan）：非流式路径 Flush 一次拿到整个 body，扫的
+// 是完整文本，能真正拦下。安全关键的 denylist 应配合非流式使用；流式下它只能拦到
+// 落在单帧内的模式。CheckInput（前置、整 body 一次过）不受此限。
 type DenylistGuard struct {
 	patterns    []*regexp.Regexp
 	checkOutput bool
@@ -46,6 +54,10 @@ func (g *DenylistGuard) CheckInput(_ context.Context, env *domain.RequestEnvelop
 }
 
 // CheckOutput 逐 chunk 扫响应（仅 check_output=true 时）。
+//
+// **流式下 chunk 是单个 SSE 帧的字节**——跨帧拆分的模式扫不出来（见类型文档）。
+// 非流式(buffer-then-translate)时 Flush 把整个 body 作为一个 chunk 送进来，扫的是
+// 完整正文，才是硬保证。
 func (g *DenylistGuard) CheckOutput(_ context.Context, chunk []byte) error {
 	if !g.checkOutput {
 		return nil

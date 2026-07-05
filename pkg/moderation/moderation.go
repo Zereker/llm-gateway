@@ -92,6 +92,12 @@ func WrapStream(inner protocol.ResponseStream, ctx context.Context) protocol.Res
 //
 // **CheckOutput 调在 inner.Feed 之后**：moderator 看到"客户端会真看到的字节"，
 // 而不是上游原始 chunk（translator 可能改过 shape）。
+//
+// **流式下 CheckOutput 的入参是单个 SSE 帧**：每次 Feed 产出的 out 通常是一帧
+// （data: {...}\n\n）。这意味着基于子串/正则的 guard 在流式下只能命中落在单帧内的
+// 模式；跨帧拆分的正文模式扫不出来（token 各自成帧，帧间夹 framing，缓冲也拼不回）。
+// 硬保证需走非流式——Flush 把整个 body 一次性送检。这是流式内容审核的固有约束
+// （已发出的字节无法召回），不是本装饰器可单独修复的；详见 DenylistGuard 类型文档。
 type moderatedStream struct {
 	inner    protocol.ResponseStream
 	mod      Moderator
