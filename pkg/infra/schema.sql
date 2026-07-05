@@ -106,6 +106,24 @@ CREATE TABLE IF NOT EXISTS model_services (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
+-- model_aliases：model 别名 → canonical model 重定向
+--
+-- 客户端请求 alias（如 "fast" / 厂商中立名），M5 解析成 canonical model_services.model
+-- （如 "gpt-4o-mini"），之后一切按 canonical 走（订阅 / 选路 / 计量）。别名对下游透明。
+-- 无 FK：轻量重定向，canonical 不存在时解析 miss → M5 走 404，不因引用完整性卡住。
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS model_aliases (
+    alias      VARCHAR(191) NOT NULL PRIMARY KEY,     -- 客户端请求的名字（唯一）
+    model      VARCHAR(191) NOT NULL,                 -- canonical model_services.model
+    enabled    TINYINT(1)   NOT NULL DEFAULT 1,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    deleted_at TIMESTAMP(6) NULL DEFAULT NULL,
+    INDEX idx_model (model),
+    INDEX idx_deleted_at (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =====================================================================
 -- account_model_subscriptions：主账号 × model_services 的可见性 N:M 表
 --
 -- 没订阅的主账号请求该 model → M5 返回 403 "model not subscribed"。

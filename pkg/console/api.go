@@ -33,6 +33,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/accounts/:pin/api-keys", api.listAPIKeys)
 		admin.GET("/quota-policies", api.listQuotaPolicies)
 		admin.GET("/pricing", api.listPricing)
+		admin.GET("/model-aliases", api.listModelAliases)
 		admin.GET("/audit", requireAdmin, api.listAudit) // 审计只给 admin 看
 
 		// 写：只有 admin
@@ -46,6 +47,8 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.POST("/quota-policies", requireAdmin, api.createQuotaPolicy)
 		admin.DELETE("/quota-policies/:id", requireAdmin, api.deleteQuotaPolicy)
 		admin.POST("/pricing", requireAdmin, api.publishPrice)
+		admin.POST("/model-aliases", requireAdmin, api.createModelAlias)
+		admin.DELETE("/model-aliases/:alias", requireAdmin, api.deleteModelAlias)
 	}
 	return engine
 }
@@ -308,6 +311,44 @@ func (a *api) listPricing(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"pricing": rows})
+}
+
+// =============================================================================
+// Model aliases
+// =============================================================================
+
+func (a *api) createModelAlias(c *gin.Context) {
+	var in ModelAliasInput
+	if !bind(c, &in) {
+		return
+	}
+	if err := a.store.CreateModelAlias(c.Request.Context(), in); err != nil {
+		var invalid *InvalidAliasError
+		if errors.As(err, &invalid) {
+			abortError(c, 400, "alias_invalid", invalid.Reason)
+			return
+		}
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"alias": in.Alias})
+}
+
+func (a *api) listModelAliases(c *gin.Context) {
+	rows, err := a.store.ListModelAliases(c.Request.Context())
+	if err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"model_aliases": rows})
+}
+
+func (a *api) deleteModelAlias(c *gin.Context) {
+	if err := a.store.DeleteModelAlias(c.Request.Context(), c.Param("alias")); err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
 // =============================================================================
