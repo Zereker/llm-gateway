@@ -86,6 +86,15 @@ type ModerationConfig struct {
 	Driver  string `yaml:"driver"`
 	APIKey  string `yaml:"api_key"`
 	BaseURL string `yaml:"base_url"`
+	// Denylist 是可选的正则内容护栏（guard 链的一环）；跟 driver 的 moderator 组合成
+	// Chain。patterns 空 = 不加此 guard。
+	Denylist DenylistConfig `yaml:"denylist"`
+}
+
+// DenylistConfig 正则内容拦截护栏。
+type DenylistConfig struct {
+	Patterns    []string `yaml:"patterns"`     // Go RE2 正则；命中任一即 block
+	CheckOutput bool     `yaml:"check_output"` // true 时也逐 chunk 扫响应
 }
 
 // ContentLogConfig 内容记录配置（docs/architecture/05-metering-billing.md §2、docs/08 §6）。

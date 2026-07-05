@@ -105,6 +105,42 @@ func strconvItoa(n int64) string {
 	return string(b[i:])
 }
 
+// e2e: denylist guard 开启时，body 命中 pattern → M8 拒 400；干净 body → 200。
+func TestE2E_DenylistGuardBlocks(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := writeTestConfig(t, upstream.URL)
+	cfg.Moderation = config.ModerationConfig{
+		Denylist: config.DenylistConfig{Patterns: []string{`(?i)forbidden`}},
+	}
+	engine, srv, err := buildEngine(cfg)
+	if err != nil {
+		t.Fatalf("buildEngine: %v", err)
+	}
+	defer srv.Close()
+
+	send := func(content string) int {
+		body := `{"model":"gpt-4o","messages":[{"role":"user","content":"` + content + `"}]}`
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test-alice")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if code := send("this is forbidden content"); code != 400 {
+		t.Errorf("命中 denylist 应 400, got %d", code)
+	}
+	if code := send("perfectly fine question"); code != 200 {
+		t.Errorf("干净 body 应 200, got %d", code)
+	}
+}
+
 // e2e: 用 httptest 模拟 OpenAI 上游，把 gateway 的全套 middleware 串起来跑一遍。
 func TestE2E_OpenAIChatCompletions(t *testing.T) {
 	var capturedAuth string

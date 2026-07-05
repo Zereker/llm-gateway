@@ -53,6 +53,11 @@ moderation:
   # api_key: ""
   # base_url 留空走 OpenAI 官方
   # base_url: ""
+  # 可选正则内容护栏（guard 链的一环，跟 driver 的 moderator 组合成 Chain）；
+  # 命中任一 pattern 即 400 拒绝。patterns 空 = 不加此 guard。
+  denylist:
+    patterns: []          # 如 ['(?i)\bpassword\b', '\d{3}-\d{2}-\d{4}']
+    check_output: false   # true 时也逐 chunk 扫响应
 
 selector:
   # M7 端点选路 Filter chain（顺序就是执行顺序；weighted_random 必须放最后）

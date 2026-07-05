@@ -33,6 +33,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/health"
 	"github.com/zereker/llm-gateway/pkg/infra"
 	"github.com/zereker/llm-gateway/pkg/middleware"
+	"github.com/zereker/llm-gateway/pkg/moderation"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/repo"
 	"github.com/zereker/llm-gateway/pkg/respcache"
@@ -476,17 +477,44 @@ func buildBudgetGate(cfg config.BudgetConfig) middleware.BudgetGate {
 //
 //   - none:   nil（默认；不审核）
 //   - openai: OpenAI moderation API client（需要 cfg.APIKey）
+// buildModerator 组装 guardrail 链（Chain 自身是 Moderator，插进 M8 零改动）。
+//
+// driver 的 moderator（openai）+ 可选 denylist guard 组合：
+//   - 0 个 guard → nil（M8 pass-through）
+//   - 1 个 guard → 直接返回它（省 Chain 开销）
+//   - ≥2 个 guard → Chain 顺序跑
 func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
+	var guards []moderation.NamedGuard
+
 	switch cfg.Driver {
 	case "", "none":
-		return nil
+		// 无 driver-side moderator
 	case "openai":
 		if cfg.APIKey == "" {
 			panic("moderation.driver=openai requires moderation.api_key")
 		}
-		return middleware.NewOpenAIModerator(cfg.APIKey, cfg.BaseURL)
+		guards = append(guards, moderation.NamedGuard{
+			Name: "openai", Guard: middleware.NewOpenAIModerator(cfg.APIKey, cfg.BaseURL),
+		})
 	default:
 		panic("unknown moderation driver: " + cfg.Driver)
+	}
+
+	if len(cfg.Denylist.Patterns) > 0 {
+		g, err := moderation.NewDenylistGuard(cfg.Denylist.Patterns, cfg.Denylist.CheckOutput)
+		if err != nil {
+			panic("moderation.denylist: " + err.Error()) // 启动 fail-fast：坏正则
+		}
+		guards = append(guards, moderation.NamedGuard{Name: "denylist", Guard: g})
+	}
+
+	switch len(guards) {
+	case 0:
+		return nil
+	case 1:
+		return guards[0].Guard
+	default:
+		return moderation.NewChain(guards...)
 	}
 }
 
