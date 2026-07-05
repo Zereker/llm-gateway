@@ -7,8 +7,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // fakeTokenProvider for testing the session BuildRequest with arbitrary header.
@@ -40,7 +40,7 @@ func TestSession_BuildRequest_StaticAPIKey(t *testing.T) {
 		Routing: domain.RoutingConfig{URL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"},
 	}
 	tp := fakeTokenProvider{hdrName: "x-goog-api-key", hdrValue: "ai-studio-key"}
-	s := newSession(context.Background(), ep, tp)
+	s := newSession(context.Background(), ep, tp, false)
 
 	body := []byte(`{"contents":[]}`)
 	req, err := s.BuildRequest(body, nil)
@@ -65,7 +65,7 @@ func TestSession_BuildRequest_StaticAPIKey(t *testing.T) {
 func TestSession_BuildRequest_OAuthBearer(t *testing.T) {
 	ep := &domain.Endpoint{Routing: domain.RoutingConfig{URL: "https://x"}}
 	tp := fakeTokenProvider{hdrName: "Authorization", hdrValue: "Bearer ya29.xxxx"}
-	s := newSession(context.Background(), ep, tp)
+	s := newSession(context.Background(), ep, tp, false)
 
 	req, err := s.BuildRequest([]byte(`{}`), nil)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestSession_BuildRequest_OAuthBearer(t *testing.T) {
 
 func TestSession_BuildRequest_EmptyURL_Error(t *testing.T) {
 	ep := &domain.Endpoint{Routing: domain.RoutingConfig{URL: ""}}
-	s := newSession(context.Background(), ep, fakeTokenProvider{hdrName: "x", hdrValue: "y"})
+	s := newSession(context.Background(), ep, fakeTokenProvider{hdrName: "x", hdrValue: "y"}, false)
 	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Fatal("expected err for empty URL")
 	}
@@ -87,14 +87,14 @@ func TestSession_BuildRequest_EmptyURL_Error(t *testing.T) {
 func TestSession_BuildRequest_TokenProviderErr(t *testing.T) {
 	ep := &domain.Endpoint{Routing: domain.RoutingConfig{URL: "u"}}
 	tp := fakeTokenProvider{err: errors.New("oauth failed")}
-	s := newSession(context.Background(), ep, tp)
+	s := newSession(context.Background(), ep, tp, false)
 	if _, err := s.BuildRequest([]byte(`{}`), nil); err == nil {
 		t.Fatal("expected err from token provider")
 	}
 }
 
 func TestSession_CloseIdempotent(t *testing.T) {
-	s := newSession(context.Background(), &domain.Endpoint{Routing: domain.RoutingConfig{URL: "u"}}, fakeTokenProvider{})
+	s := newSession(context.Background(), &domain.Endpoint{Routing: domain.RoutingConfig{URL: "u"}}, fakeTokenProvider{}, false)
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

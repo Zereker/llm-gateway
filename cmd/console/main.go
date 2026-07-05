@@ -1,19 +1,19 @@
 // Command llm-gateway-console is the control plane (Admin API): it replaces the
 // data plane's "maintain business data via direct SQL" approach with a governed
-// management interface.
+// management API.
 //
 // Usage:
 //
 //	go run ./cmd/console -config ./configs/local/console.yaml
 //
-// Decoupled from the data plane (cmd/gateway) **solely via MySQL**—the control
-// plane writes, the data plane reads through its TTL cache.
-// Shares the KEK (data_key): the control plane uses it to encrypt endpoints.auth
-// on write, and it must match the data plane's.
+// Decoupled from the data plane (cmd/gateway) **only through MySQL** — the
+// control plane writes, and the data plane reads through its TTL cache.
+// Shared KEK (data_key): the control plane encrypts with it when writing
+// endpoints.auth, and it must match the data plane's.
 //
-// Blank-imports a set of vendor Factory + translator packages so that
+// Blank-imports a batch of vendor Factory + translator packages: this lets
 // endpointcheck.Validate's vendor-registration / translator-reachability checks
-// can be decided before a write (using the same logic as the data plane).
+// run before a write is committed (the same logic the data plane uses).
 package main
 
 import (
@@ -28,16 +28,19 @@ import (
 	"github.com/zereker/llm-gateway/pkg/server"
 	"github.com/zereker/llm-gateway/pkg/trace"
 
-	// vendor Factory registration (needed for endpointcheck's vendor_not_registered check)
+	// vendor Factory registration (used by endpointcheck's vendor_not_registered check)
 	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/bedrock"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/cohere"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 
-	// translator registration (needed for endpointcheck's no_translator_path check)
+	// translator registration (used by endpointcheck's no_translator_path check)
 	_ "github.com/zereker/llm-gateway/pkg/translator/anthropic_openai"
 	_ "github.com/zereker/llm-gateway/pkg/translator/identity"
 	_ "github.com/zereker/llm-gateway/pkg/translator/openai_anthropic"
+	_ "github.com/zereker/llm-gateway/pkg/translator/openai_cohere"
 	_ "github.com/zereker/llm-gateway/pkg/translator/openai_gemini"
 	_ "github.com/zereker/llm-gateway/pkg/translator/responses_openai"
 )
@@ -61,7 +64,7 @@ func run(configPath string) error {
 	}
 
 	// Same KEK as the data plane: used to encrypt endpoints.auth on write.
-	// Missing / wrong-length key fails fast.
+	// Missing or wrong-length key fails fast.
 	if err := repo.SetDataKey(cfg.DataKey); err != nil {
 		return fmt.Errorf("load data_key: %w", err)
 	}
@@ -76,7 +79,7 @@ func run(configPath string) error {
 	store := console.NewStore(sqldb)
 
 	// Optional cachebus: if redis.addr is configured, attach a Publisher so
-	// revocations precisely notify the data plane.
+	// key revocations notify the data plane precisely.
 	if cfg.Redis.Addr != "" {
 		rdb, rerr := srv.OpenRedis(cfg.Redis)
 		if rerr != nil {

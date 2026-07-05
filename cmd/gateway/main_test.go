@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,12 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/zereker/llm-gateway/pkg/config"
 	"github.com/zereker/llm-gateway/pkg/infra"
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// devDataKey is the AES KEK used by the e2e tests; TestMain loads it for encrypting/decrypting endpoints.auth.
+// devDataKey is the AES KEK used by the e2e tests; TestMain loads it so
+// endpoints.auth can be encrypted/decrypted.
 const devDataKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestMain(m *testing.M) {
@@ -25,10 +29,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// e2e: with response cache enabled, a deterministic request (temperature=0,
-// non-streaming) hits the cache on the second call—no upstream call, and the
-// X-Gateway-Cache: hit header is set. A unique nonce in the body guarantees
-// the first call is always a miss.
+// e2e: with the response cache enabled, a deterministic request
+// (temperature=0, non-streaming) hits the cache the second time — no more
+// upstream calls, and it carries X-Gateway-Cache: hit. A unique nonce in the
+// body guarantees the first call is always a miss.
 func TestE2E_ResponseCacheHit(t *testing.T) {
 	var upstreamCalls int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +111,114 @@ func strconvItoa(n int64) string {
 	return string(b[i:])
 }
 
-// e2e: uses httptest to simulate an OpenAI upstream and runs the gateway's full middleware chain end to end.
+// e2e: semantic cache — two deterministic requests worded differently but
+// semantically equivalent (the mock embedder returns the same vector for
+// both); the second one hits semantically, skipping upstream, with
+// X-Gateway-Cache: hit. Proves the full embedder→vector→similarity-hit chain.
+// Requires REDIS_ADDR.
+func TestE2E_SemanticCacheHit(t *testing.T) {
+	if os.Getenv("REDIS_ADDR") == "" {
+		t.Skip("REDIS_ADDR not set")
+	}
+	// mock embeddings: weather-related → [1,0,0], otherwise [0,1,0].
+	embSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		vec := "[0,1,0]"
+		if strings.Contains(strings.ToLower(string(b)), "weather") {
+			vec = "[1,0,0]"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":` + vec + `}]}`))
+	}))
+	defer embSrv.Close()
+
+	var chatCalls int
+	chat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"sunny"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer chat.Close()
+
+	// Clear any leftover semantic index, guaranteeing the first call is a miss.
+	rdb := redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
+	defer rdb.Close()
+	rdb.Del(context.Background(), "llm-gateway:respcache:sem:openai|gpt-4o")
+
+	cfg := writeTestConfig(t, chat.URL)
+	cfg.Cache.TTL = time.Minute
+	cfg.Cache.Semantic = config.SemanticCacheConfig{
+		Enabled: true, Threshold: 0.95, MaxEntries: 100,
+		Embedder: config.EmbedderConfig{Driver: "openai", APIKey: "x", BaseURL: embSrv.URL},
+	}
+	engine, srv, err := buildEngine(cfg)
+	if err != nil {
+		t.Fatalf("buildEngine: %v", err)
+	}
+	defer srv.Close()
+
+	send := func(content string) *httptest.ResponseRecorder {
+		body := `{"model":"gpt-4o","stream":false,"temperature":0,"messages":[{"role":"user","content":"` + content + `"}]}`
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test-alice")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := send("what is the weather today"); w.Code != 200 || chatCalls != 1 {
+		t.Fatalf("first = %d chatCalls=%d, want 200/1", w.Code, chatCalls)
+	}
+	// Different wording, same meaning → semantic hit, doesn't hit upstream
+	w2 := send("how is the weather right now")
+	if w2.Header().Get("X-Gateway-Cache") != "hit" {
+		t.Errorf("paraphrase should be a semantic hit, header=%q", w2.Header().Get("X-Gateway-Cache"))
+	}
+	if chatCalls != 1 {
+		t.Errorf("a semantic hit should not call upstream, chatCalls=%d want 1", chatCalls)
+	}
+}
+
+// e2e: with the denylist guard enabled, a body matching the pattern → M8
+// rejects with 400; a clean body → 200.
+func TestE2E_DenylistGuardBlocks(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := writeTestConfig(t, upstream.URL)
+	cfg.Moderation = config.ModerationConfig{
+		Denylist: config.DenylistConfig{Patterns: []string{`(?i)forbidden`}},
+	}
+	engine, srv, err := buildEngine(cfg)
+	if err != nil {
+		t.Fatalf("buildEngine: %v", err)
+	}
+	defer srv.Close()
+
+	send := func(content string) int {
+		body := `{"model":"gpt-4o","messages":[{"role":"user","content":"` + content + `"}]}`
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test-alice")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if code := send("this is forbidden content"); code != 400 {
+		t.Errorf("matching the denylist should give 400, got %d", code)
+	}
+	if code := send("perfectly fine question"); code != 200 {
+		t.Errorf("clean body should give 200, got %d", code)
+	}
+}
+
+// e2e: uses httptest to simulate the OpenAI upstream, exercising gateway's full
+// middleware chain end to end.
 func TestE2E_OpenAIChatCompletions(t *testing.T) {
 	var capturedAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -202,11 +313,11 @@ func TestE2E_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// writeTestConfig prepares the outbox output path, points the Database
-// section at local MySQL (the MYSQL_DSN env var), then seedDB directly
+// writeTestConfig prepares the outbox output path, points the Database section
+// at the local MySQL instance (MYSQL_DSN env var), and then seedDB directly
 // INSERTs into the model_services / endpoints / api_keys tables.
 //
-// If MYSQL_DSN isn't set, t.Skip the whole e2e test suite.
+// If MYSQL_DSN isn't set, t.Skip skips this whole group of e2e tests.
 func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	t.Helper()
 
@@ -237,16 +348,15 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	return cfg
 }
 
-// seedDB connects to local MySQL, Migrates + TRUNCATEs, and writes a test
+// seedDB connects to the local MySQL, Migrates + TRUNCATEs, and writes a test
 // ModelService + Endpoint + APIKey.
 //
-// **endpoint's auth/routing go through NamedExec** so that AuthConfig.Value()
-// encrypts and RoutingConfig.Value() serializes to JSON—a raw SQL string
-// wouldn't get that magic.
+// **The endpoint's auth/routing go through NamedExec**, so AuthConfig.Value()
+// encrypts and RoutingConfig.Value() serializes to JSON — a raw SQL string
+// can't get that magic.
 //
-// **api_key goes through a hash**: SHA-256(plaintext) lands in the
-// api_key_hash column, so the gateway's Resolve can look it up after hashing
-// the incoming value.
+// **api_key goes through hash**: SHA-256(plaintext) lands in the api_key_hash
+// column, so gateway can look it up by hashing the input at Resolve time.
 func seedDB(t *testing.T, dsn, upstreamURL string) {
 	t.Helper()
 	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
@@ -260,7 +370,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("infra.Migrate seed: %v", err)
 	}
 	// MySQL refuses to TRUNCATE a parent table while an FK references it
-	// (pricing_versions → model_services); disable FK checks and sweep through all at once
+	// (pricing_versions → model_services); disable FK checks to blow through it all at once
 	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 0`); err != nil {
 		t.Fatalf("disable FK checks: %v", err)
 	}
@@ -281,8 +391,8 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("re-enable FK checks: %v", err)
 	}
 
-	// accounts("default") must exist first (FK anchor; schema.sql's seed does
-	// INSERT IGNORE but TRUNCATE just wiped it out)
+	// accounts("default") must exist first (FK anchor; schema.sql's seed already
+	// does INSERT IGNORE, but TRUNCATE wiped it out)
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO accounts (pin, name) VALUES (?, ?)`,
 		"default", "Default Account",
@@ -308,7 +418,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("seed subscription: %v", err)
 	}
 
-	// M5 requires an active price or it returns 503; the e2e test must seed a price
+	// M5 requires an active price, or it returns 503; the e2e test must seed a price
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO pricing_versions
 		 (account_id, model_service_id, rule_class, effective_from, effective_to, rule_json, created_by, notes)

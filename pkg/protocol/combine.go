@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sync"
 
@@ -11,16 +12,16 @@ import (
 )
 
 // Combine assembles a Factory (vendor HTTP layer) + translator.Translator
-// (body conversion) into a single Handler. **The core helper of the facade fusion.**
+// (body conversion) into a Handler. **The core helper for facade composition.**
 //
-// **Usage pattern**: DefaultLookup.Get(ep, srcProto) calls Combine at request time
-// to compose the current endpoint's Factory with the selected translator into a
-// Handler; it is not statically registered in init(). This reflects the v0.6 shift
-// of "protocol ownership" from the vendor level down to the endpoint level.
+// **Usage pattern**: DefaultLookup.Get(ep, srcProto) calls Combine at request
+// time to combine the current endpoint's Factory with the selected translator
+// into a Handler; it is not statically registered in init(). This reflects
+// v0.6's move of "protocol ownership" from vendor-level to endpoint-level.
 //
 // **Constraint**: translator.Target() must == ep.Protocol; Combine does not
-// validate this (it's a hot runtime path) — it's guaranteed by DefaultLookup
-// when it picks via translator.Find(src, ep.Protocol).
+// validate this (it's a hot runtime path) — DefaultLookup guarantees it when
+// selecting via translator.Find(src, ep.Protocol).
 func Combine(ad Factory, tr translator.Translator) Handler {
 	if ad == nil {
 		panic("protocol.Combine: nil Factory")
@@ -41,19 +42,19 @@ func Combine(ad Factory, tr translator.Translator) Handler {
 }
 
 // combined is the Handler implementation produced by Combine — internally the
-// facade still calls the underlying adapter / translator.
+// facade still delegates to the original adapter / translator.
 //
 // **quirksCache**: endpoint.Quirks JSON is compiled into a Rewriter the first
-// time it's seen; subsequent requests with the same spec (i.e. string(rawJSON))
-// hit the cache directly.
-//   - key   = string(endpoint.Quirks) — the JSON literal; shared across different
-//     endpoints with the same spec
+// time it's seen; subsequent requests with the same spec (i.e. the same
+// string(rawJSON)) hit the cache directly.
+//   - key   = string(endpoint.Quirks) — the JSON literal; endpoints with the
+//     same spec share the compiled result
 //   - value = quirks.Rewriter
 //
-// No active invalidation — after the deployer edits SQL, the new spec's string
-// naturally differs and gets a new entry; old entries are never evicted (scale
-// is generally < 100, which is acceptable). Switch to a hashicorp lru if strict
-// eviction is ever needed.
+// No active invalidation — once a deployer changes the SQL, the new spec's
+// string naturally differs and a new entry is added; old entries are never
+// evicted (cardinality is typically < 100, which is acceptable). Switch to a
+// hashicorp lru if strict eviction is required.
 type combined struct {
 	ad          Factory
 	tr          translator.Translator
@@ -70,10 +71,10 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 		return nil, NewPrepareError(PhaseTranslate, err)
 	}
 
-	// phase 2: quirks — endpoint-configured body + header tweaks.
-	// **Body and header run through together before handing off to the adapter**,
-	// keeping quirks → adapter a one-way pipe; the adapter doesn't need to know
-	// quirks exist.
+	// phase 2: quirks — body + header tweaks configured on the endpoint.
+	// **Body and header both finish before handing off to the adapter**,
+	// keeping the quirks → adapter pipeline one-directional; the adapter
+	// doesn't need to know quirks exist.
 	var extraHeaders http.Header
 	if len(ep.Quirks) > 0 {
 		rw, err := c.quirksFor(ep.Quirks)
@@ -85,16 +86,17 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 			return nil, NewPrepareError(PhaseQuirks, err)
 		}
 		extraHeaders = make(http.Header)
-		rw.RewriteHeader(extraHeaders) // run spec against an empty header: set / set_default take effect
+		rw.RewriteHeader(extraHeaders) // run the spec against an empty header: set / set_default take effect
 	}
 
-	// phase 3: adapter — HTTP envelope (URL / Auth / Content-Type), merging extraHeaders.
-	// Adapter-internal convention: copy extraHeaders first, then write its own
-	// protocol-required headers (written later so they override quirks), to
-	// prevent a deployer from accidentally breaking Authorization / Content-Type.
+	// phase 3: adapter — HTTP envelope (URL / Auth / Content-Type), merging
+	// extraHeaders. Internal adapter convention: copy extraHeaders first,
+	// then write its own protocol-required headers (later writes override
+	// quirks), preventing a deployer from accidentally breaking the request
+	// by overriding Authorization / Content-Type.
 	sess, err := c.ad.NewSession(ctx, ep, &domain.RequestEnvelope{
 		SourceProtocol: c.caps.SourceProtocol,
-		RawBytes:       srcBody, // backup for session implementations that may reference the original body
+		RawBytes:       srcBody, // backup copy for session implementations that may reference the original body
 	})
 	if err != nil {
 		return nil, NewPrepareError(PhaseBuild, err)
@@ -104,20 +106,22 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 		_ = sess.Close()
 		return nil, NewPrepareError(PhaseBuild, err)
 	}
-	// v0.5 slim session has no streaming state — close right after construction.
+	// The v0.5 slim session has no streaming state — close it right after construction.
 	_ = sess.Close()
 
 	return &Call{Request: req, UpstreamBody: upstreamBody}, nil
 }
 
-// quirksFor gets (or builds) the Rewriter for endpoint.Quirks, cached in a sync.Map.
+// quirksFor gets (or builds) the Rewriter corresponding to endpoint.Quirks,
+// cached in a sync.Map.
 //
-// **key**: string(rawSpec) — same string literal shares the same Rewriter; different
-// endpoints configured with identical quirks share the same compiled artifact.
+// **key**: string(rawSpec) — the same string literal maps to the same
+// Rewriter; different endpoints configured with the same quirks share the
+// same compiled artifact.
 //
-// **Errors are not cached**: a failed compile is not stored in the cache, so it
-// retries compilation on every call (so a deployer's SQL edit takes effect
-// immediately; caching a broken rule would only make debugging harder).
+// **Errors are not cached**: on compile failure nothing is stored in the
+// cache, so it's retried every time (this lets a deployer's SQL change take
+// effect immediately; caching failed rules would only make debugging harder).
 func (c *combined) quirksFor(rawSpec []byte) (quirks.Rewriter, error) {
 	key := string(rawSpec)
 	if cached, ok := c.quirksCache.Load(key); ok {
@@ -135,10 +139,10 @@ func (c *combined) NewResponseStream() ResponseStream {
 	return &combinedStream{inner: c.tr.NewResponseHandler()}
 }
 
-// Classify passes through to the Factory's Classifier (if implemented).
+// Classify delegates to the Factory's Classifier, if implemented.
 //
-// **Interface promotion**: Classifier is an optional implementation on Factory;
-// combined automatically exposes this capability so upstream code only needs to
+// **Interface promotion**: Factory's Classifier is an optional implementation;
+// combined automatically surfaces this capability so callers only need to
 // type-assert protocol.Classifier.
 func (c *combined) Classify(status int, body []byte) *domain.AdapterError {
 	if cls, ok := c.ad.(Classifier); ok {
@@ -147,8 +151,19 @@ func (c *combined) Classify(status int, body []byte) *domain.AdapterError {
 	return nil
 }
 
-// combinedStream wraps translator.ResponseHandler as protocol.ResponseStream
-// (identical interface shape — just a package rename + avoiding an import cycle risk).
+// DecodeTransport delegates to the Factory's TransportDecoder, if
+// implemented. Same capability-promotion pattern as Classify — callers only
+// type-assert protocol.TransportDecoder; nil means no de-framing is needed.
+func (c *combined) DecodeTransport(resp *http.Response) io.Reader {
+	if dec, ok := c.ad.(TransportDecoder); ok {
+		return dec.DecodeTransport(resp)
+	}
+	return nil
+}
+
+// combinedStream wraps a translator.ResponseHandler as a
+// protocol.ResponseStream (identical interface shape — just renaming the
+// package to avoid an import-cycle risk).
 type combinedStream struct {
 	inner translator.ResponseHandler
 }

@@ -1,10 +1,10 @@
-// Package moderation provides content moderation: the Moderator interface + a
-// response stream decorator + ctx propagation helpers.
+// Package moderation implements content moderation: the Moderator interface,
+// a response stream decorator, and ctx-passing helpers.
 //
-// **Architecture position**: extracted from the original pkg/middleware — both
-// dispatcher and invoker need to wrap the response stream to moderate output,
-// but neither should reverse-depend on middleware; moderation being its own
-// package keeps both sides clean.
+// **Architectural placement**: extracted out of the original pkg/middleware —
+// both dispatcher and invoker need to wrap the response stream to moderate
+// output, but neither can depend back on middleware; splitting moderation
+// into its own package keeps both sides clean.
 //
 // **Usage shape**:
 //
@@ -17,7 +17,7 @@
 //	  stream := moderation.WrapStream(handler.NewResponseStream(), ctx)
 //	  // the wrapped stream calls mod.CheckOutput on Feed/Flush; a violation → return error to cut off the stream
 //
-// See docs/architecture/01-request-pipeline.md, the M8 section, for details.
+// See the M8 section of docs/architecture/01-request-pipeline.md for details.
 package moderation
 
 import (
@@ -32,7 +32,7 @@ import (
 
 // Moderator is the content moderation port.
 //
-// **CheckInput**: pre-side, done once against the request body; called
+// **CheckInput**: pre-side, run once against the full request body; called
 // directly by the M8 middleware.
 // **CheckOutput**: post-side, fed chunk by chunk; called by moderation.WrapStream
 // after protocol.ResponseStream.Feed/Flush.
@@ -42,17 +42,17 @@ type Moderator interface {
 }
 
 // =============================================================================
-// ctx propagation
+// ctx passing
 // =============================================================================
 
 type ctxKey struct{}
 
-// ContextWithModerator injects the Moderator into ctx. Called by M8; read back
-// downstream by WrapStream.
-// If mod is nil, returns the original ctx unchanged (caller doesn't need to nil-check).
+// ContextWithModerator injects a Moderator into ctx. Called by M8; read back
+// downstream by WrapStream. Returns the original ctx when mod is nil (callers
+// don't need to nil-check).
 //
-// **Naming**: aligned with the standard library's context.WithValue style —
-// making the "returns a new ctx" semantics explicit; this avoids confusion with
+// **Naming**: aligned with the stdlib context.WithValue convention — making
+// the "returns a new ctx" semantics explicit, to avoid confusion with
 // pkg/middleware's gin-style "Option" interface (which also commonly uses the
 // WithX pattern).
 func ContextWithModerator(ctx context.Context, mod Moderator) context.Context {
@@ -62,7 +62,7 @@ func ContextWithModerator(ctx context.Context, mod Moderator) context.Context {
 	return context.WithValue(ctx, ctxKey{}, mod)
 }
 
-// FromContext extracts the Moderator from ctx; returns nil if none was injected.
+// FromContext extracts the Moderator stored in ctx; returns nil if none was injected.
 func FromContext(ctx context.Context) Moderator {
 	if ctx == nil {
 		return nil
@@ -77,10 +77,10 @@ func FromContext(ctx context.Context) Moderator {
 
 // WrapStream wraps the inner protocol.ResponseStream with a moderatedStream.
 //
-// If ctx is nil or ctx has no moderator, returns inner unchanged (avoiding wrap
-// overhead).
+// If ctx is nil or has no moderator in it, returns inner untouched (avoids the
+// wrapping overhead).
 //
-// **Usage convention**: caller wraps immediately after constructing the stream:
+// **Usage convention**: the caller wraps immediately after constructing the stream:
 //
 //	stream := moderation.WrapStream(handler.NewResponseStream(), ctx)
 //	sender.Forward(ctx, w, ep, resp, stream)
@@ -92,16 +92,26 @@ func WrapStream(inner protocol.ResponseStream, ctx context.Context) protocol.Res
 	return &moderatedStream{inner: inner, mod: mod, ctx: ctx}
 }
 
-// moderatedStream is a decorator: it inserts Moderator.CheckOutput after the
-// inner Feed call.
+// moderatedStream decorator: inserts a Moderator.CheckOutput call right after inner's Feed.
 //
-// When a violation is detected → Feed returns error → invoker.Forward's chunk
-// loop breaks → this chunk's bytes **will not** be written to the client.
-// Subsequent Feed calls all short-circuit and return err directly.
+// When a violation is detected → Feed returns an error → invoker.Forward's
+// chunk loop breaks → this chunk's bytes are **not** written to the client.
+// Subsequent Feed calls all short-circuit and return the same err.
 //
-// **CheckOutput is called after inner.Feed**: the moderator sees "the bytes the
-// client will actually see", not the raw upstream chunk (the translator may
-// have altered its shape).
+// **CheckOutput is called after inner.Feed**: the moderator sees "the bytes
+// the client will actually see", not the raw upstream chunk (the translator
+// may have reshaped it).
+//
+// **Under streaming, CheckOutput's input is a single SSE frame**: the out
+// produced by each Feed call is usually one frame (data: {...}\n\n). This
+// means substring/regex-based guards can only catch patterns that fall within
+// a single frame under streaming; patterns split across frames (tokens each
+// forming their own frame, with framing bytes in between) can't be scanned —
+// even buffering across chunks can't reassemble them. A hard guarantee
+// requires the non-streaming path — Flush submits the entire body for
+// checking at once. This is an inherent constraint of streaming content
+// moderation (bytes already sent can't be recalled), not something this
+// decorator alone can fix; see the DenylistGuard type doc for details.
 type moderatedStream struct {
 	inner    protocol.ResponseStream
 	mod      Moderator
@@ -109,8 +119,8 @@ type moderatedStream struct {
 	violated atomic.Bool
 }
 
-// Feed passes through to inner, then CheckOutput; a violation → return error to
-// let forward abort the stream.
+// Feed passes through to inner, then calls CheckOutput; a violation → returns
+// an error so forward aborts the stream.
 func (h *moderatedStream) Feed(chunk []byte) ([]byte, error) {
 	if h.violated.Load() {
 		return nil, ErrViolated
@@ -128,11 +138,10 @@ func (h *moderatedStream) Feed(chunk []byte) ([]byte, error) {
 	return out, nil
 }
 
-// Flush passes through to inner, then does one more CheckOutput on the final
-// bytes.
+// Flush passes through to inner, then runs CheckOutput once more on the final bytes.
 //
 // In the non-streaming (buffer-then-translate) path, Feed always returns nil
-// and only Flush produces the final body; so Flush must also be checked once.
+// and only Flush delivers the final body; it must be checked here too.
 func (h *moderatedStream) Flush() ([]byte, *domain.Usage, error) {
 	finalOut, usage, err := h.inner.Flush()
 	if err != nil {
@@ -150,8 +159,8 @@ func (h *moderatedStream) Flush() ([]byte, *domain.Usage, error) {
 	return finalOut, usage, nil
 }
 
-// ErrViolated is used internally by the decorator: it flags "a violation has
-// been detected, all subsequent Feed calls fail".
-// invoker.Forward treats every Feed err as an abort signal; there's no need to
-// specifically recognize this sentinel.
+// ErrViolated is used internally by the decorator to mark "a violation has
+// been detected; all subsequent Feed calls fail". invoker.Forward treats any
+// Feed err as an abort signal, so there's no need to specifically recognize
+// this sentinel.
 var ErrViolated = errors.New("moderation: output violated; stream aborted")

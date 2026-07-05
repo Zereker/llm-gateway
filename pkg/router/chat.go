@@ -64,7 +64,7 @@ func registerChatRoutes(engine *gin.Engine, deps Deps) {
 			middleware.WithLimitStore(deps.RateLimitStore),
 			middleware.WithLimitPolicies(deps.QuotaPolicies),
 		),
-		middleware.ResponseCache(deps.ResponseCache, deps.CacheTTL),
+		deps.Cache,
 		middleware.Schedule(deps.Dispatcher),
 		noopHandler,
 	)
@@ -82,7 +82,7 @@ func registerChatRoutes(engine *gin.Engine, deps Deps) {
 			middleware.WithLimitStore(deps.RateLimitStore),
 			middleware.WithLimitPolicies(deps.QuotaPolicies),
 		),
-		middleware.ResponseCache(deps.ResponseCache, deps.CacheTTL),
+		deps.Cache,
 		middleware.Schedule(deps.Dispatcher),
 		noopHandler,
 	)
@@ -100,7 +100,7 @@ func registerChatRoutes(engine *gin.Engine, deps Deps) {
 			middleware.WithLimitStore(deps.RateLimitStore),
 			middleware.WithLimitPolicies(deps.QuotaPolicies),
 		),
-		middleware.ResponseCache(deps.ResponseCache, deps.CacheTTL),
+		deps.Cache,
 		middleware.Schedule(deps.Dispatcher),
 		noopHandler,
 	)
