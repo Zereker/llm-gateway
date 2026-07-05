@@ -8,9 +8,10 @@ import (
 )
 
 
-// **回归（review MED#10）**：Close 与并发 Publish 竞态不能 panic——
-// 旧实现 close(queue) 时并发 Publish 的 select 可能选中往已关 channel 发送。
-// 现在 queue 永不 close，-race 下并发轰炸验证。
+// **Regression (review MED#10)**: a race between Close and concurrent
+// Publish must not panic — in the old implementation, close(queue) meant a
+// concurrent Publish's select could pick sending on an already-closed
+// channel. Now queue is never closed; verified by concurrent bombardment under -race.
 func TestAsyncKafkaOutbox_ConcurrentPublishCloseNoPanic(t *testing.T) {
 	w := &stubWriter{}
 	o := NewAsyncKafkaOutbox(w, "t", AsyncOptions{BufferSize: 8})
@@ -27,17 +28,17 @@ func TestAsyncKafkaOutbox_ConcurrentPublishCloseNoPanic(t *testing.T) {
 			}
 		}()
 	}
-	// 在 Publish 洪峰中途 Close
+	// Close midway through the Publish flood
 	time.Sleep(2 * time.Millisecond)
 	_ = o.Close()
 	wg.Wait()
-	// Close 之后 Publish 拒绝
+	// Publish should be rejected after Close
 	if err := o.Publish(context.Background(), &OutboxEvent{Key: "k", Payload: []byte("v")}); err == nil {
-		t.Error("Close 后 Publish 应返错")
+		t.Error("Publish after Close should return an error")
 	}
 }
 
-// FileOutbox Close 与并发 Publish 竞态不能 nil deref。
+// A race between Close and concurrent Publish in FileOutbox must not nil deref.
 func TestFileOutbox_ConcurrentPublishCloseNoPanic(t *testing.T) {
 	f, err := NewFileOutbox(t.TempDir() + "/usage.jsonl")
 	if err != nil {
@@ -57,6 +58,6 @@ func TestFileOutbox_ConcurrentPublishCloseNoPanic(t *testing.T) {
 	_ = f.Close()
 	wg.Wait()
 	if err := f.Publish(context.Background(), &OutboxEvent{Payload: []byte("x")}); err == nil {
-		t.Error("Close 后 Publish 应返错")
+		t.Error("Publish after Close should return an error")
 	}
 }

@@ -7,11 +7,12 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// reset 抹掉本测试用到的 metric，避免不同 test case 之间因 prometheus default
-// registry 共享导致 label keys 冲突 panic。
+// reset wipes the metric used by this test, to avoid a label-keys conflict panic caused
+// by different test cases sharing the prometheus default registry.
 //
-// Note: prometheus 不支持"unregister + 同名异 label 重注册"——所以测试里每个
-// metric name 只能用一次 label 组合。这里用唯一 name 规避冲突。
+// Note: prometheus does not support "unregister + re-register the same name with
+// different labels" — so each metric name in the tests can only use one label
+// combination. We use a unique name here to avoid the conflict.
 func TestInc_RegistersAndIncrementsCounter(t *testing.T) {
 	const name = "test_metric_inc_counter_total"
 	Inc(name, "result", "ok")
@@ -33,7 +34,7 @@ func TestObserve_RegistersAndRecordsHistogram(t *testing.T) {
 	Observe(name, 0.25, "path", "/x")
 	Observe(name, 1.5, "path", "/x")
 
-	// Histogram 验证 sample count 累积即可。
+	// For the histogram, it's enough to verify that the sample count accumulates.
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		t.Fatalf("gather: %v", err)
@@ -77,7 +78,7 @@ func TestGauge_RegistersAndSets(t *testing.T) {
 }
 
 func TestSplitLabels_OddCountDropsTail(t *testing.T) {
-	keys, vals := splitLabels([]string{"a", "1", "b", "2", "c"}) // 奇数
+	keys, vals := splitLabels([]string{"a", "1", "b", "2", "c"}) // odd count
 	if len(keys) != 2 || len(vals) != 2 {
 		t.Errorf("len(keys)=%d, len(vals)=%d, want 2/2", len(keys), len(vals))
 	}
@@ -102,7 +103,7 @@ func TestSecondsBuckets_Monotonic(t *testing.T) {
 	}
 }
 
-// counterValue 从 default registry 取 counter 指定 labels 的当前值。
+// counterValue reads the current value of the counter with the given labels from the default registry.
 func counterValue(t *testing.T, name string, labels map[string]string) float64 {
 	t.Helper()
 	mfs, err := prometheus.DefaultGatherer.Gather()

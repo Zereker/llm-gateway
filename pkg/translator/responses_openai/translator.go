@@ -1,9 +1,10 @@
-// Package responses_openai OpenAI Responses 客户端 → OpenAI Chat Completions 上游的 Translator。
+// Package responses_openai is the Translator for OpenAI Responses clients → OpenAI Chat Completions upstream.
 //
-// 客户端按 OpenAI Responses 协议发请求（/v1/responses）；本 translator 翻译成
-// OpenAI Chat Completions 格式给 openai vendor 上游，响应再翻回 Responses 格式。
+// Clients send requests using the OpenAI Responses protocol (/v1/responses); this translator
+// converts them to OpenAI Chat Completions format for the openai vendor upstream, and translates
+// the response back into Responses format.
 //
-// **协议映射**：
+// **Protocol mapping**:
 //
 //	Request:
 //	  {model, input, instructions, stream}
@@ -13,11 +14,11 @@
 //	  OpenAI Chat: {id, choices:[{message:{role,content}}], usage}
 //	    → Responses: {id, object:"response", model, output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"..."}]}], usage:{input_tokens,output_tokens,total_tokens}}
 //
-// **v1.0 限制**：
-//   - 不支持 input 数组（message 形态）；仅 string input
-//   - 不支持 tools / structured outputs
-//   - 不支持 previous_response_id（有状态延续）
-//   - 流式：buffer-then-translate（v1.0 minimum）
+// **v1.0 limitations**:
+//   - Does not support input arrays (message form); string input only
+//   - Does not support tools / structured outputs
+//   - Does not support previous_response_id (stateful continuation)
+//   - Streaming: buffer-then-translate (v1.0 minimum)
 package responses_openai
 
 import (
@@ -43,13 +44,13 @@ func (responsesOpenAI) NewResponseHandler() translator.ResponseHandler {
 }
 
 // =============================================================================
-// Request：Responses 形态 → OpenAI ChatCompletions 形态
+// Request: Responses shape → OpenAI ChatCompletions shape
 // =============================================================================
 
-// responsesRequest Responses 入参 shape。
+// responsesRequest is the Responses input shape.
 type responsesRequest struct {
 	Model        string          `json:"model"`
-	Input        json.RawMessage `json:"input,omitempty"`        // string 或 []message
+	Input        json.RawMessage `json:"input,omitempty"`        // string or []message
 	Instructions string          `json:"instructions,omitempty"` // system prompt
 	Stream       bool            `json:"stream,omitempty"`
 	MaxTokens    *int            `json:"max_output_tokens,omitempty"`
@@ -57,13 +58,13 @@ type responsesRequest struct {
 	TopP         *float64        `json:"top_p,omitempty"`
 }
 
-// chatMessage OpenAI ChatCompletion 单 message。
+// chatMessage is a single OpenAI ChatCompletion message.
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// chatRequest OpenAI ChatCompletion 出参 shape（translator 写）。
+// chatRequest is the OpenAI ChatCompletion output shape (written by the translator).
 type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
@@ -93,14 +94,14 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		out.Messages = append(out.Messages, chatMessage{Role: "system", Content: req.Instructions})
 	}
 
-	// input 可以是 string 或 []message；先尝试 string
+	// input can be a string or []message; try string first
 	var inputStr string
 	if err := json.Unmarshal(req.Input, &inputStr); err == nil {
 		if inputStr != "" {
 			out.Messages = append(out.Messages, chatMessage{Role: "user", Content: inputStr})
 		}
 	} else {
-		// 尝试解析为 message 数组（responses input messages 形态）
+		// try parsing as a message array (responses input messages shape)
 		var inputMsgs []responsesInputMessage
 		if err := json.Unmarshal(req.Input, &inputMsgs); err != nil {
 			return nil, fmt.Errorf("responses_openai: input must be string or message array: %w", err)
@@ -113,7 +114,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// responsesInputMessage Responses 协议下的 input message 形态（部分支持）。
+// responsesInputMessage is the input message shape under the Responses protocol (partial support).
 type responsesInputMessage struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
@@ -124,7 +125,7 @@ func (m responsesInputMessage) contentString() string {
 	if err := json.Unmarshal(m.Content, &s); err == nil {
 		return s
 	}
-	// 数组形态：[{"type":"input_text","text":"..."}]
+	// array shape: [{"type":"input_text","text":"..."}]
 	var parts []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -136,17 +137,19 @@ func (m responsesInputMessage) contentString() string {
 		}
 		return sb
 	}
-	return string(m.Content) // 兜底
+	return string(m.Content) // fallback
 }
 
 // =============================================================================
-// Response：OpenAI ChatCompletions 形态 → Responses 形态
+// Response: OpenAI ChatCompletions shape → Responses shape
 // =============================================================================
 
-// responseHandler buffer-then-translate：累积完整响应后 Flush 时一次性翻译。
+// responseHandler is buffer-then-translate: accumulates the full response, then
+// translates it all at once on Flush.
 //
-// 流式真实场景下 OpenAI 上游会发 SSE events；这里 v1.0 简化处理：累积所有 chunk
-// （SSE 或 JSON）→ Flush 时整体翻译输出 Responses 终态格式。
+// In real streaming scenarios the OpenAI upstream sends SSE events; this is simplified
+// for v1.0: accumulate all chunks (SSE or JSON) → on Flush, translate the whole thing
+// into the final Responses format.
 type responseHandler struct {
 	buf []byte
 	ex  extractor.Session
@@ -161,7 +164,7 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	return nil, nil // buffer-then-translate
 }
 
-// openaiChatResponse OpenAI ChatCompletion 响应 shape（非流式整体）。
+// openaiChatResponse is the OpenAI ChatCompletion response shape (full, non-streaming).
 type openaiChatResponse struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
@@ -182,7 +185,7 @@ type openaiChatResponse struct {
 	} `json:"usage"`
 }
 
-// responsesOutput Responses 协议输出 shape。
+// responsesOutput is the Responses protocol output shape.
 type responsesOutput struct {
 	ID     string `json:"id"`
 	Object string `json:"object"` // "response"
@@ -207,11 +210,11 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		return nil, h.ex.Final(), nil
 	}
 
-	// 上游可能是 SSE 流式；v1.0 minimum 只支持非流式 JSON body
-	// （SSE 完整聚合后翻译留给 v1.1）
+	// upstream may be SSE streaming; v1.0 minimum only supports a non-streaming JSON body
+	// (translating fully-aggregated SSE is left for v1.1)
 	var src openaiChatResponse
 	if err := json.Unmarshal(h.buf, &src); err != nil {
-		// 上游 SSE 无法非流式解析 → 直接透传原 chunk（客户端可能能消化）
+		// upstream SSE can't be parsed as non-streaming → pass through the raw chunk as-is (the client may be able to handle it)
 		return h.buf, h.ex.Final(), nil
 	}
 

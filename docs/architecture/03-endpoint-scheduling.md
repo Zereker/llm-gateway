@@ -107,11 +107,11 @@ type Endpoint struct {
 Candidate queries match enabled, non-soft-deleted endpoints by `(model, group)` and return them sorted by descending weight. Endpoints form a global pool with no account_id; primary-account visibility is handled in the M5 subscription stage.
 
 `EndpointReader` shares its source of truth with M5's `ModelCatalog`; the production implementation follows
-[06 §8 repo caching](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播):
+[06 §8 repo caching](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation):
 after a SQL change to the `endpoints` table, the gateway repo's in-process TTL LRU (30s by default)
 naturally expires, and the next miss goes straight to SQL to fetch the new value.
 `CachedEndpointReader` maintains both a list cache
-(keyed by `"model\x00group"`) and an id cache; see [06 §8.2](./06-pluggable-infra.md#82-适用表与默认参数) for parameters.
+(keyed by `"model\x00group"`) and an id cache; see [06 §8.2](./06-pluggable-infra.md#82-applicable-tables-and-default-parameters) for parameters.
 
 `EndpointCapabilities.SelfHosted` determines `FormSelfHosted`; it is not inferred from the vendor name.
 

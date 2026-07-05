@@ -1,13 +1,13 @@
 # examples/prometheus/alerts.yaml
 #
-# Prometheus alert rules for llm-gateway。
+# Prometheus alert rules for llm-gateway.
 #
-# 名字约定：pkg/metric/names.go const 直接用 Prometheus-native underscore 形式
-# （e.g. llm_gateway_http_request_duration_seconds），本文件引用的就是同字面值。
-# 单位走 Prometheus 推荐 base SI（_seconds 不是 _ms）。
+# Naming convention: the consts in pkg/metric/names.go directly use the Prometheus-native underscore form
+# (e.g. llm_gateway_http_request_duration_seconds); this file references those exact literal names.
+# Units follow Prometheus's recommended base SI units (_seconds, not _ms).
 #
-# 用法：把本文件放到 prometheus.yml 的 rule_files: 列表里，重启 prometheus 加载。
-# 配套 Alertmanager 收 alert，按 severity / team label 路由到 PD / Slack。
+# Usage: add this file to the rule_files: list in prometheus.yml, then restart prometheus to load it.
+# Pair it with Alertmanager to receive alerts and route them to PD / Slack based on severity / team labels.
 
 groups:
   - name: llm-gateway-availability
@@ -27,8 +27,8 @@ groups:
         annotations:
           summary: "llm-gateway: upstream error rate > 10% (class={{ $labels.class }})"
           description: |
-            过去 5 分钟有超过 10% 的请求被分类为 {{ $labels.class }}。
-            检查上游 vendor 状态 / 网络 / 配额。
+            Over the past 5 minutes, more than 10% of requests were classified as {{ $labels.class }}.
+            Check upstream vendor status / network / quota.
 
       - alert: AiGatewayUpstreamCallFailing
         expr: |
@@ -43,8 +43,8 @@ groups:
         annotations:
           summary: "llm-gateway: > 30% upstream calls failing"
           description: |
-            过去 2 分钟超过 30% 的上游调用失败（任意 endpoint / 任意 vendor）。
-            可能：所有上游同时坏 / DNS 错 / 网络分区。
+            Over the past 2 minutes, more than 30% of upstream calls failed (any endpoint / any vendor).
+            Possible causes: all upstreams down simultaneously / DNS error / network partition.
 
   - name: llm-gateway-latency
     interval: 30s
@@ -90,8 +90,8 @@ groups:
         annotations:
           summary: "llm-gateway: rate limit rejecting > 20% (scope={{ $labels.scope }})"
           description: |
-            过去 5 分钟限流拒了超过 20% 的请求。可能：客户端突发流量 / quota 配低了。
-            检查对应 scope 的 quota_policies 配置。
+            Over the past 5 minutes, rate limiting rejected more than 20% of requests. Possible causes: a client traffic burst / quota configured too low.
+            Check the quota_policies configuration for the corresponding scope.
 
       - alert: AiGatewayRateLimitOversell
         expr: llm_gateway_rate_limit_oversell_ratio > 0.05
@@ -101,8 +101,8 @@ groups:
         annotations:
           summary: "llm-gateway: rate limit oversell ratio > 5%"
           description: |
-            限流超卖比例 = (放过的真实 cost - 估算 cost) / 估算 cost。
-            > 5% 说明 token estimator 偏差大；检查 estimator 实现 / 改更保守的预估。
+            Rate-limit oversell ratio = (actual cost let through - estimated cost) / estimated cost.
+            > 5% indicates the token estimator is significantly off; check the estimator implementation / make the estimate more conservative.
 
   - name: llm-gateway-cooldown
     interval: 1m
@@ -115,7 +115,7 @@ groups:
           severity: warning
         annotations:
           summary: "llm-gateway: > 5 endpoints/sec entering cooldown"
-          description: "endpoints 大量进 cooldown。检查上游普遍异常或 cooldown 阈值是否过激"
+          description: "A large number of endpoints are entering cooldown. Check for widespread upstream issues or an overly aggressive cooldown threshold"
 
   - name: llm-gateway-budget-moderation
     interval: 1m
@@ -128,7 +128,7 @@ groups:
           severity: critical
         annotations:
           summary: "llm-gateway: budget service erroring out"
-          description: "Budget Gate 调用大量报错。计费系统挂？"
+          description: "Budget Gate calls are erroring out heavily. Is the billing system down?"
 
   - name: llm-gateway-process
     interval: 30s
@@ -142,7 +142,7 @@ groups:
         annotations:
           summary: "llm-gateway: panic recovered (any goroutine)"
           description: |
-            M9 Recover 兜住了 panic。看日志找 stack trace；任何 panic 都该被定位修复。
+            M9 Recover caught a panic. Check the logs for the stack trace; every panic should be tracked down and fixed.
 
       - alert: AiGatewayUsageBusBacklog
         expr: |
@@ -156,5 +156,5 @@ groups:
         annotations:
           summary: "llm-gateway: usage outbox dropping events"
           description: |
-            usage 事件写 file / kafka 失败。检查盘空间 / kafka broker 健康度。
-            usage 事件丢失意味着计费数据不全。
+            Writing usage events to file / kafka is failing. Check disk space / kafka broker health.
+            Lost usage events mean incomplete billing data.

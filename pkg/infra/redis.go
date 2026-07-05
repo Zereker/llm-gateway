@@ -8,28 +8,33 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisConfig Redis 客户端连接配置（M6 RateLimit + 未来 cache layer 共享）。
+// RedisConfig is the Redis client connection configuration (shared by M6
+// RateLimit and a future cache layer).
 //
-// pkg/config 通过引用本类型把字段暴露给 yaml；用户写：
+// pkg/config exposes these fields to yaml by referencing this type; the
+// user writes:
 //
 //	redis:
 //	  addr: localhost:6379
 //	  db: 0
 //	  password: ""
 //
-// **注意**：v0.5 后 Redis 是 gateway 的 hard dependency（M6 限流必须）；
-// 启动期 ping 失败 fail-fast。生产配主备 / sentinel；本结构体目前只支持单实例
-// （go-redis Client；未来扩 ClusterClient 时加 driver 字段）。
+// **Note**: as of v0.5 Redis is a hard dependency of the gateway (required
+// by M6 rate limiting); a ping failure at startup is fail-fast. Production
+// should configure primary/standby or sentinel; this struct currently only
+// supports a single instance (go-redis Client; a driver field will be
+// added when ClusterClient support is extended in the future).
 type RedisConfig struct {
 	Addr     string `yaml:"addr"`     // host:port
-	DB       int    `yaml:"db"`       // 默认 0
-	Password string `yaml:"password"` // 默认 ""
+	DB       int    `yaml:"db"`       // default 0
+	Password string `yaml:"password"` // default ""
 }
 
-// OpenRedis 按 cfg 打开 *redis.Client 并 ping 验证。
+// OpenRedis opens a *redis.Client per cfg and verifies it with a ping.
 //
-// 应用层只在 main 调一次，整个进程共享一个 client（go-redis 内部连接池）。
-// 调用方负责 defer client.Close()。
+// The application layer calls this once in main; the whole process
+// shares one client (go-redis's internal connection pool). The caller is
+// responsible for deferring client.Close().
 func OpenRedis(cfg RedisConfig) (*redis.Client, error) {
 	if cfg.Addr == "" {
 		return nil, fmt.Errorf("infra: redis addr required")
@@ -38,7 +43,8 @@ func OpenRedis(cfg RedisConfig) (*redis.Client, error) {
 		Addr:     cfg.Addr,
 		DB:       cfg.DB,
 		Password: cfg.Password,
-		// 连接池默认（go-redis 默认 10 × CPU）够用；上量再调
+		// Connection pool defaults (go-redis defaults to 10 x CPU) are
+		// sufficient; tune when load increases
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

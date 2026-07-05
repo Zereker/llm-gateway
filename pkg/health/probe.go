@@ -1,23 +1,26 @@
-// Package health 主动健康探测（docs/architecture/03-endpoint-scheduling.md §10）。
+// Package health provides active health probing (docs/architecture/03-endpoint-scheduling.md §10).
 //
-// **职责**：周期性探测自部署 endpoint（capabilities.SelfHosted=true）的健康状态，
-// 把探测结果写到 EndpointStatsStore，作为 Runtime Scoring 的 success/latency factor
-// 输入之一。
+// **Responsibility**: periodically probes the health of self-hosted endpoints
+// (capabilities.SelfHosted=true) and writes the probe results to
+// EndpointStatsStore, feeding one of the success/latency factor inputs of
+// Runtime Scoring.
 //
-// **约束**：
-//   - probe 结果**不**替代资格过滤；协议/模态不支持仍然必须被 eligibility 剔除
-//   - probe 只影响 stats / scoring，不直接改业务配置
-//   - 探测失败不立即把 endpoint 标 cooldown（被动 cooldown 仍然是主路径的真实失败信号）
+// **Constraints**:
+//   - probe results do **not** replace eligibility filtering; endpoints whose
+//     protocol/modality is unsupported must still be excluded by eligibility
+//   - probe only affects stats / scoring, it never mutates business config directly
+//   - a failed probe does not immediately mark the endpoint as cooldown (passive
+//     cooldown remains the real failure signal on the main path)
 //
-// **设计**：
+// **Design**:
 //
-//	Prober.Run() 启动后台 goroutine
+//	Prober.Run() starts a background goroutine
 //	    │
-//	    ├── 每 interval 拉一遍 self-hosted endpoint 全集（通过 EndpointSource）
-//	    ├── 并发 probe（每 endpoint 一次 GET，带超时）
-//	    └── probe 结果 → StatsStore.Record（同 Scheduler.Report 同一路径）
+//	    ├── every interval, pulls the full set of self-hosted endpoints (via EndpointSource)
+//	    ├── probes concurrently (one GET per endpoint, with timeout)
+//	    └── probe result → StatsStore.Record (same path as Scheduler.Report)
 //
-// 详见 docs/architecture/03-endpoint-scheduling.md §10。
+// See docs/architecture/03-endpoint-scheduling.md §10 for details.
 package health
 
 import (
@@ -34,30 +37,31 @@ import (
 	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
-// EndpointSource 提供"当前要 probe 的 endpoint 集合"。
+// EndpointSource provides "the current set of endpoints to probe".
 //
-// 典型实现：repo.EndpointReader.List + 过滤 capabilities.SelfHosted=true + HealthProbeEndpoint != ""。
+// Typical implementation: repo.EndpointReader.List + filter on
+// capabilities.SelfHosted=true + HealthProbeEndpoint != "".
 type EndpointSource interface {
 	ListProbeTargets(ctx context.Context) ([]*domain.Endpoint, error)
 }
 
-// HTTPDoer 抽象 HTTP client（*http.Client 自动满足）。
+// HTTPDoer abstracts the HTTP client (*http.Client satisfies it automatically).
 type HTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-// Config Prober 装配参数。
+// Config holds the Prober assembly parameters.
 type Config struct {
 	Source     EndpointSource
-	Stats      selector.EndpointStatsStore // 接收 probe 结果；写法跟 Scheduler.Report 同
+	Stats      selector.EndpointStatsStore // receives probe results; written the same way as Scheduler.Report
 	Client     HTTPDoer                    // nil = http.DefaultClient
-	Interval   time.Duration               // 默认 30s
-	Timeout    time.Duration               // 单次 probe 超时；默认 5s
-	Concurrent int                         // 并发 probe 上限；默认 8
+	Interval   time.Duration               // default 30s
+	Timeout    time.Duration               // per-probe timeout; default 5s
+	Concurrent int                         // max concurrent probes; default 8
 	Logger     *slog.Logger                // nil = slog.Default
 }
 
-// Prober 周期性 probe 子系统。
+// Prober is the periodic probing subsystem.
 type Prober struct {
 	cfg    Config
 	stop   chan struct{}
@@ -65,7 +69,7 @@ type Prober struct {
 	logger *slog.Logger
 }
 
-// New 构造 Prober。Run() 之前不会发起任何探测。
+// New constructs a Prober. No probing happens until Run() is called.
 func New(cfg Config) *Prober {
 	if cfg.Interval <= 0 {
 		cfg.Interval = 30 * time.Second
@@ -90,9 +94,9 @@ func New(cfg Config) *Prober {
 	}
 }
 
-// Run 启动后台 probe 循环；返回 nil 后调用 Stop 等待退出。
+// Run starts the background probe loop; call Stop to wait for it to exit.
 //
-// 立即启动一次 probe，然后按 Interval 周期。
+// Runs one probe immediately, then repeats every Interval.
 func (p *Prober) Run(ctx context.Context) {
 	if p.cfg.Source == nil || p.cfg.Stats == nil {
 		p.logger.Warn("health.Prober: missing Source or Stats; not running")
@@ -101,7 +105,7 @@ func (p *Prober) Run(ctx context.Context) {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		p.cycle(ctx) // 启动期立即一轮
+		p.cycle(ctx) // run one round immediately at startup
 		t := time.NewTicker(p.cfg.Interval)
 		defer t.Stop()
 		for {
@@ -117,13 +121,13 @@ func (p *Prober) Run(ctx context.Context) {
 	}()
 }
 
-// Stop 优雅停止；等当前 cycle 完成后返回。
+// Stop shuts down gracefully; returns after the current cycle finishes.
 func (p *Prober) Stop() {
 	close(p.stop)
 	p.wg.Wait()
 }
 
-// cycle 单次 probe 轮：拉 targets → 并发 probe → 写 stats。
+// cycle runs a single probe round: fetch targets → probe concurrently → write stats.
 func (p *Prober) cycle(parentCtx context.Context) {
 	targets, err := p.cfg.Source.ListProbeTargets(parentCtx)
 	if err != nil {
@@ -148,14 +152,15 @@ func (p *Prober) cycle(parentCtx context.Context) {
 	wg.Wait()
 }
 
-// probeOne 单 endpoint：GET 健康端点 → 按响应填 selector.Result → 写 stats。
+// probeOne handles a single endpoint: GET the health endpoint → fill in a
+// selector.Result based on the response → write stats.
 func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	if ep == nil {
 		return
 	}
 	url := ep.Capabilities.HealthProbeEndpoint
 	if url == "" {
-		return // 没配 probe URL，跳过
+		return // no probe URL configured, skip
 	}
 
 	ctx, cancel := context.WithTimeout(parentCtx, p.cfg.Timeout)
@@ -179,7 +184,7 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	p.recordResult(ep, selector.Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
 }
 
-// recordResult 写 stats + 发 metric。
+// recordResult writes stats + emits a metric.
 func (p *Prober) recordResult(ep *domain.Endpoint, r selector.Result) {
 	p.cfg.Stats.Record(context.Background(), ep.ID, r)
 	metric.Inc("llm_gateway_health_probe_total",
@@ -188,7 +193,7 @@ func (p *Prober) recordResult(ep *domain.Endpoint, r selector.Result) {
 	)
 }
 
-// classify HTTP status → ErrorClass（跟 upstream classifyHTTPStatus 一致）。
+// classify maps an HTTP status → ErrorClass (consistent with upstream classifyHTTPStatus).
 func classify(code int) selector.ErrorClass {
 	switch {
 	case code >= 200 && code < 300:
@@ -207,15 +212,17 @@ func classify(code int) selector.ErrorClass {
 }
 
 // =============================================================================
-// SelfHostedFilter：包一层 EndpointReader.List，只返 self-hosted + HealthProbeEndpoint 配置的
+// SelfHostedFilter: wraps EndpointReader.List, returning only endpoints that
+// are self-hosted and have HealthProbeEndpoint configured
 // =============================================================================
 
-// EndpointLister 抽象"返回所有 endpoint"（avoid直接依赖 repo）。
+// EndpointLister abstracts "return all endpoints" (avoids depending on repo directly).
 type EndpointLister interface {
 	List(ctx context.Context) ([]*domain.Endpoint, error)
 }
 
-// FilteredSource 包装 EndpointLister，只返回 self-hosted + 有 HealthProbeEndpoint 的 endpoint。
+// FilteredSource wraps an EndpointLister, returning only self-hosted endpoints
+// that have HealthProbeEndpoint set.
 type FilteredSource struct {
 	Lister EndpointLister
 }

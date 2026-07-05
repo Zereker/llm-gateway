@@ -12,8 +12,9 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// session 只管 Azure OpenAI 的 HTTP 层（URL + api-version + api-key 头）。
-// 协议 shape（SSE 解析 / usage 提取）复用 OpenAI 的 translator + response handler。
+// session only handles the Azure OpenAI HTTP layer (URL + api-version +
+// api-key header). Protocol shape (SSE parsing / usage extraction) reuses
+// OpenAI's translator + response handler.
 type session struct {
 	ctx context.Context
 	ep  *domain.Endpoint
@@ -24,11 +25,15 @@ func newSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvel
 	return &session{ctx: c, ep: ep, env: env}
 }
 
-// BuildRequest 构造 *http.Request：
-//   - URL: ep.Routing.URL（完整 Azure 端点）；若缺 api-version query 且
-//     ep.Routing.APIVersion 非空，则补上。
-//   - 鉴权：`api-key: <key>`（复用 AuthTypeBearer 的 BearerAuth.APIKey 载荷）。
-//   - header 顺序：先 quirks，再协议必需 header（覆盖），防 deployer 误改鉴权头。
+// BuildRequest constructs the *http.Request:
+//   - URL: ep.Routing.URL (the full Azure endpoint); if the api-version
+//     query is missing and ep.Routing.APIVersion is non-empty, it gets
+//     appended.
+//   - Auth: `api-key: <key>` (reuses AuthTypeBearer's BearerAuth.APIKey
+//     payload).
+//   - Header order: quirks first, then protocol-required headers
+//     (overriding), to prevent the deployer from accidentally clobbering
+//     the auth header.
 func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("azure-openai: ep.routing.url empty")
@@ -51,19 +56,20 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
-	for k, vs := range extraHeaders { // 先 quirks
+	for k, vs := range extraHeaders { // quirks first
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
-	req.Header.Set("Content-Type", "application/json") // 再协议必需（覆盖）
+	req.Header.Set("Content-Type", "application/json") // then protocol-required (overriding)
 	if key.APIKey != "" {
 		req.Header.Set("api-key", key.APIKey)
 	}
 	return req, nil
 }
 
-// ensureAPIVersion 若 URL 缺 api-version query 且提供了 version，则补上。
+// ensureAPIVersion appends the api-version query if the URL is missing it
+// and a version was provided.
 func ensureAPIVersion(raw, version string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -77,8 +83,8 @@ func ensureAPIVersion(raw, version string) (string, error) {
 	return u.String(), nil
 }
 
-// Close 幂等 no-op（本 session 不持资源）。
+// Close is an idempotent no-op (this session holds no resources).
 func (s *session) Close() error { return nil }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ protocol.Session = (*session)(nil)

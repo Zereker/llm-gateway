@@ -36,14 +36,14 @@ func TestAzure_AuthAndAPIVersion(t *testing.T) {
 	}
 	req := buildReq(t, ep)
 
-	// api-key 头（不是 Authorization: Bearer）
+	// api-key header (not Authorization: Bearer)
 	if got := req.Header.Get("api-key"); got != "azkey123" {
 		t.Errorf("api-key = %q, want azkey123", got)
 	}
 	if req.Header.Get("Authorization") != "" {
-		t.Error("Azure 不应发 Authorization 头")
+		t.Error("Azure should not send an Authorization header")
 	}
-	// api-version 被补进 query
+	// api-version gets appended to the query
 	if !strings.Contains(req.URL.RawQuery, "api-version=2024-06-01") {
 		t.Errorf("URL query = %q, want api-version=2024-06-01", req.URL.RawQuery)
 	}
@@ -59,7 +59,7 @@ func TestAzure_ExistingAPIVersionKept(t *testing.T) {
 	}
 	req := buildReq(t, ep)
 	if !strings.Contains(req.URL.RawQuery, "api-version=2023-01-01") || strings.Contains(req.URL.RawQuery, "2024-06-01") {
-		t.Errorf("既有 api-version 应保留不被覆盖，got %q", req.URL.RawQuery)
+		t.Errorf("existing api-version should be kept, not overwritten, got %q", req.URL.RawQuery)
 	}
 }
 
@@ -70,19 +70,19 @@ func TestAzure_WrongAuthType(t *testing.T) {
 	}
 	sess, _ := Factory{}.NewSession(context.Background(), ep, &domain.RequestEnvelope{})
 	if _, err := sess.BuildRequest([]byte(`{}`), http.Header{}); err == nil {
-		t.Error("非 bearer auth 应报错")
+		t.Error("non-bearer auth should return an error")
 	}
 }
 
-// Factory 注册 + 继承 openai 的 Classify（Azure 错误 JSON 是 OpenAI 形状）。
+// Factory registration + inherited openai Classify (Azure error JSON is OpenAI-shaped).
 func TestAzure_FactoryRegisteredWithClassify(t *testing.T) {
 	if protocol.LookupFactory("azure-openai") == nil {
-		t.Fatal("azure-openai vendor 未注册")
+		t.Fatal("azure-openai vendor is not registered")
 	}
 	f := Factory{}
 	if f.Metadata().Vendor != "azure-openai" {
 		t.Errorf("vendor = %q", f.Metadata().Vendor)
 	}
-	// 继承的 Classify 可用（embed openai.Factory）
+	// inherited Classify is usable (embeds openai.Factory)
 	var _ protocol.Classifier = f
 }

@@ -9,12 +9,13 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisStore Store 的唯一实现，多实例共享计数器（docs/04 §5 §7）。
+// RedisStore is the only implementation of Store; counters are shared across multiple instances
+// (docs/04 §5 §7).
 //
-// 三段 Lua 脚本：
-//   - reserveBatchLua  : sliding window counter + 多 key 原子检查 + 消耗（all-or-nothing）
-//   - chargeBatchLua   : 后扣写真实 cost；过 Limit 返 Overflow 标记
-//   - snapshotBatchLua : 批量读多 bucket 当前 effective + reset_at；只读
+// Three Lua scripts:
+//   - reserveBatchLua  : sliding window counter + atomic multi-key check + charge (all-or-nothing)
+//   - chargeBatchLua   : post-charge writes the real cost; returns an Overflow flag when over Limit
+//   - snapshotBatchLua : batch-reads the current effective value + reset_at for multiple buckets; read-only
 type RedisStore struct {
 	rdb            *redis.Client
 	scriptReserve  *redis.Script
@@ -32,24 +33,25 @@ func NewRedisStore(rdb *redis.Client) *RedisStore {
 }
 
 // =============================================================================
-// Lua 脚本
+// Lua scripts
 // =============================================================================
 
 // Sliding window counter:
 //
-// 把时间分成 window 大小的格子；每个 bucket 在 redis 里存两个 key：
+// Time is divided into window-sized slots; each bucket stores two keys in redis:
 //
-//	<key>:<curStart>   当前窗口起始时刻（unix sec）的计数
-//	<key>:<prevStart>  上一窗口的计数
+//	<key>:<curStart>   the count for the current window's start time (unix sec)
+//	<key>:<prevStart>  the count for the previous window
 //
 // effective_now = current_count + previous_count × ((window - elapsed) / window)
 //
-// **多 key 原子**：先 phase 1 检查所有 buckets，全过才 phase 2 INCRBY。
+// **Atomic across multiple keys**: phase 1 checks all buckets first; only if all pass does phase 2
+// run INCRBY.
 //
-// 返回数组 {allowed, violated_index, violated_current, violated_limit, retry_after_seconds}
+// Returns the array {allowed, violated_index, violated_current, violated_limit, retry_after_seconds}
 //
-//	{1, 0, 0, 0, 0}      = 全部允许
-//	{0, i, cur, lim, ra} = 第 i 个 bucket 拒绝（i 从 1 起；Lua 风格）
+//	{1, 0, 0, 0, 0}      = all allowed
+//	{0, i, cur, lim, ra} = the i-th bucket was rejected (i starts at 1; Lua style)
 //
 // ARGV layout: now, then per-bucket {window, limit, cost}
 const reserveBatchLua = `
@@ -91,17 +93,19 @@ end
 return {1, 0, 0, 0, 0}
 `
 
-// ChargeBatch Lua：每个 bucket 写 cost；不拒绝，但返 Overflow 标记。
+// ChargeBatch Lua: writes cost for each bucket; never rejects, but returns an Overflow flag.
 //
-// **跟 ReserveBatch 区别**（docs/04 §5 §7）：
-//   - reserve 是原子 all-or-nothing；charge 总是写入（除非 Redis 故障）
-//   - reserve 拒绝时本次请求失败；charge 写入后超限只标 Overflow 给 metric
+// **Difference from ReserveBatch** (docs/04 §5 §7):
+//   - reserve is atomic all-or-nothing; charge always writes (unless Redis fails)
+//   - when reserve rejects, this request fails; when charge writes over the limit, it only flags
+//     Overflow for the metric
 //
-// **不读 prev 窗口**：charge 是事后记账，不需要 sliding 校验——直接 INCRBY 当前
-// 窗口。effective 由 SnapshotBatch / observability 读出来时再算 prev 衰减。
+// **Does not read the prev window**: charge is after-the-fact accounting and doesn't need sliding
+// validation — it just runs INCRBY on the current window directly. The effective value with prev
+// decay is computed later when read via SnapshotBatch / observability.
 //
 // ARGV: now, then per-bucket {window, limit, cost}
-// 返回 {used_after, limit, overflow} × N （平铺）
+// Returns {used_after, limit, overflow} × N (flattened)
 const chargeBatchLua = `
 local now = tonumber(ARGV[1])
 local n = #KEYS
@@ -131,10 +135,10 @@ end
 return out
 `
 
-// SnapshotBatch Lua：批量读 bucket effective + reset_at；只读不写。
+// SnapshotBatch Lua: batch-reads bucket effective + reset_at; read-only, no writes.
 //
 // ARGV: now, then per-bucket {window, limit}
-// 返回 {used, limit, reset_at} × N （平铺）
+// Returns {used, limit, reset_at} × N (flattened)
 const snapshotBatchLua = `
 local now = tonumber(ARGV[1])
 local n = #KEYS
@@ -165,7 +169,7 @@ return out
 // Store impl
 // =============================================================================
 
-// ReserveBatch 实现 Store.ReserveBatch。
+// ReserveBatch implements Store.ReserveBatch.
 func (s *RedisStore) ReserveBatch(ctx context.Context, buckets []Bucket) (bool, *BucketViolation, error) {
 	if len(buckets) == 0 {
 		return true, nil, nil
@@ -210,7 +214,7 @@ func (s *RedisStore) ReserveBatch(ctx context.Context, buckets []Bucket) (bool, 
 	return false, violated, nil
 }
 
-// ChargeBatch 实现 Store.ChargeBatch（docs/04 §5 §7）。
+// ChargeBatch implements Store.ChargeBatch (docs/04 §5 §7).
 func (s *RedisStore) ChargeBatch(ctx context.Context, buckets []Bucket) ([]BucketChargeResult, error) {
 	if len(buckets) == 0 {
 		return nil, nil
@@ -250,7 +254,7 @@ func (s *RedisStore) ChargeBatch(ctx context.Context, buckets []Bucket) ([]Bucke
 	return out, nil
 }
 
-// SnapshotBatch 实现 Store.SnapshotBatch。
+// SnapshotBatch implements Store.SnapshotBatch.
 func (s *RedisStore) SnapshotBatch(ctx context.Context, buckets []Bucket) ([]BucketState, error) {
 	if len(buckets) == 0 {
 		return nil, nil
@@ -294,7 +298,7 @@ func (s *RedisStore) SnapshotBatch(ctx context.Context, buckets []Bucket) ([]Buc
 	return out, nil
 }
 
-// toInt 把 Lua 返回的数字解出来（go-redis 把整数返回成 int64，但小心 string）。
+// toInt parses the number returned by Lua (go-redis returns integers as int64, but watch out for string).
 func toInt(v any) (int64, error) {
 	switch x := v.(type) {
 	case int64:
@@ -308,5 +312,5 @@ func toInt(v any) (int64, error) {
 	}
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ Store = (*RedisStore)(nil)

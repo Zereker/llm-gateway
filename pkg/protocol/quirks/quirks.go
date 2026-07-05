@@ -1,41 +1,48 @@
-// Package quirks 定义 endpoint 级 request 微调 DSL——译完上游协议后的最终修正。
+// Package quirks defines the endpoint-level request tweak DSL — the final
+// correction pass applied after the upstream protocol translation.
 //
-// **架构定位**（v0.7）：
+// **Architecture position** (v0.7):
 //
 //	pkg/protocol/combine.go PrepareCall:
 //	  client body
-//	    → translator.TranslateRequest                  （客户端协议 → 上游协议 shape）
-//	    → ep.Quirks.RewriteBody + RewriteHeader        ← 本包（body + header 一次跑完）
-//	    → protocol.Session.BuildRequest(body, headers) （HTTP 信封 + 合并 quirks header）
+//	    → translator.TranslateRequest                  (client protocol → upstream protocol shape)
+//	    → ep.Quirks.RewriteBody + RewriteHeader        ← this package (body + header run in one pass)
+//	    → protocol.Session.BuildRequest(body, headers) (HTTP envelope + merge quirks headers)
 //	    → upstream
 //
-// **vendor Session 合并规则**：vendor Session 拷贝 quirks header 进 req.Header
-// 后，**再写**协议必需 header（Auth / Content-Type / vendor 版本头）——后写
-// 覆盖。这样 deployer 误改 Authorization 不会把请求打挂；想加 vendor 私有
-// header 又畅通。
+// **vendor Session merge rule**: the vendor Session copies quirks headers into
+// req.Header first, then **writes** the protocol-required headers (Auth /
+// Content-Type / vendor version headers) afterward — the later write wins.
+// That way a deployer mistakenly overriding Authorization can't break the
+// request, while still being free to add vendor-private headers.
 //
-// **为什么需要**：translator 只负责"客户端协议 → 上游协议"的形状转换；同一上游
-// 协议内不同 vendor / 模型仍有细微差异。两类典型差异：
+// **Why this is needed**: the translator only handles the "client protocol →
+// upstream protocol" shape conversion; within the same upstream protocol,
+// different vendors / models still have subtle differences. Two typical
+// categories of difference:
 //
-//   body 字段
-//   - OpenAI o1/o3/o4 推理模型：max_tokens → max_completion_tokens；strip
-//     temperature / top_p / presence_penalty / frequency_penalty
-//   - DeepSeek deepseek-reasoner：类似限制
-//   - Anthropic Claude 3.7+ extended_thinking：插 thinking 块 + 强制 temperature=1
-//   - vLLM / Ollama：strip 某些 OpenAI 特有字段
+//	body fields
+//	- OpenAI o1/o3/o4 reasoning models: max_tokens → max_completion_tokens; strip
+//	  temperature / top_p / presence_penalty / frequency_penalty
+//	- DeepSeek deepseek-reasoner: similar restrictions
+//	- Anthropic Claude 3.7+ extended_thinking: insert a thinking block + force temperature=1
+//	- vLLM / Ollama: strip certain OpenAI-specific fields
 //
-//   header 字段
-//   - 不同 vendor 的 trace-id header 名不一样（X-Request-Id / X-Trace-Id /
-//     X-Ark-Request-Id / x-ds-request-id 等）——gateway 统一用 X-Request-Id 写入，
-//     deployer 配置 rename 让上游收到自己认的 header 名
-//   - vendor 私有 header（如 X-API-Version）需要在 endpoint 上配死
+//	header fields
+//	- different vendors use different trace-id header names (X-Request-Id / X-Trace-Id /
+//	  X-Ark-Request-Id / x-ds-request-id, etc.) — the gateway always writes X-Request-Id
+//	  internally, and a deployer-configured rename lets the upstream receive the header
+//	  name it expects
+//	- vendor-private headers (e.g. X-API-Version) need to be hardcoded on the endpoint
 //
-// **为什么不做 vendor init()-time 注册**：quirks 是 deployment 知识，不是代码
-// 知识。同一 vendor 完全可能部署多个 endpoint 走不同 quirks（一个 o1 / 一个
-// gpt-4o），vendor 代码不该硬编码哪些 model 走哪些规则。**deployer 在
-// endpoints.quirks JSON 列里直接配，cmd 不需要重编译**。
+// **Why not register this at vendor init() time**: quirks is deployment
+// knowledge, not code knowledge. The same vendor can easily have multiple
+// endpoints deployed with different quirks (one for o1, one for gpt-4o), and
+// vendor code shouldn't hardcode which model gets which rules. **The deployer
+// configures it directly in the endpoints.quirks JSON column; cmd doesn't need
+// a rebuild.**
 //
-// **DSL**：endpoints.quirks 列存如下 JSON：
+// **DSL**: the endpoints.quirks column stores JSON like this:
 //
 //	{
 //	  "body": {
@@ -52,11 +59,14 @@
 //	  }
 //	}
 //
-// body / headers 子段任一可省略；全空 / 列 NULL = no-op。每子段内应用顺序固定：
-// rename → strip → set → set_default（先腾位置、再清理、再覆写、最后兜底）。
+// Either the body / headers sub-section can be omitted; all-empty / a NULL
+// column = no-op. Within each sub-section the application order is fixed:
+// rename → strip → set → set_default (first make room, then clean up, then
+// overwrite, then fill in defaults last).
 //
-// **strict mode**：CompileJSON 用 DisallowUnknownFields，typo 字段在 compile 阶段
-// 直接报错（combine.go 翻成 PhaseQuirks PrepareError）。
+// **strict mode**: CompileJSON uses DisallowUnknownFields, so a typo'd field
+// name fails immediately at compile time (combine.go turns it into a
+// PhaseQuirks PrepareError).
 package quirks
 
 import (
@@ -66,47 +76,51 @@ import (
 	"net/http"
 )
 
-// Rewriter endpoint 上配置的"上游请求微调"运行期句柄。
+// Rewriter is the runtime handle for the "upstream request tweaks" configured
+// on an endpoint.
 //
-// **生命周期**：Compile / CompileJSON 一次，多请求共享（无 per-call state，
-// 并发安全）。
+// **Lifecycle**: Compile / CompileJSON once, shared across many requests (no
+// per-call state, concurrency-safe).
 //
-// **使用**：combine.go 在 translator 之后、protocol.Session.BuildRequest 之前调 RewriteBody +
-// RewriteHeader 两个方法（header 跑在 fresh http.Header{} 上），把 final body +
-// header 传给 protocol.Session.BuildRequest。两步可独立 no-op（spec.Body 或
-// spec.Headers 单独为空时对应方法直接 short-circuit）。
+// **Usage**: combine.go calls the two methods RewriteBody + RewriteHeader
+// after the translator and before protocol.Session.BuildRequest (RewriteHeader
+// runs on a fresh http.Header{}), then passes the final body + header to
+// protocol.Session.BuildRequest. Each step can independently no-op (when
+// spec.Body or spec.Headers is empty on its own, the corresponding method
+// short-circuits immediately).
 type Rewriter interface {
-	// RewriteBody 改 body JSON 字段。返回 new body（可能跟入参同 slice）。
+	// RewriteBody rewrites body JSON fields. Returns the new body (may share
+	// the same underlying slice as the input).
 	RewriteBody(body []byte) ([]byte, error)
-	// RewriteHeader 改 outgoing HTTP header（in-place）。
+	// RewriteHeader rewrites the outgoing HTTP headers (in-place).
 	RewriteHeader(h http.Header)
 }
 
-// Spec endpoint 上配置的 quirks 规则。两子段全可选。
+// Spec is the quirks ruleset configured on an endpoint. Both sub-sections are optional.
 type Spec struct {
 	Body    BodySpec    `json:"body,omitempty"`
 	Headers HeadersSpec `json:"headers,omitempty"`
 }
 
-// BodySpec body JSON 字段微调。所有字段可选。应用顺序：Rename → Strip → Set → SetDefault。
+// BodySpec tweaks body JSON fields. All fields optional. Application order: Rename → Strip → Set → SetDefault.
 type BodySpec struct {
-	// Rename：from → to（删 from，写 to；from 不存在跳过）。
+	// Rename: from → to (deletes from, writes to; skipped if from doesn't exist).
 	Rename map[string]string `json:"rename,omitempty"`
-	// Strip：删除指定 key。
+	// Strip: deletes the given keys.
 	Strip []string `json:"strip,omitempty"`
-	// Set：覆写（已存在替换；不存在新增）。值是任意 JSON。
+	// Set: overwrites (replaces if present; adds if absent). Value is arbitrary JSON.
 	Set map[string]json.RawMessage `json:"set,omitempty"`
-	// SetDefault：仅在 key 不存在时写入。
+	// SetDefault: only written if the key doesn't already exist.
 	SetDefault map[string]json.RawMessage `json:"set_default,omitempty"`
 }
 
-// Empty 判断 body spec 是否全空。
+// Empty reports whether the body spec is entirely empty.
 func (s BodySpec) Empty() bool {
 	return len(s.Rename) == 0 && len(s.Strip) == 0 &&
 		len(s.Set) == 0 && len(s.SetDefault) == 0
 }
 
-// HeadersSpec HTTP header 微调。同样四种操作，但值类型都是 string（header value）。
+// HeadersSpec tweaks HTTP headers. Same four operations, but values are all string (header value).
 type HeadersSpec struct {
 	Rename     map[string]string `json:"rename,omitempty"`
 	Strip      []string          `json:"strip,omitempty"`
@@ -114,29 +128,30 @@ type HeadersSpec struct {
 	SetDefault map[string]string `json:"set_default,omitempty"`
 }
 
-// Empty 判断 header spec 是否全空。
+// Empty reports whether the header spec is entirely empty.
 func (s HeadersSpec) Empty() bool {
 	return len(s.Rename) == 0 && len(s.Strip) == 0 &&
 		len(s.Set) == 0 && len(s.SetDefault) == 0
 }
 
-// Empty 整个 Spec 全空 = no-op rewriter。
+// Empty reports whether the whole Spec is empty — i.e. a no-op rewriter.
 func (s Spec) Empty() bool {
 	return s.Body.Empty() && s.Headers.Empty()
 }
 
-// Compile 把 spec 编译成 Rewriter；零开销（只是把 spec 包成实现接口的 struct）。
+// Compile compiles a spec into a Rewriter; zero overhead (just wraps the spec in a struct implementing the interface).
 func Compile(spec Spec) Rewriter {
 	return &compiled{spec: spec}
 }
 
-// CompileJSON 解析 endpoint.quirks JSON 字节 + Compile。
+// CompileJSON parses the endpoint.quirks JSON bytes and calls Compile.
 //
-//   - 空字节 / 空白 = 返回 no-op Rewriter；不报错
-//   - 解析失败（含未知字段 typo） = 返错；上层翻成 PhaseQuirks PrepareError
+//   - empty bytes / whitespace = returns a no-op Rewriter; no error
+//   - parse failure (including unknown-field typos) = returns an error; the caller turns it into a PhaseQuirks PrepareError
 //
-// 启用 DisallowUnknownFields 严格模式：deployer 写错字段名（如 "strips" / "header"）
-// 会在 compile 时立即暴露，不会安静吞掉。
+// Strict mode via DisallowUnknownFields is enabled: a deployer typo in a field
+// name (e.g. "strips" / "header") is surfaced immediately at compile time
+// instead of being silently swallowed.
 func CompileJSON(specJSON []byte) (Rewriter, error) {
 	if len(bytes.TrimSpace(specJSON)) == 0 {
 		return Compile(Spec{}), nil
@@ -150,12 +165,12 @@ func CompileJSON(specJSON []byte) (Rewriter, error) {
 	return Compile(spec), nil
 }
 
-// compiled 是 Compile 返回的实现。
+// compiled is the implementation returned by Compile.
 type compiled struct {
 	spec Spec
 }
 
-// RewriteBody 按 rename → strip → set → set_default 顺序应用 body spec。
+// RewriteBody applies the body spec in rename → strip → set → set_default order.
 func (c *compiled) RewriteBody(body []byte) ([]byte, error) {
 	if c == nil || c.spec.Body.Empty() {
 		return body, nil
@@ -190,15 +205,16 @@ func (c *compiled) RewriteBody(body []byte) ([]byte, error) {
 	return out, nil
 }
 
-// RewriteHeader 按 rename → strip → set → set_default 顺序应用 header spec（in-place）。
+// RewriteHeader applies the header spec in rename → strip → set → set_default order (in-place).
 //
-// **header 名规范化**：http.Header 内部存的是 canonical 形式（X-Request-Id）；
-// 这里调 http.CanonicalHeaderKey 让 deployer 在配置里写大小写都行。
+// **Header name normalization**: http.Header internally stores canonical form
+// (X-Request-Id); we call http.CanonicalHeaderKey here so deployers can write
+// either case in config.
 //
-// **rename 语义**：from canonical → to canonical；from 不存在时跳过。多 value 一起搬。
-// **strip 语义**：删 canonical key 的所有 value。
-// **set 语义**：先 Del 再 Set（替换所有 value 成一个）。
-// **set_default**：只在 canonical key 不存在时 Set 一个 value。
+// **rename semantics**: from canonical → to canonical; skipped if from doesn't exist. Multiple values are moved together.
+// **strip semantics**: deletes all values for the canonical key.
+// **set semantics**: Del first then Set (replaces all values with a single one).
+// **set_default**: only Sets a value if the canonical key doesn't already exist.
 func (c *compiled) RewriteHeader(h http.Header) {
 	if c == nil || c.spec.Headers.Empty() || h == nil {
 		return
@@ -212,7 +228,7 @@ func (c *compiled) RewriteHeader(h http.Header) {
 			continue
 		}
 		h.Del(fromKey)
-		// 多 value 一起搬：Set 第一个，Add 剩下
+		// Move multiple values together: Set the first, Add the rest
 		h.Set(toKey, vals[0])
 		for _, v := range vals[1:] {
 			h.Add(toKey, v)

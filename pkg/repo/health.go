@@ -7,11 +7,14 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// CheckSchema 验证业务表已存在且可读——gateway 启动期跑 infra.Migrate 之后的
-// 防御性检查（schema.sql 漏改时早暴露，比"SQL: no such table"友好）。
+// CheckSchema verifies the business tables exist and are readable — a
+// defensive check run at gateway startup right after infra.Migrate (surfaces
+// a missed schema.sql change early, with a friendlier error than "SQL: no
+// such table").
 //
-// 不读数据，只发 prepare 级别的查询。表数据为空时 gateway 仍能启动，
-// 请求过来时 M5 / M7 / M2 各自 404 / 503 / 401（deployer 通过 SQL 直接管理数据）。
+// Reads no data, only issues prepare-level queries. The gateway can still
+// start when the tables are empty; once requests arrive, M5 / M7 / M2 return
+// 404 / 503 / 401 respectively (the deployer manages data directly via SQL).
 func CheckSchema(ctx context.Context, db *sqlx.DB) error {
 	for _, t := range []string{
 		"quota_policies",

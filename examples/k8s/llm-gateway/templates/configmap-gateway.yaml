@@ -14,7 +14,7 @@ data:
     request:
       body_limit_bytes: {{ $cfg.request.body_limit_bytes }}
       timeout: {{ $cfg.request.timeout }}
-    # database / redis / data_key 通过 env var 从 secret 注入；这里写占位让 yaml 合法
+    # database / redis / data_key are injected from secrets via env vars; placeholders here keep the yaml valid
     database:
       driver: mysql
       dsn: "${DATABASE_DSN}"

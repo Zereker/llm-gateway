@@ -1,15 +1,21 @@
-// Package azureopenai 是 Azure OpenAI 的 vendor 实现。
+// Package azureopenai is the vendor implementation for Azure OpenAI.
 //
-// Azure OpenAI 的**线协议就是 OpenAI**（同样的请求/响应 shape），所以 endpoint 的
-// `protocol` 仍填 `openai`——复用 OpenAI 的 translator + response handler + 错误分类
-// （embed openai.Factory 继承 Classify）。区别只在 HTTP 层：
+// Azure OpenAI's **wire protocol is just OpenAI's** (same request/response
+// shape), so the endpoint's `protocol` field is still set to `openai` —
+// we reuse OpenAI's translator + response handler + error classification
+// (embeds openai.Factory to inherit Classify). The only differences are at
+// the HTTP layer:
 //
-//	鉴权头：`api-key: <key>`（不是 Authorization: Bearer；那是 Azure AD token 的走法）
-//	URL：   带 `?api-version=<ver>` query（deployer 在 routing.url 填完整 Azure 端点，
-//	        或填 base + routing.api_version，本 adapter 补 api-version）
+//	Auth header: `api-key: <key>` (not Authorization: Bearer; that's for
+//	             Azure AD tokens).
+//	URL:         carries an `?api-version=<ver>` query (the deployer either
+//	             fills in the full Azure endpoint in routing.url, or fills
+//	             base + routing.api_version and lets this adapter append
+//	             api-version).
 //
-// 接入方式：deployer 写 endpoint 时 `vendor: azure-openai` + `protocol: openai` +
-// `auth.type: bearer`（payload.api_key = Azure key）。cmd/gateway blank import 本包。
+// Onboarding: when the deployer writes the endpoint, set `vendor: azure-openai`
+// + `protocol: openai` + `auth.type: bearer` (payload.api_key = Azure key).
+// cmd/gateway blank-imports this package.
 package azureopenai
 
 import (
@@ -20,13 +26,14 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol/openai"
 )
 
-// Factory embed openai.Factory 继承 Classify（Azure 返回 OpenAI 形状的错误 JSON），
-// 只覆盖 Metadata（vendor 名）+ NewSession（Azure HTTP 层）。
+// Factory embeds openai.Factory to inherit Classify (Azure returns
+// OpenAI-shaped error JSON), and only overrides Metadata (vendor name) +
+// NewSession (Azure HTTP layer).
 type Factory struct {
 	openai.Factory
 }
 
-// Metadata 覆盖 vendor 名。
+// Metadata overrides the vendor name.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
 		Vendor: "azure-openai",
@@ -37,7 +44,7 @@ func (Factory) Metadata() protocol.Metadata {
 	}
 }
 
-// NewSession 用 Azure session（api-key 头 + api-version URL）。
+// NewSession uses the Azure session (api-key header + api-version URL).
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	return newSession(c, ep, env), nil
 }

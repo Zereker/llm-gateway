@@ -1,15 +1,16 @@
-// Package openai_gemini OpenAI 客户端 → Gemini 上游的 Translator。
+// Package openai_gemini is the Translator for OpenAI clients → Gemini upstream.
 //
-// 客户端按 OpenAI ChatCompletion 格式发请求；本 translator 翻成 Gemini generateContent
-// 格式给 adapter 转发；上游响应再翻回 OpenAI 格式给客户端。
+// Clients send requests in OpenAI ChatCompletion format; this translator converts them
+// to Gemini generateContent format for the adapter to forward; the upstream response is
+// then translated back to OpenAI format for the client.
 //
-// **v0.5 限制**：
-//   - 只支持 chat（system/user/assistant/text content）
-//   - 不支持 streaming（buffer-then-translate at Flush；Gemini stream 格式跟 OpenAI SSE 不同，
-//     单独迭代加流式翻译）
-//   - 不支持 function calling / tool_use / vision
+// **v0.5 limitations**:
+//   - Only chat is supported (system/user/assistant/text content)
+//   - Streaming is not supported (buffer-then-translate at Flush; Gemini's stream format
+//     differs from OpenAI SSE, so streaming translation will be added separately)
+//   - function calling / tool_use / vision are not supported
 //
-// 字段映射详见 translateRequest / translateResponse。
+// See translateRequest / translateResponse for the field mapping details.
 package openai_gemini
 
 import (
@@ -38,33 +39,39 @@ func (openaiGemini) NewResponseHandler() translator.ResponseHandler {
 	return &responseHandler{ex: extractor.NewGemini()}
 }
 
-// responseHandler buffer-then-translate 模式：Feed 全部累积，Flush 一次性翻译。
+// responseHandler uses a buffer-then-translate model: Feed accumulates everything,
+// Flush translates it all at once.
 //
-// v0.6 加流式翻译时改这里：解析 Gemini chunk JSON 并实时翻成 OpenAI SSE chunk。
+// When streaming translation is added in v0.6, change this: parse the Gemini chunk JSON
+// and translate it into an OpenAI SSE chunk in real time.
 //
-// usage 走 extractor.Gemini 旁路（v0.5 G6 抽出）；translateResponse 不再返 usage。
+// usage goes through the extractor.Gemini side channel (factored out in v0.5 G6);
+// translateResponse no longer returns usage.
 type responseHandler struct {
 	buf          []byte
-	requestModel string // 翻回 OpenAI 时填到 response.model；目前留空，客户端能接受
+	requestModel string // filled into response.model when translating back to OpenAI; currently left empty, which clients accept
 	ex           extractor.Session
 }
 
 func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	h.buf = append(h.buf, chunk...)
 	h.ex.Feed(chunk)
-	return nil, nil // buffer 模式：不写客户端
+	return nil, nil // buffer mode: nothing written to the client yet
 }
 
 func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	if len(h.buf) == 0 {
-		// 上游空 body（4xx/5xx + 空 body 可能性）；没东西可透；不报错让 M7 静默
+		// Upstream returned an empty body (possible with 4xx/5xx + empty body); nothing to
+		// pass through; don't error, let M7 stay silent
 		return nil, nil, nil
 	}
 	if isGeminiError(h.buf) {
-		// **error path**：upstream 返了 4xx/5xx + 错误 JSON body。
-		// 不翻译（错误 schema 跟成功响应不同）；直接把原 body 透给客户端，保 error visibility。
-		// status 码已经是 upstream 的 4xx/5xx（M7 forwarded），客户端看到非 2xx + Gemini 错误 JSON。
-		// 唯一遗憾：错误格式不是 OpenAI shape；将来需要可以加 errorTranslate。
+		// **error path**: upstream returned 4xx/5xx with an error JSON body.
+		// Don't translate (the error schema differs from the success response); pass the
+		// raw body through to the client as-is, to preserve error visibility.
+		// The status code is already upstream's 4xx/5xx (forwarded by M7), so the client
+		// sees a non-2xx status plus the Gemini error JSON.
+		// The only downside: the error format isn't OpenAI shape; add errorTranslate later if needed.
 		return h.buf, nil, nil
 	}
 	body, err := translateResponse(h.buf, h.requestModel)
@@ -72,7 +79,7 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 }
 
 // =============================================================================
-// OpenAI 输入端 shape（最小必要字段）
+// OpenAI inbound shape (minimal required fields)
 // =============================================================================
 
 type openAIRequest struct {
@@ -91,7 +98,7 @@ type openAIMessage struct {
 }
 
 // =============================================================================
-// Gemini 上游端 shape
+// Gemini upstream shape
 // =============================================================================
 
 type geminiRequest struct {
@@ -134,7 +141,7 @@ type geminiUsageMeta struct {
 }
 
 // =============================================================================
-// OpenAI 输出端 shape（翻回客户端）
+// OpenAI outbound shape (translated back to the client)
 // =============================================================================
 
 type openAIResponse struct {
@@ -159,12 +166,12 @@ type openAIUsage struct {
 }
 
 // =============================================================================
-// 翻译函数
+// Translation functions
 // =============================================================================
 
-// translateRequest OpenAI body → Gemini body。
+// translateRequest converts an OpenAI body → Gemini body.
 //
-// 字段映射：
+// Field mapping:
 //
 //	messages[role=system]           → systemInstruction
 //	messages[role=user]             → contents[role=user, parts[].text]
@@ -174,7 +181,7 @@ type openAIUsage struct {
 //	top_p                           → generationConfig.topP
 //	stop (string or []string)       → generationConfig.stopSequences []string
 //
-// 不支持的 role（tool / function）返回 err。
+// Unsupported roles (tool / function) return an error.
 func translateRequest(rawBody []byte) ([]byte, error) {
 	var in openAIRequest
 	if err := json.Unmarshal(rawBody, &in); err != nil {
@@ -230,7 +237,8 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// parseStopField OpenAI stop 字段可能是 string 或 []string；都归一成 []string。
+// parseStopField normalizes the OpenAI stop field, which may be a string or a []string,
+// into a []string.
 func parseStopField(raw json.RawMessage) []string {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -243,9 +251,9 @@ func parseStopField(raw json.RawMessage) []string {
 	return nil
 }
 
-// translateResponse Gemini body → OpenAI body。
+// translateResponse converts a Gemini body → OpenAI body.
 //
-// 字段映射：
+// Field mapping:
 //
 //	candidates[0].content.parts[].text  → choices[0].message.content (concat)
 //	candidates[].finishReason           → choices[].finish_reason (lowercase)
@@ -253,10 +261,11 @@ func parseStopField(raw json.RawMessage) []string {
 //	usageMetadata.candidatesTokenCount  → usage.completion_tokens
 //	usageMetadata.totalTokenCount       → usage.total_tokens
 //
-// requestModel 写到 response.model（Gemini 不返回 model 名）。
+// requestModel is written into response.model (Gemini doesn't return a model name).
 //
-// 返 *domain.Usage 给 caller 的职责已移出（走 extractor.NewGemini 旁路）；本函数
-// 只负责把 usageMetadata 翻进 OpenAI body 的 usage 字段（OpenAI 客户端期待的形态）。
+// The responsibility of returning *domain.Usage to the caller has moved out (via the
+// extractor.NewGemini side channel); this function is only responsible for translating
+// usageMetadata into the OpenAI body's usage field (the shape OpenAI clients expect).
 func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 	var in geminiResponse
 	if err := json.Unmarshal(rawBody, &in); err != nil {

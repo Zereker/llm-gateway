@@ -8,55 +8,71 @@ import (
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
-// Lookup 请求级 Handler 查询端口——按 (endpoint, sourceProtocol) 动态组合 Handler。
+// Lookup is the request-level Handler lookup port — dynamically composes a
+// Handler from (endpoint, sourceProtocol).
 //
-// **设计动机**：协议组合是 per-请求的事，不是 init() 时穷举的事。
-//   - endpoint 携带 Protocol 字段（deployer 在 SQL INSERT 时配置）——表明这条 endpoint 上游说什么协议
-//   - 客户端进来用 sourceProtocol（M3 Envelope 写入 rc.Envelope.SourceProtocol）
-//   - DefaultLookup.Get(ep, src) 按 (ep.Vendor, src, ep.Protocol) 三元组临时组合：
-//       * LookupFactory(ep.Vendor) → vendor HTTP 实现
-//       * translator.Find(src, ep.Protocol) → 协议转换器；src == ep.Protocol 时
-//         返回 identity translator（已在 pkg/translator/identity 包注册）
-//   - 拿不到 → return nil；eligibility filter 据此剔除候选
+// **Design motivation**: protocol composition is a per-request concern, not
+// something enumerable at init() time.
+//   - the endpoint carries a Protocol field (configured by the deployer via SQL
+//     INSERT) — indicating what protocol this endpoint's upstream speaks
+//   - incoming clients use sourceProtocol (written by M3 Envelope into
+//     rc.Envelope.SourceProtocol)
+//   - DefaultLookup.Get(ep, src) composes on the fly from the (ep.Vendor, src,
+//     ep.Protocol) triple:
+//   - LookupFactory(ep.Vendor) → the vendor HTTP implementation
+//   - translator.Find(src, ep.Protocol) → the protocol translator; when
+//     src == ep.Protocol, returns the identity translator (already
+//     registered in pkg/translator/identity)
+//   - if it can't be obtained → return nil; the eligibility filter excludes the candidate accordingly
 //
-// **覆盖场景**：多租户 / 灰度——middleware（如 M2 Auth）按 tenant 注入自定义
-// Lookup 实现，可以走自己的 vendor 集合 / 自定义 translator chain。
+// **Override scenarios**: multi-tenancy / canary — middleware (e.g. M2 Auth)
+// injects a custom Lookup implementation per tenant, which can use its own
+// vendor set / custom translator chain.
 type Lookup interface {
-	// Get 按 endpoint 的 vendor + protocol 和客户端 srcProto 组合 Handler。
-	// 找不到 adapter 或没有对应 translator 时返回 nil。
+	// Get composes a Handler from the endpoint's vendor + protocol and the
+	// client's srcProto. Returns nil if the adapter or a matching translator
+	// can't be found.
 	Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler
 }
 
 // =============================================================================
-// DefaultLookup — 包装全局 vendor + translator registry
+// DefaultLookup — wraps the global vendor + translator registries
 // =============================================================================
 
-// handlerCache 进程级 Handler 缓存——key = (vendor, srcProto, ep.Protocol)。
+// handlerCache is a process-level Handler cache — key = (vendor, srcProto, ep.Protocol).
 //
-// **为什么需要**：M3 Envelope 给每个请求 new 一个 DefaultLookup{}；dispatch 内
-// eligibility + invoke 两条路径各 lookup 一次。如果不在包级共享，combined Handler
-// 每次 lookup 都重建，combined 内部的 quirks 编译缓存 跟着失效——deployer 配的
-// quirks JSON 每个请求都重 compile 一次。
+// **Why it's needed**: M3 Envelope news up a DefaultLookup{} per request;
+// within dispatch, the eligibility + invoke paths each do a lookup. If this
+// weren't shared at the package level, the combined Handler would be rebuilt
+// on every lookup, and its internal quirks compile cache would keep being
+// invalidated along with it — the deployer's quirks JSON would get recompiled
+// on every single request.
 //
-// Handler 本身是 stateless（vendor + translator + 内部 sync.Map cache），并发安全；
-// 同 (vendor, srcProto, target) 三元组的请求共享同一个 Handler 实例。endpoint 通过
-// PrepareCall 参数传入，不绑定到 Handler。
+// Handler itself is stateless (vendor + translator + an internal sync.Map
+// cache), safe for concurrent use; requests sharing the same (vendor, srcProto,
+// target) triple share the same Handler instance. The endpoint is passed in via
+// the PrepareCall parameter, not bound to the Handler.
 //
-// **eviction**：vendor × srcProto × upstreamProto 组合数量上界很小（<100），不做
-// eviction；条目随进程一起结束。
+// **Eviction**: the upper bound on vendor × srcProto × upstreamProto
+// combinations is small (<100), so no eviction is done; entries live for the
+// lifetime of the process.
 var handlerCache sync.Map // key = "vendor|src|target" → Handler
 
-// DefaultLookup 走全局 vendor + translator registry 组合 Handler。M3 Envelope
-// 在 rc.Handlers 为 nil 时填这个值。
+// DefaultLookup composes a Handler using the global vendor + translator
+// registries. M3 Envelope fills this in when rc.Handlers is nil.
 //
-// **stateless**：所有缓存都在包级 handlerCache。零值即可用，per-request 创建零成本。
+// **Stateless**: all caching lives in the package-level handlerCache. The zero
+// value is usable; per-request creation is zero-cost.
 type DefaultLookup struct{}
 
-// pivotProtocol 缺对组合回退用的中间协议（docs/02 §6a）。
+// pivotProtocol is the intermediate protocol used for the missing-direct-pair
+// composition fallback (docs/02 §6a).
 //
-// 选 OpenAI：事实上的行业中间语言——现有跨协议 translator 全部以它为一端
-// （anthropic↔openai / openai→gemini / responses→openai），任何新协议接入时
-// 优先写它跟 OpenAI 的互转对，组合 fallback 的覆盖自动最大化。
+// OpenAI was chosen: it's the de facto industry lingua franca — every existing
+// cross-protocol translator has it on one end (anthropic↔openai /
+// openai→gemini / responses→openai), so when adding any new protocol, writing
+// its conversion pair with OpenAI first automatically maximizes the fallback
+// composition's coverage.
 const pivotProtocol = domain.ProtoOpenAI
 
 func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler {
@@ -71,15 +87,17 @@ func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler 
 	if ad == nil {
 		return nil
 	}
-	// 直连 translator 优先（高保真）；miss 时经 pivot 组合兜底（可能有损，
-	// 双跳丢 pivot 表达不了的字段）。热门组合应尽快补直连实现——直连注册后
-	// FindVia 自动优先命中，组合退位，调用方无感。
+	// Direct translators are preferred (high fidelity); on a miss, fall back to
+	// pivot composition (potentially lossy — the double hop drops fields the
+	// pivot can't express). Popular combinations should get a direct
+	// implementation as soon as possible — once registered, FindVia
+	// automatically prefers it and the composition steps aside, transparent to the caller.
 	tr := translator.FindVia(srcProto, ep.Protocol, pivotProtocol)
 	if tr == nil {
 		return nil
 	}
 	if translator.IsComposed(tr) {
-		// handlerCache 保证同 (vendor, src, tgt) 只 warn 一次
+		// handlerCache ensures the same (vendor, src, tgt) only warns once
 		slog.Warn("protocol: no direct translator, using lossy pivot composition",
 			"src", srcProto.String(), "tgt", ep.Protocol.String(),
 			"pivot", pivotProtocol.String(), "vendor", ep.Vendor)
@@ -89,8 +107,9 @@ func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler 
 	return actual.(Handler)
 }
 
-// ResetHandlerCache 清空 DefaultLookup 的 Handler 缓存——**仅供测试**。
-// 跑 ResetFactories / translator.Reset 之后必须配套调，避免旧 Handler 引用了已删的 Factory。
+// ResetHandlerCache clears DefaultLookup's Handler cache — **for tests only**.
+// Must be called alongside ResetFactories / translator.Reset to avoid stale
+// Handlers referencing a deleted Factory.
 func ResetHandlerCache() {
 	handlerCache = sync.Map{}
 }

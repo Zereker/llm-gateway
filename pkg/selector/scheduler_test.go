@@ -14,7 +14,7 @@ import (
 // stubs
 // =============================================================================
 
-// stubFilter 简单 filter：按 excludeIDs 过滤。
+// stubFilter is a simple filter: filters by excludeIDs.
 type stubFilter struct {
 	name       string
 	excludeIDs map[int64]bool
@@ -36,7 +36,7 @@ func (s *stubFilter) Apply(_ context.Context, candidates []*domain.Endpoint, _ *
 	return out
 }
 
-// stubPicker 永远返回第一个候选。
+// stubPicker always returns the first candidate.
 type stubPicker struct{}
 
 func (stubPicker) Select(_ context.Context, cs []Candidate) *Candidate {
@@ -46,7 +46,7 @@ func (stubPicker) Select(_ context.Context, cs []Candidate) *Candidate {
 	return &cs[0]
 }
 
-// stubCooldown 记录 Mark 调用。
+// stubCooldown records Mark calls.
 type stubCooldown struct {
 	marks      []markCall
 	cooled     map[int64]bool
@@ -207,7 +207,7 @@ func TestPick_AllFiltered_Nil(t *testing.T) {
 func TestReport_NilEp_NoOp(t *testing.T) {
 	cd := &stubCooldown{}
 	s := New(Config{Cooldown: cd, Picker: stubPicker{}})
-	s.Report(context.Background(), nil, Result{Class: ClassTransient}) // 不应 panic
+	s.Report(context.Background(), nil, Result{Class: ClassTransient}) // should not panic
 	if len(cd.marks) != 0 {
 		t.Errorf("nil ep should be no-op")
 	}
@@ -241,7 +241,7 @@ func TestReport_Capacity_TriggersCooldown(t *testing.T) {
 }
 
 func TestReport_Unknown_NoCooldown(t *testing.T) {
-	// docs/03 §6：Unknown 可重试但分类不明确——Scheduler.Report 默认不冷却，避免误伤
+	// docs/03 §6: Unknown is retryable but the classification is unclear — Scheduler.Report doesn't cool down by default, to avoid collateral damage
 	cd := &stubCooldown{}
 	s := New(Config{Cooldown: cd, Picker: stubPicker{}})
 	s.Report(context.Background(), ep(1, 100), Result{Class: ClassUnknown})
@@ -251,7 +251,7 @@ func TestReport_Unknown_NoCooldown(t *testing.T) {
 }
 
 // =============================================================================
-// Scorer + StatsStore（runtime scoring）
+// Scorer + StatsStore (runtime scoring)
 // =============================================================================
 
 type recordingStats struct {
@@ -279,11 +279,11 @@ func TestReport_Stats_RecordsResult(t *testing.T) {
 
 func TestPick_ScorerAdjustsWeights(t *testing.T) {
 	store := NewInMemoryStatsStore(0.5)
-	// 让 ep1 总成功且 latency=100，ep2 总失败 latency=500
+	// make ep1 always succeed with latency=100, ep2 always fail with latency=500
 	for i := 0; i < 5; i++ {
 		store.Record(context.Background(), 1, Result{Class: ClassSuccess, Latency: 100 * time.Millisecond})
 	}
-	// 5 个样本之后 scorer 应该开始打分
+	// after 5 samples the scorer should start scoring
 	scorer := NewDefaultScorer(store, 5, 200)
 
 	s := New(Config{Scorer: scorer, Picker: stubPicker{}})
@@ -337,7 +337,7 @@ func TestInMemoryStatsStore_ZeroEndpointID_NoOp(t *testing.T) {
 }
 
 // =============================================================================
-// 兼容性：errors import 占位
+// compatibility: placeholder to keep the errors import
 // =============================================================================
 
 var _ = errors.New

@@ -1,11 +1,12 @@
-# gateway.yaml — 容器内启动配置
+# gateway.yaml — in-container startup configuration
 #
-# host 替换：
-#   mysql → mysql、redis → redis、kafka → redpanda:9092
-#   mockupstream 通过 compose service 名互连
+# host substitutions:
+#   mysql -> mysql, redis -> redis, kafka -> redpanda:9092
+#   mockupstream is reached via the compose service name
 #
-# usage_events 走 file_and_kafka：file 落 /tmp/llm-gateway-usage.jsonl（卷挂出，e2e
-# 用于校验事件落地），Kafka 投递给 billing.usage.recorded.v1 让 Flink 消费。
+# usage_events uses file_and_kafka: the file lands at /tmp/llm-gateway-usage.jsonl
+# (mounted out as a volume, used by e2e to verify events landed), and Kafka
+# delivers to billing.usage.recorded.v1 for Flink to consume.
 
 server:
   addr: ":8080"

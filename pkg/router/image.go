@@ -7,28 +7,34 @@ import (
 	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
-// registerImageRoutes 注册 image 模态路由 + 它专属的 middleware 链。
+// registerImageRoutes registers the image modality routes plus their
+// dedicated middleware chain.
 //
-// 路径（每条 `.POST` 自带 /v1 完整前缀）：
+// Paths (each `.POST` carries its own full /v1 prefix):
 //
-//	POST /v1/images/generations  OpenAI 文生图
-//	POST /v1/images/edits        OpenAI 图编辑（multipart/form-data）
-//	POST /v1/images/variations   OpenAI 图变体（multipart/form-data）
+//	POST /v1/images/generations  OpenAI text-to-image
+//	POST /v1/images/edits        OpenAI image edits (multipart/form-data)
+//	POST /v1/images/variations   OpenAI image variations (multipart/form-data)
 //
-// v0.1：路由 + middleware 已注册，但没有 image-capable Adapter；
-// edits / variations 是 multipart 请求，当前 DefaultParser 只解析 JSON，
-// 未来接 image Adapter 时会换 multipart Parser。
+// v0.1: the routes + middleware are registered, but there's no image-capable
+// Adapter yet; edits / variations are multipart requests, but the current
+// DefaultParser only parses JSON — a multipart Parser will replace it once an
+// image Adapter is wired in.
 func registerImageRoutes(engine *gin.Engine, deps Deps) {
 	pre := engine.Group("/",
 		middleware.BodyLimit(deps.BodyLimit),
 		middleware.Timeout(deps.Timeout),
 		middleware.TraceContext(),
-		// M10 Tracing 挂在 Recover **外层**（post-c.Next() 收尾）：
-		//   - 任何后续 middleware abort（401/429/503）→ 洋葱返程仍执行收尾
-		//     ——请求 metric / usage 事件 / decision 审计没有盲区
-		//   - panic → 内层 Recover 先恢复并写 500，控制流正常返回，收尾照跑
-		//     且看到的是最终 500 状态
-		// （旧版挂链尾，abort 一律跳过 → 429 风暴在 M10 指标里隐身）
+		// M10 Tracing is mounted **outside** Recover (its finishing logic runs
+		// post-c.Next()):
+		//   - any subsequent middleware abort (401/429/503) -> the onion's
+		//     return leg still runs the finishing logic, so request metrics /
+		//     usage events / decision audit have no blind spot
+		//   - panic -> the inner Recover recovers first and writes 500,
+		//     control flow returns normally, finishing logic still runs and
+		//     sees the final 500 status
+		// (the old version was mounted at the end of the chain, so any abort
+		// was skipped entirely -> 429 storms went invisible in M10 metrics)
 		middleware.Tracing(
 			middleware.WithUsageOutbox(deps.UsageOutbox),
 			middleware.WithTracer(deps.AuditTracer),

@@ -10,36 +10,42 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Role 是控制面 operator 的粗粒度权限（Phase 4 的 RBAC 基元）。
+// Role is the coarse-grained permission level for a control-plane operator
+// (the RBAC primitive for Phase 4).
 //
-// Phase 4 只做两档；真正的多租户自助 + 细粒度 RBAC（per-tenant scoping / OIDC）
-// 是更大的产品决策，留作后续。
+// Phase 4 only has two tiers; true multi-tenant self-service + fine-grained
+// RBAC (per-tenant scoping / OIDC) is a bigger product decision left for
+// later.
 type Role string
 
 const (
-	// RoleAdmin 全权：读 + 写（建/删/发 key/吊销）。
+	// RoleAdmin has full power: read + write (create/delete/issue key/revoke).
 	RoleAdmin Role = "admin"
-	// RoleViewer 只读：只能 GET。
+	// RoleViewer is read-only: GET only.
 	RoleViewer Role = "viewer"
 )
 
-// Token 一个 admin 凭证 + 它的角色 + 可选的可读名（审计里当 actor）。
+// Token is an admin credential plus its role and an optional human-readable
+// name (used as the actor in audit records).
 type Token struct {
 	Value string `yaml:"token"`
 	Role  Role   `yaml:"role"`
 	Name  string `yaml:"name"`
 }
 
-// ctxRoleKey / ctxActorKey gin.Context 里存角色 / actor 名的键。
+// ctxRoleKey / ctxActorKey are the gin.Context keys for the stored role / actor name.
 const (
 	ctxRoleKey  = "console_role"
 	ctxActorKey = "console_actor"
 )
 
-// adminAuth 鉴权 bearer token，解析出角色写进 context。
+// adminAuth authenticates the bearer token and writes the resolved role into
+// the context.
 //
-// **常量时间**：把入参和每个已配 token 都 SHA-256 成定长再 ConstantTimeCompare，
-// 且**遍历所有条目不早退**——不泄漏"匹配了哪个 token / 长度前缀"的时序信息。
+// **Constant-time**: both the incoming value and every configured token are
+// SHA-256'd to a fixed length before ConstantTimeCompare, and **all entries
+// are iterated without an early exit** — this avoids leaking timing
+// information about which token matched or any length prefix.
 func adminAuth(tokens []Token) gin.HandlerFunc {
 	type entry struct {
 		sum   [32]byte
@@ -54,7 +60,7 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 		}
 		actor := t.Name
 		if actor == "" {
-			actor = string(role) // 没配 name 时用 role 兜底当 actor
+			actor = string(role) // fall back to the role as the actor when name isn't configured
 		}
 		entries[i] = entry{sum: sha256.Sum256([]byte(t.Value)), role: role, actor: actor}
 	}
@@ -86,9 +92,12 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 	}
 }
 
-// auditWrites 是 group 级中间件：写操作（POST/DELETE/PUT/PATCH）跑完后记一条审计。
-// 挂在 adminAuth **之后**（actor / role 已入 context）。best-effort——审计写失败只
-// warn，不影响已完成的操作。刻意不记 request body（见 audit_log schema）。
+// auditWrites is a group-level middleware: after a write operation
+// (POST/DELETE/PUT/PATCH) completes, it records an audit entry. It is
+// attached **after** adminAuth (actor / role are already in the context).
+// Best-effort — a failed audit write only logs a warning and does not affect
+// the already-completed operation. The request body is deliberately not
+// recorded (see the audit_log schema).
 func auditWrites(store *Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
@@ -104,8 +113,8 @@ func auditWrites(store *Store) gin.HandlerFunc {
 	}
 }
 
-// requireAdmin 是写操作的守卫：非 admin 角色 → 403。挂在 POST/DELETE 路由上，
-// 让 viewer token 只能读。
+// requireAdmin guards write operations: a non-admin role gets 403. It is
+// attached to POST/DELETE routes so that a viewer token can only read.
 func requireAdmin(c *gin.Context) {
 	if c.GetString(ctxRoleKey) != string(RoleAdmin) {
 		abortError(c, 403, "forbidden", "admin role required for this operation")
@@ -114,7 +123,8 @@ func requireAdmin(c *gin.Context) {
 	c.Next()
 }
 
-// bearerToken 从 Authorization: Bearer <t> 抽 token（不区分大小写的 scheme）。
+// bearerToken extracts the token from an Authorization: Bearer <t> header
+// (the scheme is matched case-insensitively).
 func bearerToken(c *gin.Context) string {
 	h := c.GetHeader("Authorization")
 	if h == "" {

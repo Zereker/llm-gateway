@@ -10,22 +10,24 @@ import (
 )
 
 // =============================================================================
-// FilePublisher：JSONL append
+// FilePublisher: JSONL append
 // =============================================================================
 
-// FilePublisher 把 Record 序列化成 JSONL 追加写文件。
+// FilePublisher serializes a Record to JSONL and appends it to a file.
 //
-// 这是 Content Log 唯一支持的真实后端：gateway 只写本地 JSONL，由 fluent-bit /
-// vector 投递到下游各 sink（归档 / 检索 / 内容安全后审 / 训练数据回流）。详见
-// docs/architecture/05-metering-billing.md §2 + docs/07-configuration.md §2。
+// This is the only real backend Content Log currently supports: the gateway only writes
+// local JSONL, and fluent-bit / vector ships it downstream to the various sinks (archival /
+// retrieval / post-hoc content-safety review / training-data feedback). See
+// docs/architecture/05-metering-billing.md §2 + docs/07-configuration.md §2.
 //
-// 文件轮转 / 压缩 / 清理由外部 logrotate 或日志收集器负责，不在本进程内做。
+// File rotation / compression / cleanup is handled by an external logrotate or log
+// collector, not by this process.
 type FilePublisher struct {
 	mu sync.Mutex
 	w  io.WriteCloser
 }
 
-// NewFilePublisher 打开（或创建）指定路径文件用于 append 写。
+// NewFilePublisher opens (or creates) the file at the given path for append writes.
 func NewFilePublisher(path string) (*FilePublisher, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -34,7 +36,7 @@ func NewFilePublisher(path string) (*FilePublisher, error) {
 	return &FilePublisher{w: f}, nil
 }
 
-// Publish 序列化 + append 一行 JSON + 换行。
+// Publish serializes the record and appends it as a JSON line plus a newline.
 func (p *FilePublisher) Publish(_ context.Context, r *Record) error {
 	buf, err := json.Marshal(r)
 	if err != nil {
@@ -49,7 +51,7 @@ func (p *FilePublisher) Publish(_ context.Context, r *Record) error {
 	return err
 }
 
-// Close 关闭文件。
+// Close closes the file.
 func (p *FilePublisher) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -60,4 +62,3 @@ func (p *FilePublisher) Close() error {
 	p.w = nil
 	return err
 }
-

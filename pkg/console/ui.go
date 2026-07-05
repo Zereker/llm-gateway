@@ -2,11 +2,14 @@ package console
 
 import _ "embed"
 
-// indexHTML 是控制面单文件 Web UI（Phase 3），编译期 embed 进 binary——零外部资源、
-// 无构建步骤、跟 API 同一个进程同源提供（不引 CORS）。
+// indexHTML is the control plane's single-file Web UI (Phase 3), embedded
+// into the binary at compile time — zero external resources, no build step,
+// served same-origin from the same process as the API (no CORS needed).
 //
-// **有意 vanilla / 单文件**：这是运维后台不是消费级产品，一个自包含 HTML（内联
-// CSS/JS）足够，且部署零依赖。真要做成对外 SaaS 控制台再上正经前端工程。
+// **Deliberately vanilla / single-file**: this is an ops back office, not a
+// consumer-facing product; a self-contained HTML file (inline CSS/JS) is
+// enough, and deployment has zero dependencies. If this ever needs to become
+// an external SaaS console, invest in proper frontend engineering then.
 //
 //go:embed ui/index.html
 var indexHTML []byte

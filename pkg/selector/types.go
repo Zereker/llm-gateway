@@ -1,28 +1,28 @@
-// Package selector 端点选择 primitives——filter chain + scorer + picker。
+// Package selector provides endpoint selection primitives — filter chain + scorer + picker.
 //
-// **设计精神**（docs/architecture/03-endpoint-scheduling.md §4）：
+// **Design philosophy** (docs/architecture/03-endpoint-scheduling.md §4):
 //
-//   - 本包是**纯 selection primitives**：对一批候选跑 filter / scorer / picker
-//     选 1 个 endpoint，无 per-request 状态
-//   - 不持有 repo；不知道 protocol / handler / fallback / attempts 概念
-//   - 跨 model fallback、attempts / excluded / decisions 状态、retry / abort
-//     决策全在 `pkg/dispatch.Dispatcher` 维护——selector 永远只看一批候选
+//   - This package is **pure selection primitives**: run filter / scorer / picker
+//     over a batch of candidates to pick 1 endpoint, with no per-request state
+//   - It holds no repo; it knows nothing about protocol / handler / fallback / attempts
+//   - Cross-model fallback, attempts / excluded / decisions state, and retry / abort
+//     decisions all live in `pkg/dispatch.Dispatcher` — selector only ever sees one batch of candidates
 //
-// **调用关系**（v0.6 起 dispatch 拥有调度时序，selector 退到 primitives 层）：
+// **Call relationship** (since v0.6 dispatch owns scheduling sequencing; selector is reduced to the primitives layer):
 //
-//	pkg/dispatch.Dispatcher.step (调度时序所有者)
+//	pkg/dispatch.Dispatcher.step (owner of scheduling sequencing)
 //	    │  candidates = CandidateSource.ListForModel(ctx, model, group)
-//	    │  eligible   = filterEligible(candidates, env, handlers)  // dispatch 内部 helper
+//	    │  eligible   = filterEligible(candidates, env, handlers)  // dispatch-internal helper
 //	    │  ep         = Selector.Pick(ctx, eligible, query)  ──→  selector.Scheduler.Pick
 //	    │  ... Invoker.Invoke / Quota.Reserve / RetryPolicy.Decide ...
 //	    │  Selector.Report(ctx, ep, verdict)              ──→    selector.Scheduler.Report
 //	    │
 //	    └─ adapter: pkg/dispatch/adapters/SelectorAdapter
-//	       把 selector.Scheduler 桥成 dispatch.Selector（Pick 接受 eligible + PickQuery）
+//	       bridges selector.Scheduler into dispatch.Selector (Pick takes eligible + PickQuery)
 //
-// **不应该出现在本包**：repo 依赖、http.Request、protocol.Handler、fallback 切 model 等。
+// **Must not appear in this package**: repo dependencies, http.Request, protocol.Handler, fallback model switching, etc.
 //
-// 详见 docs/architecture/03-endpoint-scheduling.md §4 + docs/architecture/03a-schedule-overview.md §0-§2。
+// See docs/architecture/03-endpoint-scheduling.md §4 + docs/architecture/03a-schedule-overview.md §0-§2 for details.
 package selector
 
 import (
@@ -32,42 +32,42 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Candidate 单个 endpoint 候选 + 有效权重。
+// Candidate is a single endpoint candidate plus its effective weight.
 //
-// EffectiveWeight 是 Runtime Scoring（docs/03 §8）调整后的权重——
-// 未启用 scoring 时由 dispatcher 简单填 = Endpoint.Weight。
+// EffectiveWeight is the weight after Runtime Scoring (docs/03 §8) adjustment —
+// when scoring isn't enabled, the dispatcher simply fills it with Endpoint.Weight.
 type Candidate struct {
 	Endpoint        *domain.Endpoint
 	EffectiveWeight float64
 }
 
-// Request 单次 Pick 调用的入参。
+// Request is the input for a single Pick call.
 //
-// 按 docs/03 §4：Request 只承载一批候选，**不**包含 LoadFallback /
-// FallbackModels / attempts 状态。
+// Per docs/03 §4: Request only carries a batch of candidates — it does **not**
+// include LoadFallback / FallbackModels / attempts state.
 type Request struct {
-	Model      string             // 当前 model（未路由前 = 请求 model；路由 fallback 时 = fallback model）
-	Group      string             // 路由分组（rc.Identity.Group）
-	SessionKey string             // 会话亲和 key（客户端 X-Gateway-Session 头）；空 = 不粘会话
-	Candidates []Candidate        // 资格过滤后的候选（含 EffectiveWeight）
-	ExcludeIDs map[int64]struct{} // 本次请求里已经尝试过的 endpoint
-	PrefixKey  []byte             // PrefixCacheFilter 用的一致性哈希 key（跟 SessionKey 互补：
-	//                              PrefixKey=按内容 prefix 无状态一致性哈希；SessionKey=客户端
-	//                              显式 session id 的有状态 Redis 亲和，跟 weighted+scoring 组合）
+	Model      string             // current model (before routing = requested model; during fallback routing = fallback model)
+	Group      string             // routing group (rc.Identity.Group)
+	SessionKey string             // session affinity key (client's X-Gateway-Session header); empty = no sticky session
+	Candidates []Candidate        // candidates after eligibility filtering (with EffectiveWeight)
+	ExcludeIDs map[int64]struct{} // endpoints already tried in this request
+	PrefixKey  []byte             // consistent-hashing key used by PrefixCacheFilter (complements SessionKey:
+	//                              PrefixKey = stateless consistent hashing by content prefix; SessionKey = stateful
+	//                              Redis affinity from an explicit client session id, combined with weighted+scoring)
 }
 
-// ErrorClass 把上游 / 网络 / 协议错误归类成几个粗粒度桶。
+// ErrorClass buckets upstream / network / protocol errors into a few coarse-grained classes.
 //
-// CooldownManager 据此决定该 endpoint 该不该冷却 + 冷却多久。
+// CooldownManager uses this to decide whether an endpoint should cool down and for how long.
 type ErrorClass int
 
 const (
-	ClassUnknown   ErrorClass = iota // 分类不出来
+	ClassUnknown   ErrorClass = iota // couldn't be classified
 	ClassSuccess                     // 2xx
-	ClassTransient                   // 5xx / 网络错 / timeout / DNS
-	ClassCapacity                    // 上游 429 / overloaded
-	ClassPermanent                   // 上游 401 / 403 / 配置错
-	ClassInvalid                     // 客户端 4xx（除 401/403/429）；不该重试
+	ClassTransient                   // 5xx / network error / timeout / DNS
+	ClassCapacity                    // upstream 429 / overloaded
+	ClassPermanent                   // upstream 401 / 403 / config error
+	ClassInvalid                     // client 4xx (other than 401/403/429); should not be retried
 )
 
 func (c ErrorClass) String() string {
@@ -87,10 +87,10 @@ func (c ErrorClass) String() string {
 	}
 }
 
-// IsRetryable 决定 dispatch.RetryPolicy 是否继续 Pick 下一个候选。
+// IsRetryable decides whether dispatch.RetryPolicy should keep Picking the next candidate.
 //
-//	Transient / Capacity / Permanent / Unknown → 重试
-//	Success / Invalid                          → 停止
+//	Transient / Capacity / Permanent / Unknown → retry
+//	Success / Invalid                          → stop
 func (c ErrorClass) IsRetryable() bool {
 	switch c {
 	case ClassSuccess, ClassInvalid:
@@ -100,22 +100,22 @@ func (c ErrorClass) IsRetryable() bool {
 	}
 }
 
-// Result 一次调用的结果，由 dispatcher（通过 SelectorAdapter）传给 Scheduler.Report。
+// Result is the outcome of a single call, passed by the dispatcher (via SelectorAdapter) to Scheduler.Report.
 type Result struct {
 	Class    ErrorClass
-	HTTPCode int           // 上游 status；0 = 没拿到 response（网络错 / timeout）
-	Reason   string        // 人读友好的错误描述
-	Latency  time.Duration // 本次调用耗时（含上游 + 流式）
+	HTTPCode int           // upstream status; 0 = no response received (network error / timeout)
+	Reason   string        // human-readable error description
+	Latency  time.Duration // duration of this call (including upstream + streaming)
 }
 
-// Scheduler dispatch 通过 SelectorAdapter 调用的入口。无状态（docs/03 §4）。
+// Scheduler is the entry point dispatch calls through SelectorAdapter. Stateless (docs/03 §4).
 type Scheduler interface {
-	// Pick 输入当前 model 的候选 + 排除集，输出一个 endpoint。
+	// Pick takes the current model's candidates + exclude set, and outputs one endpoint.
 	//
-	// 返回 nil 表示候选全部过滤掉了（dispatch.FallbackPolicy.OnExhausted 决定 abort 503 还是切下一个 model）。
+	// Returning nil means all candidates were filtered out (dispatch.FallbackPolicy.OnExhausted decides whether to abort with 503 or switch to the next model).
 	Pick(ctx context.Context, req *Request) (*domain.Endpoint, error)
 
-	// Report 把本次 Send 结果反馈给 cooldown / metric / stats store。
-	// 不决定下一步控制流——dispatch.RetryPolicy.Decide 看 result.Class 决定继续 / 停止。
+	// Report feeds this call's result back to cooldown / metric / stats store.
+	// It does not decide subsequent control flow — dispatch.RetryPolicy.Decide looks at result.Class to decide whether to continue or stop.
 	Report(ctx context.Context, ep *domain.Endpoint, result Result)
 }

@@ -69,9 +69,9 @@ func TestWeightedRandom_ZeroWeightExcluded(t *testing.T) {
 }
 
 func TestWeightedRandom_UsesEffectiveWeight_NotStaticWeight(t *testing.T) {
-	// 关键测试：docs/03 §4 — WeightedRandom 必须基于 EffectiveWeight
-	// ep1 static weight=100, EffectiveWeight=0 → 应被排除
-	// ep2 static weight=10, EffectiveWeight=100 → 应被选中
+	// key test: docs/03 §4 — WeightedRandom must be based on EffectiveWeight
+	// ep1 static weight=100, EffectiveWeight=0 → should be excluded
+	// ep2 static weight=10, EffectiveWeight=100 → should be selected
 	s := NewWeightedRandomPicker()
 	cands := []Candidate{
 		{Endpoint: ep(1, 100), EffectiveWeight: 0},
@@ -80,7 +80,7 @@ func TestWeightedRandom_UsesEffectiveWeight_NotStaticWeight(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		got := s.Select(context.Background(), cands)
 		if got == nil || got.Endpoint.ID != 2 {
-			t.Errorf("got=%+v, want ep2 (EffectiveWeight 优先于 static)", got)
+			t.Errorf("got=%+v, want ep2 (EffectiveWeight takes priority over static)", got)
 		}
 	}
 }

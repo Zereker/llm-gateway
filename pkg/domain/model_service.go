@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-// ModelService 全局模型 catalog 条目（docs/06 §3 业务结构）。
+// ModelService is a global model catalog entry (docs/06 §3 business struct).
 type ModelService struct {
 	ID        int64
 	ServiceID string

@@ -11,18 +11,18 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// CooldownManager endpoint 失败冷却的存储抽象。
+// CooldownManager is the storage abstraction for endpoint failure cooldown.
 //
-// **Mark**：endpoint 失败时调；按 ErrorClass 决定 TTL。后续 InCooldown 在 TTL 内返 true。
-// **InCooldown**：filter 用，批量查多个 endpoint 是否在冷却。
+// **Mark**: called when an endpoint fails; TTL is decided by ErrorClass. Subsequent InCooldown returns true within the TTL.
+// **InCooldown**: used by filter, batch-checks whether multiple endpoints are cooling down.
 //
-// **多实例一致性**：Redis 后端共享状态，所有 gateway 实例看到同一份 cooldown view。
+// **Multi-instance consistency**: the Redis backend shares state, so all gateway instances see the same cooldown view.
 type CooldownManager interface {
 	Mark(ctx context.Context, endpointID int64, class ErrorClass) error
 	InCooldown(ctx context.Context, endpointIDs []int64) (map[int64]bool, error)
 }
 
-// CooldownDurations 各 ErrorClass 对应的冷却时长（来自 cfg.Selector.Cooldown）。
+// CooldownDurations holds the cooldown duration for each ErrorClass (from cfg.Selector.Cooldown).
 type CooldownDurations struct {
 	Transient time.Duration
 	Capacity  time.Duration
@@ -31,7 +31,7 @@ type CooldownDurations struct {
 	Unknown   time.Duration
 }
 
-// Get 按 class 取对应时长；class 不映射或时长 0 时返回 0（不冷却）。
+// Get returns the duration for a class; returns 0 (no cooldown) if the class isn't mapped or the duration is 0.
 func (d CooldownDurations) Get(class ErrorClass) time.Duration {
 	switch class {
 	case ClassTransient:
@@ -50,37 +50,38 @@ func (d CooldownDurations) Get(class ErrorClass) time.Duration {
 }
 
 // =============================================================================
-// Redis 实现
+// Redis implementation
 // =============================================================================
 
-// RedisCooldownManager Redis 后端的 CooldownManager。
+// RedisCooldownManager is a Redis-backed CooldownManager.
 //
-// 存储约定：
+// Storage convention:
 //
 //	key:   cd:endpoint:<id>
-//	value: ErrorClass 字符串（"transient" / "capacity" / ...）；用于诊断
-//	TTL:   按 ErrorClass 配置；过期自动清理（不需主动 GC）
+//	value: ErrorClass string ("transient" / "capacity" / ...); used for diagnostics
+//	TTL:   configured per ErrorClass; expires automatically (no active GC needed)
 //
-// **Mark 实现**：直接 SET key value EX ttl —— 后到的 Mark 会覆盖前一次的 TTL。
-// 这意味着如果一个 endpoint 反复失败，TTL 一直被刷新延长——符合"持续失败保持冷却"的语义。
+// **Mark implementation**: directly SET key value EX ttl — a later Mark overwrites the previous TTL.
+// This means that if an endpoint keeps failing, its TTL keeps getting refreshed and extended —
+// matching the semantics of "keep cooling down while failures persist".
 type RedisCooldownManager struct {
 	rdb       *redis.Client
 	durations CooldownDurations
 }
 
-// NewRedisCooldownManager 构造一个 Redis 后端的 manager。
+// NewRedisCooldownManager constructs a Redis-backed manager.
 func NewRedisCooldownManager(rdb *redis.Client, d CooldownDurations) *RedisCooldownManager {
 	return &RedisCooldownManager{rdb: rdb, durations: d}
 }
 
-// Mark 标 endpoint 进入冷却；TTL 按 class 决定。
+// Mark marks an endpoint as entering cooldown; TTL is decided by class.
 func (m *RedisCooldownManager) Mark(ctx context.Context, endpointID int64, class ErrorClass) error {
 	if endpointID == 0 {
 		return nil
 	}
 	ttl := m.durations.Get(class)
 	if ttl <= 0 {
-		// 该 class 配的 0 或负值 = 不冷却
+		// this class is configured with 0 or negative = no cooldown
 		return nil
 	}
 	key := cooldownKey(endpointID)
@@ -90,9 +91,9 @@ func (m *RedisCooldownManager) Mark(ctx context.Context, endpointID int64, class
 	return nil
 }
 
-// InCooldown 批量查多个 endpoint 是否在冷却（CooldownFilter 用）。
+// InCooldown checks in batch whether multiple endpoints are cooling down (used by CooldownFilter).
 //
-// 用 MGET 一次拿所有 key 的值；存在 key 就视为冷却中（值是 ErrorClass 字符串，目前只用做诊断）。
+// Uses MGET to fetch all key values in one call; a present key is treated as cooling down (the value is the ErrorClass string, currently only used for diagnostics).
 func (m *RedisCooldownManager) InCooldown(ctx context.Context, endpointIDs []int64) (map[int64]bool, error) {
 	if len(endpointIDs) == 0 {
 		return nil, nil
@@ -118,22 +119,22 @@ func cooldownKey(endpointID int64) string {
 	return "cd:endpoint:" + strconv.FormatInt(endpointID, 10)
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ CooldownManager = (*RedisCooldownManager)(nil)
 
 // =============================================================================
 // CooldownFilter
 // =============================================================================
 
-// CooldownFilter 排除冷却中候选；Filter 链的第一道屏障（最便宜的过滤，先做）。
+// CooldownFilter excludes candidates that are cooling down; the first barrier in the Filter chain (cheapest filter, done first).
 //
-// **Redis 错误处理**：Redis 挂了 InCooldown 返 err；filter 这里 fail-open
-// （所有候选都通过）—— 优于全部拒（导致 503 风暴）。
+// **Redis error handling**: if Redis is down, InCooldown returns an err; this filter fails open here
+// (all candidates pass through) — better than rejecting everything (which would cause a 503 storm).
 type CooldownFilter struct {
 	mgr CooldownManager
 }
 
-// NewCooldownFilter 构造一个 cooldown filter。
+// NewCooldownFilter constructs a cooldown filter.
 func NewCooldownFilter(mgr CooldownManager) *CooldownFilter {
 	return &CooldownFilter{mgr: mgr}
 }
@@ -150,7 +151,7 @@ func (f *CooldownFilter) Apply(ctx context.Context, candidates []*domain.Endpoin
 	}
 	cooled, err := f.mgr.InCooldown(ctx, ids)
 	if err != nil {
-		// fail-open：Redis 错时不要把所有 endpoint 都过滤掉
+		// fail-open: don't filter out all endpoints when Redis errors
 		return candidates
 	}
 	out := make([]*domain.Endpoint, 0, len(candidates))
@@ -162,5 +163,5 @@ func (f *CooldownFilter) Apply(ctx context.Context, candidates []*domain.Endpoin
 	return out
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ Filter = (*CooldownFilter)(nil)

@@ -5,21 +5,24 @@ import (
 	"fmt"
 )
 
-// PreparePhase 标记 PrepareCall 内部哪一阶段失败——给 dispatcher 翻成 Verdict
-// 时区分 "pre-call 协议转换 vs HTTP 构造"。
+// PreparePhase marks which internal stage of PrepareCall failed — lets the
+// dispatcher, when translating to a Verdict, distinguish "pre-call protocol
+// conversion vs HTTP construction".
 type PreparePhase int
 
 const (
-	// PhaseTranslate translator.TranslateRequest 失败（srcBody 不符合 SourceProtocol schema）。
-	// 对应 dispatch.ClassInvalid——同请求换 endpoint 也会失败，应直接 abort。
+	// PhaseTranslate translator.TranslateRequest failed (srcBody doesn't match the
+	// SourceProtocol schema). Maps to dispatch.ClassInvalid — retrying with a
+	// different endpoint would fail the same way, so it should abort directly.
 	PhaseTranslate PreparePhase = iota
-	// PhaseQuirks vendor / 模型级 body rewriter 失败（pkg/protocol/quirks）。
-	// 通常是 quirks 实现 bug 或上游 body schema 跟规则错配；对应 dispatch.ClassInvalid，
-	// 直接 abort（同请求重试也会同样失败）。
+	// PhaseQuirks vendor / model-level body rewriter failed (pkg/protocol/quirks).
+	// Usually a bug in the quirks implementation or a mismatch between the upstream
+	// body schema and the rule; maps to dispatch.ClassInvalid, abort directly
+	// (retrying the same request would fail the same way).
 	PhaseQuirks
-	// PhaseBuild adapter session BuildRequest 失败（vendor HTTP 构造错；极少见，
-	// 通常是 endpoint 配置非法如 URL 不可解析）。
-	// 对应 dispatch.ClassPermanent。
+	// PhaseBuild adapter session BuildRequest failed (vendor HTTP construction error;
+	// rare, usually an invalid endpoint config such as an unparsable URL).
+	// Maps to dispatch.ClassPermanent.
 	PhaseBuild
 )
 
@@ -36,9 +39,9 @@ func (p PreparePhase) String() string {
 	}
 }
 
-// PrepareError 包装 PrepareCall 失败的细节。
+// PrepareError wraps the details of a PrepareCall failure.
 //
-// 调用方（dispatcher）用 errors.As 取出来分类：
+// The caller (dispatcher) uses errors.As to extract it for classification:
 //
 //	var pe *PrepareError
 //	if errors.As(err, &pe) {
@@ -58,12 +61,12 @@ func (e *PrepareError) Error() string {
 
 func (e *PrepareError) Unwrap() error { return e.Err }
 
-// NewPrepareError sugar。
+// NewPrepareError sugar.
 func NewPrepareError(phase PreparePhase, err error) *PrepareError {
 	return &PrepareError{Phase: phase, Err: err}
 }
 
-// IsPrepareError sugar——caller 不关心具体 phase 时用。
+// IsPrepareError sugar — use when the caller doesn't care about the specific phase.
 func IsPrepareError(err error) bool {
 	var pe *PrepareError
 	return errors.As(err, &pe)

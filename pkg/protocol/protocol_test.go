@@ -33,8 +33,9 @@ func (f *fakeAdapter) NewSession(_ context.Context, _ *domain.Endpoint, env *dom
 	return &fakeSession{buildErr: f.buildErr, gotEnv: env}, nil
 }
 
-// Classify makes fakeAdapter satisfy protocol.Classifier *iff* classifyImpl is set；
-// 通过 wrapper 类型避免无意 satisfy（让 TestCombine_Classify_NonClassifier 拿到一个"不实现 Classifier"的 fakeAdapter）。
+// Classify makes fakeAdapter satisfy protocol.Classifier *iff* classifyImpl is set;
+// a wrapper type avoids accidentally satisfying it (so TestCombine_Classify_NonClassifier
+// gets a fakeAdapter that does "not implement Classifier").
 func newClassifierFakeAdapter(meta protocol.Metadata, classifyImpl func(int, []byte) *domain.AdapterError) *classifierFakeAdapter {
 	return &classifierFakeAdapter{fakeAdapter: fakeAdapter{meta: meta, classifyImpl: classifyImpl}}
 }
@@ -78,7 +79,7 @@ func (s *fakeSession) Close() error {
 type fakeTranslator struct {
 	src, tgt      domain.Protocol
 	translateErr  error
-	upstreamBody  []byte // 自定义翻译后的字节；不设则原样返
+	upstreamBody  []byte // custom translated bytes; returns as-is if unset
 	respHandlerFn func() translator.ResponseHandler
 }
 
@@ -102,7 +103,7 @@ func (t *fakeTranslator) NewResponseHandler() translator.ResponseHandler {
 
 type fakeRespHandler struct {
 	feeds      [][]byte
-	feedOut    []byte // Feed 返回的字节（默认 = 输入透传）
+	feedOut    []byte // bytes returned by Feed (defaults to passing the input through)
 	feedErr    error
 	flushOut   []byte
 	flushUsage *domain.Usage
@@ -219,7 +220,7 @@ func TestCombine_BuildRequestError_ReturnsPrepareErrorPhaseBuild(t *testing.T) {
 
 func TestCombine_PassesEnvelopeToSession(t *testing.T) {
 	tr := &fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoAnthropic}
-	// 包一层观察 NewSession 收到的 envelope
+	// wrap it to observe the envelope NewSession receives
 	var gotEnv *domain.RequestEnvelope
 	ad := &observingAdapter{
 		meta: protocol.Metadata{Vendor: "anthropic"},
@@ -244,7 +245,7 @@ func TestCombine_PassesEnvelopeToSession(t *testing.T) {
 	}
 }
 
-// observingAdapter 观察 NewSession 收到的 envelope 参数。
+// observingAdapter observes the envelope parameter NewSession receives.
 type observingAdapter struct {
 	meta         protocol.Metadata
 	onNewSession func(env *domain.RequestEnvelope)
@@ -278,7 +279,7 @@ func TestCombine_Classify_PassthroughToAdapter(t *testing.T) {
 }
 
 func TestCombine_Classify_NonClassifierAdapter_ReturnsNil(t *testing.T) {
-	// fakeAdapter (no Classify method) → Handler.Classify 返回 nil
+	// fakeAdapter (no Classify method) → Handler.Classify returns nil
 	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}}
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI}
 	h := protocol.Combine(ad, tr)
@@ -354,7 +355,7 @@ func TestCombine_NewResponseStream_ForwardsFeedAndFlush(t *testing.T) {
 // DefaultLookup
 // =============================================================================
 //
-// DefaultLookup 走全局 adapter + translator registry——测试需要 reset + 注册。
+// DefaultLookup uses the global adapter + translator registries — tests need to reset + register.
 
 func TestDefaultLookup_Get_Composes_AdapterPlusTranslator(t *testing.T) {
 	resetGlobalRegistries(t)
@@ -384,7 +385,7 @@ func TestDefaultLookup_Get_ProtoUnknown_ReturnsNil(t *testing.T) {
 	resetGlobalRegistries(t)
 	protocol.RegisterFactory("myv", &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}})
 
-	ep := &domain.Endpoint{Vendor: "myv"} // Protocol 零值 = ProtoUnknown
+	ep := &domain.Endpoint{Vendor: "myv"} // Protocol zero value = ProtoUnknown
 	if h := (protocol.DefaultLookup{}).Get(ep, domain.ProtoOpenAI); h != nil {
 		t.Errorf("ProtoUnknown ep should yield nil handler; got %v", h)
 	}
@@ -403,7 +404,7 @@ func TestDefaultLookup_Get_NoAdapter_ReturnsNil(t *testing.T) {
 func TestDefaultLookup_Get_NoTranslator_ReturnsNil(t *testing.T) {
 	resetGlobalRegistries(t)
 	protocol.RegisterFactory("myv", &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}})
-	// 注册一个 (Anthropic → Anthropic) translator，但 caller 找 (OpenAI → Anthropic)
+	// register an (Anthropic → Anthropic) translator, but the caller looks for (OpenAI → Anthropic)
 	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoAnthropic})
 
 	ep := &domain.Endpoint{Vendor: "myv", Protocol: domain.ProtoAnthropic}
@@ -455,7 +456,7 @@ func TestIsPrepareError(t *testing.T) {
 	if !protocol.IsPrepareError(pe) {
 		t.Error("PrepareError should satisfy IsPrepareError")
 	}
-	// 嵌套也应该被识别
+	// nesting should also be recognized
 	wrapped := errors.Join(errors.New("layer1"), pe)
 	if !protocol.IsPrepareError(wrapped) {
 		t.Error("wrapped PrepareError should satisfy IsPrepareError")
@@ -466,8 +467,9 @@ func TestIsPrepareError(t *testing.T) {
 // helpers
 // =============================================================================
 
-// resetGlobalRegistries 清空 vendor + translator registry + Handler cache；
-// 测试 setup + cleanup 用。三者必须配套清，否则 handlerCache 留着对已删 Factory 的引用。
+// resetGlobalRegistries clears the vendor + translator registries + Handler cache;
+// used for test setup + cleanup. All three must be cleared together, otherwise
+// handlerCache keeps stale references to a deleted Factory.
 func resetGlobalRegistries(t *testing.T) {
 	t.Helper()
 	protocol.ResetFactories()
@@ -481,7 +483,7 @@ func resetGlobalRegistries(t *testing.T) {
 }
 
 // =============================================================================
-// Quirks integration（endpoint.Quirks JSON → 编译 → 应用）
+// Quirks integration (endpoint.Quirks JSON → compile → apply)
 // =============================================================================
 
 func TestCombine_QuirksFromEndpointBodyAndHeaders(t *testing.T) {
@@ -509,7 +511,7 @@ func TestCombine_QuirksFromEndpointBodyAndHeaders(t *testing.T) {
 		t.Fatalf("PrepareCall: %v", err)
 	}
 
-	// body: max_tokens → max_completion_tokens、删 temperature
+	// body: max_tokens → max_completion_tokens, temperature removed
 	gotBody, _ := io.ReadAll(call.Request.Body)
 	if !strings.Contains(string(gotBody), `"max_completion_tokens":1024`) {
 		t.Errorf("body rename failed: %s", gotBody)
@@ -537,7 +539,7 @@ func TestCombine_EmptyQuirksIsNoop(t *testing.T) {
 			t.Fatalf("PrepareCall with Quirks=%q: %v", q, err)
 		}
 		if string(call.UpstreamBody) != string(upBody) {
-			t.Errorf("empty quirks 改了 body: %q → %q", upBody, call.UpstreamBody)
+			t.Errorf("empty quirks changed the body: %q → %q", upBody, call.UpstreamBody)
 		}
 	}
 }
@@ -563,8 +565,9 @@ func TestCombine_BadQuirksSpec_ReturnsPrepareErrorPhaseQuirks(t *testing.T) {
 }
 
 func TestCombine_QuirksCompileCached(t *testing.T) {
-	// 同 spec 多次调 PrepareCall 应该只 compile 一次（sync.Map cache）。
-	// 这里间接验证：第二次调用不报 spec 错（如果每次重 compile 一个故意非法 spec，第二次也会报错）。
+	// Calling PrepareCall multiple times with the same spec should only compile once (sync.Map cache).
+	// Verified indirectly here: the second call doesn't report a spec error (if each call
+	// recompiled a deliberately invalid spec, the second call would error too).
 	tr := &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI, upstreamBody: []byte(`{"a":1}`)}
 	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "openai"}}
 	ep := &domain.Endpoint{
@@ -584,12 +587,14 @@ func TestCombine_QuirksCompileCached(t *testing.T) {
 	}
 }
 
-// TestDefaultLookup_CachesHandlerAcrossRequests 验证：DefaultLookup 多次 Get 同
-// (vendor, src, target) 返回**同一个** Handler 实例——这样 combined 内部的
-// quirksCache 才能跨请求复用，否则 deployer 配的 quirks JSON 每个请求都重 compile。
+// TestDefaultLookup_CachesHandlerAcrossRequests verifies: multiple DefaultLookup.Get
+// calls for the same (vendor, src, target) return **the same** Handler instance —
+// this is what lets combined's internal quirksCache be reused across requests;
+// otherwise the deployer's quirks JSON would be recompiled on every single request.
 //
-// 之前的 bug：DefaultLookup.Get 每次都 new combined{}，sync.Map 缓存随实例丢失。
-// 修复后：handlerCache 在 package 级，按 "vendor|src|tgt" key 命中。
+// Previous bug: DefaultLookup.Get news up a combined{} every time, so the
+// sync.Map cache was lost along with the instance. Fixed: handlerCache is now
+// package-level, keyed by "vendor|src|tgt".
 func TestDefaultLookup_CachesHandlerAcrossRequests(t *testing.T) {
 	resetGlobalRegistries(t)
 
@@ -607,35 +612,36 @@ func TestDefaultLookup_CachesHandlerAcrossRequests(t *testing.T) {
 		t.Fatalf("lookup returned nil; h1=%v h2=%v", h1, h2)
 	}
 	if h1 != h2 {
-		t.Errorf("DefaultLookup.Get 多次调用返回不同 Handler 实例（缓存失效）")
+		t.Errorf("DefaultLookup.Get returned different Handler instances across calls (cache miss)")
 	}
 
-	// 另一个 DefaultLookup 实例也应该命中同一个 Handler（包级缓存）
+	// another DefaultLookup instance should also hit the same Handler (package-level cache)
 	otherLookup := protocol.DefaultLookup{}
 	h3 := otherLookup.Get(ep, domain.ProtoOpenAI)
 	if h3 != h1 {
-		t.Errorf("跨 DefaultLookup 实例没命中包级缓存")
+		t.Errorf("a different DefaultLookup instance did not hit the package-level cache")
 	}
 }
 
 // =============================================================================
-// Pivot 组合回退（缺对 → FindVia 经 OpenAI 组合，docs/02 §6a）
+// Pivot composition fallback (missing pair → FindVia composes via OpenAI, docs/02 §6a)
 // =============================================================================
 
-// 直连 (anthropic→gemini) 未注册，但两条腿 (anthropic→openai) + (openai→gemini)
-// 都在 → DefaultLookup 应组合出可用 Handler，而不是 nil（旧行为：eligibility 剔除）。
+// The direct (anthropic→gemini) pair isn't registered, but both legs
+// (anthropic→openai) + (openai→gemini) are → DefaultLookup should compose a
+// usable Handler instead of nil (old behavior: eligibility would exclude it).
 func TestDefaultLookup_PivotCompositionFallback(t *testing.T) {
 	resetGlobalRegistries(t)
 
 	protocol.RegisterFactory("gvendor", &fakeAdapter{meta: protocol.Metadata{Vendor: "gvendor"}})
 	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
 	translator.Register(&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoGemini})
-	// 注意：没有注册 (anthropic → gemini) 直连对
+	// Note: no direct (anthropic → gemini) pair registered
 
 	ep := &domain.Endpoint{Vendor: "gvendor", Protocol: domain.ProtoGemini}
 	h := protocol.DefaultLookup{}.Get(ep, domain.ProtoAnthropic)
 	if h == nil {
-		t.Fatal("缺直连对但两腿俱在，应组合出 Handler")
+		t.Fatal("direct pair is missing but both legs are present, should compose a Handler")
 	}
 	caps := h.Capabilities()
 	if caps.SourceProtocol != domain.ProtoAnthropic || caps.UpstreamProtocol != domain.ProtoGemini {
@@ -644,16 +650,16 @@ func TestDefaultLookup_PivotCompositionFallback(t *testing.T) {
 	}
 }
 
-// 两腿也缺时仍返 nil → eligibility 照常剔除。
+// Still returns nil when both legs are missing → eligibility excludes it as usual.
 func TestDefaultLookup_PivotCompositionMissingLegStillNil(t *testing.T) {
 	resetGlobalRegistries(t)
 
 	protocol.RegisterFactory("gvendor", &fakeAdapter{meta: protocol.Metadata{Vendor: "gvendor"}})
 	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
-	// 缺 (openai → gemini) 腿
+	// Missing the (openai → gemini) leg
 
 	ep := &domain.Endpoint{Vendor: "gvendor", Protocol: domain.ProtoGemini}
 	if h := (protocol.DefaultLookup{}).Get(ep, domain.ProtoAnthropic); h != nil {
-		t.Errorf("缺腿时应返 nil，got %v", h)
+		t.Errorf("should return nil when a leg is missing, got %v", h)
 	}
 }

@@ -1,16 +1,16 @@
-# values.yaml — llm-gateway Helm chart 默认值
+# values.yaml — default values for the llm-gateway Helm chart
 #
-# 部署模式：gateway 多副本 + 共享 MySQL + Redis（外部依赖）。
-# 不内置 MySQL / Redis / Kafka——生产应该用 cloud managed（RDS / ElastiCache /
-# MSK）或独立 Helm chart 部署，避免本 chart 关心 stateful infra。
-# 不带控制面 binary——业务数据由 deployer 直接 SQL 维护。
+# Deployment model: multiple gateway replicas + shared MySQL + Redis (external dependencies).
+# MySQL / Redis / Kafka are not bundled — in production, use cloud-managed services (RDS / ElastiCache /
+# MSK) or a separate Helm chart deployment, so this chart doesn't need to manage stateful infra.
+# No control-plane binary is included — business data is maintained directly via SQL by the deployer.
 
 image:
   repository: ghcr.io/zereker/llm-gateway
   tag: "latest"
   pullPolicy: IfNotPresent
 
-# Gateway 数据平面
+# Gateway data plane
 gateway:
   replicaCount: 3
 
@@ -26,14 +26,14 @@ gateway:
     type: ClusterIP
     port: 8080
 
-  # HPA 按 CPU 扩缩；流式 chat 长连占 CPU 不高但占 goroutine，可加 custom metric
+  # HPA scales based on CPU; long-lived streaming chat connections don't use much CPU but do consume goroutines — consider adding a custom metric
   autoscaling:
     enabled: true
     minReplicas: 3
     maxReplicas: 20
     targetCPUUtilizationPercentage: 70
 
-  # 健康探针：/healthz pod 启动后立即可用；/readyz 依赖 db/redis ping
+  # Health probes: /healthz is available immediately after pod startup; /readyz depends on db/redis ping
   livenessProbe:
     httpGet:
       path: /healthz
@@ -47,7 +47,7 @@ gateway:
     initialDelaySeconds: 10
     periodSeconds: 10
 
-  # gateway.yaml 通过 ConfigMap 注入到 /etc/llm-gateway/gateway.yaml
+  # gateway.yaml is injected via ConfigMap into /etc/llm-gateway/gateway.yaml
   config:
     server:
       addr: ":8080"
@@ -56,9 +56,9 @@ gateway:
     request:
       body_limit_bytes: 10485760
       timeout: 120s
-    # database / redis 从 secret 注入（DSN 含密码）
+    # database / redis are injected from secrets (DSN includes the password)
     usage_events:
-      driver: file_and_kafka  # 生产推荐：file 是 source of truth + Kafka 异步广播
+      driver: file_and_kafka  # Production recommendation: file is the source of truth + Kafka broadcasts asynchronously
       file:
         path: /var/log/llm-gateway/usage.jsonl
       kafka:
@@ -76,17 +76,17 @@ gateway:
         invalid:   0s
         unknown:   10s
     budget:
-      driver: alwayspass  # 生产接计费系统时改 inmemory / redis-backed
+      driver: alwayspass  # When integrating a production billing system, change to inmemory / redis-backed
     moderation:
-      driver: none        # 启用走 openai；api_key 从 secret 注入
+      driver: none        # Set to openai to enable; api_key is injected from a secret
     trace:
       driver: otel
       endpoint: otel-collector:4317
       service_name: llm-gateway
 
-# Ingress（gateway 数据面）
+# Ingress (gateway data plane)
 ingress:
-  enabled: false  # 默认 off；生产按需开启
+  enabled: false  # Off by default; enable in production as needed
   className: nginx
   annotations: {}
     # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
@@ -100,20 +100,20 @@ ingress:
     # - secretName: llm-gateway-tls
     #   hosts: [llm-gateway.example.com]
 
-# Secret 字段 — 部署前必须提供值（用 --set 或单独 secret yaml 覆盖）
-# **不要把真值 commit 进本文件**
+# Secret fields — values must be provided before deployment (override via --set or a separate secret yaml)
+# **Do not commit real values into this file**
 secrets:
-  # MySQL DSN：root:pwd@tcp(mysql:3306)/llm_gateway?...
+  # MySQL DSN: root:pwd@tcp(mysql:3306)/llm_gateway?...
   databaseDSN: "root:CHANGEME@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
-  # Redis password（空 = 无密码）
+  # Redis password (empty = no password)
   redisPassword: ""
   redisAddr: "redis:6379"
-  # AES-256-GCM KEK，hex 32 字节（deployer 写 endpoints.auth 时必须用同一个 KEK）
+  # AES-256-GCM KEK, hex 32 bytes (the deployer must use this same KEK when writing endpoints.auth)
   dataKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  # OpenAI moderation key（moderation.driver=openai 时需要）
+  # OpenAI moderation key (needed when moderation.driver=openai)
   moderationApiKey: ""
 
-# Pod 安全 / scheduling
+# Pod security / scheduling
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532

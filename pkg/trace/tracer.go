@@ -1,25 +1,28 @@
-// Package trace 定义结构化 trace 接口（OpenTelemetry / slog 等可插拔实现）。
+// Package trace defines the structured trace interface (pluggable implementations
+// such as OpenTelemetry / slog).
 //
-// 默认实现见 step 2+。
+// See step 2+ for the default implementation.
 package trace
 
 import "context"
 
-// Tracer 结构化日志 / span 接口。
+// Tracer is the structured logging / span interface.
 //
-// Tracer 实现 MUST be safe for concurrent use（多 gin handler goroutine 同时 Log / StartSpan）。
+// Tracer implementations MUST be safe for concurrent use (multiple gin handler
+// goroutines calling Log / StartSpan at the same time).
 type Tracer interface {
-	// Log 写一条结构化日志（带 trace_id 等上下文）
+	// Log writes one structured log entry (with trace_id and other context).
 	Log(c context.Context, name string, payload any)
 
-	// StartSpan 开启一个 span（可选 OTel 集成）
+	// StartSpan opens a span (optional OTel integration).
 	StartSpan(c context.Context, name string) (context.Context, Span)
 }
 
-// Span 一个 trace span。
+// Span is a single trace span.
 //
-// Span 实例只在创建它的 goroutine 内使用（与 OTel SpanProcessor 约定一致）；
-// 实现无需自加锁。
+// Span instances are only used within the goroutine that created them (consistent
+// with the OTel SpanProcessor convention); implementations need not add their own
+// locking.
 type Span interface {
 	SetAttribute(key string, value any)
 	End()

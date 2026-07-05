@@ -1,22 +1,28 @@
-// Package gemini 是 Google Gemini 协议的 vendor Factory 实现。
+// Package gemini is the vendor Factory implementation for the Google Gemini
+// protocol.
 //
-// init() 注册到 protocol vendor registry，vendor 名 "gemini"。
+// init() registers it with the protocol vendor registry under the vendor name
+// "gemini".
 //
-// 支持两条 auth 路径（adapter 内按 ep.Auth.Type 自动选）：
-//   - AI Studio：auth.type = "gemini-key"，公共 API key（x-goog-api-key 头）
+// Two auth paths are supported (the adapter picks one automatically based on
+// ep.Auth.Type):
+//   - AI Studio: auth.type = "gemini-key", a public API key (x-goog-api-key header)
 //     URL: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
-//   - Vertex AI：auth.type = "vertex-adc"（用 ADC）或 "oauth2-sa"（嵌入 SA JSON）
+//   - Vertex AI: auth.type = "vertex-adc" (uses ADC) or "oauth2-sa" (embedded SA JSON)
 //     URL: https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent
 //
-// **客户端格式**：客户端按 OpenAI ChatCompletion 格式发请求；adapter 内部翻译成
-// Gemini 格式发上游，响应再翻回 OpenAI 格式。客户端无感切 vendor。
+// **Client format**: clients send requests in OpenAI ChatCompletion format;
+// the adapter translates internally to Gemini format for the upstream call,
+// then translates the response back to OpenAI format. Clients are unaware of
+// the vendor switch.
 //
-// **v0.5 不支持**：
-//   - Streaming（Gemini 用 :streamGenerateContent + 不同 chunk 格式，单独迭代）
+// **Not supported in v0.5**:
+//   - Streaming (Gemini uses :streamGenerateContent plus a different chunk
+//     format, to be handled in a separate iteration)
 //   - Function calling / tool_use
-//   - Vision / multimodal（parts 只支持 text）
+//   - Vision / multimodal (parts only support text)
 //
-// 想接入时在 cmd/gateway/main.go 加 blank import：
+// To wire it in, add a blank import in cmd/gateway/main.go:
 //
 //	import _ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
 package gemini
@@ -24,15 +30,16 @@ package gemini
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// Factory 实现 protocol.Factory。
+// Factory implements protocol.Factory.
 type Factory struct{}
 
-// Metadata 返回静态元信息。endpoint.Protocol（deployer 配置）通常 = ProtoGemini，
-// 客户端用 OpenAI SDK 时 dispatcher 自动接入 openai_gemini 翻译。
+// Metadata returns static metadata. endpoint.Protocol (deployer config) is
+// usually ProtoGemini; when the client uses the OpenAI SDK, the dispatcher
+// automatically wires in the openai_gemini translation.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
 		Vendor:              "gemini",
@@ -40,10 +47,11 @@ func (Factory) Metadata() protocol.Metadata {
 	}
 }
 
-// NewSession 为本次请求构造 Session。
+// NewSession constructs a Session for this request.
 //
-// envelope 在 slim adapter 模型里不需要——translator 已经吃 raw body 翻译完。
-// 保留参数为了 protocol.Factory 接口兼容；session 不存它。
+// The envelope isn't needed in the slim adapter model — the translator has
+// already consumed and translated the raw body. The parameter is kept for
+// protocol.Factory interface compatibility; session doesn't store it.
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.RequestEnvelope) (protocol.Session, error) {
 	tp, err := newTokenProvider(c, ep.Auth)
 	if err != nil {

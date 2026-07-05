@@ -1,20 +1,22 @@
 package dispatch
 
-// DefaultRetry 是当前默认 retry 策略：把一次 attempt 的 Verdict 翻译成
-// Dispatcher outer reducer 能消费的 Action。
+// DefaultRetry is the current default retry policy: it translates one
+// attempt's Verdict into an Action the Dispatcher's outer reducer can
+// consume.
 //
-// 映射规则：
+// Mapping rules:
 //
-//	Success     → Stream{}            （让 Dispatcher 调 res.StreamTo）
-//	Invalid     → Abort{400}          （translator 失败 / 客户端错；不重试）
-//	Retryable   → Continue{}          （Transient / Capacity / Permanent / Unknown）
-//	Non-retry   → Abort{502}          （兜底，理论上 IsRetryable 已覆盖）
+//	Success     → Stream{}            (lets Dispatcher call res.StreamTo)
+//	Invalid     → Abort{400}          (translator failure / client error; no retry)
+//	Retryable   → Continue{}          (Transient / Capacity / Permanent / Unknown)
+//	Non-retry   → Abort{502}          (fallback; in theory already covered by IsRetryable)
 //
-// **可替换**：实现 RetryPolicy 接口写新策略——cost-aware retry / circuit breaker /
-// exponential backoff / 时间窗口 budget 等。
+// **Replaceable**: implement the RetryPolicy interface to write a new
+// policy — cost-aware retry / circuit breaker / exponential backoff /
+// time-window budget, etc.
 type DefaultRetry struct{}
 
-// Decide 把 Verdict 翻译成 Action。
+// Decide translates a Verdict into an Action.
 func (DefaultRetry) Decide(_ State, v Verdict) Action {
 	switch v.Class {
 	case ClassSuccess:

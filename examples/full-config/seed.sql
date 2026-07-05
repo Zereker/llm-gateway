@@ -1,14 +1,14 @@
 -- examples/full-config/seed.sql
 --
--- 示例数据：3 quota policies + 1 account + 3 model services + 3 subscriptions + 3 pricing
--- versions。endpoints + api_keys 留空（需要加密 / hash，见末尾 helper）。
+-- Sample data: 3 quota policies + 1 account + 3 model services + 3 subscriptions + 3 pricing
+-- versions. endpoints + api_keys are left empty (they need encryption / hashing; see the helper notes at the end).
 --
--- 先启 gateway（启动期自跑 infra.Migrate 建表），再跑本文件 seed 业务数据。
--- 然后用 helper 工具（或自己写 Go 小脚本调 pkg/repo.EncodePayload / HashAPIKey）
--- 算 endpoints.auth 密文 + api_keys.api_key_hash 再 INSERT 即可。
+-- Start the gateway first (it runs infra.Migrate to create tables at startup), then run this file to seed business data.
+-- Then use the helper tool (or write a small Go script calling pkg/repo.EncodePayload / HashAPIKey)
+-- to compute endpoints.auth ciphertext + api_keys.api_key_hash before INSERTing them.
 
 -- ============================================================================
--- 1) quota_policies：三种限流档位
+-- 1) quota_policies: three rate-limit tiers
 -- ============================================================================
 
 INSERT INTO quota_policies (name, description, rule_json) VALUES
@@ -35,8 +35,8 @@ INSERT INTO accounts (pin, name, quota_policy_id) VALUES
 ('demo-acme', 'ACME Corp (demo)', (SELECT id FROM quota_policies WHERE name='tier1'));
 
 -- ============================================================================
--- 3) model_services：开放给客户端选择的 model 列表
---    service_id 是业务/审计 key（vendor/model 组合）；model 是客户端 body 里写的字段
+-- 3) model_services: the list of models exposed for clients to choose from
+--    service_id is a business/audit key (vendor/model combination); model is the field clients put in the request body
 -- ============================================================================
 
 INSERT INTO model_services (service_id, model) VALUES
@@ -45,45 +45,46 @@ INSERT INTO model_services (service_id, model) VALUES
 ('openai/gpt-4o-via-gemini',            'gemini-1.5-pro');
 
 -- ============================================================================
--- 4) account_model_subscriptions：demo-acme 订阅全部三个 model
+-- 4) account_model_subscriptions: demo-acme subscribes to all three models
 -- ============================================================================
 
 INSERT INTO account_model_subscriptions (account_id, model_service_id)
 SELECT 'demo-acme', id FROM model_services;
 
 -- ============================================================================
--- 5) endpoints：上游接入点
+-- 5) endpoints: upstream access points
 --
--- **auth 列 AES-256-GCM 加密**——直接 INSERT 明文 JSON 不工作。生成密文有两种方式：
+-- **The auth column is AES-256-GCM encrypted** — inserting plaintext JSON directly will not work.
+-- There are two ways to generate the ciphertext:
 --
--- (a) Go 工具脚本（推荐）：用 pkg/repo 自己的 helper
---     repo.SetDataKey(cfg.DataKey)   // 跟 gateway.yaml 里的 data_key 一致
+-- (a) Go tooling script (recommended): use pkg/repo's own helper
+--     repo.SetDataKey(cfg.DataKey)   // must match the data_key in gateway.yaml
 --     auth, _ := repo.EncodePayload(repo.AuthTypeBearer, repo.BearerAuth{APIKey: "sk-..."})
 --     // auth.Type = "bearer", auth.Payload = "v1:base64ofciphertext"
 --
--- (b) MySQL 命令行：先用 (a) 算好密文字符串，再贴到下面的 INSERT。
+-- (b) MySQL CLI: first compute the ciphertext string using (a), then paste it into the INSERT below.
 --
--- routing.url 是上游 BASE URL（不含 path）；session 自己拼。
--- protocol 字段：endpoint 上游说什么协议（openai / anthropic / gemini / responses）
+-- routing.url is the upstream BASE URL (no path); the session appends the path itself.
+-- protocol field: which protocol the endpoint's upstream speaks (openai / anthropic / gemini / responses)
 -- ============================================================================
 
--- 占位（请用 (a) 工具生成 v1:... 密文后填入）：
+-- Placeholder (generate the v1:... ciphertext with tool (a) and fill it in):
 --   INSERT INTO endpoints (name, vendor, protocol, model, group_name, weight, enabled, auth, routing) VALUES
 --   ('openai_main', 'openai', 'openai', 'gpt-4o', 'default', 100, 1,
 --    'v1:base64ofEncryptedBearerAuth',
 --    JSON_OBJECT('url', 'https://api.openai.com'));
 
 -- ============================================================================
--- 6) api_keys：客户端凭证
+-- 6) api_keys: client credentials
 --
--- **明文不入库**——只入 SHA-256 hex 的 hash。生成方式：
---   hash := repo.HashAPIKey(plaintext)   // 已 hex 编码的 SHA-256
---   prefix := plaintext[:12]              // 前 12 字符做 prefix（运维列表显示用）
+-- **Plaintext is never stored** — only the SHA-256 hex hash is stored. To generate it:
+--   hash := repo.HashAPIKey(plaintext)   // already hex-encoded SHA-256
+--   prefix := plaintext[:12]              // first 12 characters as the prefix (used for display in ops listings)
 --
--- 用 Go 脚本 / openssl / sha256sum 算出明文的 hex SHA-256 hash 填入下面。
+-- Use a Go script / openssl / sha256sum to compute the plaintext's hex SHA-256 hash and fill it in below.
 -- ============================================================================
 
--- 占位：
+-- Placeholder:
 --   INSERT INTO api_keys (account_id, api_key_hash, api_key_prefix, api_key_id,
 --                          sub_account_id, group_name, quota_policy_id, enabled)
 --   VALUES ('demo-acme', '<sha256-hex-of-plaintext>', 'sk-demo', 'ak_demo_alice',
@@ -91,10 +92,10 @@ SELECT 'demo-acme', id FROM model_services;
 --           (SELECT id FROM quota_policies WHERE name='tier1'), 1);
 
 -- ============================================================================
--- 7) pricing_versions：每个 (account, model_service, rule_class) 至少一条 effective_to=NULL 当前价
+-- 7) pricing_versions: each (account, model_service, rule_class) needs at least one current price row with effective_to=NULL
 --
--- rule_json 是 PricingSpec 的 JSON 表示（pkg/usage/pricing.go）。
--- 这里给三个 model 都配 standard 档；BaseUnit=1K_tokens；只配 input/output 单价。
+-- rule_json is the JSON representation of PricingSpec (pkg/usage/pricing.go).
+-- Here all three models are configured with the standard tier; BaseUnit=1K_tokens; only input/output unit prices are set.
 -- ============================================================================
 
 INSERT INTO pricing_versions (account_id, model_service_id, rule_class, effective_from, rule_json, notes) VALUES

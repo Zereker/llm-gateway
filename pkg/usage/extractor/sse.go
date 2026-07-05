@@ -2,9 +2,11 @@ package extractor
 
 import "bytes"
 
-// extractDataPayload 从 SSE 单行里拿 "data: " 后的 payload；非 data 行返回 nil。
+// extractDataPayload takes the payload after "data: " from a single SSE line;
+// returns nil for non-data lines.
 //
-// 兼容 SSE 规范的 "data: " 后零或一个空格 + 跳过末尾 \r。
+// Compatible with the SSE spec's zero-or-one space after "data:" + trims a
+// trailing \r.
 func extractDataPayload(line []byte) []byte {
 	const prefix = "data:"
 	if !bytes.HasPrefix(line, []byte(prefix)) {

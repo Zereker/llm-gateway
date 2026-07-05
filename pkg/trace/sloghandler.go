@@ -9,37 +9,43 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// CtxHandler 包一层 slog.Handler，从 ctx 自动抽 trace 信息加到 log record。
+// CtxHandler wraps a slog.Handler, automatically extracting trace info from ctx
+// and adding it to the log record.
 //
-// **抽取来源**：
+// **Extraction sources**:
 //
-//  1. **OTel SpanContext**（从 W3C traceparent 来）→ trace_id / span_id
-//  2. **OTel Baggage** → 全部 members 当 attr（业务侧用 baggage.SetMember 加
-//     sub_account_id / request_id 等会自动出现在 log）
+//  1. **OTel SpanContext** (from W3C traceparent) → trace_id / span_id
+//  2. **OTel Baggage** → all members become attrs (business code uses
+//     baggage.SetMember to add sub_account_id / request_id etc., which then
+//     automatically appear in the log)
 //
-// **使用约定**：所有需要 trace 关联的 log 都用 `slog.InfoContext(ctx, ...)`（带 ctx 的变体），
-// 不要用 `slog.Info` —— 后者拿不到 ctx，handler 提取不到 trace 信息。
+// **Usage convention**: all logs that need trace correlation must use
+// `slog.InfoContext(ctx, ...)` (the ctx-carrying variant), not `slog.Info` — the
+// latter has no access to ctx, so the handler cannot extract trace info from it.
 //
-// **装配**（main.go 里）：
+// **Wiring** (in main.go):
 //
 //	base := slog.NewJSONHandler(os.Stderr, nil)
 //	slog.SetDefault(slog.New(trace.NewCtxHandler(base)))
 //
-// 之后任何代码 `slog.InfoContext(ctx, "msg", ...)` 自动带 trace_id / span_id /
-// 已注入 baggage 的字段（sub_account_id 等）。
+// After this, any `slog.InfoContext(ctx, "msg", ...)` call automatically carries
+// trace_id / span_id / injected baggage fields (sub_account_id etc.).
 //
-// **没装 OTel TracerProvider 时也工作**：M1 TraceContext middleware 自己用
-// W3C propagator 注入 SpanContext，与是否启用 OTel 上报无关；CtxHandler 只看 ctx，
-// 不依赖 TracerProvider。
+// **Also works without an OTel TracerProvider installed**: the M1 TraceContext
+// middleware injects the SpanContext itself via the W3C propagator, independent of
+// whether OTel reporting is enabled; CtxHandler only looks at ctx and does not
+// depend on the TracerProvider.
 //
-// **baggage 安全**：本 handler 把 baggage 全 member 都暴露到 log。生产里**不要
-// 往 baggage 写敏感数据**（API key / 密码 / PII）——baggage 设计就是"明文跨 service
-// 传播"，本就不适合存敏感数据。
+// **Baggage security**: this handler exposes all baggage members to the log.
+// **Do not write sensitive data to baggage in production** (API keys / passwords /
+// PII) — baggage is designed to propagate "in plaintext across services," which
+// makes it inherently unsuitable for sensitive data.
 type CtxHandler struct {
 	inner slog.Handler
 }
 
-// NewCtxHandler 包装一个底层 slog.Handler；inner=nil 时退到 JSONHandler(stderr)。
+// NewCtxHandler wraps an underlying slog.Handler; falls back to
+// JSONHandler(stderr) when inner is nil.
 func NewCtxHandler(inner slog.Handler) *CtxHandler {
 	if inner == nil {
 		inner = slog.NewJSONHandler(os.Stderr, nil)
@@ -47,15 +53,16 @@ func NewCtxHandler(inner slog.Handler) *CtxHandler {
 	return &CtxHandler{inner: inner}
 }
 
-// Enabled 透传给内层 handler。
+// Enabled delegates to the inner handler.
 func (h *CtxHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
 	return h.inner.Enabled(ctx, lvl)
 }
 
-// Handle 在 record 上追加 ctx 抽出的属性，再调内层 handler。
+// Handle appends attributes extracted from ctx onto the record, then calls the
+// inner handler.
 //
-// 注意 record 顺序：trace_id / span_id 先于 baggage member——后追加的会出现在
-// JSON 输出靠后位置（slog 实现保序）。
+// Note the record ordering: trace_id / span_id come before the baggage members —
+// attributes appended later appear later in the JSON output (slog preserves order).
 func (h *CtxHandler) Handle(ctx context.Context, r slog.Record) error {
 	if ctx == nil {
 		return h.inner.Handle(ctx, r)
@@ -77,7 +84,8 @@ func (h *CtxHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.inner.Handle(ctx, r)
 }
 
-// WithAttrs / WithGroup 透传：返回包装后的 handler 保持 ctx-aware 能力。
+// WithAttrs / WithGroup delegate through: return a wrapped handler that keeps the
+// ctx-aware behavior.
 func (h *CtxHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &CtxHandler{inner: h.inner.WithAttrs(attrs)}
 }

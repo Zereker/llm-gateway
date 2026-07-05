@@ -358,7 +358,7 @@ func (c *Config) Validate() error {
 		// ok; endpoint is ignored
 	case "otel":
 		if c.Trace.Endpoint == "" {
-			return errors.New("trace.driver=otel requires trace.endpoint (OTLP gRPC collector 地址)")
+			return errors.New("trace.driver=otel requires trace.endpoint (OTLP gRPC collector address)")
 		}
 	default:
 		return fmt.Errorf("trace.driver=%q not supported (use slog|otel)", c.Trace.Driver)
@@ -395,7 +395,7 @@ func (c *Config) Validate() error {
 		// logging/audit channel, the gateway only writes local JSONL, and
 		// downstream fan-out is left to fluent-bit / vector
 		// (see docs/05 §2 + docs/07 §2).
-		return fmt.Errorf("content_log.driver=%q not supported (use none|file; kafka 已下沉到 fluent-bit/vector)", c.ContentLog.Driver)
+		return fmt.Errorf("content_log.driver=%q not supported (use none|file; kafka handling has moved to fluent-bit/vector)", c.ContentLog.Driver)
 	}
 	if c.ContentLog.Driver == "file" && c.ContentLog.File.Path == "" {
 		return errors.New("content_log.driver=file requires file.path non-empty")

@@ -30,7 +30,7 @@ func TestClassify_OverloadedError_MapsToRateLimit(t *testing.T) {
 
 func TestClassify_InvalidRequestError_Overrides5xx(t *testing.T) {
 	body := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad input"}}`)
-	got := Factory{}.Classify(500, body) // 即使 5xx，invalid_request_error 应映射 ErrInvalid
+	got := Factory{}.Classify(500, body) // even for 5xx, invalid_request_error should map to ErrInvalid
 	if got.Class != domain.ErrInvalid {
 		t.Errorf("class=%v, want=invalid", got.Class)
 	}
@@ -60,7 +60,7 @@ func TestClassify_BadJSON_FallbackToDefault(t *testing.T) {
 }
 
 func TestClassify_ErrorFieldMissing_FallbackToDefault(t *testing.T) {
-	// JSON 解析成功但没有 .error 字段 → fallback
+	// JSON parses successfully but has no .error field → fallback
 	got := Factory{}.Classify(500, []byte(`{"type":"error"}`))
 	if got.Class != domain.ErrTransient {
 		t.Errorf("missing error obj should fallback, got=%v", got.Class)
@@ -70,7 +70,7 @@ func TestClassify_ErrorFieldMissing_FallbackToDefault(t *testing.T) {
 func TestClassify_UnknownErrorType_KeepsBaseClass(t *testing.T) {
 	body := []byte(`{"type":"error","error":{"type":"weird_error","message":"x"}}`)
 	got := Factory{}.Classify(500, body)
-	// unknown error.type → 保留 base class（500 → transient）
+	// unknown error.type → keep base class (500 → transient)
 	if got.Class != domain.ErrTransient {
 		t.Errorf("class=%v, want=transient (unknown error.type → base)", got.Class)
 	}

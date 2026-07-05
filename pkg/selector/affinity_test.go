@@ -47,7 +47,7 @@ func candidatesOf(ids ...int64) []Candidate {
 	return cs
 }
 
-// TestScheduler_SessionAffinity：同 session 粘同一 endpoint；pinned 被排除时重选并重 pin。
+// TestScheduler_SessionAffinity: same session sticks to the same endpoint; reselects and re-pins when the pinned endpoint is excluded.
 func TestScheduler_SessionAffinity(t *testing.T) {
 	rdb := testAffinityRedis(t)
 	ctx := context.Background()
@@ -66,12 +66,12 @@ func TestScheduler_SessionAffinity(t *testing.T) {
 		return &Request{Group: "free", SessionKey: "sessX", Candidates: candidatesOf(1, 2, 3), ExcludeIDs: ex}
 	}
 
-	// 首次:随机选一个 + pin
+	// first time: pick one at random + pin
 	first, err := sched.Pick(ctx, req())
 	if err != nil || first == nil {
 		t.Fatalf("pick1: %v ep=%v", err, first)
 	}
-	// 再选 5 次同 session → 必须都粘到同一个
+	// pick 5 more times on the same session → must all stick to the same one
 	for i := 0; i < 5; i++ {
 		got, _ := sched.Pick(ctx, req())
 		if got == nil || got.ID != first.ID {
@@ -79,19 +79,19 @@ func TestScheduler_SessionAffinity(t *testing.T) {
 		}
 	}
 
-	// 把 pinned 排除 → 应重选到别的 ep（且重新 pin 到它）
+	// exclude the pinned one → should reselect to a different ep (and re-pin to it)
 	second, _ := sched.Pick(ctx, req(first.ID))
 	if second == nil || second.ID == first.ID {
-		t.Fatalf("排除 pinned 后 = %v, want 另一个 ep", second)
+		t.Fatalf("after excluding pinned = %v, want a different ep", second)
 	}
-	// 后续同 session（不排除）应粘到新 pin（second）
+	// subsequent picks on the same session (without exclusion) should stick to the new pin (second)
 	got, _ := sched.Pick(ctx, req())
 	if got == nil || got.ID != second.ID {
-		t.Errorf("重 pin 后 = %v, want %d", got, second.ID)
+		t.Errorf("after re-pinning = %v, want %d", got, second.ID)
 	}
 }
 
-// 无 SessionKey 时不走亲和（正常 weighted）——affinity store 不被触碰。
+// When there's no SessionKey, affinity isn't used (normal weighted) — the affinity store isn't touched.
 func TestScheduler_NoSessionKeyNoAffinity(t *testing.T) {
 	rdb := testAffinityRedis(t)
 	sched := New(Config{

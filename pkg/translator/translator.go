@@ -1,24 +1,29 @@
-// Package translator 协议间数据 shape 翻译（body / SSE / usage）。
+// Package translator translates data shapes between protocols (body / SSE / usage).
 //
-// **架构定位**（v0.6 facade）：
+// **Architecture position** (v0.6 facade):
 //
 //	pkg/protocol.Handler = Combine(protocol.Factory, translator.Translator)
 //
-// translator 只管 body shape；HTTP 层走 pkg/protocol；端到端 Handler 由
-// pkg/protocol.Combine 在请求时按 (srcProto, ep.Protocol) 动态组合。消费侧
-// 只看 protocol.Handler，不直接消费 Translator。
+// translator only handles body shape; the HTTP layer goes through pkg/protocol.
+// The end-to-end Handler is dynamically composed by pkg/protocol.Combine per
+// request based on (srcProto, ep.Protocol). Consumers only see protocol.Handler,
+// never consuming Translator directly.
 //
-// **同协议短路**：identity translator 注册在 pkg/translator/identity（OpenAI/
-// Anthropic/Responses 各一个），request 几乎透传，response 仅做 SSE / usage 解析。
+// **Same-protocol shortcut**: identity translators are registered under
+// pkg/translator/identity (one each for OpenAI/Anthropic/Responses); the request
+// is nearly pass-through, and the response only does SSE / usage parsing.
 //
-// **跨协议**：每对 (source, target) 一个 translator 实现（pkg/translator/<from>_<to>/）。
-// 流式翻译复杂度高（chunk 边界 + 部分 JSON 解析），当前实现 buffer-then-translate
-// （Flush 时一次性翻整 body）；流式翻译留待后续迭代。
+// **Cross-protocol**: one translator implementation per (source, target) pair
+// (pkg/translator/<from>_<to>/). Streaming translation is inherently complex
+// (chunk boundaries + partial JSON parsing); the current implementation is
+// buffer-then-translate (translates the whole body at once on Flush); true
+// streaming translation is left for a future iteration.
 //
-// **注册**：每个 translator 子包 init() 调 Register；cmd 完成全部 blank import。
-// protocol.DefaultLookup 通过 translator.Find(src, tgt) 在请求时检索。
+// **Registration**: each translator subpackage calls Register in its init();
+// cmd wires up all the blank imports. protocol.DefaultLookup looks translators
+// up per request via translator.Find(src, tgt).
 //
-// 详见 docs/architecture/02-protocol-translation.md。
+// See docs/architecture/02-protocol-translation.md for details.
 package translator
 
 import (
@@ -27,45 +32,59 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Translator 把客户端协议翻译成上游协议（请求方向 + 响应方向）。
+// Translator translates the client protocol into the upstream protocol (both
+// the request direction and the response direction).
 //
-// 实现 MUST be safe for concurrent use（多 gin handler goroutine 并发拿同一 Translator
-// 调 TranslateRequest / NewResponseHandler）。
+// Implementations MUST be safe for concurrent use (multiple gin handler
+// goroutines may concurrently call TranslateRequest / NewResponseHandler on
+// the same Translator).
 type Translator interface {
-	// Source 客户端使用的协议（envelope.SourceProtocol）。
+	// Source is the protocol used by the client (envelope.SourceProtocol).
 	Source() domain.Protocol
-	// Target 上游使用的协议（match domain.Endpoint.Protocol）。
+	// Target is the protocol used by upstream (matches domain.Endpoint.Protocol).
 	Target() domain.Protocol
 
-	// TranslateRequest 客户端 body → 上游 body。
-	// 同协议 identity 走最小逻辑（可能注入辅助字段如 stream_options.include_usage）。
+	// TranslateRequest converts client body -> upstream body.
+	// Same-protocol identity takes the minimal path (may inject helper fields
+	// such as stream_options.include_usage).
 	TranslateRequest(srcBody []byte) (dstBody []byte, err error)
 
-	// NewResponseHandler 每请求一个；负责处理上游响应 chunk → 客户端 chunk。
-	// 必须每请求 new（handler 内部有累积 buffer / SSE parser 状态）。
+	// NewResponseHandler returns one handler per request; it handles upstream
+	// response chunks -> client chunks.
+	// Must be created new per request (the handler carries internal
+	// accumulation buffer / SSE parser state).
 	NewResponseHandler() ResponseHandler
 }
 
-// ResponseHandler 处理一次上游响应：chunk-by-chunk 喂入；可选累积；最终 Flush 输出。
+// ResponseHandler processes one upstream response: fed chunk-by-chunk;
+// optionally accumulates; finally emits output on Flush.
 //
-// **streaming 模式**（identity OpenAI）：Feed 直接返回 chunk 给客户端；usage 在
-// Feed 阶段持续解析；Flush 返回 nil bytes + 已积累的 usage。
+// **Streaming mode** (identity OpenAI): Feed returns the chunk to the client
+// immediately; usage is parsed incrementally during Feed; Flush returns nil
+// bytes plus the usage accumulated so far.
 //
-// **buffer-then-translate 模式**（openai_gemini）：Feed 全部累积，返回 nil；Flush
-// 一次性翻译累积 body 并返回完整 OpenAI 格式 body + usage。客户端只在 Flush 后看到响应。
+// **Buffer-then-translate mode** (openai_gemini): Feed accumulates everything
+// and returns nil; Flush translates the accumulated body all at once and
+// returns the full OpenAI-format body plus usage. The client only sees the
+// response after Flush.
 //
-// 实现 MUST 单 goroutine（M7 Schedule 在同 handler goroutine 内顺序调用）。
+// Implementations MUST be single-goroutine (M7 Schedule calls sequentially
+// within the same handler goroutine).
 type ResponseHandler interface {
-	// Feed 喂上游响应的下一段 chunk。
-	// 返回 clientBytes：要立即写客户端的字节；nil = 不写（buffer 模式）。
+	// Feed supplies the next chunk of the upstream response.
+	// Returns clientBytes: bytes to write to the client immediately; nil means
+	// don't write yet (buffer mode).
 	Feed(chunk []byte) (clientBytes []byte, err error)
 
-	// Flush 上游 EOF 后调；返回最后要写客户端的字节 + 提取到的 usage（nil = 缺失）。
-	// 同 handler 多次 Flush 行为未定义；M7 只调一次。
+	// Flush is called after upstream EOF; returns the final bytes to write to
+	// the client plus the extracted usage (nil = missing).
+	// Behavior of calling Flush more than once on the same handler is
+	// undefined; M7 only calls it once.
 	Flush() (clientBytes []byte, usage *domain.Usage, err error)
 }
 
-// Registry translator 全局注册表（init() Register 模式，类似 adapter）。
+// Registry is the global translator registry (init() Register pattern,
+// similar to adapter).
 type Registry struct {
 	mu sync.RWMutex
 	m  map[key]Translator
@@ -77,8 +96,9 @@ type key struct {
 
 var defaultRegistry = &Registry{m: make(map[key]Translator)}
 
-// Register 全局注册（包 init() 内调用）。同 (source, target) 重复注册会 panic
-// 让冲突在启动期暴露。
+// Register performs global registration (called within a package's init()).
+// Registering the same (source, target) twice panics, surfacing the conflict
+// at startup.
 func Register(t Translator) {
 	defaultRegistry.mu.Lock()
 	defer defaultRegistry.mu.Unlock()
@@ -89,14 +109,14 @@ func Register(t Translator) {
 	defaultRegistry.m[k] = t
 }
 
-// Find 找 (source, target) 对应的 translator；未注册返回 nil。
+// Find looks up the translator for (source, target); returns nil if unregistered.
 func Find(source, target domain.Protocol) Translator {
 	defaultRegistry.mu.RLock()
 	defer defaultRegistry.mu.RUnlock()
 	return defaultRegistry.m[key{src: source, tgt: target}]
 }
 
-// Reset 清空注册表，仅供测试用。
+// Reset clears the registry; for tests only.
 func Reset() {
 	defaultRegistry.mu.Lock()
 	defer defaultRegistry.mu.Unlock()

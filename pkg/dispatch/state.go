@@ -8,19 +8,26 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// State 给 Policy 看的运行时投影——read-only。
+// State is the read-only runtime projection exposed to Policy.
 //
-// **设计原则**：Policy 是外部可注入实现，State 给接口而非 *state 指针，
-// 防止外部 Policy 误改 driver 状态。Dispatcher 内部用 *state 拿到可变态。
+// **Design principle**: Policy is an externally injectable implementation;
+// State exposes an interface rather than a *state pointer, to prevent an
+// external Policy from mutating driver state by mistake. Dispatcher uses
+// *state internally to get the mutable view.
 //
-// **字段语义**：
+// **Field semantics**:
 //
-//	Attempts        ── 已完成的 attempt 数（跨 model 累加，从 1 起）
-//	AttemptsCap     ── 本请求允许的最大 attempt 数（AttemptCap.Resolve 出来的）
-//	Excluded        ── 本请求已尝试过的 endpoint ID 集合（跨 model 累加）
-//	CurrentModel    ── 当前 attempt loop 用的 model（fallback 切换会更新）
-//	RemainingModels ── ModelChain 里在 CurrentModel 之后还没用到的 model
-//	LastVerdict     ── 上一次 Invoker.Invoke 的 Verdict（首次 attempt 前是零值）
+//	Attempts        ── number of completed attempts (accumulated across
+//	                    models, starting at 1)
+//	AttemptsCap     ── the max attempts allowed for this request (from
+//	                    AttemptCap.Resolve)
+//	Excluded        ── the set of endpoint IDs already tried in this request
+//	                    (accumulated across models)
+//	CurrentModel    ── the model used by the current attempt loop (updated
+//	                    on fallback switches)
+//	RemainingModels ── models in ModelChain not yet used after CurrentModel
+//	LastVerdict     ── the Verdict from the last Invoker.Invoke (zero value
+//	                    before the first attempt)
 type State interface {
 	Attempts() int
 	AttemptsCap() int
@@ -31,12 +38,13 @@ type State interface {
 }
 
 // =============================================================================
-// state — Dispatcher 内部的运行时门面，实现 State + 自带 mutator
+// state — Dispatcher's internal runtime facade; implements State + carries mutators
 // =============================================================================
 //
-// **不持 *RequestContext**：dispatch 跟 RC 解耦后，state 只看 typed Input；
-// 副作用（Decision / Usage / RoutedModel / Error）全部写入 s.outcome，
-// 由 caller（middleware/schedule.go）从 Outcome 翻译回 RC 字段。
+// **Doesn't hold a *RequestContext**: since dispatch is decoupled from RC,
+// state only sees the typed Input; side effects (Decision / Usage /
+// RoutedModel / Error) are all written into s.outcome, and the caller
+// (middleware/schedule.go) translates Outcome back into RC fields.
 
 type state struct {
 	in Input
@@ -55,7 +63,7 @@ type state struct {
 	outcome   Outcome
 }
 
-// newState 用 Input + 已 resolve 的 cap 初始化运行时状态。
+// newState initializes runtime state from Input plus an already-resolved cap.
 func newState(in Input, cap int) *state {
 	return &state{
 		in:          in,
@@ -69,7 +77,7 @@ func newState(in Input, cap int) *state {
 }
 
 // =============================================================================
-// State interface（read-only，给 Policy 用）
+// State interface (read-only, used by Policy)
 // =============================================================================
 
 func (s *state) Attempts() int                { return s.attempts }
@@ -94,13 +102,13 @@ func (s *state) RemainingModels() []*domain.ModelService {
 func (s *state) LastVerdict() Verdict { return s.lastVerdict }
 
 // =============================================================================
-// Internal mutators（Dispatcher 内部调用）
+// Internal mutators (called by Dispatcher internally)
 // =============================================================================
 
-// Exhausted attempt 数已到上限。
+// Exhausted reports whether the attempt count has hit the cap.
 func (s *state) Exhausted() bool { return s.attempts >= s.attemptsCap }
 
-// PickQuery 构造给 Selector.Pick 的入参（model / group / exclude）。
+// PickQuery builds the input for Selector.Pick (model / group / exclude).
 func (s *state) PickQuery() PickQuery {
 	cur := s.CurrentModel()
 	model := ""
@@ -115,8 +123,8 @@ func (s *state) PickQuery() PickQuery {
 	}
 }
 
-// CurrentModelName 当前轮次的 model 字符串（CandidateSource.ListForModel 入参）；
-// 链已耗尽返 ""。
+// CurrentModelName returns the current round's model string (input for
+// CandidateSource.ListForModel); returns "" once the chain is exhausted.
 func (s *state) CurrentModelName() string {
 	cur := s.CurrentModel()
 	if cur == nil {
@@ -125,26 +133,34 @@ func (s *state) CurrentModelName() string {
 	return cur.Model
 }
 
-// Group 用户分组（CandidateSource.ListForModel 入参）。
+// Group returns the user group (input for CandidateSource.ListForModel).
 func (s *state) Group() string { return s.in.Identity.Group }
 
-// Envelope 给 InvokerFactory.For 用（含 RawBytes）+ filterEligible 用。
+// Envelope is used by InvokerFactory.For (includes RawBytes) and by
+// filterEligible.
 func (s *state) Envelope() *domain.RequestEnvelope { return s.in.Envelope }
 
-// Handlers 给 dispatcher.step 用——Input 的请求级 Handler 查询端口
-// （filterEligible + dispatcher 选 handler 都要）。
+// Handlers is used by dispatcher.step — Input's request-level Handler
+// lookup port (needed by both filterEligible and the dispatcher's handler
+// selection).
 func (s *state) Handlers() protocol.Lookup { return s.in.Handlers }
 
-// Record 记一次 attempt：attempts++ / excluded / lastVerdict / decisions append。
-// Outcome 字段先填 Unknown，finalize 阶段按终态修正。
+// Record logs one attempt: attempts++ / excluded / lastVerdict / decisions
+// append. Outcome fields are initially filled as Unknown and corrected to
+// the terminal state during finalize.
 //
-// **ClassUnknown 不排除**：Unknown = 分类盲区 / 依赖故障（Redis reserve store
-// 错等），不是"这个 endpoint 坏了"。跟 cooldown 一样（scheduler.Report 对 Unknown
-// 也不 Mark），这里也不把 endpoint 加进 excluded——否则一次 Redis 抖动会把健康
-// endpoint 从后续 fallback model 的候选池里永久删掉：endpoint E 同时服务 model
-// A/B，chain [A→B]，E 在 A 上撞 store 错被 exclude，fallback 到 B 时 E 是唯一候选
-// 却被 excluded 过滤 → eligible 空 → 对健康 endpoint 报 503。attempt 数由
-// attemptsCap 兜底，不会因不排除而无限重选同一个 ep。
+// **ClassUnknown is not excluded**: Unknown means a classification blind
+// spot / dependency failure (e.g. a Redis reserve-store error), not "this
+// endpoint is broken". Just like cooldown (scheduler.Report also doesn't
+// Mark on Unknown), we don't add the endpoint to excluded here either —
+// otherwise a single Redis blip would permanently remove a healthy endpoint
+// from the candidate pool for subsequent fallback models: say endpoint E
+// serves both models A and B, with chain [A→B]; if E hits a store error on
+// A and gets excluded, then when falling back to B, E — the only
+// candidate — gets filtered out by excluded → eligible is empty → a
+// healthy endpoint gets reported as 503. The attempt count is still bounded
+// by attemptsCap, so not excluding it doesn't cause infinite re-selection
+// of the same endpoint.
 func (s *state) Record(ep *domain.Endpoint, v Verdict) {
 	s.attempts++
 	if v.Class != ClassUnknown {
@@ -167,15 +183,16 @@ func (s *state) Record(ep *domain.Endpoint, v Verdict) {
 		Model:       model,
 		EndpointID:  strconv.FormatInt(ep.ID, 10),
 		AttemptRole: role,
-		Outcome:     domain.AttemptUnknown, // finalize 阶段填
+		Outcome:     domain.AttemptUnknown, // filled during finalize
 		LatencyMs:   v.Latency.Milliseconds(),
 		ErrorClass:  v.Class.String(),
 		Started:     time.Now().Add(-v.Latency),
 	})
 }
 
-// SetModel 切换 fallback model。默认按 chain 顺序切；ms 不在 chain 里
-// （外部 FallbackPolicy 给了 chain 外选择）时追加进 chain 末尾。
+// SetModel switches to a fallback model. By default it switches in chain
+// order; if ms isn't in the chain (an external FallbackPolicy chose one
+// outside the chain), it's appended to the end of the chain.
 func (s *state) SetModel(ms *domain.ModelService) {
 	for i := s.curIdx + 1; i < len(s.modelChain); i++ {
 		if s.modelChain[i] == ms {
@@ -187,8 +204,9 @@ func (s *state) SetModel(ms *domain.ModelService) {
 	s.curIdx = len(s.modelChain) - 1
 }
 
-// ApplyStream Stream 成功后写 RoutedModel + Usage + TTFT + Outcome.Error；
-// 全部记到 s.outcome，不直接动 RC（dispatch 跟 RC 解耦）。
+// ApplyStream writes RoutedModel + Usage + TTFT + Outcome.Error after a
+// successful Stream; everything goes into s.outcome, never touching RC
+// directly (dispatch is decoupled from RC).
 func (s *state) ApplyStream(rep StreamReport) {
 	routed := s.CurrentModel()
 	usage := rep.Usage
@@ -214,11 +232,12 @@ func (s *state) ApplyStream(rep StreamReport) {
 	s.finalize()
 }
 
-// SetAbort 终止本请求；finalize 写 SchedulingDecision。
+// SetAbort terminates the request; finalize writes the SchedulingDecision.
 func (s *state) SetAbort(a Abort) {
 	result := a.Result
 	if result == OutcomeUnknown {
-		// Policy 没填 Result——按 HTTPCode 兜底（保留兼容；理想是 Policy 都显式填）
+		// Policy didn't fill Result — fall back to inferring from HTTPCode
+		// (kept for compatibility; ideally every Policy fills it explicitly)
 		result = inferResultFromHTTPCode(a.HTTPCode)
 	}
 	s.outcome = Outcome{
@@ -230,22 +249,25 @@ func (s *state) SetAbort(a Abort) {
 	s.finalize()
 }
 
-// Outcome 取最终产出（含 SchedulingDecision）。
+// Outcome returns the final output (including SchedulingDecision).
 func (s *state) Outcome() Outcome { return s.outcome }
 
 // =============================================================================
-// finalize — 终态时给 decisions[].Outcome 补值并写 Outcome.Decision
+// finalize — at the terminal state, backfill decisions[].Outcome and write Outcome.Decision
 // =============================================================================
 
 func (s *state) finalize() {
-	// attempt 标签只有在有 attempt 时才能补；空 attempts（无候选 / 无 eligible /
-	// AttemptCap=0）跳过这一步，Decision 仍然下方填出来。
+	// attempt labels can only be backfilled if there are attempts; skip this
+	// step when attempts is empty (no candidates / no eligible / AttemptCap
+	// == 0) — Decision still gets filled in below regardless.
 	if n := len(s.decisions); n > 0 {
 		for i := 0; i < n-1; i++ {
 			s.decisions[i].Outcome = domain.AttemptFallback
 		}
-		// 流中断（200 之后 body 转发失败）不算成功——审计上这次 attempt 没有
-		// 完整交付；只有干净跑完的 stream 才标 AttemptSuccess。
+		// a stream interruption (body forwarding failed after a 200)
+		// doesn't count as success — from an audit standpoint this attempt
+		// didn't fully deliver; only a cleanly finished stream is marked
+		// AttemptSuccess.
 		if s.outcome.Result == OutcomeStreamed && s.outcome.StreamErr == nil {
 			s.decisions[n-1].Outcome = domain.AttemptSuccess
 		} else {
@@ -262,23 +284,27 @@ func (s *state) finalize() {
 	if s.outcome.RoutedModel != nil {
 		routedName = s.outcome.RoutedModel.Model
 	} else if primary != nil {
-		// 没成功路由时审计 routed 兜底成 primary，方便下游 join。
+		// when routing never succeeded, fall back the audited routed name
+		// to primary, to make downstream joins easier.
 		routedName = primary.Model
 	}
 
-	// **永远填 Decision**（即使 attempts 为空）——契约见 Outcome.Decision 注释。
-	// 无候选 / 无 eligible / 初始 attempts exhausted 这类调度失败也有审计结构，
-	// 下游审计 / log / metric 不需要对 nil Decision 特判。
+	// **Decision is always filled** (even when attempts is empty) — see the
+	// contract in Outcome.Decision's comment. Scheduling failures like no
+	// candidates / no eligible / attempts exhausted from the start still
+	// get an audit structure, so downstream auditing / logging / metrics
+	// never need to special-case a nil Decision.
 	s.outcome.Decision = &domain.SchedulingDecision{
 		Model:       model,
 		RoutedModel: routedName,
 		UserGroup:   s.in.Identity.Group,
-		Attempts:    s.decisions, // 可能是 nil/empty slice
+		Attempts:    s.decisions, // may be a nil/empty slice
 		DurationMs:  time.Since(s.startTime).Milliseconds(),
 	}
 }
 
-// inferResultFromHTTPCode 兜底映射——Policy 未显式填 Result 时用。
+// inferResultFromHTTPCode is the fallback mapping used when Policy didn't
+// explicitly fill Result.
 func inferResultFromHTTPCode(code int) OutcomeResult {
 	switch code {
 	case 400:

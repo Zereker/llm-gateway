@@ -9,41 +9,45 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// TTLCache 是带 TTL 的 LRU + singleflight loader——容量满淘汰最近最少用，
-// TTL 过期 Get 视为未命中；GetOrLoad 把"miss → 调 loader → 回填"收成一步，
-// 同 key 并发 miss 只调 loader 一次（防雪崩）。
+// TTLCache is an LRU with TTL + singleflight loader — at capacity it evicts
+// least-recently-used; a Get past TTL counts as a miss; GetOrLoad folds
+// "miss -> call loader -> backfill" into one step, and concurrent misses on
+// the same key call the loader only once (thundering-herd protection).
 //
-// 底层是 hashicorp/golang-lru v2 expirable.LRU 的薄包装。
+// Underneath it's a thin wrapper around hashicorp/golang-lru v2 expirable.LRU.
 //
-// **使用模式**：repo 层 cached wrapper 用 GetOrLoad 包 SQL Reader。
+// **Usage pattern**: the repo layer's cached wrapper uses GetOrLoad to wrap a SQL Reader.
 //
 //	c := repo.NewTTLCache[int64, *Endpoint](1024, 30*time.Second)
 //	ep, err := c.GetOrLoad(ctx, id, func(ctx context.Context) (*Endpoint, bool, error) {
 //	    v, err := sqlReader.GetByID(ctx, id)
 //	    if err != nil { return nil, false, err }
-//	    return v, v != nil, nil   // not-found（v==nil）不缓存
+//	    return v, v != nil, nil   // not-found (v==nil) is not cached
 //	})
 //
-// **设计权衡**：repo 端用 TTL 缓存替代实时失效。deployer SQL 写完后 ≤ TTL 才能
-// 保证 gateway 看到新值；接受这个延迟，因为业务表变更（endpoint / api_key 启用 /
-// quota 调整）不需要秒级。
+// **Design trade-off**: the repo side uses a TTL cache instead of real-time
+// invalidation. After the deployer's SQL write completes, the gateway is only
+// guaranteed to see the new value within <= TTL; we accept this delay because
+// changes to business tables (endpoint / api_key enablement / quota
+// adjustments) don't need sub-second propagation.
 type TTLCache[K comparable, V any] struct {
 	inner   *lru.LRU[K, V]
 	sf      singleflight.Group
-	metrics Metrics // 可选；nil → 不报
-	table   string  // metrics 上报的 table label
+	metrics Metrics // optional; nil -> no reporting
+	table   string  // table label used when reporting metrics
 }
 
-// LoaderFunc 是 GetOrLoad 的 miss 回调。
+// LoaderFunc is the miss callback for GetOrLoad.
 //
-// 返回 (value, cache, err)：
-//   - err != nil：不缓存，错误透传给 caller
-//   - err == nil && cache == true：value 回填 cache 并返回
-//   - err == nil && cache == false：value 直接返回，不进 cache
-//     （用于 not-found：避免缓存"刚创建的资源"还没生效）
+// Returns (value, cache, err):
+//   - err != nil: not cached, the error is passed through to the caller
+//   - err == nil && cache == true: value is backfilled into the cache and returned
+//   - err == nil && cache == false: value is returned directly, not cached
+//     (used for not-found: avoids caching a "just-created resource" that
+//     hasn't taken effect yet)
 type LoaderFunc[V any] func(ctx context.Context) (V, bool, error)
 
-// NewTTLCache 构造一个 TTLCache。capacity<=0 时 fallback 到 1024。
+// NewTTLCache builds a TTLCache. Falls back to 1024 when capacity<=0.
 func NewTTLCache[K comparable, V any](capacity int, ttl time.Duration) *TTLCache[K, V] {
 	if capacity <= 0 {
 		capacity = 1024
@@ -51,11 +55,12 @@ func NewTTLCache[K comparable, V any](capacity int, ttl time.Duration) *TTLCache
 	return &TTLCache[K, V]{inner: lru.NewLRU[K, V](capacity, nil, ttl)}
 }
 
-// WithMetrics 给 cache 挂一个 Metrics + table label。链式调用：
+// WithMetrics attaches a Metrics + table label to the cache. Chainable call:
 //
 //	c := repo.NewTTLCache[int64, *Endpoint](1024, ttl).WithMetrics("endpoints", m)
 //
-// nil metrics 等价于不设置（cached wrapper 没传指标时用）。
+// nil metrics is equivalent to not setting it (used when the cached wrapper
+// doesn't pass metrics).
 func (c *TTLCache[K, V]) WithMetrics(table string, m Metrics) *TTLCache[K, V] {
 	c.metrics = m
 	c.table = table
@@ -67,36 +72,46 @@ func (c *TTLCache[K, V]) Set(key K, val V)    { c.inner.Add(key, val) }
 func (c *TTLCache[K, V]) Delete(key K)        { c.inner.Remove(key) }
 func (c *TTLCache[K, V]) Len() int            { return c.inner.Len() }
 
-// loaderTimeout 是 loader（一次 SQL 点查/短列表查询）的硬上限。
+// loaderTimeout is the hard cap for a loader (one SQL point lookup / short list query).
 //
-// 因为 loader 用的是**跟 leader 请求解耦**的 ctx（见 GetOrLoad），必须自带
-// deadline，否则 DB 挂死时 singleflight 的所有 waiter 会无限阻塞。
+// Because the loader runs on a ctx that is **decoupled from the leader
+// request** (see GetOrLoad), it must carry its own deadline — otherwise, if
+// the DB hangs, all singleflight waiters would block forever.
 const loaderTimeout = 5 * time.Second
 
-// GetOrLoad cache hit 直接返回；miss 时 singleflight 调 loader 加载。
+// GetOrLoad returns immediately on a cache hit; on a miss it uses singleflight
+// to call the loader.
 //
-// 同 key 并发 miss 只会调用 loader 一次，其他调用阻塞等同一结果；
-// loader panic / err 透传给所有阻塞者。
+// Concurrent misses on the same key call the loader only once; the other
+// callers block waiting for the same result. A loader panic / err is passed
+// through to all blocked callers.
 //
-// **loader ctx 与 leader 解耦**：singleflight 的结果被所有 waiter 共享，但
-// loader 闭包只会拿到"第一个到达的 goroutine"的 ctx——如果直接用它，leader 的
-// 客户端断连（ctx cancel）会让 SQL 报 context.Canceled，**毒化全部 waiter**
-// （N 个无辜请求一起失败）。所以 loader 跑在 context.WithoutCancel(ctx) 上：
-// 保留 trace / baggage values，剥离 cancellation 与 deadline，再套 loaderTimeout
-// 作为兜底。代价是断连请求的那次 SQL 会跑完——正好回填缓存，是我们想要的。
+// **loader ctx is decoupled from the leader**: the singleflight result is
+// shared by all waiters, but the loader closure only ever gets the ctx of the
+// "first goroutine to arrive" — if we used it directly, that leader's client
+// disconnecting (ctx cancel) would make the SQL fail with context.Canceled,
+// **poisoning all waiters** (N innocent requests failing together). So the
+// loader runs on context.WithoutCancel(ctx): trace / baggage values are kept,
+// cancellation and deadline are stripped, and loaderTimeout is layered on top
+// as a backstop. The cost is that the SQL query for a disconnected request
+// still runs to completion — which conveniently backfills the cache, which is
+// what we want.
 //
-// 报告 Metrics：hit / miss / error 三种结果（hit 在 cache 命中时；miss 在
-// loader 成功时；error 在 loader 返 err 时）。多个 goroutine 同 key 并发 miss
-// 时只报一次 miss（singleflight 只跑一遍 loader）。
+// Reports Metrics with three outcomes: hit / miss / error (hit on a cache hit;
+// miss when the loader succeeds; error when the loader returns an err). When
+// multiple goroutines miss on the same key concurrently, only one miss is
+// reported (singleflight runs the loader exactly once).
 func (c *TTLCache[K, V]) GetOrLoad(ctx context.Context, key K, loader LoaderFunc[V]) (V, error) {
 	if v, ok := c.inner.Get(key); ok {
 		c.record("hit")
 		return v, nil
 	}
-	// singleflight key 是 string；comparable 用 fmt.Sprintf 即可（miss path 不是 hot path）
+	// The singleflight key is a string; fmt.Sprintf on the comparable is fine
+	// (the miss path isn't a hot path).
 	sfKey := fmt.Sprintf("%v", key)
 	raw, err, _ := c.sf.Do(sfKey, func() (any, error) {
-		// 等阻塞结束后可能已经有别的 goroutine 回填了，再查一次
+		// By the time the block ends another goroutine may already have
+		// backfilled it, so check again.
 		if v, ok := c.inner.Get(key); ok {
 			return v, nil
 		}

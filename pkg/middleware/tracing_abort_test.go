@@ -37,7 +37,7 @@ func TestTracing_RunsOnAbortPath(t *testing.T) {
 	}
 	after := counterValue(t, "llm_gateway_http_requests_total", map[string]string{"status": "429"})
 	if after <= before {
-		t.Errorf("abort 路径没有产生 http_requests_total：before=%v after=%v", before, after)
+		t.Errorf("the abort path did not produce http_requests_total: before=%v after=%v", before, after)
 	}
 }
 
@@ -62,7 +62,7 @@ func TestTracing_RunsAfterRecoveredPanic(t *testing.T) {
 	}
 	after := counterValue(t, "llm_gateway_http_requests_total", map[string]string{"status": "500"})
 	if after <= before {
-		t.Errorf("panic 路径没有产生 http_requests_total(500)：before=%v after=%v", before, after)
+		t.Errorf("the panic path did not produce http_requests_total(500): before=%v after=%v", before, after)
 	}
 }
 

@@ -6,21 +6,26 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Compose 把两个 translator 串成一个：front (src→pivot) + back (pivot→tgt)。
+// Compose chains two translators into one: front (src->pivot) + back (pivot->tgt).
 //
-// **用途**：缺对回退（docs/02 §6a）。直连 translator 是高保真首选；registry 里
-// 没有 (src, tgt) 直连对时，DefaultLookup 会尝试用 OpenAI 协议做 pivot 组合出
-// 一个可用（但可能有损）的翻译链，避免协议对 O(N×M) 增长都要手写。
+// **Purpose**: fallback for a missing direct pair (docs/02 §6a). A direct
+// translator is the high-fidelity first choice; when the registry has no
+// direct (src, tgt) pair, DefaultLookup tries composing a usable (but possibly
+// lossy) translation chain via the OpenAI protocol as pivot, avoiding the need
+// to hand-write every protocol pair as they grow O(N×M).
 //
-//	请求向：src body → front.TranslateRequest → pivot body → back.TranslateRequest → tgt body
-//	响应向：tgt chunks → back.handler（tgt→pivot）→ pivot body → front.handler（pivot→src）→ src body
+//	Request direction:  src body -> front.TranslateRequest -> pivot body -> back.TranslateRequest -> tgt body
+//	Response direction: tgt chunks -> back.handler (tgt->pivot) -> pivot body -> front.handler (pivot->src) -> src body
 //
-// **有损警告**：双跳会丢失 pivot 协议表达不了的字段（thinking blocks /
-// cache_control / vendor 特有参数等）。组合对只作兜底；流量大的组合应尽快
-// 补写直连 translator（直连注册后 Find 命中，组合自动退位）。
+// **Lossy warning**: the double hop loses fields the pivot protocol can't
+// express (thinking blocks / cache_control / vendor-specific params, etc.).
+// Composed pairs are only a fallback; high-traffic combinations should get a
+// direct translator written as soon as possible (once registered directly,
+// Find hits it and composition automatically steps aside).
 //
-// **前置条件**：front.Target() == back.Source()，否则 panic（组合只发生在
-// FindVia 内部，两边都来自 registry，错配即代码 bug，启动期暴露）。
+// **Precondition**: front.Target() == back.Source(), otherwise panic
+// (composition only happens inside FindVia, both sides come from the
+// registry, so a mismatch is a code bug that should surface at startup).
 func Compose(front, back Translator) Translator {
 	if front == nil || back == nil {
 		panic("translator.Compose: nil translator")
@@ -32,14 +37,18 @@ func Compose(front, back Translator) Translator {
 	return &composed{front: front, back: back}
 }
 
-// FindVia 先找 (src, tgt) 直连 translator；miss 时尝试经 pivot 组合：
-// Find(src, pivot) + Find(pivot, tgt)。任一腿缺失返回 nil。
+// FindVia first looks for a direct (src, tgt) translator; on a miss it tries
+// composing via the pivot: Find(src, pivot) + Find(pivot, tgt). Returns nil if
+// either leg is missing.
 //
-// **直连优先**：手写的高保真对永远压过组合——将来给热门组合补直连实现时
-// 不需要改任何调用方。
+// **Direct wins**: a hand-written high-fidelity pair always takes precedence
+// over composition — adding a direct implementation for a popular combination
+// later requires no changes to any caller.
 //
-// src == tgt（identity 对）或 src/tgt 就是 pivot 时不会产生冗余组合：
-// 直连 Find 已覆盖 identity；单腿等于缺失的直连对，组合同样失败返回 nil。
+// No redundant composition is produced when src == tgt (an identity pair) or
+// when src/tgt is itself the pivot: direct Find already covers identity; a
+// leg equal to the missing direct pair likewise fails composition and
+// returns nil.
 func FindVia(src, tgt, pivot domain.Protocol) Translator {
 	if t := Find(src, tgt); t != nil {
 		return t
@@ -52,22 +61,23 @@ func FindVia(src, tgt, pivot domain.Protocol) Translator {
 	return Compose(front, back)
 }
 
-// IsComposed 判断 translator 是否是 pivot 组合产物（供调用方打 lossy warn / metric）。
+// IsComposed reports whether a translator is a pivot-composition product (so
+// callers can emit a lossy warning / metric).
 func IsComposed(t Translator) bool {
 	_, ok := t.(*composed)
 	return ok
 }
 
-// composed 是 Compose 的实现。
+// composed is the implementation behind Compose.
 type composed struct {
-	front Translator // src → pivot
-	back  Translator // pivot → tgt
+	front Translator // src -> pivot
+	back  Translator // pivot -> tgt
 }
 
 func (c *composed) Source() domain.Protocol { return c.front.Source() }
 func (c *composed) Target() domain.Protocol { return c.back.Target() }
 
-// TranslateRequest 两跳：src → pivot → tgt。
+// TranslateRequest does two hops: src -> pivot -> tgt.
 func (c *composed) TranslateRequest(srcBody []byte) ([]byte, error) {
 	pivotBody, err := c.front.TranslateRequest(srcBody)
 	if err != nil {
@@ -80,23 +90,25 @@ func (c *composed) TranslateRequest(srcBody []byte) ([]byte, error) {
 	return tgtBody, nil
 }
 
-// NewResponseHandler 每请求组合一对 handler。
+// NewResponseHandler composes a pair of handlers per request.
 func (c *composed) NewResponseHandler() ResponseHandler {
 	return &composedHandler{
-		upstream: c.back.NewResponseHandler(),  // tgt 响应 → pivot 格式
-		client:   c.front.NewResponseHandler(), // pivot 格式 → src 格式
+		upstream: c.back.NewResponseHandler(),  // tgt response -> pivot format
+		client:   c.front.NewResponseHandler(), // pivot format -> src format
 	}
 }
 
-// composedHandler 串接两级 ResponseHandler。
+// composedHandler chains two levels of ResponseHandler.
 //
-// 上游 chunk 先进 upstream 级（tgt→pivot）；它吐出的 pivot 字节再进 client 级
-// （pivot→src）。跨协议 handler 都是 buffer-then-translate 模式（Feed 返 nil、
-// Flush 一次性出全量），所以链路上通常只在 Flush 时流动一次；identity 级
-// （流式透传）混进链里也成立——Feed 有产出就立刻透给下一级。
+// Upstream chunks go into the upstream level first (tgt->pivot); the pivot
+// bytes it emits then go into the client level (pivot->src). Cross-protocol
+// handlers are all buffer-then-translate (Feed returns nil, Flush emits
+// everything at once), so data typically only flows through the chain on
+// Flush; an identity level (streaming pass-through) mixed into the chain also
+// works — whatever Feed produces is passed straight to the next level.
 type composedHandler struct {
-	upstream ResponseHandler // tgt → pivot
-	client   ResponseHandler // pivot → src
+	upstream ResponseHandler // tgt -> pivot
+	client   ResponseHandler // pivot -> src
 }
 
 func (h *composedHandler) Feed(chunk []byte) ([]byte, error) {
@@ -110,8 +122,9 @@ func (h *composedHandler) Feed(chunk []byte) ([]byte, error) {
 	return h.client.Feed(mid)
 }
 
-// Flush 依次排空两级；usage 优先取 upstream 级（它解析的是真实上游响应；
-// client 级看到的是二手 pivot 字节，可能已丢字段）。
+// Flush drains both levels in order; usage prefers the upstream level (it
+// parses the real upstream response; the client level only sees secondhand
+// pivot bytes, which may already have lost fields).
 func (h *composedHandler) Flush() ([]byte, *domain.Usage, error) {
 	midBytes, upUsage, err := h.upstream.Flush()
 	if err != nil {

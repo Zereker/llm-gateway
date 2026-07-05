@@ -30,8 +30,8 @@ func TestFactory_Metadata(t *testing.T) {
 }
 
 func TestAdapter_Registered(t *testing.T) {
-	// vendor 适配器注册（Handler 由 protocol.DefaultLookup 在请求时动态组合，
-	// 这里只验证 adapter 一侧）
+	// vendor adapter registration (Handler is dynamically composed by protocol.DefaultLookup
+	// at request time; here we only verify the adapter side)
 	if f := protocol.LookupFactory("anthropic"); f == nil {
 		t.Fatal("anthropic adapter not registered")
 	}
@@ -90,7 +90,7 @@ func TestSession_BuildRequest_EmptyAPIKey_Error(t *testing.T) {
 }
 
 func TestSession_BuildRequest_BadPayload_Error(t *testing.T) {
-	// 故意构造一个 payload 不是 XAPIKeyAuth JSON
+	// deliberately construct a payload that isn't XAPIKeyAuth JSON
 	ep := &domain.Endpoint{
 		Auth: domain.AuthConfig{
 			Type:    domain.AuthTypeXAPIKey,

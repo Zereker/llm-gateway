@@ -1,20 +1,20 @@
-// Package contentlog 内容记录通道：审计 / 排障 / 合规 / 回放
-//（docs/architecture/05-metering-billing.md §2 + docs/08 §6）。
+// Package contentlog is the content recording channel: audit / troubleshooting / compliance / replay
+// (docs/architecture/05-metering-billing.md §2 + docs/08 §6).
 //
-// 默认关闭；按需开启。通过 pkg/upstream hooks 接入 Sender 字节流：
+// Disabled by default; opt in as needed. Taps into the Sender byte stream via pkg/upstream hooks:
 //
-//	ClientRequest   → 客户端原始请求 body
-//	UpstreamRequest → 翻译后发上游 body
-//	UpstreamChunk   → 上游原始响应 chunk
-//	ClientChunk     → 客户端实际收到 chunk
+//	ClientRequest   → the client's original request body
+//	UpstreamRequest → the translated body sent upstream
+//	UpstreamChunk   → the raw upstream response chunk
+//	ClientChunk     → the chunk actually received by the client
 //
-// **三大特性**：
-//   - **采样**：按比例 / 按 account / endpoint 决定是否记录
-//   - **Backpressure**：buffer 满时 drop_oldest / drop_newest / block；block 必有 timeout
-//   - **脱敏**：可选 Redactor 钩子；失败按配置 drop 或写摘要
+// **Three key features**:
+//   - **Sampling**: decides whether to record based on ratio / account / endpoint
+//   - **Backpressure**: when the buffer is full, drop_oldest / drop_newest / block; block always has a timeout
+//   - **Redaction**: optional Redactor hook; on failure, drop or write a digest per config
 //
-// **不能影响业务响应**（docs/05 §2）：异步 buffer，hook 内 enqueue 后立即返回；
-// 失败仅 metric / log，不抛错。
+// **Must not affect the business response** (docs/05 §2): async buffer, the hook returns
+// immediately after enqueueing; failures are only metric'd / logged, never propagated as errors.
 package contentlog
 
 import (
@@ -31,7 +31,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// Direction 内容方向（docs/05 §2 表）。
+// Direction is the content direction (docs/05 §2 table).
 type Direction string
 
 const (
@@ -41,39 +41,39 @@ const (
 	DirClientChunk     Direction = "client_chunk"
 )
 
-// Record 单条内容记录（docs/05 §2）。
+// Record is a single content record (docs/05 §2).
 type Record struct {
-	RequestID    string    `json:"request_id"`
-	TraceID      string    `json:"trace_id"`
-	AccountID    string    `json:"account_id"`
-	APIKeyID     string    `json:"api_key_id"`
-	SubAccountID string    `json:"sub_account_id"`
-	Model        string    `json:"model"`
-	Vendor       string    `json:"vendor"`
-	EndpointID   string    `json:"endpoint_id"`
+	RequestID    string `json:"request_id"`
+	TraceID      string `json:"trace_id"`
+	AccountID    string `json:"account_id"`
+	APIKeyID     string `json:"api_key_id"`
+	SubAccountID string `json:"sub_account_id"`
+	Model        string `json:"model"`
+	Vendor       string `json:"vendor"`
+	EndpointID   string `json:"endpoint_id"`
 
 	Direction   Direction `json:"direction"`
 	Protocol    string    `json:"protocol"`
 	Modality    string    `json:"modality"`
 	ContentType string    `json:"content_type,omitempty"`
 
-	Body       []byte    `json:"body,omitempty"`        // truncated 后的 body；如配置 object storage 则为空
+	Body       []byte    `json:"body,omitempty"` // body after truncation; empty if object storage is configured
 	BodySHA256 string    `json:"body_sha256"`
 	Truncated  bool      `json:"truncated"`
 	Redacted   bool      `json:"redacted,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// Publisher 后端实现：异步 buffer + 真正写出。
+// Publisher is the backend implementation: async buffer + the actual write-out.
 //
-// 同 OutboxPublisher 一样的可插拔模型：file / kafka / async_kafka。
+// Same pluggable model as OutboxPublisher: file / kafka / async_kafka.
 type Publisher interface {
 	Publish(ctx context.Context, r *Record) error
 }
 
-// Redactor 可选脱敏钩子。返回 (脱敏后 body, 是否已脱敏)；error = 脱敏失败。
+// Redactor is an optional redaction hook. Returns (redacted body, whether it was redacted); error = redaction failed.
 //
-// 实现 MUST be safe for concurrent use。
+// Implementations MUST be safe for concurrent use.
 type Redactor interface {
 	Redact(direction Direction, body []byte) ([]byte, bool, error)
 }
@@ -82,31 +82,32 @@ type Redactor interface {
 // Config
 // =============================================================================
 
-// BackpressureStrategy buffer 满时的处理策略。
+// BackpressureStrategy is the handling strategy when the buffer is full.
 type BackpressureStrategy int
 
 const (
-	BackpressureDropOldest BackpressureStrategy = iota // 默认；丢最老一条
-	BackpressureDropNewest                             // 丢本次（不入队）
-	BackpressureBlock                                  // 阻塞直到 timeout；不能用作默认
+	BackpressureDropOldest BackpressureStrategy = iota // default; drops the oldest entry
+	BackpressureDropNewest                             // drops this entry (does not enqueue)
+	BackpressureBlock                                  // blocks until timeout; must not be used as default
 )
 
-// Config Logger 装配参数。
+// Config holds the Logger's assembly parameters.
 type Config struct {
 	Publisher    Publisher
-	Redactor     Redactor // nil = 不脱敏
-	SampleRate   float64  // [0,1]；1.0 = 全量；0 = 全丢
-	MaxBodyBytes int      // > 0 时截断 body；<= 0 = 不截断
-	BufferSize   int      // 异步队列容量；默认 1024
+	Redactor     Redactor // nil = no redaction
+	SampleRate   float64  // [0,1]; 1.0 = record everything; 0 = drop everything
+	MaxBodyBytes int      // > 0 truncates the body; <= 0 = no truncation
+	BufferSize   int      // async queue capacity; default 1024
 	Backpressure BackpressureStrategy
-	BlockTimeout time.Duration // BackpressureBlock 才有意义
-	OnDrop       func(reason string) // 可选回调（metric / log）
+	BlockTimeout time.Duration       // only meaningful with BackpressureBlock
+	OnDrop       func(reason string) // optional callback (metric / log)
 }
 
-// Logger 内容记录入口；实现 upstream Hook 各 Observer 接口。
+// Logger is the content-recording entry point; it implements the various upstream Hook Observer interfaces.
 //
-// 单实例可作为 hook 同时挂多个 Observer 子接口（实现 ClientRequestObserver /
-// UpstreamRequestObserver / UpstreamChunkObserver / ClientChunkObserver）。
+// A single instance can be attached as a hook implementing multiple Observer sub-interfaces
+// simultaneously (ClientRequestObserver / UpstreamRequestObserver / UpstreamChunkObserver /
+// ClientChunkObserver).
 type Logger struct {
 	cfg     Config
 	queue   chan *Record
@@ -114,12 +115,12 @@ type Logger struct {
 	wg      sync.WaitGroup
 	dropped atomic.Int64
 
-	// 上下文采样状态（per-request 决定是否抽样；避免一个请求里 client / upstream
-	// 一半在采另一半丢）
+	// Per-request sampling state (decides sampling per request; avoids a single request
+	// having client sampled in and upstream dropped, or vice versa)
 	sampleSeed atomic.Uint64
 }
 
-// New 构造 Logger 并启动 worker。
+// New builds a Logger and starts its worker.
 func New(cfg Config) *Logger {
 	if cfg.BufferSize <= 0 {
 		cfg.BufferSize = 1024
@@ -143,7 +144,7 @@ func New(cfg Config) *Logger {
 	return l
 }
 
-// Close 优雅停止 worker：等队列排空后退出。block 直到 worker 退出。
+// Close gracefully stops the worker: exits after draining the queue. Blocks until the worker exits.
 func (l *Logger) Close(ctx context.Context) error {
 	close(l.stop)
 	done := make(chan struct{})
@@ -156,37 +157,37 @@ func (l *Logger) Close(ctx context.Context) error {
 	}
 }
 
-// Dropped 截至当前累计丢弃数。
+// Dropped returns the cumulative drop count so far.
 func (l *Logger) Dropped() int64 { return l.dropped.Load() }
 
 // =============================================================================
-// upstream Observer 接口
+// upstream Observer interfaces
 // =============================================================================
 
-// OnClientRequest 实现 ClientRequestObserver。
+// OnClientRequest implements ClientRequestObserver.
 func (l *Logger) OnClientRequest(ctx context.Context, ep *domain.Endpoint, body []byte) {
 	l.enqueue(ctx, ep, DirClientRequest, body)
 }
 
-// OnUpstreamRequest 实现 UpstreamRequestObserver。
+// OnUpstreamRequest implements UpstreamRequestObserver.
 func (l *Logger) OnUpstreamRequest(ctx context.Context, ep *domain.Endpoint, body []byte) {
 	l.enqueue(ctx, ep, DirUpstreamRequest, body)
 }
 
-// OnUpstreamChunk 实现 UpstreamChunkObserver。
+// OnUpstreamChunk implements UpstreamChunkObserver.
 //
-// **chunk 在回调返回后失效**——必须 copy。
+// **The chunk becomes invalid after the callback returns** — it must be copied.
 func (l *Logger) OnUpstreamChunk(ctx context.Context, ep *domain.Endpoint, chunk []byte) {
 	l.enqueue(ctx, ep, DirUpstreamChunk, chunk)
 }
 
-// OnClientChunk 实现 ClientChunkObserver。
+// OnClientChunk implements ClientChunkObserver.
 func (l *Logger) OnClientChunk(ctx context.Context, ep *domain.Endpoint, chunk []byte) {
 	l.enqueue(ctx, ep, DirClientChunk, chunk)
 }
 
 // =============================================================================
-// 内部：采样 / 截断 / 脱敏 / 入队
+// Internal: sampling / truncation / redaction / enqueueing
 // =============================================================================
 
 func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction, body []byte) {
@@ -198,22 +199,22 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 		return
 	}
 
-	// 1) copy body（chunk slice 在 callback 返回后失效）
+	// 1) copy body (the chunk slice becomes invalid after the callback returns)
 	bodyCopy := append([]byte(nil), body...)
 
-	// 2) 截断
+	// 2) truncate
 	truncated := false
 	if l.cfg.MaxBodyBytes > 0 && len(bodyCopy) > l.cfg.MaxBodyBytes {
 		bodyCopy = bodyCopy[:l.cfg.MaxBodyBytes]
 		truncated = true
 	}
 
-	// 3) 脱敏
+	// 3) redact
 	redacted := false
 	if l.cfg.Redactor != nil {
 		out, ok, err := l.cfg.Redactor.Redact(dir, bodyCopy)
 		if err != nil {
-			// 脱敏失败：保守 drop（避免泄露未脱敏内容）
+			// redaction failed: drop conservatively (avoid leaking unredacted content)
 			l.drop("redact_failed")
 			return
 		}
@@ -221,7 +222,7 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 		redacted = ok
 	}
 
-	// 4) hash（脱敏后的）
+	// 4) hash (post-redaction)
 	hash := sha256.Sum256(bodyCopy)
 
 	rec := &Record{
@@ -238,7 +239,7 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 	}
 	enrichFromCtx(ctx, rec)
 
-	// 5) 入队（按 backpressure 策略）
+	// 5) enqueue (per the backpressure strategy)
 	switch l.cfg.Backpressure {
 	case BackpressureDropNewest:
 		select {
@@ -260,12 +261,12 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 			case l.queue <- rec:
 				return
 			default:
-				// 丢最老的，腾位置
+				// drop the oldest to make room
 				select {
 				case <-l.queue:
 					l.drop("drop_oldest")
 				default:
-					// 别人正好消费走了，再试一次入队
+					// someone else just consumed it; retry enqueue
 				}
 			}
 		}
@@ -280,9 +281,10 @@ func (l *Logger) drop(reason string) {
 	}
 }
 
-// shouldSample 简单 0..1 概率采样（math/rand 全局，thread-safe）。
+// shouldSample does simple 0..1 probability sampling (thread-safe, no global math/rand).
 //
-// 上下文级一致性不在 v0.5 范围（同请求里 client/upstream 一半采一半丢可接受）。
+// Context-level consistency is out of scope for v0.5 (it's acceptable for client/upstream
+// within the same request to be split between sampled-in and dropped).
 func (l *Logger) shouldSample() bool {
 	if l.cfg.SampleRate >= 1.0 {
 		return true
@@ -290,19 +292,19 @@ func (l *Logger) shouldSample() bool {
 	if l.cfg.SampleRate <= 0 {
 		return false
 	}
-	// 简单 RNG；不引入额外依赖
+	// simple RNG; avoids pulling in an extra dependency
 	v := l.sampleSeed.Add(0x9E3779B97F4A7C15) // golden ratio constant
 	frac := float64(v%1000_000) / 1_000_000.0
 	return frac < l.cfg.SampleRate
 }
 
-// worker 单线程消费 queue，调 Publisher.Publish。
+// worker single-threadedly consumes the queue, calling Publisher.Publish.
 func (l *Logger) worker() {
 	defer l.wg.Done()
 	for {
 		select {
 		case <-l.stop:
-			// 排空剩余
+			// drain remaining entries
 			for {
 				select {
 				case r := <-l.queue:
@@ -336,20 +338,22 @@ func (l *Logger) publish(r *Record) {
 }
 
 // =============================================================================
-// ctx 提取 request 元信息（避免 logger 直依赖 middleware）
+// ctx extraction of request metadata (avoids the logger directly depending on middleware)
 // =============================================================================
 
-// 跟 middleware.requestContextKey 用同一 typed key 形态，但 contentlog 无法 import
-// middleware（会形成循环依赖）。通过 docs/08 §1 的字段规范，logger 走 ctxValueLookup
-// 接口让 caller（M7 / Tracing）填上 enrichment。
+// Uses the same typed-key shape as middleware.requestContextKey, but contentlog cannot
+// import middleware (that would create a circular dependency). Per the field conventions
+// in docs/08 §1, the logger goes through a ctxValueLookup interface so the caller (M7 /
+// Tracing) can fill in the enrichment.
 type ctxEnrichKey struct{}
 
-// EnrichCtx 把单次请求的元信息塞进 ctx；Sender 会带 ctx 透传到所有 hook 回调。
+// EnrichCtx stashes a single request's metadata into ctx; the Sender carries ctx through
+// to all hook callbacks.
 func EnrichCtx(ctx context.Context, e RequestEnrich) context.Context {
 	return context.WithValue(ctx, ctxEnrichKey{}, e)
 }
 
-// RequestEnrich 一次请求要附加到 Record 上的元信息。
+// RequestEnrich is the metadata to attach to a Record for a single request.
 type RequestEnrich struct {
 	RequestID    string
 	TraceID      string
@@ -376,12 +380,12 @@ func enrichFromCtx(ctx context.Context, r *Record) {
 	r.Modality = v.Modality
 }
 
-// formatInt 简单 int64 → string（避免 import strconv 在多处用）
+// formatInt is a simple int64 → string conversion (avoids importing strconv just for this)
 func formatInt(v int64) string {
 	if v == 0 {
 		return ""
 	}
-	// 用 stdlib strconv 即可，但本包没用其它 strconv 调用，inline 一个简单实现
+	// stdlib strconv would do, but this package has no other strconv calls, so inline a simple implementation
 	const digits = "0123456789"
 	if v < 0 {
 		return "-" + formatInt(-v)
@@ -396,5 +400,5 @@ func formatInt(v int64) string {
 	return string(buf[i:])
 }
 
-// 占位防 unused import
+// placeholder to prevent an unused import
 var _ = errors.New

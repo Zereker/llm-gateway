@@ -1,20 +1,26 @@
-// Package infra 是基础设施层：收拢"如何连外部系统"的代码（SQL / kafka /
-// 未来的 redis / s3 / otel 等），按 file 而非 sub-package 组织——只在出现命名冲突或单包
-// 依赖图臃肿时才拆 sub-package。
+// Package infra is the infrastructure layer: it gathers the code for "how to
+// connect to external systems" (SQL / kafka / future redis / s3 / otel /
+// etc.), organized by file rather than by sub-package — a sub-package is
+// split off only when naming collisions appear or a single package's
+// dependency graph gets bloated.
 //
-// 边界规则——本包只知道"怎么连"，零业务实体知识：
-//   - 业务表 / 实体（ModelService / Endpoint）→ pkg/repo
-//   - 业务 query / CRUD                         → pkg/repo
+// Boundary rule — this package only knows "how to connect," with zero
+// knowledge of business entities:
+//   - Business tables / entities (ModelService / Endpoint) -> pkg/repo
+//   - Business query / CRUD                                -> pkg/repo
 //
-// **每个 infra 子系统自己定义 Config 结构体**（DBConfig / KafkaConfig / ...），
-// pkg/config 引用这些类型而不是重新定义；这样新增 infra 时 pkg/config 几乎不变，
-// schema 演进的所有权集中在 infra 这边。
+// **Each infra subsystem defines its own Config struct** (DBConfig /
+// KafkaConfig / ...); pkg/config references these types instead of
+// redefining them. That way adding a new infra barely touches pkg/config,
+// and ownership of schema evolution stays concentrated in infra.
 //
-// 应用层在 main 调一次 Open + Migrate，进程内共享一份 *sqlx.DB；
-// pkg/repo 的 SQL 实现接受 *sqlx.DB 作为依赖，自己不打开连接。
+// The application layer calls Open + Migrate once in main and shares a
+// single *sqlx.DB within the process; pkg/repo's SQL implementation takes
+// *sqlx.DB as a dependency and does not open its own connection.
 //
-// **v0.1 只支持 MySQL 8.0+**。Postgres / SQLite 等其它方言以后通过新增 driver
-// 常量 + 新 schema_<dialect>.sql 文件支持，目前不做。
+// **v0.1 only supports MySQL 8.0+**. Other dialects such as Postgres /
+// SQLite will be supported later by adding a new driver constant plus a
+// new schema_<dialect>.sql file; not done for now.
 package infra
 
 import (
@@ -28,41 +34,44 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// Driver 标识当前使用的 SQL 驱动。
+// Driver identifies the SQL driver currently in use.
 //
-// v0.1 只支持 MySQL；以后扩展 Postgres 等只需在此加常量 + 新 schema 文件。
+// v0.1 only supports MySQL; extending to Postgres etc. later only needs
+// a new constant here plus a new schema file.
 type Driver string
 
 const (
 	DriverMySQL Driver = "mysql"
 )
 
-// DBConfig SQL 数据库连接配置。
+// DBConfig is the SQL database connection configuration.
 //
-// pkg/config 通过引用本类型把字段暴露给 yaml；用户 yaml 写：
+// pkg/config exposes these fields to yaml by referencing this type; the
+// user's yaml writes:
 //
 //	database:
 //	  driver: mysql
 //	  dsn: root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4
 //
-// 直接落到 *Config.Database 字段。DSN 必须带 `parseTime=true`，否则
-// time.Time 字段读取会出错。
+// which lands directly on the *Config.Database field. The DSN must carry
+// `parseTime=true`, otherwise reading time.Time fields will error.
 type DBConfig struct {
 	Driver Driver `yaml:"driver"`
 	DSN    string `yaml:"dsn"`
 }
 
-// Open 按 cfg 打开 *sqlx.DB 并 ping 验证。
+// Open opens a *sqlx.DB per cfg and verifies it with a ping.
 //
-// 应用层只在 main 调一次，整个进程共享一份连接池。
-// 调用方负责 defer db.Close()。
+// The application layer calls this once in main; the whole process
+// shares one connection pool. The caller is responsible for
+// deferring db.Close().
 func Open(cfg DBConfig) (*sqlx.DB, error) {
 	db, err := sqlx.Open(string(cfg.Driver), cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("infra: open %s: %w", cfg.Driver, err)
 	}
 
-	// 合理的连接池默认；需要时调用方覆盖
+	// Reasonable connection pool defaults; the caller can override if needed
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(30 * time.Minute)
@@ -79,16 +88,19 @@ func Open(cfg DBConfig) (*sqlx.DB, error) {
 //go:embed schema.sql
 var schemaFS embed.FS
 
-// Migrate 把 embed 的 schema.sql 应用到 db。
+// Migrate applies the embedded schema.sql to db.
 //
-// schema.sql 全部用 IF NOT EXISTS / DEFAULT 写法，可以反复 Run；
-// boot 时调一次即可。
+// schema.sql is written entirely with IF NOT EXISTS / DEFAULT so it can
+// be run repeatedly; a single call at boot is enough.
 //
-// MySQL go-sql-driver 默认不允许单次 Exec 多语句（multiStatements=false），
-// 这里按 `;` 拆开逐条执行；schema.sql 不能用"字符串里含 ;"这种构造。
+// The MySQL go-sql-driver does not allow multiple statements in a single
+// Exec by default (multiStatements=false), so we split on `;` and execute
+// each statement one at a time; schema.sql must not use constructs like
+// "a string literal containing ;".
 //
-// v0.1 不引入 golang-migrate / goose；schema 演进到需要 versioning
-// （多版本上线、需要回滚、跨服务共享 schema）时再升级。
+// v0.1 does not introduce golang-migrate / goose; upgrade to those once
+// schema evolution needs real versioning (multi-version rollout, rollback
+// support, schema shared across services).
 func Migrate(ctx context.Context, db *sqlx.DB) error {
 	raw, err := schemaFS.ReadFile("schema.sql")
 	if err != nil {
@@ -100,11 +112,14 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 		}
 	}
 
-	// 列级演进：CREATE TABLE IF NOT EXISTS 对已存在的表是 no-op，schema.sql 里
-	// 新加的列不会落到老库。MySQL 又不支持 ADD COLUMN IF NOT EXISTS（MariaDB
-	// 才有），所以这里用 information_schema 判断后再 ALTER。
+	// Column-level evolution: CREATE TABLE IF NOT EXISTS is a no-op on a
+	// table that already exists, so a new column added in schema.sql won't
+	// land on an old database. MySQL also doesn't support ADD COLUMN IF NOT
+	// EXISTS (only MariaDB does), so here we check information_schema first
+	// and then ALTER.
 	//
-	// 新列在这里登记一行；老列稳定后可清理。
+	// Register each new column as one entry here; clean up old ones once
+	// they've stabilized.
 	for _, m := range []columnMigration{
 		{"endpoints", "quirks", "ALTER TABLE endpoints ADD COLUMN quirks JSON DEFAULT NULL"},
 	} {
@@ -115,15 +130,17 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 	return nil
 }
 
-// columnMigration 一条"表缺列则补"的迁移。
+// columnMigration is a single "add the column if the table is missing it" migration.
 type columnMigration struct {
 	table, column, ddl string
 }
 
-// ensureColumn 列不存在时执行 DDL；存在则 no-op。
+// ensureColumn runs the DDL when the column doesn't exist yet; a no-op otherwise.
 //
-// **多副本竞态**：两个副本同时判断"列不存在"、同时 ALTER 时，后到的会收到
-// "Duplicate column name"（MySQL errno 1060）——此时列已就位，视为成功。
+// **Multi-replica race**: if two replicas both determine the column is
+// missing and both ALTER, the one that lands second gets "Duplicate
+// column name" (MySQL errno 1060) — at that point the column is already
+// in place, so we treat it as success.
 func ensureColumn(ctx context.Context, db *sqlx.DB, m columnMigration) error {
 	var n int
 	err := db.GetContext(ctx, &n,
@@ -138,15 +155,16 @@ func ensureColumn(ctx context.Context, db *sqlx.DB, m columnMigration) error {
 	}
 	if _, err := db.ExecContext(ctx, m.ddl); err != nil {
 		if strings.Contains(err.Error(), "Duplicate column name") {
-			return nil // 并发副本抢先加了；目标状态已达成
+			return nil // a concurrent replica added it first; the target state is already reached
 		}
 		return fmt.Errorf("infra: add column %s.%s: %w", m.table, m.column, err)
 	}
 	return nil
 }
 
-// splitSQL 按 ; 切分语句，过滤纯空白 / 纯注释行。简单实现：不解析字符串字面量，
-// schema.sql 不允许出现"字符串内含 ;"。
+// splitSQL splits statements on ; and filters out whitespace-only / comment-only
+// lines. Simple implementation: it does not parse string literals, so
+// schema.sql must not contain a string literal that includes ;.
 func splitSQL(raw string) []string {
 	var out []string
 	for _, chunk := range strings.Split(raw, ";") {
@@ -158,7 +176,8 @@ func splitSQL(raw string) []string {
 	return out
 }
 
-// stripCommentsAndTrim 去掉行注释 + trim 整体空白；剩下空字符串则该语句被跳过。
+// stripCommentsAndTrim strips line comments and trims surrounding whitespace;
+// if what's left is an empty string, that statement is skipped.
 func stripCommentsAndTrim(s string) string {
 	var keep []string
 	for _, line := range strings.Split(s, "\n") {

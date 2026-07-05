@@ -84,19 +84,19 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 
 	// 1. the ctx the handler receives must have a valid SpanContext
 	if handlerTraceID == "" || handlerTraceID == "00000000000000000000000000000000" {
-		t.Errorf("handler ctx 缺 trace_id：got=%q", handlerTraceID)
+		t.Errorf("handler ctx missing trace_id: got=%q", handlerTraceID)
 	}
 	if handlerSpanID == "" || handlerSpanID == "0000000000000000" {
-		t.Errorf("handler ctx 缺 span_id：got=%q", handlerSpanID)
+		t.Errorf("handler ctx missing span_id: got=%q", handlerSpanID)
 	}
 	if rcRequestID == "" {
-		t.Errorf("rc.RequestID 空")
+		t.Errorf("rc.RequestID is empty")
 	}
 
 	// 2. every log record must carry trace_id (auto-injected by CtxHandler)
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) < 2 {
-		t.Fatalf("日志条数 < 2，输出：\n%s", buf.String())
+		t.Fatalf("log line count < 2, output:\n%s", buf.String())
 	}
 	for i, line := range lines {
 		if line == "" {
@@ -104,28 +104,28 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 		}
 		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Errorf("行 %d 不是 JSON：%s", i, line)
+			t.Errorf("line %d is not JSON: %s", i, line)
 			continue
 		}
 		// trace_id must exist and equal what the handler saw (same root span)
 		traceID, _ := rec["trace_id"].(string)
 		if traceID == "" {
-			t.Errorf("行 %d msg=%v 缺 trace_id", i, rec["msg"])
+			t.Errorf("line %d msg=%v missing trace_id", i, rec["msg"])
 			continue
 		}
 		if traceID != handlerTraceID {
-			t.Errorf("行 %d trace_id=%s, 期望=%s（应跟 handler 同 root span）",
+			t.Errorf("line %d trace_id=%s, want=%s (should match the handler's root span)",
 				i, traceID, handlerTraceID)
 		}
 		// span_id must exist
 		if sid, _ := rec["span_id"].(string); sid == "" {
-			t.Errorf("行 %d msg=%v 缺 span_id", i, rec["msg"])
+			t.Errorf("line %d msg=%v missing span_id", i, rec["msg"])
 		}
 		// request_id (injected into baggage by M1) must exist
 		if rid, _ := rec["request_id"].(string); rid == "" {
-			t.Errorf("行 %d msg=%v 缺 request_id（M1 baggage 未传到 ctx？）", i, rec["msg"])
+			t.Errorf("line %d msg=%v missing request_id (did M1's baggage fail to propagate to ctx?)", i, rec["msg"])
 		} else if rid != rcRequestID {
-			t.Errorf("行 %d request_id=%s, 期望=%s", i, rid, rcRequestID)
+			t.Errorf("line %d request_id=%s, want=%s", i, rid, rcRequestID)
 		}
 	}
 }
@@ -165,7 +165,7 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 
 	spans := sr.Ended()
 	if len(spans) < 3 {
-		t.Fatalf("期望 ≥3 个 span（root + auth + envelope），got=%d", len(spans))
+		t.Fatalf("expected >=3 spans (root + auth + envelope), got=%d", len(spans))
 	}
 
 	// index spans by name
@@ -179,16 +179,16 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 		}
 	}
 	if rootName == "" {
-		t.Fatalf("没找到 root span，实际 spans=%v", spanNames(spans))
+		t.Fatalf("root span not found, actual spans=%v", spanNames(spans))
 	}
 	root := byName[rootName]
 	auth, ok := byName["auth.lookup"]
 	if !ok {
-		t.Fatalf("缺 auth.lookup span，spans=%v", spanNames(spans))
+		t.Fatalf("missing auth.lookup span, spans=%v", spanNames(spans))
 	}
 	envelope, ok := byName["envelope.parse"]
 	if !ok {
-		t.Fatalf("缺 envelope.parse span，spans=%v", spanNames(spans))
+		t.Fatalf("missing envelope.parse span, spans=%v", spanNames(spans))
 	}
 
 	rootTID := root.SpanContext().TraceID()
@@ -196,15 +196,15 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 
 	// all spans share the same trace_id
 	if auth.SpanContext().TraceID() != rootTID {
-		t.Errorf("auth.lookup trace_id=%s, 期望=%s", auth.SpanContext().TraceID(), rootTID)
+		t.Errorf("auth.lookup trace_id=%s, want=%s", auth.SpanContext().TraceID(), rootTID)
 	}
 	if envelope.SpanContext().TraceID() != rootTID {
-		t.Errorf("envelope.parse trace_id=%s, 期望=%s", envelope.SpanContext().TraceID(), rootTID)
+		t.Errorf("envelope.parse trace_id=%s, want=%s", envelope.SpanContext().TraceID(), rootTID)
 	}
 
 	// auth.lookup's parent must be root
 	if auth.Parent().SpanID() != rootSID {
-		t.Errorf("auth.lookup parent span_id=%s, 期望 root=%s（说明 M2 没继承 M1 的 ctx）",
+		t.Errorf("auth.lookup parent span_id=%s, want root=%s (means M2 did not inherit M1's ctx)",
 			auth.Parent().SpanID(), rootSID)
 	}
 	// envelope.parse's parent must be root (M3 sits right after M2, at the same
@@ -217,7 +217,7 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 	// auth's ctx
 	// so envelope's parent should be auth
 	if envelope.Parent().SpanID() != auth.SpanContext().SpanID() {
-		t.Errorf("envelope.parse parent span_id=%s, 期望 auth=%s（说明 c.Request ctx 接力断了）",
+		t.Errorf("envelope.parse parent span_id=%s, want auth=%s (means the c.Request ctx relay broke)",
 			envelope.Parent().SpanID(), auth.SpanContext().SpanID())
 	}
 
@@ -227,7 +227,7 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 		ids[s.SpanContext().SpanID()] = true
 	}
 	if len(ids) != len(spans) {
-		t.Errorf("有 span 共享同一 span_id（noop tracer？），spans=%v", spanNames(spans))
+		t.Errorf("some spans share the same span_id (noop tracer?), spans=%v", spanNames(spans))
 	}
 }
 

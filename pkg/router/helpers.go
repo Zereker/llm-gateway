@@ -8,38 +8,47 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// noopHandler 让 gin 把请求路由到这里，实际响应由 M7 Schedule middleware 写出；
-// 跑完整条 middleware 链后才回到这里，handler 里无事可做。
+// noopHandler lets gin route the request here, but the actual response is
+// written by the M7 Schedule middleware; by the time control reaches this
+// handler the whole middleware chain has already run, so there's nothing
+// left to do.
 func noopHandler(c *gin.Context) {}
 
-// ReadinessChecker 一项 readiness 依赖检查（SQL ping / Redis ping）。
-// cmd 装配时把 db.PingContext / redis.Ping 包成这个签名注入 Deps.Readiness。
+// ReadinessChecker is a single readiness dependency check (SQL ping / Redis
+// ping). During cmd assembly, db.PingContext / redis.Ping are wrapped into
+// this signature and injected into Deps.Readiness.
 type ReadinessChecker struct {
 	Name  string
 	Check func(ctx context.Context) error
 }
 
-// readyzTimeout 单项依赖检查的上限——readiness 探针本身不能慢。
+// readyzTimeout is the cap for a single dependency check — the readiness
+// probe itself must not be slow.
 const readyzTimeout = 2 * time.Second
 
-// === 操作端点（不走主 middleware 链） ===
+// === Ops endpoints (bypass the main middleware chain) ===
 
 func registerOpsRoutes(engine *gin.Engine, checks []ReadinessChecker) {
 	engine.GET("/healthz", healthzHandler)
 	engine.GET("/readyz", readyzHandler(checks))
-	// /metrics 直接读 prometheus default registry——pkg/metric 的 Inc/Observe/Gauge
-	// 注册到那里，handler 自动暴露所有已注册的 metric。
+	// /metrics reads directly from the prometheus default registry — pkg/metric's
+	// Inc/Observe/Gauge register there, so the handler automatically exposes
+	// every registered metric.
 	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 }
 
-// healthzHandler liveness：只表示进程事件循环仍可响应，不依赖 SQL / Redis。
+// healthzHandler liveness: only indicates the process's event loop can still
+// respond; it does not depend on SQL / Redis.
 func healthzHandler(c *gin.Context) { c.String(200, "ok") }
 
-// readyzHandler readiness：逐项检查注入的依赖（SQL / Redis），任一失败返 503
-// ——让 k8s 摘掉这个 pod 的流量，而不是把请求灌进一个必然 503 的实例
-// （docs/06 §13）。不检查 Kafka / outbox：usage 发布失败不应导致摘流量。
+// readyzHandler readiness: checks each injected dependency (SQL / Redis) in
+// turn, returning 503 on any failure — so k8s pulls traffic off this pod
+// instead of routing requests into an instance that's bound to 503 (docs/06
+// §13). Kafka / outbox are not checked: a failed usage publish should not
+// pull traffic.
 //
-// 没有注入 checks 时退化为静态 200（测试 / 未装配场景）。
+// Degrades to a static 200 when no checks are injected (test / unassembled
+// scenarios).
 func readyzHandler(checks []ReadinessChecker) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		for _, chk := range checks {

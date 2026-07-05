@@ -2,42 +2,48 @@ package dispatch
 
 import "github.com/zereker/llm-gateway/pkg/domain"
 
-// Outcome Dispatch 的最终产出，由 middleware 翻译成 HTTP + 写回 RC。
+// Outcome is Dispatch's final output, translated by middleware into an HTTP
+// response + written back onto RC.
 //
-// **语义**：
+// **Semantics**:
 //
-//	Result == OutcomeStreamed ── 响应已通过 Result.StreamTo 写到 w，middleware 不要再写
-//	Result != OutcomeStreamed ── middleware 需根据 HTTPCode / Class / Reason 写错误响应
+//	Result == OutcomeStreamed ── the response has already been written to w
+//	                              via Result.StreamTo; middleware must not write again
+//	Result != OutcomeStreamed ── middleware needs to write an error response
+//	                              based on HTTPCode / Class / Reason
 //
-// **Decision**：永远填（即使 attempt = 0 也会写 SchedulingDecision，便于审计 / log）。
-// **StreamErr**：仅 Result == OutcomeStreamed 时可能非 nil；流式过程中失败
-// （header 已写、字节已发，无法回滚）。
-// **RoutedModel**：实际成功的 model（fallback 时 != Input.PrimaryModel()）；
-// Result != OutcomeStreamed 时为 nil。
-// **Error**：dispatcher 不直接写 rc.Error，把 AdapterError 放在 Outcome 里让 middleware 写回 RC。
+// **Decision**: always populated (even when attempts == 0, a
+// SchedulingDecision is still written, for auditing / logging).
+// **StreamErr**: may be non-nil only when Result == OutcomeStreamed; a
+// failure that happened mid-stream (headers already written, bytes already
+// sent, can't roll back).
+// **RoutedModel**: the model that actually succeeded (!= Input.PrimaryModel()
+// on fallback); nil when Result != OutcomeStreamed.
+// **Error**: the dispatcher never writes rc.Error directly — it puts the
+// AdapterError in Outcome and lets the middleware write it back onto RC.
 type Outcome struct {
 	Result      OutcomeResult
-	HTTPCode    int    // 仅 Result != OutcomeStreamed 时有意义
-	Class       Class  // 仅 Result == OutcomeAbort 时有意义
-	Reason      string // 仅 Result != OutcomeStreamed 时有意义
+	HTTPCode    int    // only meaningful when Result != OutcomeStreamed
+	Class       Class  // only meaningful when Result == OutcomeAbort
+	Reason      string // only meaningful when Result != OutcomeStreamed
 	Decision    *domain.SchedulingDecision
-	Usage       *domain.Usage         // 仅 Result == OutcomeStreamed 时填
-	StreamErr   error                 // 仅 Result == OutcomeStreamed + 流式中失败
-	TTFTMs      int64                 // 仅 Result == OutcomeStreamed
-	RoutedModel *domain.ModelService  // 实际成功 model；非 streamed 时为 nil
-	Error       *domain.AdapterError  // stream 阶段错误的 typed 包装；nil = 无错
+	Usage       *domain.Usage        // filled only when Result == OutcomeStreamed
+	StreamErr   error                // only when Result == OutcomeStreamed and streaming failed
+	TTFTMs      int64                // only when Result == OutcomeStreamed
+	RoutedModel *domain.ModelService // the model that actually succeeded; nil unless streamed
+	Error       *domain.AdapterError // typed wrapper for a stream-stage error; nil = no error
 }
 
-// OutcomeResult Dispatch 终态。
+// OutcomeResult is Dispatch's terminal state.
 type OutcomeResult int
 
 const (
-	OutcomeUnknown   OutcomeResult = iota
-	OutcomeStreamed                // 成功，response 已 stream 给客户端
-	OutcomeInvalid                 // 客户端错（400）
-	OutcomeTerminal                // 上游非 retryable 错（502）
-	OutcomeNoEndpoint              // 所有 model / attempt 耗尽（503）
-	OutcomeDepFail                 // Selector 依赖故障（503，Reason 含 SQL/Redis 错）
+	OutcomeUnknown    OutcomeResult = iota
+	OutcomeStreamed                 // success, response already streamed to the client
+	OutcomeInvalid                  // client error (400)
+	OutcomeTerminal                 // non-retryable upstream error (502)
+	OutcomeNoEndpoint               // all models / attempts exhausted (503)
+	OutcomeDepFail                  // Selector dependency failure (503, Reason contains the SQL/Redis error)
 )
 
 func (r OutcomeResult) String() string {
