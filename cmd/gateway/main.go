@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/zereker/llm-gateway/pkg/cachebus"
 	"github.com/zereker/llm-gateway/pkg/config"
@@ -156,7 +157,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	contentLogger := buildContentLogger(srv, cfg.ContentLog)
 
 	// Runtime Scoring（docs/03 §8）：未启用时 scorer = nil，scheduler 走纯静态 weight
-	stats, scorer := buildScoring(cfg.Scoring)
+	stats, scorer := buildScoring(cfg.Scoring, rdb)
 
 	// Health Probing（docs/03 §10）：未启用时不启动 prober
 	startHealthProber(srv, cfg.Health, healthListerAdapter{p: repo.NewSQLEndpointReader(sqldb)}, stats)
@@ -316,7 +317,12 @@ func buildTracer(srv *server.Server, cfg config.TraceConfig) trace.Tracer {
 // buildScoring 构造 Runtime Scoring 的 stats store + scorer（docs/03 §8）。
 //
 // 未启用时返回 (nil, nil) —— scheduler 将走纯静态 weight，无任何运行时打分。
-func buildScoring(cfg config.ScoringConfig) (selector.EndpointStatsStore, selector.Scorer) {
+//
+// **driver**（cfg.Driver，按 P5 fail-fast）：
+//   - inmemory（默认）：进程内 EMA，每副本独立累积；单副本 / 容忍副本间差异用。
+//   - redis：多副本共享同一份 per-endpoint EMA，打分一致；生产多副本用。
+//   - 未知 driver → panic（暴露配置错）。
+func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.EndpointStatsStore, selector.Scorer) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
@@ -324,7 +330,15 @@ func buildScoring(cfg config.ScoringConfig) (selector.EndpointStatsStore, select
 	if decay <= 0 {
 		decay = 0.2
 	}
-	store := selector.NewInMemoryStatsStore(decay)
+	var store selector.EndpointStatsStore
+	switch cfg.Driver {
+	case "", "inmemory":
+		store = selector.NewInMemoryStatsStore(decay)
+	case "redis":
+		store = selector.NewRedisStatsStore(rdb, "llm-gateway:sched", decay, cfg.StatsTTL)
+	default:
+		panic("buildScoring: unknown scoring.driver " + cfg.Driver + " (want inmemory|redis)")
+	}
 	baselineMs := float64(200)
 	if cfg.LatencyBaseline > 0 {
 		baselineMs = float64(cfg.LatencyBaseline.Milliseconds())

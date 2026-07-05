@@ -85,14 +85,20 @@ selector:
     permanent: 5m
     invalid: 0s
     unknown: 10s
-  # scoring: deferred — runtime scoring 未在 v0.3 实现，配置块占位仅作未来契约示意；
-  # 落地节奏见 03-endpoint-scheduling §8 Runtime Scoring（后续演进）。
-  # scoring:
-  #   enabled: false
-  #   window: 5m
-  #   latency_weight: 0.25
-  #   success_weight: 0.50
-  #   cost_weight: 0.25
+
+scoring:
+  # Runtime Scoring（已实现，默认关）：按 endpoint 运行时质量 soft 调权。
+  # enabled=true 时 Scheduler.Report 写 EMA 统计，Pick 时 DefaultScorer 按
+  # success/latency factor 调 EffectiveWeight（hard filter 决定能不能选，scoring
+  # 决定更倾向选谁）。见 03-endpoint-scheduling §8。
+  enabled: false
+  # driver：stats 存储后端。inmemory=每副本独立累积（单副本 / 容忍差异）；
+  # redis=多副本共享同一份 per-endpoint EMA，打分一致（生产多副本）。
+  driver: inmemory        # inmemory | redis
+  min_samples: 5          # 样本 < 此给中性 factor=1，保留新 endpoint 探索流量
+  latency_baseline: 200ms # latency factor = baseline / actual
+  ema_decay: 0.2          # EMA 衰减（新样本权重）
+  stats_ttl: 1h           # redis driver 下单 endpoint 统计 TTL
 
 ratelimit:
   policy_cache_ttl: 30s
