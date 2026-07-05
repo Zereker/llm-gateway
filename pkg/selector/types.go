@@ -48,9 +48,12 @@ type Candidate struct {
 type Request struct {
 	Model      string             // 当前 model（未路由前 = 请求 model；路由 fallback 时 = fallback model）
 	Group      string             // 路由分组（rc.Identity.Group）
+	SessionKey string             // 会话亲和 key（客户端 X-Gateway-Session 头）；空 = 不粘会话
 	Candidates []Candidate        // 资格过滤后的候选（含 EffectiveWeight）
 	ExcludeIDs map[int64]struct{} // 本次请求里已经尝试过的 endpoint
-	PrefixKey  []byte             // PrefixCacheFilter 用的一致性哈希 key
+	PrefixKey  []byte             // PrefixCacheFilter 用的一致性哈希 key（跟 SessionKey 互补：
+	//                              PrefixKey=按内容 prefix 无状态一致性哈希；SessionKey=客户端
+	//                              显式 session id 的有状态 Redis 亲和，跟 weighted+scoring 组合）
 }
 
 // ErrorClass 把上游 / 网络 / 协议错误归类成几个粗粒度桶。

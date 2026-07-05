@@ -241,10 +241,19 @@ type KafkaOutboxSection struct {
 // **max_per_endpoint**：同 endpoint 最大尝试次数（含首次）；默认 1 = 无 L1 retry，
 // 失败立刻换 ep。设 2-3 可吸收上游网络偶发抖动。
 type SelectorConfig struct {
-	Filters        []string       `yaml:"filters"`
-	Cooldown       CooldownConfig `yaml:"cooldown"`
-	MaxAttempts    int            `yaml:"max_attempts"`
-	MaxPerEndpoint int            `yaml:"max_per_endpoint"`
+	Filters         []string              `yaml:"filters"`
+	Cooldown        CooldownConfig        `yaml:"cooldown"`
+	MaxAttempts     int                   `yaml:"max_attempts"`
+	MaxPerEndpoint  int                   `yaml:"max_per_endpoint"`
+	SessionAffinity SessionAffinityConfig `yaml:"session_affinity"`
+}
+
+// SessionAffinityConfig 会话亲和（sticky routing）：客户端 X-Gateway-Session 头带
+// session id，网关把它粘到同一上游 endpoint（prefix/KV cache 命中）。Redis-backed
+// （多副本共享）；enabled=false 时完全不生效。
+type SessionAffinityConfig struct {
+	Enabled bool          `yaml:"enabled"`
+	TTL     time.Duration `yaml:"ttl"` // session→endpoint 映射 TTL；默认 10m
 }
 
 // CooldownConfig 各 ErrorClass 对应的冷却时长。

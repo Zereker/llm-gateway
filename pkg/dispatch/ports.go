@@ -31,9 +31,10 @@ type Selector interface {
 // PickQuery Selector.Pick 的入参——只含 picker 需要的信息（不含 Envelope /
 // Identity / Handlers，这些已经被 CandidateSource 和 filterEligible 消化过）。
 type PickQuery struct {
-	Model   string              // 当前轮次 model（metric label / cooldown key）
-	Group   string              // endpoint 池分组（filter 用）
-	Exclude map[int64]struct{}  // 本请求已尝试过的 endpoint ID
+	Model      string             // 当前轮次 model（metric label / cooldown key）
+	Group      string             // endpoint 池分组（filter 用）
+	SessionKey string             // 会话亲和 key（客户端 X-Gateway-Session 头）；空 = 不粘会话
+	Exclude    map[int64]struct{} // 本请求已尝试过的 endpoint ID
 }
 
 // =============================================================================

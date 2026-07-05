@@ -20,12 +20,14 @@ import (
 //	ModelChain          ── M5 写：[0]=primary，后续 = X-Gateway-Fallback-Models 校验过的
 //	Handlers            ── M3 写：protocol.Lookup（DefaultLookup 或 tenant 覆盖）
 //	AttemptCapOverride  ── 客户端 X-Gateway-Max-Attempts header 原始值；Policy 解析
+//	SessionKey          ── 客户端 X-Gateway-Session header；会话亲和（sticky routing）
 type Input struct {
 	Envelope           *domain.RequestEnvelope
 	Identity           domain.UserIdentity
 	ModelChain         []*domain.ModelService
 	Handlers           protocol.Lookup
 	AttemptCapOverride string
+	SessionKey         string
 }
 
 // PrimaryModel ModelChain 第一个；为空时返 nil（dispatcher 应早期校验 ModelChain 非空）。

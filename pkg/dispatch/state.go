@@ -108,9 +108,10 @@ func (s *state) PickQuery() PickQuery {
 		model = cur.Model
 	}
 	return PickQuery{
-		Model:   model,
-		Group:   s.in.Identity.Group,
-		Exclude: s.excluded,
+		Model:      model,
+		Group:      s.in.Identity.Group,
+		SessionKey: s.in.SessionKey,
+		Exclude:    s.excluded,
 	}
 }
 
