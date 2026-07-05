@@ -60,7 +60,7 @@
 
 <script>
 "use strict";
-const TABS = ["Endpoints","API Keys","Accounts","Models","Policies","Pricing","Audit"];
+const TABS = ["Endpoints","API Keys","Accounts","Models","Aliases","Policies","Pricing","Audit"];
 let TOKEN = sessionStorage.getItem("tok") || "";
 let active = "Endpoints";
 
@@ -99,7 +99,7 @@ function renderNav(){
 function show(tab){
   active=tab; renderNav();
   const v=$("#view"); v.innerHTML="<div class='empty'>loading…</div>";
-  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Policies":viewPolicies,"Pricing":viewPricing,"Audit":viewAudit})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
+  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Aliases":viewAliases,"Policies":viewPolicies,"Pricing":viewPricing,"Audit":viewAudit})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
 }
 
 function table(cols,rows,rowFn){
@@ -196,6 +196,26 @@ async function viewModels(){
   const card=el("div",{class:"card"},el("h2",{},"Model services ("+(model_services||[]).length+")"));
   card.append(table(["ID","Service ID","Model","Created"],model_services,m=>el("tr",{},
     el("td",{class:"mono"},String(m.id)),el("td",{},m.service_id),el("td",{},m.model),el("td",{class:"mono"},(m.created_at||"").slice(0,19)))));
+  v.append(card);
+}
+
+// ---- Model Aliases ----
+async function viewAliases(){
+  const {model_services}=await api("GET","/admin/model-services");
+  const {model_aliases}=await api("GET","/admin/model-aliases");
+  const v=$("#view"); v.innerHTML="";
+  const alias=el("input",{placeholder:"alias (fast)"});
+  const model=el("select"); (model_services||[]).forEach(m=>model.append(el("option",{value:m.model},m.model)));
+  v.append(el("div",{class:"card"},el("h2",{},"Create model alias"),
+    el("div",{class:"hint",style:"margin-bottom:8px"},"client requests the alias → gateway resolves to the canonical model (transparent downstream)"),
+    el("div",{class:"grid"},el("label",{},"alias",alias),el("label",{},"canonical model",model)),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
+      try{await api("POST","/admin/model-aliases",{alias:alias.value,model:model.value});toast("alias created","ok");show("Aliases")}catch(e){toast(e.message,"bad")}
+    }},"Create"))));
+  const card=el("div",{class:"card"},el("h2",{},"Aliases ("+(model_aliases||[]).length+")"));
+  card.append(table(["Alias","→ Canonical model","Enabled",""],model_aliases,a=>el("tr",{},
+    el("td",{class:"mono"},a.alias),el("td",{class:"mono"},a.model),el("td",{},onoff(a.enabled)),
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete alias "+a.alias+"?")){try{await api("DELETE","/admin/model-aliases/"+encodeURIComponent(a.alias));toast("deleted","ok");show("Aliases")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
   v.append(card);
 }
 

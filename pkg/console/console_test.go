@@ -314,6 +314,51 @@ func TestConsole_ViewerRoleReadOnly(t *testing.T) {
 	}
 }
 
+// TestConsole_ModelAliasCrossPlane：控制面建别名 → 数据面 reader 把 alias 解析成
+// canonical model_service（跨面）；建指向不存在 model 的别名 → 400；删后解析 miss。
+func TestConsole_ModelAliasCrossPlane(t *testing.T) {
+	engine, db := newTestEngine(t)
+
+	// canonical model
+	if code, _ := do(t, engine, "POST", "/admin/model-services",
+		ModelServiceInput{ServiceID: "openai/gpt-4o-mini", Model: "gpt-4o-mini"}, true); code != 201 {
+		t.Fatal("create model")
+	}
+	// 别名 fast → gpt-4o-mini
+	if code, resp := do(t, engine, "POST", "/admin/model-aliases",
+		ModelAliasInput{Alias: "fast", Model: "gpt-4o-mini"}, true); code != 201 {
+		t.Fatalf("create alias = %d %v", code, resp)
+	}
+	// 指向不存在的 model → 400
+	if code, _ := do(t, engine, "POST", "/admin/model-aliases",
+		ModelAliasInput{Alias: "bad", Model: "no-such-model"}, true); code != 400 {
+		t.Errorf("dead alias = %d, want 400", code)
+	}
+
+	reader := repo.NewSQLModelServiceReader(db)
+	// alias 解析到 canonical
+	ms, err := reader.GetByModel(context.Background(), "fast")
+	if err != nil || ms == nil || ms.Model != "gpt-4o-mini" {
+		t.Fatalf(`GetByModel("fast") = %v, %v; want canonical gpt-4o-mini`, ms, err)
+	}
+	// 直查 canonical 仍然正常
+	if ms2, _ := reader.GetByModel(context.Background(), "gpt-4o-mini"); ms2 == nil || ms2.Model != "gpt-4o-mini" {
+		t.Errorf("direct lookup broken: %v", ms2)
+	}
+	// 未知名 → (nil, nil)
+	if ms3, err := reader.GetByModel(context.Background(), "totally-unknown"); ms3 != nil || err != nil {
+		t.Errorf(`GetByModel(unknown) = %v, %v; want nil,nil`, ms3, err)
+	}
+
+	// 删别名后解析 miss
+	if code, _ := do(t, engine, "DELETE", "/admin/model-aliases/fast", nil, true); code != 200 {
+		t.Fatal("delete alias")
+	}
+	if ms4, _ := reader.GetByModel(context.Background(), "fast"); ms4 != nil {
+		t.Errorf("删别名后 GetByModel(fast) 仍解析出 %v", ms4)
+	}
+}
+
 // TestConsole_QuotaPolicyCRUD：建（校验 rule_json）+ 列 + 删。
 func TestConsole_QuotaPolicyCRUD(t *testing.T) {
 	engine, _ := newTestEngine(t)

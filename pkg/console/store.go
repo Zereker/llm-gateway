@@ -409,6 +409,68 @@ func (s *Store) RevokeAPIKey(ctx context.Context, accountID, apiKeyID string) er
 }
 
 // =============================================================================
+// Model aliases（别名 → canonical model 重定向）
+// =============================================================================
+
+// ModelAliasInput 建别名入参。
+type ModelAliasInput struct {
+	Alias string `json:"alias"`
+	Model string `json:"model"` // canonical model_services.model
+}
+
+// InvalidAliasError 别名入参非法（如 canonical model 不存在）。
+type InvalidAliasError struct{ Reason string }
+
+func (e *InvalidAliasError) Error() string { return "model alias invalid: " + e.Reason }
+
+// CreateModelAlias 建别名。写前校验 canonical model 存在（避免建出死别名）。
+func (s *Store) CreateModelAlias(ctx context.Context, in ModelAliasInput) error {
+	if in.Alias == "" || in.Model == "" {
+		return &InvalidAliasError{Reason: "alias and model required"}
+	}
+	var n int
+	if err := s.db.GetContext(ctx, &n,
+		`SELECT COUNT(*) FROM model_services WHERE model = ? AND deleted_at IS NULL`, in.Model); err != nil {
+		return err
+	}
+	if n == 0 {
+		return &InvalidAliasError{Reason: "canonical model does not exist: " + in.Model}
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO model_aliases (alias, model) VALUES (?, ?)`, in.Alias, in.Model)
+	return err
+}
+
+// ModelAliasView 别名只读视图。
+type ModelAliasView struct {
+	Alias     string    `db:"alias" json:"alias"`
+	Model     string    `db:"model" json:"model"`
+	Enabled   bool      `db:"enabled" json:"enabled"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
+// ListModelAliases 列全部未删别名。
+func (s *Store) ListModelAliases(ctx context.Context) ([]ModelAliasView, error) {
+	var rows []ModelAliasView
+	err := s.db.SelectContext(ctx, &rows,
+		`SELECT alias, model, enabled, created_at
+		 FROM model_aliases WHERE deleted_at IS NULL ORDER BY alias`)
+	return rows, err
+}
+
+// DeleteModelAlias 硬删别名（别名是纯重定向，无历史价值；硬删避免 PK 无法复用）。
+func (s *Store) DeleteModelAlias(ctx context.Context, alias string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM model_aliases WHERE alias = ?`, alias)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// =============================================================================
 // Quota policies（限流策略库；被 accounts / api_keys 引用）
 // =============================================================================
 
