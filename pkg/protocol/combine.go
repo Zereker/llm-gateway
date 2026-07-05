@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sync"
 
@@ -132,6 +133,15 @@ func (c *combined) NewResponseStream() ResponseStream {
 func (c *combined) Classify(status int, body []byte) *domain.AdapterError {
 	if cls, ok := c.ad.(Classifier); ok {
 		return cls.Classify(status, body)
+	}
+	return nil
+}
+
+// DecodeTransport 透传到 Factory 的 TransportDecoder（如果实现了）。同 Classify 的
+// 能力提升模式——上层只 type-assert protocol.TransportDecoder，nil 表示无需解帧。
+func (c *combined) DecodeTransport(resp *http.Response) io.Reader {
+	if dec, ok := c.ad.(TransportDecoder); ok {
+		return dec.DecodeTransport(resp)
 	}
 	return nil
 }

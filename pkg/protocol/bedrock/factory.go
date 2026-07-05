@@ -1,5 +1,5 @@
-// Package bedrock 是 AWS Bedrock 的 vendor 实现（v1：Anthropic Claude on Bedrock，
-// 非流式 InvokeModel）。
+// Package bedrock 是 AWS Bedrock 的 vendor 实现（Anthropic Claude on Bedrock，
+// 支持非流式 InvokeModel + 流式 InvokeModelWithResponseStream）。
 //
 // **线协议 = Anthropic Messages**：endpoint 的 `protocol` 填 `anthropic`，复用
 // Anthropic 的 translator + response handler（Bedrock 的 Claude 返回体就是 Anthropic
@@ -13,8 +13,10 @@
 // **SigV4 用官方 aws-sdk-go-v2 signer**：SigV4 的 canonical-URI 编码（Bedrock 路径带
 // `:`）等边界极易手写出错且无法离线对真实端点验证，用官方 signer 保正确。
 //
-// **v1 限制（非流式）**：只支持 InvokeModel（单 JSON 响应）；InvokeModelWithResponseStream
-// 用的是 AWS event-stream（vnd.amazon.eventstream）而非 SSE，需另写解析器，记为后续。
+// **流式**：客户端 stream:true 时用 InvokeModelWithResponseStream 端点，响应是 AWS
+// event-stream 二进制分帧——由 Factory.DecodeTransport（protocol.TransportDecoder，
+// 见 stream.go）解成 Anthropic SSE,再交 openai_anthropic handler 翻成 OpenAI SSE。
+// 传输层(解帧)与协议层(shape 翻译)分离,复用现成 Anthropic 流式翻译。
 //
 // 接入方式：deployer 写 endpoint `vendor: bedrock` + `protocol: anthropic` +
 // `auth.type: aws-sigv4`。cmd/gateway blank import 本包。

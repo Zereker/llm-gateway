@@ -22,15 +22,16 @@
 //	      可以挂多条不同协议的 endpoint。
 //
 // **组合时机**：请求级，不是 init()。DefaultLookup.Get(ep, srcProto) 调用：
-//   1. protocol.LookupFactory(ep.Vendor) → protocol.Factory（vendor HTTP 实现）
-//   2. translator.Find(srcProto, ep.Protocol) → translator.Translator（body 转换）
-//   3. Combine(ad, tr) → Handler
+//  1. protocol.LookupFactory(ep.Vendor) → protocol.Factory（vendor HTTP 实现）
+//  2. translator.Find(srcProto, ep.Protocol) → translator.Translator（body 转换）
+//  3. Combine(ad, tr) → Handler
 //
 // 任一缺失 → return nil → eligibility filter 剔除该 endpoint。
 package protocol
 
 import (
 	"context"
+	"io"
 	"net/http"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
@@ -102,6 +103,24 @@ type Handler interface {
 type ResponseStream interface {
 	Feed(chunk []byte) (clientBytes []byte, err error)
 	Flush() (clientBytes []byte, usage *domain.Usage, err error)
+}
+
+// TransportDecoder 可选接口：vendor 把上游响应的**传输分帧**解成协议 handler 认识
+// 的字节流。用于 wire 传输格式 ≠ 协议 SSE 的场景。
+//
+// **为什么单独一层**：至今所有 provider 的流式都是 SSE / JSON，传输格式恰好 ≈ 协议
+// 格式，一个 ResponseStream 顺手两件事都干了。AWS Bedrock 的 event-stream 是二进制
+// 分帧（`vnd.amazon.eventstream`），把 Anthropic 事件裹在帧里——这是**传输层**关注
+// 点，跟协议 shape 是两回事。TransportDecoder 在字节进 ResponseStream.Feed **之前**
+// 把帧解掉，还原成协议 handler 期望的字节（如 Anthropic SSE）。于是 Bedrock 保持
+// protocol=anthropic、复用 anthropic 的 ResponseStream 做 shape 翻译，传输/协议干净分离。
+//
+// **可选**：Factory 不实现 = 上游字节直接进 handler（SSE/JSON 场景，绝大多数）。
+// combined Handler 自动透出 Factory 的这能力（同 Classifier 的透传模式）。
+type TransportDecoder interface {
+	// DecodeTransport 把 resp.Body 包成"已解帧"的 reader；不需要解码时返 nil
+	// （调用方据此判断是否插入解码层）。实现**不负责** Close resp.Body（调用方管）。
+	DecodeTransport(resp *http.Response) io.Reader
 }
 
 // Classifier 可选接口：vendor 自定义把错误响应 body 细化到 domain.ErrorClass。

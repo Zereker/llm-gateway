@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"io"
 	"net/http"
 
 	"github.com/zereker/llm-gateway/pkg/dispatch"
@@ -88,6 +89,18 @@ func (r *invokerResult) StreamTo(ctx context.Context, w http.ResponseWriter) dis
 	}
 	r.consumed = true
 
+	// 传输解码接缝：vendor（如 Bedrock event-stream）把上游分帧解成协议 handler 认识
+	// 的字节流，再进 Feed。TransportDecoder 是可选的——返回 nil = 无需解帧（SSE/JSON，
+	// 绝大多数）。这样传输层（分帧）跟协议层（shape 翻译）干净分离。
+	if dec, ok := r.handler.(protocol.TransportDecoder); ok {
+		if decoded := dec.DecodeTransport(r.response); decoded != nil {
+			// 用 decoded 替换 body 供 Forward 读；原 body 的 Close 权交给包装，
+			// 保证 Forward 的 defer Close 仍关到真实连接。
+			orig := r.response.Body
+			r.response.Body = readClose{Reader: decoded, closeFn: orig.Close}
+		}
+	}
+
 	stream := moderation.WrapStream(r.handler.NewResponseStream(), ctx)
 	fwd := r.sender.Forward(ctx, w, r.ep, r.response, stream)
 
@@ -140,3 +153,12 @@ var (
 	_ dispatch.Invoker        = (*invokerImpl)(nil)
 	_ dispatch.Result         = (*invokerResult)(nil)
 )
+
+// readClose 把一个 io.Reader（解帧后的流）+ 原 body 的 Close 组合成 ReadCloser——
+// Forward 读解帧字节，defer Close 仍关真实上游连接。
+type readClose struct {
+	io.Reader
+	closeFn func() error
+}
+
+func (rc readClose) Close() error { return rc.closeFn() }
