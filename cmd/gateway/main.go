@@ -33,6 +33,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/embed"
 	"github.com/zereker/llm-gateway/pkg/health"
 	"github.com/zereker/llm-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/moderation"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
@@ -42,15 +43,14 @@ import (
 	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/server"
 	"github.com/zereker/llm-gateway/pkg/trace"
-	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/usage"
 
 	// vendor Factory blank imports：init() 自动注册到 protocol vendor registry
 	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/bedrock"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/cohere"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
-	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 
 	// translator blank imports：init() 自动注册到 translator registry
@@ -252,7 +252,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		Dispatcher: dispatcher,
 
 		// 响应缓存中间件（M6 之后、M7 之前）：精确 / 语义 / no-op
-		Cache: buildCacheMiddleware(cfg.Cache, rdb),
+		Cache:          buildCacheMiddleware(cfg.Cache, rdb),
+		EmbeddingCache: buildEmbeddingCache(cfg.Cache, rdb),
 
 		// M8 Moderation
 		Moderator: buildModerator(cfg.Moderation),
@@ -382,6 +383,19 @@ func buildCacheMiddleware(cfg config.CacheConfig, rdb *redis.Client) gin.Handler
 	}
 }
 
+// buildEmbeddingCache 装配 embedding 模态专用缓存——**只精确**。
+//
+// embeddings 天然确定（无采样），精确缓存纯收益（RAG 反复 embed 同批文本命中率高）；
+// 语义缓存对 embedding 无意义（必须精确匹配）。所以不复用 buildCacheMiddleware（可能
+// 是语义）——任一缓存开关打开就给 embeddings 上精确缓存，共用同一 Redis store（key
+// 含 protocol|model|body，与 chat key 天然不撞）。
+func buildEmbeddingCache(cfg config.CacheConfig, rdb *redis.Client) gin.HandlerFunc {
+	if cfg.Enabled || cfg.Semantic.Enabled {
+		return middleware.ResponseCache(respcache.NewRedisStore(rdb, "llm-gateway:respcache"), cfg.TTL)
+	}
+	return func(c *gin.Context) { c.Next() } // no-op
+}
+
 // buildEmbedder 装配文本向量化后端（P5 fail-fast：未知 driver panic）。
 func buildEmbedder(cfg config.EmbedderConfig) embed.Embedder {
 	switch cfg.Driver {
@@ -444,8 +458,8 @@ func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister healt
 //
 //   - none/"":  返回 nil，零开销（不挂 hooks）
 //   - file:     JSONL append 到本地文件；下游分流（S3 / Loki / Kafka 内容安全 /
-//               训练数据回流）交给 fluent-bit / vector，gateway 不内嵌 Kafka producer。
-//               理由见 docs/architecture/05-metering-billing.md §2。
+//     训练数据回流）交给 fluent-bit / vector，gateway 不内嵌 Kafka producer。
+//     理由见 docs/architecture/05-metering-billing.md §2。
 //
 // 找不到的 driver 直接 panic（启动期暴露配置错）。
 func buildContentLogger(srv *server.Server, cfg config.ContentLogConfig) *contentlog.Logger {
@@ -508,6 +522,7 @@ func buildBudgetGate(cfg config.BudgetConfig) middleware.BudgetGate {
 //
 //   - none:   nil（默认；不审核）
 //   - openai: OpenAI moderation API client（需要 cfg.APIKey）
+//
 // buildModerator 组装 guardrail 链（Chain 自身是 Moderator，插进 M8 零改动）。
 //
 // driver 的 moderator（openai）+ 可选 denylist guard 组合：

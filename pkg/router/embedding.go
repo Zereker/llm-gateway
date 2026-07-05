@@ -46,6 +46,14 @@ func registerEmbeddingRoutes(engine *gin.Engine, deps Deps) {
 			middleware.WithLimitStore(deps.RateLimitStore),
 			middleware.WithLimitPolicies(deps.QuotaPolicies),
 		),
+		// embeddings 天然确定（无采样参数）——ResponseCache 默认就缓存，命中直接返
+		// 向量、跳过上游。见 middleware.ResponseCache 的 embeddings 例外。
+		//
+		// **专用 EmbeddingCache（精确），不复用 deps.Cache**：当全局配的是语义缓存时
+		// deps.Cache 是 SemanticCache，而 embedding 请求的 input 会被 extractPrompt 抽
+		// 去做相似度匹配——语义命中对 embedding 是错的（paraphrase 的正确向量不同）。
+		// embeddings 必须精确缓存。
+		deps.EmbeddingCache,
 		middleware.Schedule(deps.Dispatcher),
 		noopHandler,
 	)
