@@ -76,10 +76,10 @@ func TestEnvelope_HappyPath_ParsesModel(t *testing.T) {
 	}
 }
 
-// TestEnvelope_PopulatesDefaultHandlers 证明 M3 给 rc.Handlers 写默认值
-// （protocol.DefaultLookup 包装全局 adapter + translator registry），让后续
-// middleware / dispatch / invoker 能通过 HandlersFrom(rc) 拿到 nil-safe
-// 的请求级查询端口。
+// TestEnvelope_PopulatesDefaultHandlers proves that M3 writes a default value into
+// rc.Handlers (protocol.DefaultLookup wrapping the global adapter + translator
+// registry), so that downstream middleware / dispatch / invoker can obtain a
+// nil-safe, request-scoped lookup port via HandlersFrom(rc).
 func TestEnvelope_PopulatesDefaultHandlers(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
@@ -104,9 +104,10 @@ func TestEnvelope_PopulatesDefaultHandlers(t *testing.T) {
 	}
 }
 
-// TestEnvelope_PreservesPreSetHandlers 证明 M3 不覆盖前置 middleware 已写入的
-// 自定义 lookup（多租户 / 灰度场景：M2 Auth 根据 tenant 装上 custom lookup，
-// M3 不应该把它覆盖回 default）。
+// TestEnvelope_PreservesPreSetHandlers proves that M3 does not overwrite a custom
+// lookup already set by an earlier middleware (multi-tenant / canary scenario: M2
+// Auth installs a custom lookup based on tenant, and M3 must not reset it back to
+// the default).
 func TestEnvelope_PreservesPreSetHandlers(t *testing.T) {
 	custom := &fakeHandlerLookup{}
 	preSet := func(c *gin.Context) {
@@ -138,7 +139,8 @@ func TestEnvelope_PreservesPreSetHandlers(t *testing.T) {
 	}
 }
 
-// fakeHandlerLookup 测试占位（永远返 nil），仅校验"指针有没有被覆盖"。
+// fakeHandlerLookup is a test placeholder (always returns nil), used only to check
+// whether the pointer got overwritten.
 type fakeHandlerLookup struct{}
 
 func (*fakeHandlerLookup) Get(_ *domain.Endpoint, _ domain.Protocol) protocol.Handler { return nil }
@@ -219,7 +221,7 @@ func TestEnvelope_400_ReadBodyError(t *testing.T) {
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
-	// failingReader 模拟 body 读到一半 IO 失败
+	// failingReader simulates an IO failure partway through reading the body
 	req := httptest.NewRequest("POST", "/x", &failingReader{})
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -233,14 +235,14 @@ func TestEnvelope_400_ReadBodyError(t *testing.T) {
 	}
 }
 
-// failingReader 是 io.Reader 实现，永远返回 error。
+// failingReader is an io.Reader implementation that always returns an error.
 type failingReader struct{}
 
 func (failingReader) Read(_ []byte) (int, error) { return 0, errors.New("simulated io failure") }
-func (failingReader) Close() error                { return nil }
+func (failingReader) Close() error               { return nil }
 
 func TestEnvelope_ResponseStartedAlready_StatusCode(t *testing.T) {
-	// abort 通过 rc.Error + M9 Recover 写出；status 由 DefaultHTTPStatus 推导
+	// the abort is written out via rc.Error + M9 Recover; status is derived by DefaultHTTPStatus
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
@@ -257,5 +259,5 @@ func TestEnvelope_ResponseStartedAlready_StatusCode(t *testing.T) {
 	}
 }
 
-// 防止 unused import 警告
+// prevent an unused import warning
 var _ = io.EOF

@@ -82,7 +82,7 @@ usage_events:
 	if cfg.Database.Driver != infra.DriverMySQL {
 		t.Errorf("Database.Driver = %q", cfg.Database.Driver)
 	}
-	// MySQL DSN 是连接字符串，不应被相对解析
+	// The MySQL DSN is a connection string and should not be resolved as a relative path
 	if cfg.Database.DSN != "user:pwd@tcp(db.example.com:3306)/prod?parseTime=true" {
 		t.Errorf("Database.DSN was rewritten unexpectedly: %q", cfg.Database.DSN)
 	}

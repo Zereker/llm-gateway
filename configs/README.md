@@ -1,44 +1,44 @@
 # configs/
 
-每个子目录是一份**完整的、自包含的**网关配置，对应一个环境。
+Each subdirectory is a **complete, self-contained** gateway configuration, corresponding to one environment.
 
-## 结构
+## Structure
 
 ```
 configs/
-├── local/                  # 本地开发配置；依赖 docker compose 的 MySQL + Redis + Redpanda
+├── local/                  # Local development config; depends on docker compose's MySQL + Redis + Redpanda
 │   └── gateway.yaml
 │
-├── prod/                   # 生产模板
+├── prod/                   # Production template
 │   └── gateway.yaml
 │
-├── docker/                 # docker-compose 用的容器版配置（仅供 image 内引用）
+├── docker/                 # Containerized config for docker-compose (only referenced inside the image)
 │   └── gateway.yaml
 │
-└── mysql-init/             # MySQL 容器初始化脚本（默认参数）
+└── mysql-init/             # MySQL container init scripts (default parameters)
 ```
 
-本项目目标架构**不提供零外部依赖启动**。gateway 启动必需 SQL DB 和 Redis：
+This project's target architecture **does not provide zero-external-dependency startup**. The gateway requires SQL DB and Redis to start:
 
-- SQL DB 保存 accounts / api_keys / model_services / subscriptions / endpoints /
-  quota_policies / pricing_versions 等业务表。
-- Redis 承载 M6 rate limit buckets 和 scheduler cooldown 状态。
-- Kafka/Redpanda 仅在 outbox driver 选择 kafka 时必需；file outbox 可用于本地调试。
+- SQL DB stores business tables such as accounts / api_keys / model_services / subscriptions / endpoints /
+  quota_policies / pricing_versions.
+- Redis backs M6 rate limit buckets and scheduler cooldown state.
+- Kafka/Redpanda is only required when the outbox driver is set to kafka; file outbox can be used for local debugging.
 
-schema 由 gateway 启动期自跑 `pkg/infra.Migrate` 建表（`schema.sql` 全 `IF NOT EXISTS`
-幂等）；`repo.CheckSchema` 在 Migrate 之后做防御性校验。
+The schema is created by the gateway automatically running `pkg/infra.Migrate` at startup (`schema.sql` is fully
+idempotent with `IF NOT EXISTS`); `repo.CheckSchema` performs a defensive check after Migrate.
 
-业务数据（accounts / endpoints / api_keys 等）由 deployer 直接 SQL 写入 ——
-本项目只做数据面，不带控制面 REST API。
+Business data (accounts / endpoints / api_keys, etc.) is written directly via SQL by the deployer —
+this project only implements the data plane, without a control plane REST API.
 
-## 路径解析
+## Path Resolution
 
-配置文件中的外部依赖地址应指向当前环境的 SQL DB、Redis 和 outbox 后端。
-生产环境不要把真实凭证写入 git；通过 Secret、环境变量渲染或部署系统注入。
+External dependency addresses in the config file should point to the current environment's SQL DB, Redis, and outbox backend.
+In production, do not commit real credentials to git; inject them via Secrets, environment variable rendering, or the deployment system.
 
-## Gateway 配置结构
+## Gateway Config Structure
 
-`gateway.yaml` 顶层结构：
+Top-level structure of `gateway.yaml`:
 
 ```yaml
 server:
@@ -98,26 +98,26 @@ trace:
   service_name: llm-gateway
 ```
 
-新增配置字段时，需要同步更新 `pkg/config`、示例配置、本文件和对应 architecture 文档。
+When adding new config fields, you need to update `pkg/config`, the example config, this file, and the corresponding architecture doc in sync.
 
-## 添加新环境
+## Adding a New Environment
 
 ```sh
 cp -r configs/local configs/staging
-# 编辑 configs/staging/gateway.yaml
+# Edit configs/staging/gateway.yaml
 go run ./cmd/gateway -config ./configs/staging/gateway.yaml
-# 启动后用 SQL INSERT 录入业务数据（见 examples/full-config/README.md 的"数据管理"章节）
+# After startup, use SQL INSERT to populate business data (see the "Data Management" section of examples/full-config/README.md)
 ```
 
-## 密钥管理
+## Secret Management
 
-**绝对不要把真实密钥 commit 到 git。** 推荐：
+**Never commit real secrets to git.** Recommended:
 
-| 场景 | 方案 |
+| Scenario | Approach |
 |------|------|
-| local dev | 使用 docker compose 启动 MySQL / Redis / Redpanda；测试 endpoint/API key 直接 SQL INSERT |
-| CI / staging | 独立 SQL DB / Redis；密钥由 CI secret 或部署系统注入 |
-| prod | SQL DB / Redis / Kafka 使用托管服务；凭证走 Vault / secret manager / K8s Secret |
+| local dev | Use docker compose to start MySQL / Redis / Redpanda; test endpoint/API keys via direct SQL INSERT |
+| CI / staging | Independent SQL DB / Redis; secrets injected by CI secret store or deployment system |
+| prod | SQL DB / Redis / Kafka use managed services; credentials go through Vault / secret manager / K8s Secret |
 
-`prod/gateway.yaml` 中的 DSN、Redis 密码、data key、上游 API key 都必须由部署环境注入，
-不应提交真实值。
+The DSN, Redis password, data key, and upstream API keys in `prod/gateway.yaml` must all be injected by the deployment environment,
+and real values should not be committed.

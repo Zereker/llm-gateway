@@ -73,14 +73,14 @@ func TestRecover_WritesRCErrorWhenSet(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/err", nil))
 
-	if w.Code != 502 { // domain.ErrTransient → DefaultHTTPStatus
+	if w.Code != 502 { // domain.ErrTransient -> DefaultHTTPStatus
 		t.Errorf("status = %d, want 502", w.Code)
 	}
 	var body map[string]map[string]string
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	// 新 schema：code=稳定机器码（upstream_error），class=行为分类（transient）
+	// new schema: code = stable machine code (upstream_error), class = behavioral category (transient)
 	if body["error"]["class"] != "transient" {
 		t.Errorf("class = %q, want transient", body["error"]["class"])
 	}

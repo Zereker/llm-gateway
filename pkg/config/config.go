@@ -1,14 +1,17 @@
-// Package config 加载 gateway 启动配置（gateway.yaml 的根 = Config 类型）。
+// Package config loads the gateway's startup configuration (the root of
+// gateway.yaml = the Config type).
 //
-// **infra 子系统的 Config 类型住在 pkg/infra**（infra.DBConfig / infra.KafkaConfig
-// 等），pkg/config 通过 import 引用——这样新增 infra 时 schema 演进的所有权
-// 集中在 infra 那边，pkg/config 只是 yaml 编排层。
+// **The Config types for infra subsystems live in pkg/infra** (infra.DBConfig /
+// infra.KafkaConfig etc.); pkg/config references them via import — this way
+// ownership of schema evolution for new infra stays concentrated in infra,
+// and pkg/config is just the yaml orchestration layer.
 //
-// 区分于 pkg/repo —— pkg/repo 是"业务记录"（ModelService / Endpoint 等，由
-// deployer 直接 SQL 维护）；pkg/config 是启动时一次性读入的"进程本身的设置"
-// （监听端口、超时、DB 连接、日志路径等）。
+// This is distinct from pkg/repo — pkg/repo holds "business records"
+// (ModelService / Endpoint etc., maintained directly via SQL by the deployer);
+// pkg/config is "the process's own settings" read once at startup
+// (listen port, timeouts, DB connection, log paths, etc.).
 //
-// 示例：configs/local/gateway.yaml。
+// Example: configs/local/gateway.yaml.
 package config
 
 import (
@@ -22,90 +25,102 @@ import (
 	"github.com/zereker/llm-gateway/pkg/infra"
 )
 
-// Config 是 gateway.yaml 的根。
+// Config is the root of gateway.yaml.
 //
-// 缺省字段会被 ApplyDefaults 填上合理默认值；用户的 YAML 可只声明需要 override 的字段。
+// Unset fields are filled with sensible defaults by ApplyDefaults; the user's
+// YAML only needs to declare the fields it wants to override.
 type Config struct {
-	Server     ServerConfig      `yaml:"server"`
-	Request    RequestConfig     `yaml:"request"`
-	Paths      PathsConfig       `yaml:"paths"`
-	Database   infra.DBConfig    `yaml:"database"` // schema 在 pkg/infra
-	Redis      infra.RedisConfig `yaml:"redis"`    // M6 RateLimit + 未来 cache layer 共享
+	Server      ServerConfig      `yaml:"server"`
+	Request     RequestConfig     `yaml:"request"`
+	Paths       PathsConfig       `yaml:"paths"`
+	Database    infra.DBConfig    `yaml:"database"` // schema lives in pkg/infra
+	Redis       infra.RedisConfig `yaml:"redis"`    // shared by M6 RateLimit + future cache layer
 	UsageEvents UsageEventsConfig `yaml:"usage_events"`
-	Selector  SelectorConfig   `yaml:"selector"`  // M7 端点调度 + cooldown 配置
-	Budget     BudgetConfig      `yaml:"budget"`     // M4 Budget driver
-	Moderation ModerationConfig  `yaml:"moderation"` // M8 内容审核 driver
-	Trace      TraceConfig       `yaml:"trace"`      // M10 Tracer driver（slog / otel）
-	ContentLog ContentLogConfig  `yaml:"content_log"` // 内容记录通道（docs/05 §2 + docs/08 §6）
-	Health     HealthConfig      `yaml:"health"`      // Health Probing（docs/03 §10）
-	Scoring    ScoringConfig     `yaml:"scoring"`     // Runtime Scoring（docs/03 §8）
-	Cache      CacheConfig       `yaml:"cache"`       // 响应缓存（M6 之后、M7 之前）
+	Selector    SelectorConfig    `yaml:"selector"`    // M7 endpoint scheduling + cooldown config
+	Budget      BudgetConfig      `yaml:"budget"`      // M4 Budget driver
+	Moderation  ModerationConfig  `yaml:"moderation"`  // M8 content moderation driver
+	Trace       TraceConfig       `yaml:"trace"`       // M10 Tracer driver (slog / otel)
+	ContentLog  ContentLogConfig  `yaml:"content_log"` // content logging channel (docs/05 §2 + docs/08 §6)
+	Health      HealthConfig      `yaml:"health"`      // Health Probing (docs/03 §10)
+	Scoring     ScoringConfig     `yaml:"scoring"`     // Runtime Scoring (docs/03 §8)
+	Cache       CacheConfig       `yaml:"cache"`       // response cache (after M6, before M7)
 
-	// DataKey 是 AES-256-GCM 的 KEK（hex-encoded 32 字节 = 64 字符）。
-	// gateway 启动期调 repo.SetDataKey 装载；用于解密 endpoints.auth 列。
-	// deployer 加密 endpoints.auth 列时必须用同一个 KEK。
-	// 生产应从 secret manager 注入，**不要 commit 真实 key**。
+	// DataKey is the KEK for AES-256-GCM (hex-encoded 32 bytes = 64 chars).
+	// Loaded at gateway startup via repo.SetDataKey; used to decrypt the
+	// endpoints.auth column.
+	// The deployer must use the same KEK when encrypting the endpoints.auth column.
+	// In production this should be injected from a secret manager — **do not
+	// commit the real key**.
 	DataKey string `yaml:"data_key"`
 }
 
-// BudgetConfig M4 Budget Gate 实现选择。
+// BudgetConfig selects the M4 Budget Gate implementation.
 //
 //	driver:
-//	  alwayspass — 默认；永远放行（开发 / 无付费体系）
-//	  inmemory   — 进程内余额跟踪（适合单实例 demo / 单主账号）；丢内存重启清零
+//	  alwayspass — default; always allows (development / no billing system)
+//	  inmemory   — in-process balance tracking (suitable for single-instance
+//	               demos / a single primary account); resets on restart
 //
-// inmemory 时 default_balance 是新 user 首次出现时分配的余额（USD）。
-// 0 = safe-by-default 拒绝（要用 inmemory budget 必须显式 SetBalance）。
+// With inmemory, default_balance is the balance (USD) assigned the first time
+// a new user shows up.
+// 0 = safe-by-default rejection (using inmemory budget requires an explicit SetBalance).
 type BudgetConfig struct {
 	Driver         string  `yaml:"driver"`
 	DefaultBalance float64 `yaml:"default_balance"`
 }
 
-// TraceConfig M10 Tracer 实现选择。
+// TraceConfig selects the M10 Tracer implementation.
 //
 //	driver:
-//	  slog — 默认；本地结构化日志（log/slog）
+//	  slog — default; local structured logging (log/slog)
 //	  otel — OpenTelemetry OTLP gRPC export
 //
-// otel 时 endpoint 是 collector 地址（如 "otel-collector:4317"）；
-// service_name 写到 OTel resource（默认 "llm-gateway"）。
+// With otel, endpoint is the collector address (e.g. "otel-collector:4317");
+// service_name is written to the OTel resource (default "llm-gateway").
 type TraceConfig struct {
 	Driver      string `yaml:"driver"`
 	Endpoint    string `yaml:"endpoint"`
 	ServiceName string `yaml:"service_name"`
 }
 
-// ModerationConfig M8 Moderator 实现选择。
+// ModerationConfig selects the M8 Moderator implementation.
 //
 //	driver:
-//	  none   — 默认；不审核（pass-through）
-//	  openai — 调 OpenAI /v1/moderations endpoint
+//	  none   — default; no moderation (pass-through)
+//	  openai — calls the OpenAI /v1/moderations endpoint
 //
-// openai 时需要 api_key（生产从 secret manager 注入）；base_url 留空走 OpenAI 官方。
+// With openai, api_key is required (inject from a secret manager in
+// production); leave base_url empty to use the official OpenAI endpoint.
 type ModerationConfig struct {
 	Driver  string `yaml:"driver"`
 	APIKey  string `yaml:"api_key"`
 	BaseURL string `yaml:"base_url"`
 }
 
-// ContentLogConfig 内容记录配置（docs/architecture/05-metering-billing.md §2、docs/08 §6）。
+// ContentLogConfig is the content-logging configuration
+// (docs/architecture/05-metering-billing.md §2, docs/08 §6).
 //
 //	driver:
-//	  none — 默认；完全关闭，零开销
-//	  file — JSONL append 写本地文件，由 fluent-bit / vector 投递到下游各 sink
-//	         （归档 / 检索 / 内容安全后审 / 训练数据回流）
+//	  none — default; fully disabled, zero overhead
+//	  file — appends JSONL to a local file, shipped downstream to various
+//	         sinks by fluent-bit / vector (archival / retrieval / content
+//	         safety post-review / training data feedback loop)
 //
-// gateway 故意**不**内嵌 Kafka producer。Content Log 在性质上是日志/审计而非业务事件，
-// 下游往往是多 sink（Loki + S3 + Kafka + ES），让 gateway 同时承担投递分流会把
-// 多个下游的可用性耦合到主链路。把文件作为唯一出口，fluent-bit 这一层负责扇出 +
-// 重试，gateway 主进程只关心"写不影响响应"。文件本身的轮转 / 压缩 / 清理由外部
-// logrotate 或日志收集器（fluent-bit tail 输入支持 inode 跟随）负责。
+// The gateway deliberately does **not** embed a Kafka producer. A Content Log
+// is a logging/audit concern in nature, not a business event; downstream is
+// often multiple sinks (Loki + S3 + Kafka + ES), and having the gateway also
+// own fan-out to those sinks would couple their availability into the main
+// request path. Using a file as the sole output lets the fluent-bit layer own
+// fan-out + retry, so the gateway process only has to care that "writing
+// never affects the response." File rotation / compression / cleanup is
+// handled externally by logrotate or the log collector (fluent-bit's tail
+// input supports inode following).
 //
-// sample_rate:        [0,1]，1.0=全采，0=全丢
-// backpressure:       drop_oldest（默认） / drop_newest / block；block 必须配 block_timeout
-// max_body_bytes:     >0 时截断 body
-// buffer_size:        异步队列容量；默认 1024
-// file.path:          driver=file 时 JSONL 追加路径；约定绝对路径
+// sample_rate:        [0,1], 1.0 = sample everything, 0 = drop everything
+// backpressure:       drop_oldest (default) / drop_newest / block; block requires block_timeout
+// max_body_bytes:     truncates the body when > 0
+// buffer_size:        async queue capacity; default 1024
+// file.path:          JSONL append path when driver=file; use an absolute path
 type ContentLogConfig struct {
 	Driver       string            `yaml:"driver"`
 	SampleRate   float64           `yaml:"sample_rate"`
@@ -116,12 +131,13 @@ type ContentLogConfig struct {
 	File         FileOutboxSection `yaml:"file"`
 }
 
-// HealthConfig 主动健康探测配置（docs/architecture/03-endpoint-scheduling.md §10）。
+// HealthConfig is the active health-probing configuration
+// (docs/architecture/03-endpoint-scheduling.md §10).
 //
-//	enabled:     默认 false；true 启动周期 prober
-//	interval:    探测周期（默认 30s）
-//	timeout:     单次 probe 超时（默认 5s）
-//	concurrent:  并发上限（默认 8）
+//	enabled:     default false; true starts the periodic prober
+//	interval:    probe period (default 30s)
+//	timeout:     per-probe timeout (default 5s)
+//	concurrent:  concurrency cap (default 8)
 type HealthConfig struct {
 	Enabled    bool          `yaml:"enabled"`
 	Interval   time.Duration `yaml:"interval"`
@@ -129,14 +145,15 @@ type HealthConfig struct {
 	Concurrent int           `yaml:"concurrent"`
 }
 
-// ScoringConfig Runtime Scoring 配置（docs/architecture/03-endpoint-scheduling.md §8）。
+// ScoringConfig is the Runtime Scoring configuration
+// (docs/architecture/03-endpoint-scheduling.md §8).
 //
-//	enabled:           默认 false；true 时 Scorer 调权
-//	driver:            stats 存储 inmemory（默认，每副本独立）| redis（多副本共享）
-//	min_samples:       样本数 < min_samples 给中性 factor=1（默认 5）
-//	latency_baseline:  归一 latency 用的 baseline（默认 200ms）
-//	ema_decay:         EMA 衰减（0..1，默认 0.2）
-//	stats_ttl:         redis driver 下单 endpoint 统计的 TTL（默认 1h）
+//	enabled:           default false; true lets the Scorer adjust weights
+//	driver:            stats storage: inmemory (default, per-replica) | redis (shared across replicas)
+//	min_samples:       sample count < min_samples gets a neutral factor=1 (default 5)
+//	latency_baseline:  baseline used to normalize latency (default 200ms)
+//	ema_decay:         EMA decay (0..1, default 0.2)
+//	stats_ttl:         TTL for per-endpoint stats under the redis driver (default 1h)
 type ScoringConfig struct {
 	Enabled         bool          `yaml:"enabled"`
 	Driver          string        `yaml:"driver"`
@@ -146,101 +163,115 @@ type ScoringConfig struct {
 	StatsTTL        time.Duration `yaml:"stats_ttl"`
 }
 
-// ServerConfig HTTP 服务器层配置。
+// ServerConfig is the HTTP server layer configuration.
 type ServerConfig struct {
 	Addr              string        `yaml:"addr"`
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
 	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
 }
 
-// RequestConfig 每条入站 HTTP 请求的全局默认限制。
+// RequestConfig holds global default limits for every inbound HTTP request.
 //
-// 这两个字段历史上叫 `middleware:` 是误导：
-//   - `body_limit_bytes` 在 M1 之前就要在 router / server 层拒掉超大 body；
-//   - `timeout` 用 gin TimeoutMiddleware 包整条 M1-M10 链，不是任一 M_n 自己的 timeout。
+// Historically these two fields were named `middleware:`, which is misleading:
+//   - `body_limit_bytes` must reject oversized bodies at the router / server
+//     layer, before M1 even runs;
+//   - `timeout` wraps the entire M1-M10 chain via gin's TimeoutMiddleware, it
+//     is not any single M_n's own timeout.
 //
-// 真正的 per-middleware 配置（M4 budget driver / M7 scheduler / M8 moderation /
-// M10 trace 等）已经各自分布在顶级段里；这一段只是 per-request 默认值，故名 request。
+// The real per-middleware configuration (M4 budget driver / M7 scheduler /
+// M8 moderation / M10 trace, etc.) is already distributed across its own
+// top-level sections; this section is just the per-request defaults, hence
+// the name "request".
 type RequestConfig struct {
 	BodyLimitBytes int64         `yaml:"body_limit_bytes"`
 	Timeout        time.Duration `yaml:"timeout"`
 }
 
-// PathsConfig 文件型数据路径。
+// PathsConfig holds file-based data paths.
 //
-// v0.1：apikeys / model_services / endpoints 全部迁到 DB（直接 SQL 维护），
-// usage 输出迁到 outbox 段。本结构体当前为空但保留——未来如果有"必须是文件"
-// 的资源（例如 TLS 证书），加在这里。
+// v0.1: apikeys / model_services / endpoints have all moved to the DB
+// (maintained directly via SQL), and usage output has moved to the outbox
+// section. This struct is currently empty but kept around — if a resource
+// that "must be a file" comes up in the future (e.g. TLS certificates), add
+// it here.
 type PathsConfig struct{}
 
-// UsageEventsConfig M10 Tracing 输出 usage 事件的下游通道选择。
+// UsageEventsConfig selects the downstream channel M10 Tracing uses to
+// output usage events.
 //
-// yaml 段名 `usage_events:`——按"用途"命名跟 `content_log:` / `trace:` 一致；
-// 实现层用的是 Outbox Pattern（pkg/usage.OutboxPublisher 接口），但这是内部模式名，
-// 不暴露到 yaml 操作面。
+// The yaml section name `usage_events:` is named by "purpose", consistent
+// with `content_log:` / `trace:`; the implementation layer uses the Outbox
+// Pattern (the pkg/usage.OutboxPublisher interface), but that's an internal
+// pattern name and isn't exposed on the yaml surface.
 //
 //	driver:
-//	  file            — 仅写本地 JSONL，无下游广播（dev / 兜底）
-//	  kafka           — 仅写 Kafka，无本地副本（不推荐：broker 挂 = 数据丢）
-//	  async_kafka     — Kafka + 内存 buffer + retry + DLQ（broker 短抖动可救，长时挂仍丢）
-//	  file_and_kafka  — **生产推荐**：file 是 source of truth（sync commit），
-//	                    Kafka 是 best-effort 异步广播；broker 挂不丢数据，
-//	                    由外部 replay 工具读 file 补发到 Kafka
+//	  file            — writes local JSONL only, no downstream broadcast (dev / fallback)
+//	  kafka           — writes Kafka only, no local copy (not recommended: broker down = data lost)
+//	  async_kafka     — Kafka + in-memory buffer + retry + DLQ (survives brief broker blips, still loses data on prolonged outage)
+//	  file_and_kafka  — **recommended for production**: file is the source of
+//	                    truth (sync commit), Kafka is a best-effort async
+//	                    broadcast; no data loss if the broker goes down,
+//	                    an external replay tool reads the file to backfill Kafka
 //
-// 字段使用：
+// Field usage:
 //
-//	driver=file               → 取 file.path
-//	driver=kafka|async_kafka  → 取 kafka.{brokers, topic, ...}
-//	driver=file_and_kafka     → 同时取 file.path 和 kafka.{brokers, topic, ...}
+//	driver=file               → uses file.path
+//	driver=kafka|async_kafka  → uses kafka.{brokers, topic, ...}
+//	driver=file_and_kafka     → uses both file.path and kafka.{brokers, topic, ...}
 //
-// 其余分支字段被忽略。
+// Fields for other branches are ignored.
 type UsageEventsConfig struct {
 	Driver string             `yaml:"driver"`
 	File   FileOutboxSection  `yaml:"file"`
 	Kafka  KafkaOutboxSection `yaml:"kafka"`
 }
 
-// FileOutboxSection driver=file 时的字段。
+// FileOutboxSection holds the fields used when driver=file.
 type FileOutboxSection struct {
-	Path string `yaml:"path"` // JSONL 追加路径；约定绝对路径，不做相对解析
+	Path string `yaml:"path"` // JSONL append path; use an absolute path, no relative resolution
 }
 
-// KafkaOutboxSection driver=kafka 时的字段：嵌入 infra.KafkaConfig（brokers
-// 等连接字段）+ Topic（业务侧关切，不属于 infra）+ 异步 / DLQ 选项。
+// KafkaOutboxSection holds the fields used when driver=kafka: embeds
+// infra.KafkaConfig (brokers and other connection fields) + Topic (a
+// business-side concern, not part of infra) + async / DLQ options.
 //
-// yaml `,inline` 让嵌入字段直接出现在 usage_events.kafka 这一级，不嵌套：
+// yaml `,inline` makes the embedded fields appear directly at the
+// usage_events.kafka level, without nesting:
 //
 //	usage_events:
 //	  kafka:
-//	    brokers: [...]   # 来自 infra.KafkaConfig
-//	    topic: ...       # 本类型独有
-//	    async: true      # 用 AsyncKafkaOutbox（生产推荐）
+//	    brokers: [...]   # from infra.KafkaConfig
+//	    topic: ...       # unique to this type
+//	    async: true      # use AsyncKafkaOutbox (recommended for production)
 //	    buffer_size: 1024
 //	    max_retries: 3
 //	    dlq_topic: billing.usage.recorded.v1.dlq
 type KafkaOutboxSection struct {
 	infra.KafkaConfig `yaml:",inline"`
 	Topic             string        `yaml:"topic"`
-	Async             bool          `yaml:"async"`        // true = 用 AsyncKafkaOutbox（生产推荐）
-	BufferSize        int           `yaml:"buffer_size"`  // async 模式 channel 容量；0 = 默认 1024
-	MaxRetries        int           `yaml:"max_retries"`  // async 单事件最多 retry 次数；0 = 默认 3
-	BackoffBase       time.Duration `yaml:"backoff_base"` // 指数退避起始；0 = 默认 200ms
-	DLQTopic          string        `yaml:"dlq_topic"`    // 重试耗尽后的 DLQ topic；空 = 直接丢
+	Async             bool          `yaml:"async"`        // true = use AsyncKafkaOutbox (recommended for production)
+	BufferSize        int           `yaml:"buffer_size"`  // channel capacity in async mode; 0 = default 1024
+	MaxRetries        int           `yaml:"max_retries"`  // max retries per event in async mode; 0 = default 3
+	BackoffBase       time.Duration `yaml:"backoff_base"` // exponential backoff starting point; 0 = default 200ms
+	DLQTopic          string        `yaml:"dlq_topic"`    // DLQ topic once retries are exhausted; empty = drop
 }
 
-// SelectorConfig M7 端点选路 + cooldown + 重试配置。
+// SelectorConfig holds M7 endpoint routing + cooldown + retry configuration.
 //
-// **filters**：执行顺序就是数组顺序；可用值（v0.5）：
-//   - `cooldown`         排除冷却中 endpoint
-//   - `limit_read`       排除 endpoint quota 超限
-//   - `weighted_random`  最终选一个（必须是最后一个；其它 filter 跑完再这个）
+// **filters**: execution order is array order; available values (v0.5):
+//   - `cooldown`         excludes endpoints currently in cooldown
+//   - `limit_read`       excludes endpoints over their quota
+//   - `weighted_random`  makes the final pick (must be last; runs after the other filters)
 //
-// **cooldown.<class>**：endpoint 失败后冷却时长，按 ErrorClass 分。0 = 不冷却。
+// **cooldown.<class>**: cooldown duration after an endpoint failure, keyed by
+// ErrorClass. 0 = no cooldown.
 //
-// **max_attempts**：M7 全局尝试上限（含 L1 同 ep 内部重试）；客户端 X-Gateway-Max-Attempts 可覆盖。
+// **max_attempts**: the M7 global attempt cap (includes L1 in-endpoint
+// retries); the client's X-Gateway-Max-Attempts header can override it.
 //
-// **max_per_endpoint**：同 endpoint 最大尝试次数（含首次）；默认 1 = 无 L1 retry，
-// 失败立刻换 ep。设 2-3 可吸收上游网络偶发抖动。
+// **max_per_endpoint**: max attempts on the same endpoint (including the
+// first); default 1 = no L1 retry, switch endpoints immediately on failure.
+// Setting 2-3 can absorb occasional upstream network jitter.
 type SelectorConfig struct {
 	Filters         []string              `yaml:"filters"`
 	Cooldown        CooldownConfig        `yaml:"cooldown"`
@@ -249,35 +280,40 @@ type SelectorConfig struct {
 	SessionAffinity SessionAffinityConfig `yaml:"session_affinity"`
 }
 
-// CacheConfig 响应缓存：命中直接返回、跳过上游。Redis-backed（多副本共享）。
-// 默认只缓存非流式 + temperature=0 的确定性请求；客户端 X-Gateway-Cache 头可覆盖。
+// CacheConfig is the response cache: a hit returns directly and skips the
+// upstream. Redis-backed (shared across replicas).
+// By default only caches non-streaming + temperature=0 deterministic
+// requests; the client's X-Gateway-Cache header can override this.
 type CacheConfig struct {
 	Enabled bool          `yaml:"enabled"`
-	TTL     time.Duration `yaml:"ttl"` // 默认 5m
+	TTL     time.Duration `yaml:"ttl"` // default 5m
 }
 
-// SessionAffinityConfig 会话亲和（sticky routing）：客户端 X-Gateway-Session 头带
-// session id，网关把它粘到同一上游 endpoint（prefix/KV cache 命中）。Redis-backed
-// （多副本共享）；enabled=false 时完全不生效。
+// SessionAffinityConfig is session affinity (sticky routing): the client's
+// X-Gateway-Session header carries a session id, and the gateway pins it to
+// the same upstream endpoint (for prefix/KV cache hits). Redis-backed
+// (shared across replicas); has no effect at all when enabled=false.
 type SessionAffinityConfig struct {
 	Enabled bool          `yaml:"enabled"`
-	TTL     time.Duration `yaml:"ttl"` // session→endpoint 映射 TTL；默认 10m
+	TTL     time.Duration `yaml:"ttl"` // TTL of the session→endpoint mapping; default 10m
 }
 
-// CooldownConfig 各 ErrorClass 对应的冷却时长。
+// CooldownConfig holds the cooldown duration for each ErrorClass.
 //
-// 命中冷却标记后，candidate 在 TTL 内被 CooldownFilter 排除。
+// Once a cooldown marker is hit, the candidate is excluded by the
+// CooldownFilter within the TTL.
 type CooldownConfig struct {
-	Transient time.Duration `yaml:"transient"` // 上游 5xx / 网络错 / timeout 等暂时性
-	Capacity  time.Duration `yaml:"capacity"`  // 上游 429 / quota 满 / overloaded
-	Permanent time.Duration `yaml:"permanent"` // 上游 401 / 配置错 / endpoint 本身坏
-	Invalid   time.Duration `yaml:"invalid"`   // 客户端 400-class（一般不冷却）
-	Unknown   time.Duration `yaml:"unknown"`   // 分类不出来时的兜底
+	Transient time.Duration `yaml:"transient"` // transient conditions: upstream 5xx / network error / timeout, etc.
+	Capacity  time.Duration `yaml:"capacity"`  // upstream 429 / quota exhausted / overloaded
+	Permanent time.Duration `yaml:"permanent"` // upstream 401 / misconfiguration / endpoint itself broken
+	Invalid   time.Duration `yaml:"invalid"`   // client 400-class (generally not cooled down)
+	Unknown   time.Duration `yaml:"unknown"`   // fallback when it can't be classified
 }
 
-// Load 从 YAML 文件读入 Config 并应用默认值。
+// Load reads Config in from a YAML file and applies defaults.
 //
-// MySQL DSN 是连接字符串、Outbox.File.Path 约定绝对路径，都按字面量保留。
+// The MySQL DSN is a connection string, and Outbox.File.Path is conventionally
+// an absolute path; both are kept as-is, literally.
 func Load(path string) (*Config, error) {
 	if path == "" {
 		return nil, errors.New("config: empty path")
@@ -297,26 +333,29 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// Validate fail-fast 校验（docs/07 §5）。**在 ApplyDefaults 之后跑**——所以这里
-// 只校验"默认值填不了、必须人工给对"的约束：
-//   - data_key 是 hex 64 字符（32 字节）
-//   - trace.driver=otel 时 endpoint 必填（slog 不需要）；driver 只认 slog|otel
-//   - usage_events.driver / 各 driver 的必填子字段
-//   - content_log.driver / backpressure 约束
+// Validate performs fail-fast validation (docs/07 §5). **Runs after
+// ApplyDefaults** — so it only validates constraints that "can't be defaulted,
+// must be supplied correctly by a human":
+//   - data_key is 64 hex chars (32 bytes)
+//   - endpoint is required when trace.driver=otel (not needed for slog); driver only accepts slog|otel
+//   - usage_events.driver / each driver's required sub-fields
+//   - content_log.driver / backpressure constraints
 //
-// **注意**：database.dsn / redis.addr / cooldown 有本地开发默认值（ApplyDefaults
-// 填充），永远非空——它们的"配错"由启动期真实连接 fail-fast 暴露（OpenDB /
-// OpenRedis ping），不在这里做字符串检查（做了也是死代码——旧版的 dsn-empty /
-// cooldown-all-zero 检查在 defaults 之后永远打不中，已删）。
+// **Note**: database.dsn / redis.addr / cooldown have local dev defaults
+// (filled in by ApplyDefaults) and are always non-empty — their
+// "misconfiguration" is exposed fail-fast by the real connection at startup
+// (OpenDB / OpenRedis ping), so no string checks are done here (doing so
+// would be dead code anyway — the old dsn-empty / cooldown-all-zero checks
+// could never trigger after defaults were applied, and have been removed).
 //
-// 启动期失败即退出，不让配置错走到运行期。
+// A failure at startup exits immediately, so a bad config never reaches runtime.
 func (c *Config) Validate() error {
 	if c.DataKey != "" && len(c.DataKey) != 64 {
 		return fmt.Errorf("data_key must be 64 hex chars (32 bytes); got %d", len(c.DataKey))
 	}
 	switch c.Trace.Driver {
 	case "", "slog":
-		// ok；endpoint 忽略
+		// ok; endpoint is ignored
 	case "otel":
 		if c.Trace.Endpoint == "" {
 			return errors.New("trace.driver=otel requires trace.endpoint (OTLP gRPC collector 地址)")
@@ -326,7 +365,7 @@ func (c *Config) Validate() error {
 	}
 	switch c.UsageEvents.Driver {
 	case "", "file":
-		// file driver 不需要 kafka 段；file.path 由 ApplyDefaults 兜底
+		// the file driver doesn't need the kafka section; file.path falls back via ApplyDefaults
 	case "kafka", "async_kafka":
 		if len(c.UsageEvents.Kafka.Brokers) == 0 {
 			return errors.New("usage_events.driver=" + c.UsageEvents.Driver + " requires kafka.brokers non-empty")
@@ -335,7 +374,7 @@ func (c *Config) Validate() error {
 			return errors.New("usage_events.driver=" + c.UsageEvents.Driver + " requires kafka.topic")
 		}
 	case "file_and_kafka":
-		// dual-write：同时需要 file 和 kafka 配置
+		// dual-write: requires both file and kafka configuration
 		if c.UsageEvents.File.Path == "" {
 			return errors.New("usage_events.driver=file_and_kafka requires file.path non-empty (source of truth)")
 		}
@@ -352,8 +391,10 @@ func (c *Config) Validate() error {
 	case "", "none", "file":
 		// ok
 	default:
-		// kafka 故意不再支持：Content Log 是日志/审计通道，gateway 只写本地 JSONL，
-		// 下游分流交给 fluent-bit / vector（见 docs/05 §2 + docs/07 §2）。
+		// kafka is deliberately unsupported here: Content Log is a
+		// logging/audit channel, the gateway only writes local JSONL, and
+		// downstream fan-out is left to fluent-bit / vector
+		// (see docs/05 §2 + docs/07 §2).
 		return fmt.Errorf("content_log.driver=%q not supported (use none|file; kafka 已下沉到 fluent-bit/vector)", c.ContentLog.Driver)
 	}
 	if c.ContentLog.Driver == "file" && c.ContentLog.File.Path == "" {
@@ -365,9 +406,10 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ApplyDefaults 给所有未设置的字段填默认值。
+// ApplyDefaults fills in defaults for every unset field.
 //
-// 调用方可以 zero-value 构造 Config 然后 ApplyDefaults，得到一份"可直接用"的配置。
+// Callers can construct a zero-value Config and then call ApplyDefaults to
+// get a "ready to use" configuration.
 func (c *Config) ApplyDefaults() {
 	if c.Server.Addr == "" {
 		c.Server.Addr = ":8080"
@@ -399,7 +441,7 @@ func (c *Config) ApplyDefaults() {
 	if c.UsageEvents.File.Path == "" {
 		c.UsageEvents.File.Path = "/tmp/llm-gateway-usage.log"
 	}
-	// UsageEvents.Kafka 不给默认（driver=kafka 时必须显式配置）
+	// UsageEvents.Kafka has no default (must be configured explicitly when driver=kafka)
 
 	// Scheduler defaults
 	if len(c.Selector.Filters) == 0 {
@@ -409,7 +451,7 @@ func (c *Config) ApplyDefaults() {
 		c.Selector.MaxAttempts = 3
 	}
 	if c.Selector.MaxPerEndpoint == 0 {
-		c.Selector.MaxPerEndpoint = 1 // 默认无 L1 retry；显式开启需配置
+		c.Selector.MaxPerEndpoint = 1 // default: no L1 retry; must be configured explicitly to enable
 	}
 	if c.Selector.Cooldown.Transient == 0 {
 		c.Selector.Cooldown.Transient = 30 * time.Second
@@ -423,7 +465,7 @@ func (c *Config) ApplyDefaults() {
 	if c.Selector.Cooldown.Unknown == 0 {
 		c.Selector.Cooldown.Unknown = 10 * time.Second
 	}
-	// Cooldown.Invalid 默认 0（客户端错误不该冷却 endpoint）
+	// Cooldown.Invalid defaults to 0 (a client error shouldn't cool down the endpoint)
 
 	// Budget defaults
 	if c.Budget.Driver == "" {

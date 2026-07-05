@@ -15,17 +15,17 @@ import (
 )
 
 // =============================================================================
-// M7 thin-adapter 测试
+// M7 thin-adapter tests
 //
-// driver loop 行为（retry / fallback / verdict / streaming）由 pkg/dispatch 测；
-// 这里只验证 middleware.Schedule 这层 wrapper：
-//   - Dispatcher nil → panic
-//   - M3/M5 未跑 → 500
-//   - X-Gateway-Max-Attempts header → 写入 rc.Extras[dispatch.HeaderKey]
-//   - Outcome → HTTP code 翻译
+// The driver loop's behavior (retry / fallback / verdict / streaming) is tested by
+// pkg/dispatch; here we only verify the middleware.Schedule wrapper layer:
+//   - Dispatcher nil -> panic
+//   - M3/M5 not run -> 500
+//   - X-Gateway-Max-Attempts header -> written into rc.Extras[dispatch.HeaderKey]
+//   - Outcome -> HTTP code translation
 // =============================================================================
 
-// stubSelectorReturns 永远返一个固定 endpoint 或 nil。
+// stubSelectorReturns always returns a fixed endpoint or nil.
 type stubSelectorReturns struct {
 	ep  *domain.Endpoint
 	err error
@@ -37,7 +37,8 @@ func (s stubSelectorReturns) Pick(_ context.Context, _ []*domain.Endpoint, _ dis
 	return s.ep, s.err
 }
 
-// stubCandidates 永远返一个 dummy 候选——让 dispatcher.step 过 CandidateSource 阶段。
+// stubCandidates always returns a dummy candidate, letting dispatcher.step get past
+// the CandidateSource stage.
 type stubCandidates struct{ ep *domain.Endpoint }
 
 func (s stubCandidates) ListForModel(_ context.Context, _, _ string) ([]*domain.Endpoint, error) {
@@ -95,25 +96,29 @@ func attachM7Inputs(model string) gin.HandlerFunc {
 		ms := &domain.ModelService{ID: 1, Model: model}
 		rc.ModelService = ms
 		rc.ModelChain = []*domain.ModelService{ms}
-		// 给 dispatcher 一个 always-OK 的 Handler 查询端口（具体 Handler 也是 stub
-		// 占位——stubInvokerFactory 拿到后忽略不调用）。绕过 protocol.DefaultLookup
-		// 在测试环境没有真 adapter / translator 注册的问题。
+		// give the dispatcher an always-OK Handler lookup port (the concrete Handler
+		// is also just a stub placeholder -- stubInvokerFactory receives it but never
+		// calls it). This works around protocol.DefaultLookup having no real
+		// adapter / translator registered in the test environment.
 		rc.Handlers = stubHandlerLookup{h: stubHandler{}}
 		c.Next()
 	}
 }
 
-// stubHandlerLookup 测试占位：返回固定 stubHandler。
+// stubHandlerLookup is a test placeholder: returns a fixed stubHandler.
 type stubHandlerLookup struct{ h protocol.Handler }
 
 func (s stubHandlerLookup) Get(_ *domain.Endpoint, _ domain.Protocol) protocol.Handler { return s.h }
 
-// stubHandler 占位 Handler；本测试集 stubInvokerFactory 不会真调它的方法。
+// stubHandler is a placeholder Handler; in this test suite stubInvokerFactory never
+// actually calls its methods.
 type stubHandler struct{}
 
-func (stubHandler) Capabilities() protocol.Capabilities                                       { return protocol.Capabilities{} }
-func (stubHandler) PrepareCall(_ context.Context, _ *domain.Endpoint, _ []byte) (*protocol.Call, error) { return nil, nil }
-func (stubHandler) NewResponseStream() protocol.ResponseStream                                { return nil }
+func (stubHandler) Capabilities() protocol.Capabilities { return protocol.Capabilities{} }
+func (stubHandler) PrepareCall(_ context.Context, _ *domain.Endpoint, _ []byte) (*protocol.Call, error) {
+	return nil, nil
+}
+func (stubHandler) NewResponseStream() protocol.ResponseStream { return nil }
 
 func runSchedule(t *testing.T, mw gin.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
@@ -131,7 +136,7 @@ func runSchedule(t *testing.T, mw gin.HandlerFunc) *httptest.ResponseRecorder {
 	return w
 }
 
-// attachRCM7 装一个 RequestContext，模拟 M1 之后状态。
+// attachRCM7 attaches a RequestContext, simulating post-M1 state.
 func attachRCM7() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("rc", &domain.RequestContext{})
@@ -139,7 +144,8 @@ func attachRCM7() gin.HandlerFunc {
 	}
 }
 
-// sliceEq 给 model_service_test.go 用——之前住在删掉的 schedule_test.go 里。
+// sliceEq is used by model_service_test.go -- it used to live in a since-deleted
+// schedule_test.go.
 func sliceEq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -153,7 +159,7 @@ func sliceEq(a, b []string) bool {
 }
 
 // =============================================================================
-// 测试
+// Tests
 // =============================================================================
 
 func TestSchedule_PanicsOnNilDispatcher(t *testing.T) {
@@ -188,7 +194,7 @@ func TestSchedule_MissingRCFields500(t *testing.T) {
 	e := gin.New()
 	ep := &domain.Endpoint{ID: 1}
 	d := newTestDispatcher(ep, dispatch.Verdict{Class: dispatch.ClassSuccess})
-	// 这里**不**挂 attachM7Inputs——rc.Envelope / ModelChain 都没填
+	// **not** wiring attachM7Inputs here -- rc.Envelope / ModelChain are left unset
 	e.POST("/x", TraceContext(), Recover(), attachRCM7(), Schedule(d))
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httptest.NewRequest("POST", "/x", strings.NewReader(`{}`)))

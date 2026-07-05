@@ -38,7 +38,8 @@ func TestAuth_RejectsMissingCreds(t *testing.T) {
 	}
 }
 
-// 凭证无效（wrap domain.ErrInvalidCredentials）→ 401，固定文案，**不**泄漏内部细节。
+// Invalid credentials (wrapping domain.ErrInvalidCredentials) -> 401 with a fixed
+// message; internal details must **not** leak.
 func TestAuth_RejectsInvalidCreds(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), Auth(
 		WithIdentityProvider(stubProvider{
@@ -63,8 +64,9 @@ func TestAuth_RejectsInvalidCreds(t *testing.T) {
 	}
 }
 
-// 依赖故障（非 sentinel 的裸错误，如 SQL 连不上）→ fail-closed 503 + Retry-After，
-// 不得伪装成 401（docs/01 §7），错误细节不进 body。
+// A dependency failure (a bare, non-sentinel error such as an unreachable SQL server)
+// -> fail-closed 503 + Retry-After; it must not masquerade as 401 (docs/01 §7), and
+// error details must not leak into the body.
 func TestAuth_DependencyFailureFailsClosed503(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), Auth(
 		WithIdentityProvider(stubProvider{err: errors.New("apikey: lookup: dial tcp 10.0.0.5:3306: i/o timeout")}),
@@ -117,7 +119,7 @@ func TestAuth_LoggerGetsSubAccountID(t *testing.T) {
 		WithIdentityProvider(stubProvider{user: &want}),
 	))
 	r.GET("/x", func(c *gin.Context) {
-		_ = GetRequestContext(c) // Logger 字段已删；改 ctx-aware 后这个 test 不再断言 logger
+		_ = GetRequestContext(c) // Logger field was removed; after the ctx-aware change this test no longer asserts on the logger
 		c.Status(200)
 	})
 

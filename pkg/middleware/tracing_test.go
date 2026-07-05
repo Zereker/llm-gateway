@@ -48,11 +48,11 @@ func TestTracing_PublishesUsageWhenSet(t *testing.T) {
 	if len(out.events) != 1 {
 		t.Fatalf("got %d events, want 1", len(out.events))
 	}
-	// 新 schema：partition key = AccountID（docs/05 §5）
+	// new schema: partition key = AccountID (docs/05 §5)
 	if out.events[0].Key != "acc42" {
 		t.Errorf("event key = %q, want acc42 (AccountID)", out.events[0].Key)
 	}
-	// 新 schema：payload 是 UsageEvent envelope，包 schema_version + usage
+	// new schema: payload is a UsageEvent envelope, wrapping schema_version + usage
 	body := string(out.events[0].Payload)
 	if !contains(body, `"schema_version":"usage.v1"`) {
 		t.Errorf("payload missing schema_version: %s", body)

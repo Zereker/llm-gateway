@@ -18,7 +18,7 @@ func TestBodyLimit_ZeroOrNeg_PassThrough(t *testing.T) {
 		})
 
 		w := httptest.NewRecorder()
-		// 1MB body 必须能通过
+		// a 1MB body must pass through
 		big := strings.Repeat("a", 1024*1024)
 		r.ServeHTTP(w, httptest.NewRequest("POST", "/x", strings.NewReader(big)))
 		if w.Code != 200 {

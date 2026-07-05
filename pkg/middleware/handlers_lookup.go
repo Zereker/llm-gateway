@@ -5,14 +5,16 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// HandlersFrom 从 RequestContext 取 protocol.Lookup；nil / 类型不符时退化到
-// protocol.DefaultLookup。
+// HandlersFrom retrieves protocol.Lookup from the RequestContext; falls back
+// to protocol.DefaultLookup when nil / of the wrong type.
 //
-// **类型安全 helper**：rc.Handlers 声明为 any 是为了避 pkg/domain → pkg/protocol
-// → pkg/protocol → pkg/domain 循环依赖；所有消费者都走这个 helper，不直接 type-assert。
+// **Type-safe helper**: rc.Handlers is declared as any in order to avoid a
+// pkg/domain → pkg/protocol → pkg/protocol → pkg/domain circular dependency;
+// all consumers go through this helper instead of type-asserting directly.
 //
-// **归属在 middleware**：dispatch 已完全脱离 RequestContext；只有 middleware 层
-// 才接触 RC，所以这个 RC ↔ typed lookup 桥接函数住在 middleware 里。
+// **Lives in middleware**: dispatch has been fully decoupled from
+// RequestContext; only the middleware layer touches RC, so this RC ↔ typed
+// lookup bridging function lives here in middleware.
 func HandlersFrom(rc *domain.RequestContext) protocol.Lookup {
 	if rc == nil {
 		return protocol.DefaultLookup{}

@@ -10,15 +10,16 @@ import (
 	"github.com/zereker/llm-gateway/pkg/trace"
 )
 
-// Dispatcher 协调 Selector + Invoker + Policy，把一次请求路由到合适的 endpoint
-// 并执行。
+// Dispatcher coordinates Selector + Invoker + Policy to route a request to
+// the right endpoint and execute it.
 //
-// **设计精神**：Dispatcher 自身只跑 Action reducer 循环，业务真相分布在三个
-// Policy 实现里。新增 retry 策略 / fallback 策略不动 Dispatcher，写新 Policy
-// 注入即可。
+// **Design philosophy**: Dispatcher itself only runs the Action reducer
+// loop; the business truth lives in the three Policy implementations. Adding
+// a new retry policy / fallback policy doesn't touch Dispatcher — just write
+// a new Policy and inject it.
 //
-// **生命周期**：单实例（startup wiring），并发安全（无 per-request state；
-// state 是每请求 new 出来的）。
+// **Lifecycle**: a single instance (startup wiring), concurrency-safe (no
+// per-request state; state is newed up per request).
 type Dispatcher struct {
 	candidates     CandidateSource
 	selector       Selector
@@ -27,15 +28,16 @@ type Dispatcher struct {
 	cap            AttemptCap
 	retry          RetryPolicy
 	fallback       FallbackPolicy
-	tracer         trace.Tracer // 可选；nil → 不开 span（与 SlogTracer NoOp 等价）
+	tracer         trace.Tracer // optional; nil → no span (equivalent to SlogTracer NoOp)
 }
 
-// New 装配一个 Dispatcher。
+// New assembles a Dispatcher.
 //
-// **必填**：CandidateSource / Selector / InvokerFactory / AttemptCap / RetryPolicy /
-// FallbackPolicy 任一缺失 → panic。fail-fast 暴露配置错。
+// **Required**: CandidateSource / Selector / InvokerFactory / AttemptCap /
+// RetryPolicy / FallbackPolicy — missing any one → panic. Fail-fast exposes
+// config errors.
 //
-// **可选**：EndpointQuota（不传 = NoopQuota 永不拒绝）。
+// **Optional**: EndpointQuota (not passed = NoopQuota, never rejects).
 func New(opts ...Option) *Dispatcher {
 	d := &Dispatcher{}
 	for _, opt := range opts {
@@ -63,14 +65,15 @@ func New(opts ...Option) *Dispatcher {
 		d.quota = NoopQuota{}
 	}
 	if d.tracer == nil {
-		d.tracer = trace.NewSlogTracer(nil) // NoOp span，hot path 零开销
+		d.tracer = trace.NewSlogTracer(nil) // NoOp span, zero overhead on the hot path
 	}
 	return d
 }
 
-// Dispatch 入口。framework-free——只认 stdlib http.ResponseWriter 和 typed Input。
+// Dispatch is the entry point. Framework-free — it only knows about the
+// stdlib http.ResponseWriter and the typed Input.
 //
-// **流程**：
+// **Flow**:
 //
 //	state := newState(in, cap.Resolve(in))
 //	for {
@@ -78,9 +81,11 @@ func New(opts ...Option) *Dispatcher {
 //	    switch action.(type) { Continue / Switch / Stream / Abort }
 //	}
 //
-// **返回**：Outcome.Result == OutcomeStreamed 表示响应已通过 w 写出；
-// 否则 middleware 需根据 HTTPCode / Class / Reason 写错误响应。caller 把
-// outcome.Decision / Usage / RoutedModel / Error 等字段映射回 RC（dispatch 不直接动 RC）。
+// **Returns**: Outcome.Result == OutcomeStreamed means the response has
+// already been written out via w; otherwise the middleware needs to write an
+// error response based on HTTPCode / Class / Reason. The caller maps
+// outcome.Decision / Usage / RoutedModel / Error etc. back onto RC (dispatch
+// never touches RC directly).
 func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Input) Outcome {
 	s := newState(in, d.cap.Resolve(in))
 
@@ -93,7 +98,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Inp
 	for {
 		switch a := d.step(ctx, w, s).(type) {
 		case Continue:
-			// 同 model 再选一个；Record 已 exclude，直接进下一轮 Select
+			// pick another endpoint for the same model; Record already
+			// excluded it, so go straight into the next round of Select
 		case Switch:
 			prev := s.CurrentModelName()
 			s.SetModel(a.Next)
@@ -101,7 +107,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Inp
 				"from": prev, "to": modelName(a.Next),
 			})
 		case Stream:
-			// step 内部已完成 ApplyStream；Stream{} 仅作"已处理"信号
+			// ApplyStream already ran inside step; Stream{} is only a
+			// "handled" signal
 			out := s.Outcome()
 			span.SetAttribute("dispatch.outcome", out.Result.String())
 			span.SetAttribute("dispatch.routed_model", modelName(out.RoutedModel))
@@ -118,12 +125,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Inp
 	}
 }
 
-// step 跑业务的一次循环：select → quota.Reserve → handler 查找 → invoke →
-// selector.Report → policy 决策；stream 成功时还会 quota.Charge。
+// step runs one business iteration: select → quota.Reserve → handler lookup
+// → invoke → selector.Report → policy decision; also runs quota.Charge on a
+// successful stream.
 //
-// **特殊**：Stream 决策时直接在 step 内部完成 StreamTo + ApplyStream
-// （res 资源在 step 栈内 defer Close，不能跨方法返回）；step 返回 Stream{}
-// 仅作为信号让 Dispatch 退出循环。
+// **Special case**: when the decision is Stream, StreamTo + ApplyStream are
+// completed directly inside step (the res resource is deferred-Closed within
+// step's stack frame, so it can't be returned across methods); step returns
+// Stream{} purely as a signal for Dispatch to exit the loop.
 func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) Action {
 	if s.Exhausted() {
 		return Abort{
@@ -139,7 +148,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 	span.SetAttribute("attempt.index", s.Attempts())
 	defer span.End()
 
-	// === CandidateSource → filter → Selector.Pick：三个步骤分立 ===
+	// === CandidateSource → filter → Selector.Pick: three separate steps ===
 	candidates, err := d.candidates.ListForModel(ctx, s.CurrentModelName(), s.Group())
 	if err != nil {
 		return Abort{
@@ -166,13 +175,14 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		}
 	}
 	if ep == nil {
-		// 候选有 eligible，但 picker 因 cooldown 等原因全 skip——交给 FallbackPolicy
+		// candidates were eligible, but the picker skipped all of them (e.g.
+		// due to cooldown) — hand it off to FallbackPolicy
 		span.SetAttribute("attempt.exit", "picker_skipped_all")
 		return d.fallback.OnExhausted(s)
 	}
 	annotateEndpoint(span, ep)
 
-	// === EndpointQuota.Reserve（前扣）===
+	// === EndpointQuota.Reserve (pre-deduction) ===
 	if denied, qerr := d.quota.Reserve(ctx, ep); denied != nil || qerr != nil {
 		v := quotaVerdictToAttempt(denied, qerr)
 		annotateVerdict(span, v)
@@ -181,9 +191,10 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		return d.retry.Decide(s, v)
 	}
 
-	// === Handler 查找 ===
-	// 按 (endpoint, srcProto) 动态组合 Handler。
-	// eligibility filter 已挡掉 handler-missing 的 endpoint，这里再防一手。
+	// === Handler lookup ===
+	// dynamically compose the Handler from (endpoint, srcProto).
+	// the eligibility filter already blocks endpoints missing a handler;
+	// this is a second line of defense.
 	handler := s.Handlers().Get(ep, s.in.SourceProtocol())
 	if handler == nil {
 		v := Verdict{
@@ -198,13 +209,15 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		return d.retry.Decide(s, v)
 	}
 
-	// === Invoker.Invoke（纯 HTTP）===
+	// === Invoker.Invoke (pure HTTP) ===
 	inv := d.invokerFactory.For(ep, handler, s.Envelope())
 	res, ierr := inv.Invoke(ctx)
 	if ierr != nil {
-		// "无法构造调用"极少见（当前默认 InvokerFactory 不会走到；给自定义
-		// Invoker 实现留的路径）。跟其它失败路径一致：Record + Report + Policy
-		// 决策——直接 Abort 会绕过 cooldown / retry，把 transient 错放大成 503。
+		// "unable to construct the call" is very rare (the current default
+		// InvokerFactory never hits this; it's a path left open for custom
+		// Invoker implementations). Handle it the same as other failure
+		// paths: Record + Report + Policy decision — Aborting directly would
+		// bypass cooldown/retry and blow up a transient error into a 503.
 		v := Verdict{
 			Stage:  StageInvoke,
 			Class:  ClassTransient,
@@ -224,21 +237,28 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 
 	action := d.retry.Decide(s, verdict)
 	if _, ok := action.(Stream); ok {
-		// 成功路径——在 step 内消费 res（资源生命周期不能跨方法）
+		// success path — consume res inside step (its resource lifetime
+		// can't cross method boundaries)
 		rep := res.StreamTo(ctx, w)
 		s.ApplyStream(rep)
-		// === EndpointQuota.ChargeUsage（后扣，fire-and-forget）===
+		// === EndpointQuota.ChargeUsage (post-deduction, fire-and-forget) ===
 		d.quota.ChargeUsage(ctx, ep, rep.Usage)
 		if rep.Err != nil {
-			// 200 之后流中断：状态码已写出，不能 retry。是否惩罚 endpoint 取决于是
-			// 谁断的：
-			//   - 客户端主动断开（请求 ctx 取消 / 写 client 时 EPIPE）——不是
-			//     endpoint 的错。惩罚它会让"客户端频繁取消"误伤健康 endpoint 打进
-			//     cooldown。
-			//   - 上游 RST / 半途断流——endpoint 的锅，必须让 cooldown / stats 看到，
-			//     否则"200 后掐断"的坏 endpoint 统计上永远 100% 成功、流量持续打过去。
-			// pre-stream 的 Success Report 已经发过；只在"上游断"时补一条 StageStream
-			// 的 transient 覆盖它，客户端断开则保留 success 不惩罚。
+			// stream interrupted after a 200: the status code is already
+			// written, so no retry is possible. Whether we penalize the
+			// endpoint depends on who broke the connection:
+			//   - client actively disconnected (request ctx canceled / EPIPE
+			//     while writing to the client) — not the endpoint's fault.
+			//     Penalizing it would let "clients frequently canceling"
+			//     wrongly push healthy endpoints into cooldown.
+			//   - upstream RST / connection dropped mid-stream — the
+			//     endpoint's fault, and cooldown/stats must see it, otherwise
+			//     a bad endpoint that "cuts off after 200" would show up as
+			//     100% success forever while traffic keeps hitting it.
+			// the pre-stream Success Report has already been sent; only when
+			// the *upstream* broke the connection do we send a supplementary
+			// StageStream transient verdict to override it. A client
+			// disconnect keeps the success verdict and isn't penalized.
 			if isClientAbort(ctx, rep.Err) {
 				span.SetAttribute("stream.abort", "client")
 			} else {
@@ -256,11 +276,14 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 	return action
 }
 
-// isClientAbort 判断流中断是不是客户端主动断开（而非上游 RST / 半途断流）。
+// isClientAbort determines whether a stream interruption was the client
+// actively disconnecting (as opposed to an upstream RST / mid-stream drop).
 //
-// 首要判据是请求 ctx.Err()——gin 在客户端断连 / 请求超时时取消 c.Request.Context()，
-// 这也覆盖了"w.Write 遇到 EPIPE 后 ctx 被取消"的竞态；兜底再直接匹配 context 错误
-// （StreamTo 内部把 ctx 取消透传成 rep.Err 的实现）。
+// The primary signal is the request's ctx.Err() — gin cancels
+// c.Request.Context() on client disconnect / request timeout, which also
+// covers the race where "w.Write hits EPIPE, then ctx gets canceled"; as a
+// fallback it also matches the context error directly (StreamTo internally
+// propagates a canceled ctx as rep.Err).
 func isClientAbort(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return true
@@ -268,7 +291,7 @@ func isClientAbort(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// modelName 安全取 *domain.ModelService 的 Model（防 nil）。
+// modelName safely reads the Model field off *domain.ModelService (nil-safe).
 func modelName(m *domain.ModelService) string {
 	if m == nil {
 		return ""
@@ -276,7 +299,8 @@ func modelName(m *domain.ModelService) string {
 	return m.Model
 }
 
-// annotateEndpoint 给当前 span 打 endpoint 选中后的标签。
+// annotateEndpoint tags the current span with attributes once an endpoint
+// has been selected.
 func annotateEndpoint(span trace.Span, ep *domain.Endpoint) {
 	if ep == nil {
 		return
@@ -286,7 +310,7 @@ func annotateEndpoint(span trace.Span, ep *domain.Endpoint) {
 	span.SetAttribute("endpoint.protocol", ep.Protocol.String())
 }
 
-// annotateVerdict 给 span 打 attempt 结果。
+// annotateVerdict tags the span with the attempt's result.
 func annotateVerdict(span trace.Span, v Verdict) {
 	span.SetAttribute("verdict.stage", v.Stage.String())
 	span.SetAttribute("verdict.class", v.Class.String())

@@ -12,7 +12,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// attachM5Inputs：M3 之后的状态（Identity + Envelope shell）。
+// attachM5Inputs sets up the post-M3 state (Identity + Envelope shell).
 func attachM5Inputs(model, account string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -110,7 +110,7 @@ func TestModelService_403_NotSubscribed(t *testing.T) {
 }
 
 func TestModelService_503_CatalogError(t *testing.T) {
-	// SQL/dep failure → fail-closed 503（docs/01 §7）
+	// SQL/dep failure -> fail-closed 503 (docs/01 §7)
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("x", "acc1"),
@@ -145,10 +145,10 @@ func TestModelService_503_SubscriptionError(t *testing.T) {
 }
 
 // =============================================================================
-// fallback chain 解析（前置到 M5；M7 直接消费 rc.ModelChain）
+// Fallback chain resolution (moved up to M5; M7 consumes rc.ModelChain directly)
 // =============================================================================
 
-// mapCatalog 按 model 名返回不同的 *ModelService，供 chain 测试用。
+// mapCatalog returns a different *ModelService per model name, for chain tests.
 type mapCatalog struct {
 	items map[string]*domain.ModelService
 	err   error
@@ -161,7 +161,7 @@ func (m mapCatalog) GetByModel(_ context.Context, model string) (*domain.ModelSe
 	return m.items[model], nil
 }
 
-// mapSubs 按 modelServiceID 返回订阅判定。
+// mapSubs returns a subscription verdict keyed by modelServiceID.
 type mapSubs struct {
 	subscribed map[int64]bool
 	err        error
@@ -174,7 +174,7 @@ func (m mapSubs) HasModel(_ context.Context, _ string, msID int64) (bool, error)
 	return m.subscribed[msID], nil
 }
 
-// extractChainModels 取出 rc.ModelChain 里的 model name slice，便于断言。
+// extractChainModels extracts the model name slice from rc.ModelChain, for easier assertions.
 func extractChainModels(rc *domain.RequestContext) []string {
 	out := make([]string, len(rc.ModelChain))
 	for i, ms := range rc.ModelChain {
@@ -260,7 +260,7 @@ func TestModelChain_DropsUnsubscribedFallback(t *testing.T) {
 			"gpt-4-turbo": fb1,
 			"claude-3":    fb2,
 		}},
-		mapSubs{subscribed: map[int64]bool{1: true, 3: true}}, // fb1 未订阅
+		mapSubs{subscribed: map[int64]bool{1: true, 3: true}}, // fb1 not subscribed
 	)
 	if got := extractChainModels(rc); !sliceEq(got, []string{"gpt-4o", "claude-3"}) {
 		t.Errorf("chain=%v, want=[gpt-4o claude-3]", got)
@@ -270,7 +270,7 @@ func TestModelChain_DropsUnsubscribedFallback(t *testing.T) {
 func TestModelChain_DropsPrimaryInFallback(t *testing.T) {
 	primary := &domain.ModelService{ID: 1, Model: "gpt-4o"}
 	fb1 := &domain.ModelService{ID: 2, Model: "gpt-4-turbo"}
-	rc := runModelChain(t, "gpt-4o,gpt-4-turbo", // primary 在 fallback 里
+	rc := runModelChain(t, "gpt-4o,gpt-4-turbo", // primary appears in the fallback list
 		mapCatalog{items: map[string]*domain.ModelService{
 			"gpt-4o":      primary,
 			"gpt-4-turbo": fb1,
@@ -286,7 +286,7 @@ func TestModelChain_DedupAndOrder(t *testing.T) {
 	primary := &domain.ModelService{ID: 1, Model: "gpt-4o"}
 	fb1 := &domain.ModelService{ID: 2, Model: "a"}
 	fb2 := &domain.ModelService{ID: 3, Model: "b"}
-	rc := runModelChain(t, " a , b , a , ", // 去重保序 + trim + 跳空
+	rc := runModelChain(t, " a , b , a , ", // dedup while preserving order + trim + skip blanks
 		mapCatalog{items: map[string]*domain.ModelService{
 			"gpt-4o": primary, "a": fb1, "b": fb2,
 		}},
@@ -318,7 +318,7 @@ func TestModelChain_RespectsMaxFallback(t *testing.T) {
 }
 
 func TestModelChain_FallbackCatalogErrSilentDrop(t *testing.T) {
-	// 这次 catalog 只对 fallback model 出错，primary 正常
+	// this time the catalog only errors for the fallback model; primary is fine
 	primary := &domain.ModelService{ID: 1, Model: "gpt-4o"}
 	cat := perModelCatalog{
 		ok:  map[string]*domain.ModelService{"gpt-4o": primary},
@@ -333,7 +333,7 @@ func TestModelChain_FallbackCatalogErrSilentDrop(t *testing.T) {
 	}
 }
 
-// perModelCatalog 让 catalog 对不同 model 返不同结果（含 err）。
+// perModelCatalog lets the catalog return a different result (including an err) per model.
 type perModelCatalog struct {
 	ok  map[string]*domain.ModelService
 	err map[string]error

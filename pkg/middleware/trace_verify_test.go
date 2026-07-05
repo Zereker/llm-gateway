@@ -19,9 +19,10 @@ import (
 	"github.com/zereker/llm-gateway/pkg/trace"
 )
 
-// installRealTracerProvider 给本测试装一个会真创建子 span 的 TracerProvider，
-// 并返回 SpanRecorder 用于断言。默认 otel global 是 noop——noop tracer.Start
-// 直接 return 原 ctx + noop span，不会创建独立 span_id。
+// installRealTracerProvider installs a TracerProvider for this test that actually
+// creates child spans, and returns a SpanRecorder for assertions. The default otel
+// global is noop -- noop tracer.Start just returns the original ctx + a noop span
+// and never creates a distinct span_id.
 func installRealTracerProvider(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
 	sr := tracetest.NewSpanRecorder()
@@ -32,14 +33,15 @@ func installRealTracerProvider(t *testing.T) *tracetest.SpanRecorder {
 	return sr
 }
 
-// TestE2E_LogsCarryTraceID 端到端验证：CtxHandler 包 slog default → 走 M1 +
-// 任意下游 middleware → handler 里调 slog.InfoContext(c.Request.Context(), ...)
-// → 日志里必须出现 trace_id / span_id / request_id（来自 baggage）。
+// TestE2E_LogsCarryTraceID is an end-to-end check: CtxHandler wraps the slog
+// default -> goes through M1 + any downstream middleware -> the handler calls
+// slog.InfoContext(c.Request.Context(), ...) -> the log must contain
+// trace_id / span_id / request_id (sourced from baggage).
 //
-// **回归保护**：refactor 把 rc.Ctx 删掉后，每个 mw 改成
-// c.Request = c.Request.WithContext(ctx)。本测试确保 c.Request.Context() 在
-// handler 时刻能拿到 M1 的 span info——如果某个 mw 漏写回 c.Request，trace_id
-// 会从日志里消失。
+// **Regression guard**: after the refactor removed rc.Ctx, every mw changed to
+// c.Request = c.Request.WithContext(ctx). This test ensures c.Request.Context() at
+// handler time still carries M1's span info -- if any mw forgets to write it back
+// to c.Request, trace_id disappears from the logs.
 func TestE2E_LogsCarryTraceID(t *testing.T) {
 	installRealTracerProvider(t)
 
@@ -50,7 +52,7 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 
 	var handlerTraceID, handlerSpanID, rcRequestID string
 
-	// 串一条「最小但跨多个 mw」的链：M1 → M2(auth) → M3(envelope) → handler
+	// chain together a "minimal but spanning multiple mw" pipeline: M1 -> M2(auth) -> M3(envelope) -> handler
 	r := newGinTest(
 		TraceContext(),
 		Recover(),
@@ -59,7 +61,7 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 		Envelope(),
 	)
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
-		// 在 handler 里：c.Request.Context() 必须能拿到 span info
+		// inside the handler: c.Request.Context() must carry span info
 		ctx := c.Request.Context()
 		sc := oteltrace.SpanContextFromContext(ctx)
 		handlerTraceID = sc.TraceID().String()
@@ -80,7 +82,7 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 
-	// 1. handler 拿到的 ctx 必须有 valid SpanContext
+	// 1. the ctx the handler receives must have a valid SpanContext
 	if handlerTraceID == "" || handlerTraceID == "00000000000000000000000000000000" {
 		t.Errorf("handler ctx 缺 trace_id：got=%q", handlerTraceID)
 	}
@@ -91,7 +93,7 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 		t.Errorf("rc.RequestID 空")
 	}
 
-	// 2. 日志输出每条 record 必须有 trace_id（CtxHandler 自动注入）
+	// 2. every log record must carry trace_id (auto-injected by CtxHandler)
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) < 2 {
 		t.Fatalf("日志条数 < 2，输出：\n%s", buf.String())
@@ -105,7 +107,7 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 			t.Errorf("行 %d 不是 JSON：%s", i, line)
 			continue
 		}
-		// trace_id 必须存在且等于 handler 看到的（同 root span）
+		// trace_id must exist and equal what the handler saw (same root span)
 		traceID, _ := rec["trace_id"].(string)
 		if traceID == "" {
 			t.Errorf("行 %d msg=%v 缺 trace_id", i, rec["msg"])
@@ -115,11 +117,11 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 			t.Errorf("行 %d trace_id=%s, 期望=%s（应跟 handler 同 root span）",
 				i, traceID, handlerTraceID)
 		}
-		// span_id 必须存在
+		// span_id must exist
 		if sid, _ := rec["span_id"].(string); sid == "" {
 			t.Errorf("行 %d msg=%v 缺 span_id", i, rec["msg"])
 		}
-		// request_id（M1 注入到 baggage） 必须存在
+		// request_id (injected into baggage by M1) must exist
 		if rid, _ := rec["request_id"].(string); rid == "" {
 			t.Errorf("行 %d msg=%v 缺 request_id（M1 baggage 未传到 ctx？）", i, rec["msg"])
 		} else if rid != rcRequestID {
@@ -128,14 +130,15 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 	}
 }
 
-// TestE2E_SpansFormHierarchy 用真 OTel SDK 跑链，验证每个 mw 创建的子 span：
+// TestE2E_SpansFormHierarchy runs the chain against a real OTel SDK, verifying the
+// child span each mw creates:
 //
-//  1. trace_id 都 == root span trace_id（同一条链）
-//  2. auth.lookup / envelope.parse 的 parent_span_id 链回 root
-//  3. handler 处 c.Request.Context() 拿到的是最后一个 mw 的 span
+//  1. trace_id all == the root span's trace_id (same chain)
+//  2. auth.lookup / envelope.parse's parent_span_id chains back to root
+//  3. at the handler, c.Request.Context() carries the last mw's span
 //
-// 如果某个 mw 漏 c.Request = c.Request.WithContext(ctx)，子 span 会 orphan
-// （parent 是 invalid SpanContext），本测试会捕获。
+// If any mw forgets c.Request = c.Request.WithContext(ctx), its child span will be
+// orphaned (parent is an invalid SpanContext), and this test will catch it.
 func TestE2E_SpansFormHierarchy(t *testing.T) {
 	sr := installRealTracerProvider(t)
 
@@ -165,12 +168,12 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 		t.Fatalf("期望 ≥3 个 span（root + auth + envelope），got=%d", len(spans))
 	}
 
-	// 索引 span by name
+	// index spans by name
 	byName := make(map[string]sdktrace.ReadOnlySpan, len(spans))
 	var rootName string
 	for _, s := range spans {
 		byName[s.Name()] = s
-		// root 是 "POST /v1/chat/completions" 形态
+		// root looks like "POST /v1/chat/completions"
 		if strings.HasPrefix(s.Name(), "POST ") {
 			rootName = s.Name()
 		}
@@ -191,7 +194,7 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 	rootTID := root.SpanContext().TraceID()
 	rootSID := root.SpanContext().SpanID()
 
-	// 所有 span 同 trace_id
+	// all spans share the same trace_id
 	if auth.SpanContext().TraceID() != rootTID {
 		t.Errorf("auth.lookup trace_id=%s, 期望=%s", auth.SpanContext().TraceID(), rootTID)
 	}
@@ -199,22 +202,26 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 		t.Errorf("envelope.parse trace_id=%s, 期望=%s", envelope.SpanContext().TraceID(), rootTID)
 	}
 
-	// auth.lookup parent 必须是 root
+	// auth.lookup's parent must be root
 	if auth.Parent().SpanID() != rootSID {
 		t.Errorf("auth.lookup parent span_id=%s, 期望 root=%s（说明 M2 没继承 M1 的 ctx）",
 			auth.Parent().SpanID(), rootSID)
 	}
-	// envelope.parse parent 必须是 root（M3 紧跟 M2 同级；都是 root 的直接子）
-	// 注：envelope 在 c.Request.Context() 上启动 span，那时 c.Request.Context() 是 root span ctx
-	// （auth 的 span 已经在 auth 函数 return 时 End 并恢复了——实际上 auth 也只是写 c.Request，没 restore）
-	// auth 不 restore c.Request 所以 envelope 启动 span 时 ctx 是 auth ctx
-	// 所以 envelope parent 应该是 auth
+	// envelope.parse's parent must be root (M3 sits right after M2, at the same
+	// level; both are direct children of root)
+	// note: envelope starts its span on c.Request.Context(); at that point
+	// c.Request.Context() is the root span ctx (auth's span was already Ended and
+	// restored when the auth function returned -- actually auth just writes
+	// c.Request without restoring)
+	// auth does not restore c.Request, so when envelope starts its span the ctx is
+	// auth's ctx
+	// so envelope's parent should be auth
 	if envelope.Parent().SpanID() != auth.SpanContext().SpanID() {
 		t.Errorf("envelope.parse parent span_id=%s, 期望 auth=%s（说明 c.Request ctx 接力断了）",
 			envelope.Parent().SpanID(), auth.SpanContext().SpanID())
 	}
 
-	// 所有 span 的 SpanID 必须各不相同（noop tracer 才会 collapse 成同一个）
+	// every span's SpanID must be distinct (only a noop tracer would collapse them into one)
 	ids := map[oteltrace.SpanID]bool{}
 	for _, s := range spans {
 		ids[s.SpanContext().SpanID()] = true
@@ -246,4 +253,3 @@ func (stubE2EIdentity) Resolve(_ context.Context, _ *domain.Credentials) (*domai
 		Group:        "default",
 	}, nil
 }
-

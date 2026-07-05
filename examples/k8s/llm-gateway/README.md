@@ -1,18 +1,18 @@
 # llm-gateway Helm chart
 
-把 llm-gateway 部署到 Kubernetes 的参考 chart。包括：
+A reference chart for deploying llm-gateway to Kubernetes. Includes:
 
-- gateway 多副本 + HPA
-- ConfigMap 注入 yaml 配置
-- Secret 持有 DSN / data_key / moderation API key
-- envsubst 启动时把 env var 替换进 yaml（避免明文配置文件）
+- gateway multi-replica + HPA
+- ConfigMap injecting yaml configuration
+- Secret holding DSN / data_key / moderation API key
+- envsubst substituting env vars into yaml at startup (avoids plaintext config files)
 
-**前置依赖**（chart 不内置）：MySQL 8.0+ / Redis 7+ / Kafka 3+（生产推荐 cloud managed）。
+**Prerequisites** (not bundled with the chart): MySQL 8.0+ / Redis 7+ / Kafka 3+ (cloud managed recommended for production).
 
-## 镜像约定
+## Image convention
 
-需要构造一个含 `llm-gateway` binary + `envsubst`（gettext 包）的镜像。
-建议 Dockerfile：
+You need to build an image containing the `llm-gateway` binary + `envsubst` (gettext package).
+Suggested Dockerfile:
 
 ```dockerfile
 FROM golang:1.22 AS builder
@@ -26,7 +26,7 @@ COPY --from=builder /out/llm-gateway /usr/local/bin/
 USER 65532:65532
 ```
 
-或 distroless（无 envsubst；改 chart 让 gateway 直接读 env var）：
+Or distroless (no envsubst; modify the chart so gateway reads env vars directly):
 
 ```dockerfile
 FROM golang:1.22 AS builder
@@ -39,10 +39,10 @@ COPY --from=builder /out/llm-gateway /usr/local/bin/
 USER nonroot
 ```
 
-## 安装
+## Installation
 
 ```bash
-# 1. 准备 secret 值（**不要 commit**）
+# 1. Prepare secret values (**do not commit**)
 cat > my-values.yaml <<EOF
 secrets:
   databaseDSN: "user:pwd@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
@@ -54,54 +54,54 @@ EOF
 # 2. install
 helm install ai-gw ./examples/k8s/llm-gateway -f my-values.yaml
 
-# 3. 检查
+# 3. check
 kubectl get pods -l app.kubernetes.io/name=llm-gateway
 kubectl logs -l app.kubernetes.io/component=gateway --tail=50
 ```
 
-## 业务数据管理
+## Business data management
 
-本 chart 不提供控制面——业务数据（accounts / endpoints / api_keys 等）由
-deployer 直接 SQL 写入 MySQL。生产推荐做法：
+This chart does not provide a control plane — business data (accounts / endpoints / api_keys, etc.) is
+written directly into MySQL via SQL by the deployer. Recommended approach for production:
 
-- 把 SQL 文件放进独立的 GitOps 仓库（ArgoCD app / kubectl job）
-- 用 K8s Job + initContainer 在 gateway 启动前跑 INSERT 脚本
-- 或者业务团队走自家管理系统（CRM / 计费系统）直接写 DB
+- Put SQL files into a separate GitOps repo (ArgoCD app / kubectl job)
+- Use a K8s Job + initContainer to run INSERT scripts before gateway starts
+- Or have the business team write directly to the DB via their own management system (CRM / billing system)
 
-gateway 启动期会自跑 `infra.Migrate` 建表（`schema.sql` 全 `IF NOT EXISTS` 幂等），
-多副本同时启动也安全。
+At startup, gateway automatically runs `infra.Migrate` to create tables (`schema.sql` is fully idempotent with `IF NOT EXISTS`),
+so starting multiple replicas simultaneously is safe.
 
-## 升级 / 回滚
+## Upgrade / Rollback
 
 ```bash
 helm upgrade ai-gw ./examples/k8s/llm-gateway -f my-values.yaml
 helm rollback ai-gw 1
 ```
 
-ConfigMap / Secret 改动会触发 deployment rolling restart（`checksum/config` annotation）。
+ConfigMap / Secret changes trigger a deployment rolling restart (`checksum/config` annotation).
 
-## 卸载
+## Uninstall
 
 ```bash
 helm uninstall ai-gw
-# Note: secret 不会被自动删除（防止误删）
+# Note: the secret is not deleted automatically (to prevent accidental deletion)
 kubectl delete secret ai-gw-llm-gateway-secrets
 ```
 
-## 生产建议
+## Production recommendations
 
-| 维度 | 建议 |
+| Dimension | Recommendation |
 |---|---|
-| 镜像 tag | 用版本号（如 `1.0.0`）；不要 `latest` |
-| Secret 管理 | 用 ExternalSecrets / Sealed Secrets / vault sidecar；不要明文 values.yaml |
-| Resource limits | gateway 流式占 goroutine 多于 CPU；按 QPS 起步给 cpu=2 / mem=2Gi 再调 |
-| HPA 指标 | CPU 是次优；上 custom metric（in-flight requests / queue depth）效果更好 |
-| Ingress | 走 nginx ingress + cert-manager 自动 TLS；body limit 配 10MiB+ |
-| Network policy | gateway 只允许 ingress; deny everything else |
+| Image tag | Use a version number (e.g. `1.0.0`); do not use `latest` |
+| Secret management | Use ExternalSecrets / Sealed Secrets / vault sidecar; do not use plaintext values.yaml |
+| Resource limits | gateway streaming consumes more goroutines than CPU; start with cpu=2 / mem=2Gi based on QPS and tune from there |
+| HPA metrics | CPU is suboptimal; custom metrics (in-flight requests / queue depth) work better |
+| Ingress | Use nginx ingress + cert-manager for automatic TLS; set body limit to 10MiB+ |
+| Network policy | gateway allows ingress only; deny everything else |
 
-## 不在本 chart 范围
+## Out of scope for this chart
 
-| 项 | 推荐方案 |
+| Item | Recommended solution |
 |---|---|
 | MySQL | cloud RDS / bitnami/mysql chart |
 | Redis | cloud ElastiCache / bitnami/redis chart |

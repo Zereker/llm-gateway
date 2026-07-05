@@ -6,18 +6,20 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// AlwaysPassGate 是 BudgetGate 的零依赖默认实现：永远返回 BudgetActive。
+// AlwaysPassGate is the zero-dependency default implementation of BudgetGate:
+// it always returns BudgetActive.
 //
-// 用于无付费 / 无配额体系的场景（开发、单主账号内部网关）。
-// 接入外部计费系统时实现自定义 BudgetGate。
+// Used for scenarios without billing / quota systems (development, single-tenant
+// internal gateways). Implement a custom BudgetGate when integrating with an
+// external billing system.
 //
-// 零值即可用：var gate AlwaysPassGate；不需要构造函数。
+// Zero value is ready to use: var gate AlwaysPassGate; no constructor needed.
 type AlwaysPassGate struct{}
 
-// Check 实现 BudgetGate.Check：永远 BudgetActive、永远 nil。
+// Check implements BudgetGate.Check: always BudgetActive, always nil.
 func (AlwaysPassGate) Check(_ context.Context, _ string) (domain.BudgetStatus, error) {
 	return domain.BudgetActive, nil
 }
 
-// 编译期断言：AlwaysPassGate 满足 BudgetGate。
+// Compile-time assertion: AlwaysPassGate satisfies BudgetGate.
 var _ BudgetGate = AlwaysPassGate{}

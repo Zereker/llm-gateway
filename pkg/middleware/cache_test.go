@@ -29,8 +29,8 @@ func (f *fakeCacheStore) Set(_ context.Context, key string, r CachedResponse, _ 
 	f.sets++
 }
 
-// cacheHarness 建一个 [seed RC] → [ResponseCache] → [downstream] 的 gin 引擎。
-// downstream 每次被调 calls++，写 rc.Usage + 一个 200 JSON body。
+// cacheHarness builds a gin engine chaining [seed RC] -> [ResponseCache] -> [downstream].
+// downstream increments calls++ on every call and writes rc.Usage plus a 200 JSON body.
 func cacheHarness(store ResponseCacheStore) (*gin.Engine, *int) {
 	return cacheHarnessDown(store, func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -39,7 +39,8 @@ func cacheHarness(store ResponseCacheStore) (*gin.Engine, *int) {
 	})
 }
 
-// cacheHarnessDown 同上但 downstream 可自定义（测试毒化 / SSE 等路径）。
+// cacheHarnessDown is the same as above but lets downstream be customized (for testing
+// poisoning / SSE paths, etc).
 func cacheHarnessDown(store ResponseCacheStore, down gin.HandlerFunc) (*gin.Engine, *int) {
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
@@ -78,7 +79,8 @@ func postCache(e *gin.Engine, body, cacheHdr string) *httptest.ResponseRecorder 
 	return w
 }
 
-// 确定性请求（temperature=0，非流式）：第一次 miss+存，第二次 hit（不打 downstream）。
+// Deterministic request (temperature=0, non-streaming): first call misses and stores,
+// second call hits (downstream is not called).
 func TestResponseCache_DeterministicHitMiss(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
@@ -93,7 +95,7 @@ func TestResponseCache_DeterministicHitMiss(t *testing.T) {
 	}
 
 	w2 := postCache(e, body, "")
-	if w2.Code != 200 || *calls != 1 { // downstream 不再被调
+	if w2.Code != 200 || *calls != 1 { // downstream must not be called again
 		t.Fatalf("hit: code=%d calls=%d, want 200/1（命中不打 downstream）", w2.Code, *calls)
 	}
 	if w2.Header().Get(HeaderGatewayCache) != "hit" {
@@ -104,14 +106,15 @@ func TestResponseCache_DeterministicHitMiss(t *testing.T) {
 	}
 }
 
-// 毒化防线：200 但 rc.Error 非空（流中断 / 上游错，body 截断）绝不入缓存。
+// Poisoning defense: a 200 with a non-nil rc.Error (stream interrupted / upstream error,
+// truncated body) must never be cached.
 func TestResponseCache_TruncatedNotCached(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarnessDown(store, func(c *gin.Context) {
 		rc := GetRequestContext(c)
 		rc.Usage = &domain.Usage{Total: 15}
 		rc.Error = &domain.AdapterError{Class: domain.ErrTransient, Code: domain.ErrCodeUpstreamError, Message: "stream reset mid-body"}
-		c.Data(http.StatusOK, "application/json", []byte(`{"parti`)) // 半个 body
+		c.Data(http.StatusOK, "application/json", []byte(`{"parti`)) // half a body
 	})
 	body := `{"model":"m","temperature":0,"messages":[]}`
 	postCache(e, body, "")
@@ -124,7 +127,8 @@ func TestResponseCache_TruncatedNotCached(t *testing.T) {
 	}
 }
 
-// SSE Content-Type 兜底：即使漏判成非流式，text/event-stream 响应也不入缓存。
+// SSE Content-Type fallback: even if a request is misclassified as non-streaming, a
+// text/event-stream response must not be cached.
 func TestResponseCache_EventStreamNotCached(t *testing.T) {
 	store := newFakeCacheStore()
 	e, _ := cacheHarnessDown(store, func(c *gin.Context) {
@@ -137,7 +141,8 @@ func TestResponseCache_EventStreamNotCached(t *testing.T) {
 	}
 }
 
-// 畸形 stream 字段（字符串 "true"）宽松判定为流式 → bypass（即使 X-Gateway-Cache: on）。
+// A malformed stream field (the string "true") is leniently treated as streaming ->
+// bypass (even with X-Gateway-Cache: on).
 func TestResponseCache_MalformedStreamDetected(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
@@ -149,7 +154,7 @@ func TestResponseCache_MalformedStreamDetected(t *testing.T) {
 	}
 }
 
-// 非确定请求（无 temperature）：一律 bypass，永不缓存。
+// Non-deterministic request (no temperature): always bypass, never cached.
 func TestResponseCache_NonDeterministicBypass(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
@@ -162,7 +167,7 @@ func TestResponseCache_NonDeterministicBypass(t *testing.T) {
 	}
 }
 
-// 流式：永不缓存。
+// Streaming: never cached.
 func TestResponseCache_StreamBypass(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
@@ -174,9 +179,9 @@ func TestResponseCache_StreamBypass(t *testing.T) {
 	}
 }
 
-// X-Gateway-Cache: off 绕过；on 强制缓存（即使 temperature≠0）。
+// X-Gateway-Cache: off bypasses; on forces caching (even when temperature != 0).
 func TestResponseCache_HeaderOverrides(t *testing.T) {
-	// off：确定性请求也绕过
+	// off: bypass even a deterministic request
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
 	det := `{"model":"m","temperature":0,"messages":[]}`
@@ -186,7 +191,7 @@ func TestResponseCache_HeaderOverrides(t *testing.T) {
 		t.Errorf("off: calls=%d sets=%d, want 2/0", *calls, store.sets)
 	}
 
-	// on：非确定请求也缓存
+	// on: cache even a non-deterministic request
 	store2 := newFakeCacheStore()
 	e2, calls2 := cacheHarness(store2)
 	nondet := `{"model":"m","temperature":0.9,"messages":[]}`
