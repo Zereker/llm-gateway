@@ -6,8 +6,8 @@ one OpenAI-compatible interface.
 
 ## Status
 
-**v0.1 MVP.** Interfaces are settling but not yet API-stable. Architecture
-targets are tracked in [`docs/architecture`](docs/architecture/).
+A Go implementation of an LLM API gateway. Architecture targets are tracked
+in [`docs/architecture`](docs/architecture/).
 
 ## Data plane shape
 
