@@ -16,6 +16,7 @@ const (
 	ProtoBedrock            // AWS Bedrock 格式
 	ProtoCustom             // 厂商自定义；Adapter 自行解释
 	ProtoResponses          // OpenAI Responses API（/v1/responses；2024 H2 推出的新协议）
+	ProtoCohere             // Cohere v2 /v2/chat（message.content 数组 + usage.tokens 嵌套）
 )
 
 func (p Protocol) String() string {
@@ -32,6 +33,8 @@ func (p Protocol) String() string {
 		return "custom"
 	case ProtoResponses:
 		return "responses"
+	case ProtoCohere:
+		return "cohere"
 	default:
 		return "unknown"
 	}
@@ -53,6 +56,8 @@ func ParseProtocol(s string) Protocol {
 		return ProtoCustom
 	case "responses":
 		return ProtoResponses
+	case "cohere":
+		return ProtoCohere
 	default:
 		return ProtoUnknown
 	}
