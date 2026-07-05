@@ -32,6 +32,11 @@ go.work.sum
 .vscode/
 bin/
 
+# Stray root-level binaries from `go build ./...`
+/gateway
+/console
+/mockupstream
+
 # Flink build artifacts (built via `make flink-jar`)
 flink/billing-aggregator/target/
 

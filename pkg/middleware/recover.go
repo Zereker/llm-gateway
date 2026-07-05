@@ -10,12 +10,13 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// Recover 是 M9：捕获 panic + 兜底写出 rc.Error。
+// Recover is M9: catches panics + falls back to writing out rc.Error.
 //
-// 必须紧随 M1 注册（在 c.Next() 之前），这样 defer 才能覆盖整条链。
+// Must be registered right after M1 (before c.Next()), so its defer can cover
+// the entire chain.
 //
-// 响应 body 统一用 docs/01 §8 + docs/08 §7 的 ErrorResponse{Code,Message,Class,
-// Details,RequestID,TraceID}。
+// The response body uniformly uses the ErrorResponse{Code,Message,Class,
+// Details,RequestID,TraceID} shape from docs/01 §8 + docs/08 §7.
 func Recover() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
@@ -42,7 +43,7 @@ func Recover() gin.HandlerFunc {
 	}
 }
 
-// writeError 按 ErrorResponse schema 写 JSON 响应。
+// writeError writes a JSON response following the ErrorResponse schema.
 func writeError(c *gin.Context, e *domain.AdapterError) {
 	if e == nil {
 		return

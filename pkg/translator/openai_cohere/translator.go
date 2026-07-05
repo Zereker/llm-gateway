@@ -1,15 +1,18 @@
-// Package openai_cohere OpenAI 客户端 → Cohere v2 上游的 Translator。
+// Package openai_cohere is the Translator from the OpenAI client protocol to the Cohere v2 upstream.
 //
-// Cohere v2 /v2/chat 的请求跟 OpenAI 很接近（messages: role+content），但**响应
-// shape 不同**：message.content 是数组([{type:"text",text}])、usage 嵌在
-// usage.tokens.{input,output}_tokens、finish_reason 是大写枚举。本 translator 把
-// 请求翻过去、把响应翻回 OpenAI ChatCompletion 给客户端。
+// The Cohere v2 /v2/chat request is close to OpenAI's (messages: role+content), but the
+// **response shape differs**: message.content is an array ([{type:"text",text}]), usage is
+// nested under usage.tokens.{input,output}_tokens, and finish_reason is an uppercase enum.
+// This translator translates the request over and translates the response back to an
+// OpenAI ChatCompletion for the client.
 //
-// **流式**：客户端 stream:true 时 Cohere 返回带 type 的 SSE 事件流,responseHandler
-// 增量翻成 OpenAI SSE chunk（见下）。非流式则 buffer-then-translate。**限制**：只支持
-// chat 文本;不支持 tool/vision。
+// **Streaming**: when the client sets stream:true, Cohere returns an SSE event stream with
+// a type field; responseHandler incrementally translates it into OpenAI SSE chunks (see
+// below). Non-streaming uses buffer-then-translate. **Limitation**: only chat text is
+// supported; tool calls/vision are not.
 //
-// 其它客户端协议（Anthropic / Responses）经 OpenAI pivot 组合到达（见 translator.compose）。
+// Other client protocols (Anthropic / Responses) reach this via the OpenAI pivot composition
+// (see translator.compose).
 package openai_cohere
 
 import (
@@ -41,7 +44,7 @@ func (openaiCohere) NewResponseHandler() translator.ResponseHandler {
 func init() { translator.Register(openaiCohere{}) }
 
 // =============================================================================
-// 请求：OpenAI ChatCompletion → Cohere v2 /v2/chat
+// Request: OpenAI ChatCompletion -> Cohere v2 /v2/chat
 // =============================================================================
 
 type openaiReq struct {
@@ -60,12 +63,12 @@ type openaiMsg struct {
 }
 
 type cohereReq struct {
-	Model       string     `json:"model"`
+	Model       string      `json:"model"`
 	Messages    []cohereMsg `json:"messages"`
-	MaxTokens   *int       `json:"max_tokens,omitempty"`
-	Temperature *float64   `json:"temperature,omitempty"`
-	P           *float64   `json:"p,omitempty"`
-	Stream      bool       `json:"stream"`
+	MaxTokens   *int        `json:"max_tokens,omitempty"`
+	Temperature *float64    `json:"temperature,omitempty"`
+	P           *float64    `json:"p,omitempty"`
+	Stream      bool        `json:"stream"`
 }
 
 type cohereMsg struct {
@@ -83,7 +86,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		MaxTokens:   in.MaxTokens,
 		Temperature: in.Temperature,
 		P:           in.TopP,
-		Stream:      in.Stream, // 透传客户端 stream 标志
+		Stream:      in.Stream, // pass through the client's stream flag
 	}
 	out.Messages = make([]cohereMsg, 0, len(in.Messages))
 	for _, m := range in.Messages {
@@ -92,7 +95,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// contentToString 把 OpenAI content（string 或 多模态数组）压成纯文本。
+// contentToString flattens OpenAI content (a string or a multimodal array) into plain text.
 func contentToString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -115,14 +118,17 @@ func contentToString(raw json.RawMessage) string {
 }
 
 // =============================================================================
-// 响应：Cohere v2 → OpenAI ChatCompletion（buffer-then-translate）
+// Response: Cohere v2 -> OpenAI ChatCompletion (buffer-then-translate)
 // =============================================================================
 
-// responseHandler 自适应上游格式:
-//   - JSON(非流式):buffer-then-translate,Flush 一次性翻成 OpenAI ChatCompletion。
-//   - SSE(流式,客户端 stream:true):增量把 Cohere v2 事件翻成 OpenAI SSE chunk。
+// responseHandler adapts to the upstream format:
+//   - JSON (non-streaming): buffer-then-translate, Flush translates it into an OpenAI
+//     ChatCompletion in one shot.
+//   - SSE (streaming, client stream:true): incrementally translates Cohere v2 events into
+//     OpenAI SSE chunks.
 //
-// 首个 chunk 按第一个非空字节嗅探:'{' → JSON;否则 → SSE。
+// The mode is sniffed from the first non-empty byte of the first chunk: '{' -> JSON;
+// otherwise -> SSE.
 type respMode int
 
 const (
@@ -133,8 +139,8 @@ const (
 
 type responseHandler struct {
 	mode    respMode
-	buf     []byte // JSON 模式累积 / 未定模式暂存
-	lineBuf []byte // SSE 模式的行缓冲（跨 Feed 保留半行）
+	buf     []byte // accumulates in JSON mode / staging buffer while mode is undetermined
+	lineBuf []byte // line buffer for SSE mode (retains a partial line across Feed calls)
 	id      string
 	usage   *domain.Usage
 }
@@ -147,11 +153,11 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	case modeSSE:
 		h.lineBuf = append(h.lineBuf, chunk...)
 		return h.drainSSE(), nil
-	default: // 未定：嗅探
+	default: // undetermined: sniff it
 		h.buf = append(h.buf, chunk...)
 		t := bytes.TrimLeft(h.buf, " \t\r\n")
 		if len(t) == 0 {
-			return nil, nil // 还没拿到非空字节
+			return nil, nil // haven't seen a non-empty byte yet
 		}
 		if t[0] == '{' {
 			h.mode = modeJSON
@@ -168,8 +174,9 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	switch h.mode {
 	case modeSSE:
 		out := h.drainSSE()
-		// 末帧可能无结尾换行（上游 abrupt close）：drainSSE 只吐带 \n 的整行，
-		// 这里把残留行当最后一行补处理，避免丢 message-end 携带的 usage/finish_reason。
+		// The last frame may lack a trailing newline (upstream abrupt close): drainSSE only
+		// emits complete lines terminated by \n, so here we treat the leftover as the final
+		// line to avoid losing the usage/finish_reason carried by message-end.
 		if rest := bytes.TrimSpace(h.lineBuf); len(rest) > 0 {
 			h.lineBuf = nil
 			if bytes.HasPrefix(rest, []byte("data:")) {
@@ -178,13 +185,14 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 				}
 			}
 		}
-		out = append(out, "data: [DONE]\n\n"...) // OpenAI 流终止符
+		out = append(out, "data: [DONE]\n\n"...) // OpenAI stream terminator
 		return out, h.usage, nil
-	default: // JSON / 空
+	default: // JSON / empty
 		if len(h.buf) == 0 {
 			return nil, nil, nil
 		}
-		// error path：成功响应 message 是对象；错误(message 字符串/缺)原样透传保 visibility。
+		// error path: on success, message is an object; on error (message is a string or
+		// missing), pass it through as-is to preserve visibility.
 		if !gjson.GetBytes(h.buf, "message").IsObject() {
 			return h.buf, nil, nil
 		}
@@ -193,13 +201,14 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	}
 }
 
-// drainSSE 从 lineBuf 抽出完整行,把 Cohere `data:` 事件翻成 OpenAI SSE chunk。
+// drainSSE extracts complete lines from lineBuf and translates Cohere `data:` events into
+// OpenAI SSE chunks.
 func (h *responseHandler) drainSSE() []byte {
 	var out []byte
 	for {
 		i := bytes.IndexByte(h.lineBuf, '\n')
 		if i < 0 {
-			break // 半行,留到下次
+			break // partial line, leave it for next time
 		}
 		line := bytes.TrimRight(h.lineBuf[:i], "\r")
 		h.lineBuf = h.lineBuf[i+1:]
@@ -215,7 +224,7 @@ func (h *responseHandler) drainSSE() []byte {
 	return out
 }
 
-// translateEvent 单个 Cohere v2 流事件 → OpenAI SSE chunk。
+// translateEvent translates a single Cohere v2 stream event into an OpenAI SSE chunk.
 func (h *responseHandler) translateEvent(data []byte) []byte {
 	ev := gjson.ParseBytes(data)
 	switch ev.Get("type").String() {
@@ -232,12 +241,12 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		outTok := ev.Get("delta.usage.tokens.output_tokens").Int()
 		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Source: domain.UsageSourceExtracted}
 		return h.chunk(map[string]any{}, mapFinishReason(ev.Get("delta.finish_reason").String()))
-	default: // content-start / content-end 等：跳过
+	default: // content-start / content-end etc.: skip
 		return nil
 	}
 }
 
-// chunk 构造一个 OpenAI chat.completion.chunk 的 SSE 行。
+// chunk builds a single OpenAI chat.completion.chunk SSE line.
 func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
 	if h.id == "" {
 		h.id = "chatcmpl-" + randHex(8)
@@ -255,7 +264,7 @@ func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
 func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	root := gjson.ParseBytes(buf)
 
-	// 拼 message.content[].text
+	// concatenate message.content[].text
 	var text strings.Builder
 	root.Get("message.content").ForEach(func(_, part gjson.Result) bool {
 		if part.Get("type").String() == "text" {
@@ -279,8 +288,8 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	}
 
 	resp := map[string]any{
-		"id":      id,
-		"object":  "chat.completion",
+		"id":     id,
+		"object": "chat.completion",
 		"choices": []any{map[string]any{
 			"index":         0,
 			"message":       map[string]any{"role": "assistant", "content": text.String()},
@@ -296,7 +305,7 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	return body, usage
 }
 
-// mapFinishReason Cohere 大写枚举 → OpenAI。
+// mapFinishReason maps Cohere's uppercase enum to OpenAI's.
 func mapFinishReason(c string) string {
 	switch c {
 	case "COMPLETE", "STOP_SEQUENCE":

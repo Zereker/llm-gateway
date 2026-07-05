@@ -7,31 +7,36 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// Guardrails 框架：把"单个 Moderator"泛化成"一条 guard 链"。
+// Guardrails framework: generalizes a "single Moderator" into "a chain of guards".
 //
-// **关键设计**：Chain 自身实现 Moderator 接口——所以它直接插进现有 M8 Moderation
-// 中间件 + WrapStream 输出装饰器,下游**零改动**。加 guard = 往链里塞一个,不动主链路。
+// **Key design**: Chain itself implements the Moderator interface — so it
+// plugs directly into the existing M8 Moderation middleware and the
+// WrapStream output decorator with **zero changes** downstream. Adding a
+// guard just means appending one to the chain; the main path is untouched.
 //
-// 每个 guard 也是一个 Moderator（CheckInput 前置 / CheckOutput 逐 chunk 后置）。
+// Each guard is itself a Moderator (CheckInput pre-side / CheckOutput per-chunk post-side).
 
-// NamedGuard 一个带名字的 guard；名字用于阻断时归因（哪条 guard 拦的）。
+// NamedGuard is a guard with a name; the name is used for attribution when it
+// blocks a request (which guard rejected it).
 type NamedGuard struct {
 	Name  string
 	Guard Moderator
 }
 
-// Chain 顺序跑每个 guard；任一 CheckInput/CheckOutput 返错即整体 block（错误里带
-// guard 名,不带敏感细节——错误会冒到客户端 400 body,见 M8 middleware）。
+// Chain runs each guard in order; if any CheckInput/CheckOutput returns an
+// error, the whole request is blocked (the error carries the guard's name but
+// no sensitive details — it can bubble up into the client's 400 body, see the
+// M8 middleware).
 type Chain struct {
 	guards []NamedGuard
 }
 
-// NewChain 组装 guard 链。空链 = 永远放行。
+// NewChain assembles a guard chain. An empty chain always passes.
 func NewChain(guards ...NamedGuard) *Chain {
 	return &Chain{guards: guards}
 }
 
-// CheckInput 顺序跑每个 guard 的 CheckInput，第一个 block 即返（fail-fast）。
+// CheckInput runs each guard's CheckInput in order, returning as soon as one blocks (fail-fast).
 func (c *Chain) CheckInput(ctx context.Context, env *domain.RequestEnvelope) error {
 	for _, g := range c.guards {
 		if err := g.Guard.CheckInput(ctx, env); err != nil {
@@ -41,7 +46,7 @@ func (c *Chain) CheckInput(ctx context.Context, env *domain.RequestEnvelope) err
 	return nil
 }
 
-// CheckOutput 顺序跑每个 guard 的 CheckOutput（逐 chunk）。
+// CheckOutput runs each guard's CheckOutput in order (chunk by chunk).
 func (c *Chain) CheckOutput(ctx context.Context, chunk []byte) error {
 	for _, g := range c.guards {
 		if err := g.Guard.CheckOutput(ctx, chunk); err != nil {
@@ -51,5 +56,5 @@ func (c *Chain) CheckOutput(ctx context.Context, chunk []byte) error {
 	return nil
 }
 
-// 编译期断言：Chain 是 Moderator，可直接插进 M8。
+// Compile-time assertion: Chain is a Moderator and can be plugged directly into M8.
 var _ Moderator = (*Chain)(nil)

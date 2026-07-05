@@ -1,14 +1,16 @@
-// Package repo 数据访问层：把"middleware 在请求路径上要查的数据"抽象成接口，
-// 默认实现（file-backed / KV-backed）也放本包内。
+// Package repo is the data access layer: it abstracts "the data middleware needs
+// to look up on the request path" into interfaces, with default implementations
+// (file-backed / KV-backed) also living in this package.
 //
-// 边界——只收"按 key 查记录"型的接口：
-//   - IdentityProvider     按凭证查 UserIdentity
-//   - ModelServiceProvider 按 model 查 ModelServiceSnapshot
-//   - EndpointProvider     按 model + group 选 Endpoint
+// Scope — only interfaces of the "look up a record by key" shape:
+//   - IdentityProvider     looks up UserIdentity by credential
+//   - ModelServiceProvider looks up ModelServiceSnapshot by model
+//   - EndpointProvider     selects an Endpoint by model + group
 //
-// 不属于本包：
-//   - Detector / Parser  纯解析逻辑（pkg/middleware）
-//   - Moderator / BudgetGate 外部策略调用，非数据查询（pkg/middleware）
+// Out of scope for this package:
+//   - Detector / Parser        pure parsing logic (pkg/middleware)
+//   - Moderator / BudgetGate   external policy calls, not data lookups (pkg/middleware)
 //
-// middleware 通过 repo.XxxProvider 类型声明依赖；具体实现由 cmd 装配并注入。
+// middleware declares its dependencies via repo.XxxProvider types; the concrete
+// implementation is assembled and injected by cmd.
 package repo

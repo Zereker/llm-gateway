@@ -7,8 +7,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // fakeTokenProvider for testing the session BuildRequest with arbitrary header.

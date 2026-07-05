@@ -1,11 +1,16 @@
-// Package console 是控制面（Admin API）——把数据面"直接 SQL 维护业务数据"换成
-// 受控的管理接口：CRUD + 写前校验 + 发 key + KEK 加密 + admin 鉴权。
+// Package console is the control plane (Admin API) — it replaces the data
+// plane's "maintain business data via direct SQL" approach with a governed
+// management interface: CRUD + pre-write validation + key issuance + KEK
+// encryption + admin auth.
 //
-// **架构定位**：独立 binary（cmd/console），跟数据面（cmd/gateway）**只通过 MySQL
-// 解耦**——控制面写、数据面按 TTL 缓存读，两者不同步调用。共享 pkg/domain、
-// pkg/repo（含 Scanner/Valuer + KEK 加密）、pkg/infra、pkg/endpointcheck，保证
-// schema / 加密格式 / key hash 这些"漂移即静默损坏"的硬契约永远一致（monorepo 的
-// 核心收益）。
+// **Architecture position**: a standalone binary (cmd/console), decoupled
+// from the data plane (cmd/gateway) **solely through MySQL** — the control
+// plane writes, the data plane reads via its TTL cache, and the two never
+// call each other synchronously. They share pkg/domain, pkg/repo (including
+// Scanner/Valuer + KEK encryption), pkg/infra, and pkg/endpointcheck, which
+// keeps the hard contracts that would silently break on drift — schema /
+// encryption format / key hash — permanently in sync (the core benefit of
+// the monorepo).
 package console
 
 import (
@@ -18,41 +23,47 @@ import (
 	"github.com/zereker/llm-gateway/pkg/infra"
 )
 
-// Config 是 console.yaml 的根。控制面配置面很窄：server / DB / KEK / admin token。
+// Config is the root of console.yaml. The control plane's configuration
+// surface is narrow: server / DB / KEK / admin tokens.
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database infra.DBConfig `yaml:"database"`
-	// Redis 可选：配了就走 cachebus 精准失效（吊销 key 亚秒级通知数据面）；
-	// 不配则退化成纯 TTL（数据面 ≤30s 后自然失效）。addr 空 = 未配置。
+	// Redis is optional: when configured, revocation goes through cachebus
+	// for precise invalidation (notifying the data plane in sub-second time);
+	// when not configured it falls back to plain TTL (the data plane expires
+	// naturally after <=30s). An empty addr means unconfigured.
 	Redis infra.RedisConfig `yaml:"redis"`
 	Admin AdminConfig       `yaml:"admin"`
 
-	// DataKey 是 AES-256-GCM 的 KEK（hex 64 字符）。控制面写 endpoints.auth 时用它
-	// 加密——**必须跟数据面 cfg.data_key 完全一致**，否则数据面解不开凭证。
-	// 生产从 secret manager 注入，不 commit。
+	// DataKey is the AES-256-GCM KEK (64 hex characters). The control plane
+	// uses it to encrypt endpoints.auth on write — **it must exactly match
+	// the data plane's cfg.data_key**, otherwise the data plane can't decrypt
+	// the credentials. Injected from a secret manager in production; never
+	// committed.
 	DataKey string `yaml:"data_key"`
 }
 
-// ServerConfig 控制面 HTTP server。
+// ServerConfig is the control-plane HTTP server.
 type ServerConfig struct {
 	Addr              string        `yaml:"addr"`
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
 	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
 }
 
-// AdminConfig 静态 bearer token 鉴权 + 角色（Phase 4 的 RBAC 基元；真 OIDC/多租户
-// 留后续）。yaml 里每个 token 带 role（admin / viewer；空 = admin）。
+// AdminConfig is static bearer-token auth + role (the RBAC primitive for
+// Phase 4; real OIDC/multi-tenancy is left for later). Each token in the yaml
+// carries a role (admin / viewer; empty = admin).
 type AdminConfig struct {
 	Tokens []Token `yaml:"tokens"`
 }
 
-// Load 读 YAML + env 覆盖 + 默认值 + 校验。
+// Load reads the YAML, applies env overrides and defaults, and validates.
 //
-// env 覆盖（生产从 secret manager 注入敏感字段）：
+// Env overrides (production injects sensitive fields from a secret manager):
 //
 //	LLM_GATEWAY_DATABASE_DSN     → database.dsn
 //	LLM_GATEWAY_DATA_KEY         → data_key
-//	LLM_GATEWAY_CONSOLE_TOKENS   → admin.tokens（逗号分隔）
+//	LLM_GATEWAY_CONSOLE_TOKENS   → admin.tokens (comma-separated)
 func Load(path string) (*Config, error) {
 	var cfg Config
 	if path != "" {
@@ -80,7 +91,7 @@ func (c *Config) applyEnv() {
 		c.DataKey = v
 	}
 	if v := os.Getenv("LLM_GATEWAY_CONSOLE_TOKENS"); v != "" {
-		// env 简写形式：逗号分隔的裸 token，全给 admin 角色。
+		// Env shorthand form: comma-separated bare tokens, all assigned the admin role.
 		var toks []Token
 		for _, t := range splitComma(v) {
 			toks = append(toks, Token{Value: t, Role: RoleAdmin})
@@ -119,7 +130,7 @@ func (c *Config) validate() error {
 			return fmt.Errorf("console: admin.tokens[%d].token is empty", i)
 		}
 		if t.Role == "" {
-			c.Admin.Tokens[i].Role = RoleAdmin // 缺省 admin
+			c.Admin.Tokens[i].Role = RoleAdmin // default to admin
 		} else if t.Role != RoleAdmin && t.Role != RoleViewer {
 			return fmt.Errorf("console: admin.tokens[%d].role %q invalid (want admin|viewer)", i, t.Role)
 		}

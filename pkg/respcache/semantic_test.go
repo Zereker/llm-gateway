@@ -28,20 +28,20 @@ func TestRedisSemanticStore_Roundtrip(t *testing.T) {
 	s := NewRedisSemanticStore(rdb, prefix, 100)
 	ns := "openai|m"
 
-	// 存两个正交向量的条目
+	// Store two entries with orthogonal vectors
 	s.Store(ctx, ns, []float32{1, 0, 0}, middleware.CachedResponse{StatusCode: 200, Body: []byte("weather-resp")}, time.Minute)
 	s.Store(ctx, ns, []float32{0, 1, 0}, middleware.CachedResponse{StatusCode: 200, Body: []byte("code-resp")}, time.Minute)
 
-	// 查一个接近 [1,0,0] 的向量 → 命中 weather-resp
+	// Query a vector close to [1,0,0] → hits weather-resp
 	if r, ok := s.Lookup(ctx, ns, []float32{0.98, 0.02, 0}, 0.9); !ok || string(r.Body) != "weather-resp" {
-		t.Errorf("Lookup 近 [1,0,0] = %q ok=%v, want weather-resp", r.Body, ok)
+		t.Errorf("Lookup near [1,0,0] = %q ok=%v, want weather-resp", r.Body, ok)
 	}
-	// 查一个跟两者都不像的向量 → miss
+	// Query a vector that resembles neither → miss
 	if _, ok := s.Lookup(ctx, ns, []float32{0, 0, 1}, 0.9); ok {
-		t.Error("正交向量应 miss")
+		t.Error("an orthogonal vector should miss")
 	}
-	// 阈值太高 → miss
+	// Threshold too high → miss
 	if _, ok := s.Lookup(ctx, ns, []float32{0.9, 0.1, 0}, 0.999); ok {
-		t.Error("相似度低于阈值应 miss")
+		t.Error("similarity below threshold should miss")
 	}
 }

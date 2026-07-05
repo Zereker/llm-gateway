@@ -1,19 +1,19 @@
 # Architecture Decision Records (ADR)
 
-本目录记录 llm-gateway **架构层面**的决策。bug fix / 实现细节走 commit message + PR 描述；架构选择、组件边界、向后不兼容改动走 ADR。
+This directory records **architecture-level** decisions for llm-gateway. Bug fixes / implementation details go through commit messages + PR descriptions; architectural choices, component boundaries, and backward-incompatible changes go through ADRs.
 
-> ADR 是**决策的过程记录**，不是 spec。每条 ADR 描述：当时的现状、考虑过的选项、为什么选了某个、放弃的代价。后人接手时知道"为什么不这么做"，避免回头路。
+> An ADR is a **record of the decision process**, not a spec. Each ADR describes: the situation at the time, the options considered, why one was chosen, and the cost of the ones given up. This lets successors know "why it wasn't done that way," avoiding going back down the same road.
 
-## 与 `docs/architecture/` 的分工
+## Division of labor with `docs/architecture/`
 
-| 目录 | 性质 | 何时写 |
+| Directory | Nature | When to write |
 |---|---|---|
-| `docs/architecture/*.md` | 当前**有效**的设计规范（接口契约、组件职责） | 实现就要符合；改了文档同步改代码 |
-| `docs/adr/####-*.md` | **历史决策**的记录（含被拒方案 + 取舍）| 提议变更时写；被采纳后归档 |
+| `docs/architecture/*.md` | The currently **effective** design spec (interface contracts, component responsibilities) | Implementation must conform to it; when the doc changes, update the code in sync |
+| `docs/adr/####-*.md` | Record of a **historical decision** (including rejected options + trade-offs) | Written when proposing a change; archived once adopted |
 
-`architecture/` 是"现在长什么样"，`adr/` 是"为什么长这样、曾考虑过怎样的样"。
+`architecture/` is "what it looks like now"; `adr/` is "why it looks this way, and what alternatives were once considered."
 
-## 状态流转
+## Status lifecycle
 
 ```
   Proposed ──→ Accepted ──→ Deprecated / Superseded by NNNN
@@ -21,26 +21,26 @@
       └──→ Rejected
 ```
 
-- **Proposed**：作者提交，等待 review；可改可撤。
-- **Accepted**：团队通过，开始实施；ADR 内容定稿，不再改（除元数据）。后续若需修改决策，写**新** ADR 标注 supersedes。
-- **Rejected**：讨论后未通过，保留作为"曾考虑"的证据。
-- **Deprecated**：决策本身被废弃但没替代品（如组件被删除）。
-- **Superseded by NNNN**：被新 ADR 替代；保留旧 ADR 作为历史。
+- **Proposed**: Submitted by the author, awaiting review; can still be changed or withdrawn.
+- **Accepted**: Approved by the team, implementation begins; the ADR content is final and no longer changes (except metadata). If the decision needs to change later, write a **new** ADR marked as supersedes.
+- **Rejected**: Discussed but not approved; kept as evidence of what was "once considered."
+- **Deprecated**: The decision itself has been abandoned with no replacement (e.g., the component was removed).
+- **Superseded by NNNN**: Replaced by a new ADR; the old ADR is kept for history.
 
-**重要**：Accepted 之后不要直接编辑内容（除了上面五个 status 行）；要改只能写新 ADR supersede。这是 ADR 跟普通文档的本质区别——历史决策不能被改写。
+**Important**: Do not edit the content directly after Accepted (except for the five status lines above); to change it, you can only write a new ADR that supersedes it. This is the essential difference between an ADR and a regular document — historical decisions must not be rewritten.
 
-## 文件命名
+## File naming
 
 ```
 ####-kebab-case-title.md
 ```
 
-`####` 是 4 位流水号（0001 起），全局唯一不复用。即便 ADR 被 Reject 也保留编号。
+`####` is a 4-digit sequence number (starting at 0001), globally unique and never reused. Even if an ADR is Rejected, its number is still kept.
 
-## 模板（写新 ADR 时拷贝）
+## Template (copy this when writing a new ADR)
 
 ```markdown
-# NNNN. <短标题>
+# NNNN. <Short title>
 
 * **Status**: Proposed
 * **Date**: YYYY-MM-DD
@@ -48,25 +48,25 @@
 
 ## Context
 
-为什么需要这个决策？现状是什么？哪些约束 / 痛点驱动它？
+Why is this decision needed? What is the current situation? What constraints / pain points are driving it?
 
-引用具体代码位置：`pkg/foo/bar.go:42`、commit hash、issue 编号。
+Reference specific code locations: `pkg/foo/bar.go:42`, commit hash, issue number.
 
 ## Options Considered
 
-### Option A: <短描述>
-- **怎么做**：...
-- **正面**：...
-- **负面**：...
+### Option A: <Short description>
+- **How**: ...
+- **Pros**: ...
+- **Cons**: ...
 
-### Option B: <短描述>
-（同上）
+### Option B: <Short description>
+(same as above)
 
 ## Decision
 
-我们选 **Option X**。
+We choose **Option X**.
 
-理由：
+Rationale:
 - ...
 
 ## Consequences
@@ -77,13 +77,13 @@
 ### Negative / Trade-offs
 - ...
 
-### Migration Path（若涉及向后不兼容）
+### Migration Path (if backward-incompatible)
 
-阶段 1：...
-阶段 2：...
-回退方案：...
+Phase 1: ...
+Phase 2: ...
+Rollback plan: ...
 ```
 
-## 当前 ADR 索引
+## Current ADR index
 
-当前没有独立 ADR。已采纳的设计内容以 `docs/architecture/` 为准。
+There are currently no standalone ADRs. Adopted design content is governed by `docs/architecture/`.

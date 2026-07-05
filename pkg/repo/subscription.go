@@ -2,15 +2,21 @@ package repo
 
 import "context"
 
-// SubscriptionProvider M5 ModelService middleware 用：判定主账号是否订阅了某 model_service。
+// SubscriptionProvider is used by M5 ModelService middleware: determines
+// whether an account is subscribed to a given model_service.
 //
-// **fail-fast 语义**：M5 在拿到 model_service 后，必须查这张表确认订阅；找不到 → 403。
-// 这是 SaaS 平台模型可见性的核心控制点（"哪个主账号看得到哪个模型"）。
+// **fail-fast semantics**: after M5 obtains the model_service, it must query
+// this table to confirm the subscription; not found -> 403. This is the core
+// control point for model visibility on a SaaS platform ("which account can
+// see which model").
 //
-// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
+// Implementations MUST be safe for concurrent use (called by multiple gin
+// handler goroutines at once).
 type SubscriptionProvider interface {
-	// Has 判定 (account_id, model_service_id) 是否订阅且 enabled 且未软删。
-	// account_id 是历史列名，语义是主账号 pin。
-	// 返回 (true, nil) = 已订阅；(false, nil) = 没订阅；(_, err) = SQL 出错。
+	// Has determines whether (account_id, model_service_id) is subscribed,
+	// enabled, and not soft-deleted. account_id is a legacy column name;
+	// semantically it's the account pin.
+	// Returns (true, nil) = subscribed; (false, nil) = not subscribed;
+	// (_, err) = SQL error.
 	Has(ctx context.Context, accountID string, modelServiceID int64) (bool, error)
 }

@@ -8,16 +8,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisStatsStore 是 EndpointStatsStore 的 Redis 实现——多副本 gateway 共享同一份
-// per-endpoint EMA 统计,打分一致(InMemoryStatsStore 每副本各算各的,多副本下评分
-// 会漂移)。接口跟 InMemory 版完全一致,cmd 按 scoring.driver 切换。
+// RedisStatsStore is a Redis implementation of EndpointStatsStore — multiple gateway replicas share
+// the same per-endpoint EMA stats, keeping scoring consistent (InMemoryStatsStore computes independently
+// per replica, so scoring drifts across replicas). The interface is fully identical to the InMemory
+// version; cmd switches between them via scoring.driver.
 //
-// **存储**:每个 endpoint 一个 hash `<prefix>:epstats:<id>`,字段
-// latency_ms / success_rate / sample_count / updated。TTL 让长期无流量的 endpoint
-// 统计自然过期(回到中性)。
+// **Storage**: one hash per endpoint, `<prefix>:epstats:<id>`, with fields
+// latency_ms / success_rate / sample_count / updated. TTL lets stats for long-idle endpoints
+// naturally expire (returning to neutral).
 //
-// **原子 EMA**:Record 用一段 Lua EVAL 做 read-modify-write,避免多副本并发
-// Record 互相覆盖。best-effort——Redis 错不阻塞调度(Report 本就是 fire-and-forget)。
+// **Atomic EMA**: Record uses a Lua EVAL script to do the read-modify-write, avoiding concurrent
+// Records from different replicas overwriting each other. Best-effort — a Redis error doesn't block
+// scheduling (Report is inherently fire-and-forget).
 type RedisStatsStore struct {
 	rdb    *redis.Client
 	prefix string
@@ -25,7 +27,7 @@ type RedisStatsStore struct {
 	ttl    time.Duration
 }
 
-// NewRedisStatsStore 构造;decay<=0 用 0.2,ttl<=0 用 1h,prefix 空用 "llm-gateway:sched"。
+// NewRedisStatsStore constructs one; decay<=0 uses 0.2, ttl<=0 uses 1h, empty prefix uses "llm-gateway:sched".
 func NewRedisStatsStore(rdb *redis.Client, prefix string, decay float64, ttl time.Duration) *RedisStatsStore {
 	if decay <= 0 || decay > 1 {
 		decay = 0.2
@@ -43,8 +45,9 @@ func (s *RedisStatsStore) key(endpointID int64) string {
 	return s.prefix + ":epstats:" + strconv.FormatInt(endpointID, 10)
 }
 
-// recordScript 原子 EMA:有历史则加权更新,无历史则直接取本次值;末尾刷新 TTL。
-// KEYS[1]=hash key; ARGV=[latency, success01, decay, now_unix, ttl_sec]。
+// recordScript performs an atomic EMA: weighted update if history exists, otherwise take this
+// value directly; refreshes TTL at the end.
+// KEYS[1]=hash key; ARGV=[latency, success01, decay, now_unix, ttl_sec].
 var recordScript = redis.NewScript(`
 local k = KEYS[1]
 local lat = tonumber(ARGV[1])
@@ -66,13 +69,14 @@ redis.call('EXPIRE', k, tonumber(ARGV[5]))
 return ncnt
 `)
 
-// Record EMA 更新单 endpoint 的 latency / success(原子)。best-effort。
+// Record updates a single endpoint's latency / success via EMA (atomic). Best-effort.
 func (s *RedisStatsStore) Record(ctx context.Context, endpointID int64, result Result) {
 	if endpointID == 0 {
 		return
 	}
-	// 钳到 ≥1s：亚秒 TTL 被 int() 截成 0，而 EXPIRE key 0 会立刻删 key——每次 Record
-	// 写完即丢，Snapshot 永远中性、打分静默失效。
+	// Clamp to >=1s: a sub-second TTL gets truncated to 0 by int(), and EXPIRE key 0 deletes
+	// the key immediately — every Record would be discarded right after being written, leaving
+	// Snapshot permanently neutral and silently disabling scoring.
 	ttlSec := int64(s.ttl.Seconds())
 	if ttlSec < 1 {
 		ttlSec = 1
@@ -86,9 +90,9 @@ func (s *RedisStatsStore) Record(ctx context.Context, endpointID int64, result R
 	).Err()
 }
 
-// Snapshot 取单 endpoint 当前快照;无数据 / Redis 错都返回中性快照
-// (SuccessRate=1, SampleCount=0)——跟 InMemory 版语义一致,DefaultScorer 会给中性
-// factor 保留探索流量。
+// Snapshot takes the current snapshot for a single endpoint; both no-data and Redis errors return
+// a neutral snapshot (SuccessRate=1, SampleCount=0) — matching the InMemory version's semantics,
+// so DefaultScorer gives a neutral factor and preserves exploration traffic.
 func (s *RedisStatsStore) Snapshot(ctx context.Context, endpointID int64) EndpointStats {
 	neutral := EndpointStats{SuccessRate: 1.0}
 	if endpointID == 0 {
@@ -125,7 +129,7 @@ func parseUint32(v any) uint32 {
 	if !ok {
 		return 0
 	}
-	n, _ := strconv.ParseFloat(s, 64) // Lua 存的是 number,可能带小数,先按 float 再截
+	n, _ := strconv.ParseFloat(s, 64) // Lua stores a number, which may have decimals; parse as float first, then truncate
 	if n < 0 {
 		return 0
 	}
@@ -141,5 +145,5 @@ func parseInt64(v any) int64 {
 	return n
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ EndpointStatsStore = (*RedisStatsStore)(nil)

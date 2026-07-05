@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// stubWriter 记录所有 Write 调用；用于 KafkaOutbox 单元测试。
+// stubWriter records all Write calls; used for KafkaOutbox unit tests.
 type stubWriter struct {
 	writes []writtenMsg
 	err    error
@@ -78,7 +78,7 @@ func TestKafkaOutbox_RejectsNilEvent(t *testing.T) {
 }
 
 func TestKafkaOutbox_RejectsEmptyTopic(t *testing.T) {
-	// 防御性：调用方误用 NewKafkaOutbox(producer, "") 时也要给清晰错误
+	// defensive: a clear error must still be given if the caller misuses NewKafkaOutbox(producer, "")
 	o := NewKafkaOutbox(&stubWriter{}, "")
 	err := o.Publish(context.Background(), &OutboxEvent{Key: "k", Payload: []byte("v")})
 	if err == nil {
@@ -98,7 +98,7 @@ func TestKafkaOutbox_CloseDelegates(t *testing.T) {
 }
 
 func TestKafkaOutbox_ManyConcurrentPublish(t *testing.T) {
-	// 简单串行烟雾测；真并发安全靠底层 *kafka.Writer 提供。
+	// Simple serial smoke test; actual concurrency safety is provided by the underlying *kafka.Writer.
 	sw := &stubWriter{}
 	o := NewKafkaOutbox(sw, "topic")
 	for i := 0; i < 100; i++ {

@@ -1,15 +1,19 @@
-// Command llm-gateway-console 是控制面（Admin API）：把数据面"直接 SQL 维护业务
-// 数据"换成受控的管理接口。
+// Command llm-gateway-console is the control plane (Admin API): it replaces the
+// data plane's "maintain business data via direct SQL" approach with a governed
+// management API.
 //
-// 用法：
+// Usage:
 //
 //	go run ./cmd/console -config ./configs/local/console.yaml
 //
-// 与数据面（cmd/gateway）**只通过 MySQL 解耦**——控制面写、数据面按 TTL 缓存读。
-// 共享 KEK（data_key）：控制面写 endpoints.auth 时用它加密，必须与数据面一致。
+// Decoupled from the data plane (cmd/gateway) **only through MySQL** — the
+// control plane writes, and the data plane reads through its TTL cache.
+// Shared KEK (data_key): the control plane encrypts with it when writing
+// endpoints.auth, and it must match the data plane's.
 //
-// blank import 一批 vendor Factory + translator：让 endpointcheck.Validate 的
-// vendor 注册 / translator 可达性检查在写入前就能判定（跟数据面同一份逻辑）。
+// Blank-imports a batch of vendor Factory + translator packages: this lets
+// endpointcheck.Validate's vendor-registration / translator-reachability checks
+// run before a write is committed (the same logic the data plane uses).
 package main
 
 import (
@@ -24,15 +28,15 @@ import (
 	"github.com/zereker/llm-gateway/pkg/server"
 	"github.com/zereker/llm-gateway/pkg/trace"
 
-	// vendor Factory 注册（endpointcheck vendor_not_registered 判定要用）
+	// vendor Factory registration (used by endpointcheck's vendor_not_registered check)
 	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/bedrock"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/cohere"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
-	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 
-	// translator 注册（endpointcheck no_translator_path 判定要用）
+	// translator registration (used by endpointcheck's no_translator_path check)
 	_ "github.com/zereker/llm-gateway/pkg/translator/anthropic_openai"
 	_ "github.com/zereker/llm-gateway/pkg/translator/identity"
 	_ "github.com/zereker/llm-gateway/pkg/translator/openai_anthropic"
@@ -59,7 +63,8 @@ func run(configPath string) error {
 		return err
 	}
 
-	// 与数据面同一个 KEK：写 endpoints.auth 时加密。缺失 / 长度错 fail-fast。
+	// Same KEK as the data plane: used to encrypt endpoints.auth on write.
+	// Missing or wrong-length key fails fast.
 	if err := repo.SetDataKey(cfg.DataKey); err != nil {
 		return fmt.Errorf("load data_key: %w", err)
 	}
@@ -73,7 +78,8 @@ func run(configPath string) error {
 
 	store := console.NewStore(sqldb)
 
-	// 可选 cachebus：配了 redis.addr 就挂 Publisher，吊销 key 时精准通知数据面。
+	// Optional cachebus: if redis.addr is configured, attach a Publisher so
+	// key revocations notify the data plane precisely.
 	if cfg.Redis.Addr != "" {
 		rdb, rerr := srv.OpenRedis(cfg.Redis)
 		if rerr != nil {

@@ -1,17 +1,21 @@
-// Package upstream 封装"调一次上游 + 流式回写"两个动作；M7 driver loop
-// 把 retry / fallback / cooldown 编排留给自己，把 HTTP / protocol Handler /
-// classify / 流式 chunk 转发的细节交给本包。
+// Package upstream encapsulates two actions: "make one call to an upstream"
+// and "stream the response back"; the M7 driver loop keeps retry /
+// fallback / cooldown orchestration to itself and hands the details of
+// HTTP / protocol Handler / classify / streamed chunk forwarding to this
+// package.
 //
-// **职责边界（v0.6 融合后）**：
+// **Responsibility boundary (after the v0.6 merge)**:
 //
-//   - 知道：HTTP 调用、按 caller 传入的 protocol.Handler 走 PrepareCall /
-//     NewResponseStream、按 HTTP status + Handler.Classify 给 outcome 分类、
-//     流式 chunk 拷贝。
-//   - 不知道：retry 策略、cooldown、Selection 状态机、HTTP framework
-//     （gin / echo / chi 都行），protocol.Handler 实现来源（全局 registry /
-//     租户级覆盖均可——caller 决定）。
+//   - Knows: making the HTTP call, driving the caller-supplied
+//     protocol.Handler through PrepareCall / NewResponseStream, classifying
+//     the outcome by HTTP status + Handler.Classify, copying streamed
+//     chunks.
+//   - Doesn't know: retry policy, cooldown, the Selection state machine,
+//     the HTTP framework (gin / echo / chi are all fine), where the
+//     protocol.Handler implementation comes from (global registry /
+//     tenant-level override — the caller decides).
 //
-// **使用形态**（M7 内部）：
+// **Usage shape** (inside M7):
 //
 //	sender := invoker.New()
 //	for {
@@ -26,7 +30,7 @@
 //	    }
 //	}
 //
-// 详见 docs/architecture/03-endpoint-scheduling.md。
+// See docs/architecture/03-endpoint-scheduling.md for details.
 package invoker
 
 import (
@@ -39,46 +43,54 @@ import (
 	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
-// HTTPDoer 抽象 HTTP 客户端。*http.Client 自动满足；测试可注入 RoundTripper-like fake。
+// HTTPDoer abstracts the HTTP client. *http.Client satisfies it
+// automatically; tests can inject a RoundTripper-like fake.
 type HTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-// Stage 标记 Send 内部哪一阶段产出本 Outcome——给 wiring 层翻译成
-// dispatch.Stage 用，让 Policy.Decide 区分 prepare 失败 vs invoke 失败。
+// Stage marks which internal phase of Send produced this Outcome — used by
+// the wiring layer to translate into dispatch.Stage, letting Policy.Decide
+// distinguish a prepare failure from an invoke failure.
 type Stage int
 
 const (
-	// StageInvoke HTTP 调用阶段（默认；成功 / 网络错 / 上游 4xx-5xx 都属此阶段）。
+	// StageInvoke is the HTTP-call phase (default; success / network error /
+	// upstream 4xx-5xx all belong to this phase).
 	StageInvoke Stage = iota
-	// StagePrepare handler.PrepareCall 阶段失败（pre-call 协议转换 / vendor HTTP 构造）。
+	// StagePrepare means handler.PrepareCall failed (pre-call protocol
+	// conversion / vendor HTTP construction).
 	StagePrepare
 )
 
-// Outcome Send 的结果。
+// Outcome is the result of Send.
 //
-// 成功 = Class==ClassSuccess && Response != nil。Response.Body 由 caller 关
-// （通常是 Forward 内部 defer Close）。
-// 失败 = Response==nil（Send 已自己 close 失败响应的 body）。
+// Success = Class==ClassSuccess && Response != nil. Response.Body is closed
+// by the caller (usually via a defer Close inside Forward).
+// Failure = Response==nil (Send has already closed the failed response's
+// body itself).
 type Outcome struct {
-	Response *http.Response // 仅成功时填；失败 nil
-	Stage    Stage          // 本次 Outcome 产自哪一阶段
+	Response *http.Response // populated only on success; nil on failure
+	Stage    Stage          // which phase produced this Outcome
 	Class    selector.ErrorClass
 	HTTPCode int
 	Reason   string
 	Latency  time.Duration
 
-	// Handler 成功路径下 Forward 时要用的 protocol.Handler；失败时无意义。
-	// caller 用 outcome.Handler.NewResponseStream() 拿响应流处理器传给 Forward。
+	// Handler is the protocol.Handler to use during Forward on the success
+	// path; meaningless on failure. The caller calls
+	// outcome.Handler.NewResponseStream() to get the response-stream
+	// processor to pass to Forward.
 	Handler protocol.Handler
 }
 
-// Success outcome 是否成功（HTTP 2xx + 无协议层错）。
+// Success reports whether the outcome succeeded (HTTP 2xx + no
+// protocol-level error).
 func (o Outcome) Success() bool {
 	return o.Class == selector.ClassSuccess && o.Response != nil
 }
 
-// ToScheduleResult 转成 sel.Report 需要的 selector.Result。
+// ToScheduleResult converts to the selector.Result that sel.Report expects.
 func (o Outcome) ToScheduleResult() selector.Result {
 	return selector.Result{
 		Class:    o.Class,
@@ -88,59 +100,71 @@ func (o Outcome) ToScheduleResult() selector.Result {
 	}
 }
 
-// ErrInvalidRequest Send 翻译请求体失败时返回（caller 应直接 abort 400，
-// 不要 retry——同一请求换 endpoint 也会失败）。
+// ErrInvalidRequest is returned when Send fails to translate the request
+// body (the caller should abort with 400 directly — do not retry, since
+// switching endpoints for the same request will fail too).
 var ErrInvalidRequest = errors.New("upstream: invalid request body")
 
 // =============================================================================
 // Sender
 // =============================================================================
 
-// Sender 封装"调一次上游 + 流式 forward"两个动作。
+// Sender encapsulates two actions: "make one call to an upstream" and
+// "stream forward".
 //
-// 不持有请求级状态；Send / Forward 两个方法都可被多请求并发调用。
-// **不持任何 lookup**——adapter / translator / handler 都是请求级依赖，
-// caller 在调用 Send 时透传。
+// It holds no request-level state; both the Send and Forward methods can be
+// called concurrently by multiple requests. **It holds no lookups at all**
+// — adapter / translator / handler are all request-level dependencies that
+// the caller passes through when calling Send.
 type Sender struct {
 	client HTTPDoer
 	hooks  hookSet
 }
 
-// Option 装配 Sender 的可选项。
+// Option configures optional settings on Sender.
 type Option func(*senderConfig)
 
-// senderConfig New 期间 Option 写入的临时配置；New 收尾后产出 Sender。
+// senderConfig holds the temporary configuration written by Option during
+// New; New produces the Sender once configuration is finalized.
 type senderConfig struct {
 	client HTTPDoer
 	hooks  []Hook
 }
 
-// WithHTTPClient 注入自定义 HTTP 客户端；不调 = http.DefaultClient。
+// WithHTTPClient injects a custom HTTP client; if not called, defaults to
+// http.DefaultClient.
 func WithHTTPClient(c HTTPDoer) Option {
 	return func(cfg *senderConfig) { cfg.client = c }
 }
 
-// WithHooks 注册一组 Hook（observer）。多次调用累加；同一 hook 实现多个
-// Observer 接口时同时进多个桶，运行期一次回调（每个桶一次）。
+// WithHooks registers a set of Hooks (observers). Multiple calls accumulate;
+// when the same hook implements multiple Observer interfaces it lands in
+// multiple buckets at once, each firing once at runtime per bucket.
 //
-// 详见 hooks.go。
+// See hooks.go for details.
 func WithHooks(hooks ...Hook) Option {
 	return func(c *senderConfig) { c.hooks = append(c.hooks, hooks...) }
 }
 
-// per-attempt 超时边界（Transport 级，对本 client 的所有请求生效）：
+// per-attempt timeout boundaries (Transport-level, apply to all requests on
+// this client):
 //
-//   - dialTimeout / tlsHandshakeTimeout：连接建立阶段。挂死的 endpoint（accept
-//     后不响应 / 半开连接）在这里快速失败，而不是烧光整个请求预算。
-//   - responseHeaderTimeout：请求写完到响应头到达（≈ TTFB）。LLM 首 token 可能
-//     慢（长 prompt / 冷启动），30s 给足余量，但**有界**——留出 retry / fallback
-//     的预算（request 级总超时默认 60s+）。
-//   - **不限制**响应 body 读取时长：流式响应合法地可以跑几分钟，由 request 级
-//     总超时（middleware.Timeout）兜底。
+//   - dialTimeout / tlsHandshakeTimeout: connection-establishment phase. A
+//     hung endpoint (accepts but never responds / half-open connection)
+//     fails fast here instead of burning through the whole request budget.
+//   - responseHeaderTimeout: from finishing the request write to the
+//     response header arriving (≈ TTFB). An LLM's first token can be slow
+//     (long prompt / cold start), so 30s gives ample headroom while still
+//     being **bounded** — leaving budget for retry / fallback (the
+//     request-level total timeout defaults to 60s+).
+//   - Response body read time is **not** limited: a streaming response can
+//     legitimately run for minutes, backstopped by the request-level total
+//     timeout (middleware.Timeout).
 //
-// **为什么不用 http.DefaultClient**：它无任何超时（挂死 = 永久占用），且
-// DefaultTransport 的 MaxIdleConnsPerHost=2——高 QPS 打同一上游 host 时连接
-// 疯狂重建（延迟 + 端口耗尽）。
+// **Why not http.DefaultClient**: it has no timeout at all (a hang means
+// permanent occupancy), and DefaultTransport's MaxIdleConnsPerHost=2 means
+// under high QPS against the same upstream host, connections get
+// rebuilt frantically (latency + port exhaustion).
 const (
 	dialTimeout           = 5 * time.Second
 	tlsHandshakeTimeout   = 5 * time.Second
@@ -150,8 +174,9 @@ const (
 	maxIdleConnsPerHost   = 128
 )
 
-// defaultHTTPClient 数据面上游调用的默认 client；需要不同参数时用
-// WithHTTPClient 覆盖（如 mTLS / 代理 / 自定义超时）。
+// defaultHTTPClient is the default client for data-plane upstream calls;
+// override it with WithHTTPClient when different parameters are needed
+// (e.g. mTLS / proxy / custom timeouts).
 func defaultHTTPClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
@@ -159,8 +184,10 @@ func defaultHTTPClient() *http.Client {
 			DialContext: (&net.Dialer{
 				Timeout:   dialTimeout,
 				KeepAlive: 30 * time.Second,
-				// SSRF 防线：拨号前拦截云 metadata 端点（按解析后的真实 IP，挡
-				// DNS-rebinding）。只挡 metadata，不挡私网自建上游。见 ssrf.go。
+				// SSRF guard: block cloud metadata endpoints before dialing
+				// (based on the resolved real IP, blocking DNS-rebinding).
+				// Only blocks metadata, not self-hosted private-network
+				// upstreams. See ssrf.go.
 				Control: blockMetadataDial,
 			}).DialContext,
 			ForceAttemptHTTP2:     true,
@@ -170,15 +197,18 @@ func defaultHTTPClient() *http.Client {
 			MaxIdleConns:          maxIdleConns,
 			MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		},
-		// 不设 Client.Timeout——它包含 body 读取，会掐断长流。
-		// 阶段性超时全部在 Transport 上。
+		// Client.Timeout is intentionally not set — it covers body reading
+		// and would cut off long streams. All phased timeouts live on the
+		// Transport instead.
 	}
 }
 
-// New 构造 Sender；零配置走 defaultHTTPClient + 无 hook。
+// New constructs a Sender; with zero configuration it uses
+// defaultHTTPClient + no hooks.
 //
-// protocol.Handler 在 Send 调用时由 caller 传入；Sender 本身不持有，
-// 支持多租户 / 灰度场景按请求覆盖。
+// protocol.Handler is passed in by the caller at Send time; Sender itself
+// holds none, which supports per-request overrides for multi-tenant /
+// canary scenarios.
 func New(opts ...Option) *Sender {
 	cfg := &senderConfig{
 		client: defaultHTTPClient(),

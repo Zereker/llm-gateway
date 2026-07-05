@@ -1,6 +1,8 @@
-// Package embed 提供文本向量化（Embedder）+ 余弦相似度——语义缓存用。
+// Package embed provides text vectorization (Embedder) + cosine similarity — used by the
+// semantic cache.
 //
-// 叶子包:只依赖 stdlib + net/http,不引 middleware/respcache,供两者共用。
+// Leaf package: depends only on stdlib + net/http, doesn't import middleware/respcache, so
+// both can depend on it.
 package embed
 
 import (
@@ -15,12 +17,12 @@ import (
 	"time"
 )
 
-// Embedder 把文本转成向量。实现须并发安全。
+// Embedder converts text into a vector. Implementations must be safe for concurrent use.
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
-// Cosine 余弦相似度 [-1,1]；任一零向量返 0。
+// Cosine returns the cosine similarity [-1,1]; returns 0 if either vector is zero.
 func Cosine(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
@@ -38,10 +40,10 @@ func Cosine(a, b []float32) float64 {
 }
 
 // =============================================================================
-// OpenAIEmbedder — 调 OpenAI-compatible /v1/embeddings
+// OpenAIEmbedder — calls the OpenAI-compatible /v1/embeddings endpoint
 // =============================================================================
 
-// OpenAIEmbedder 调 {baseURL}/v1/embeddings（或 baseURL 直接是完整端点）。
+// OpenAIEmbedder calls {baseURL}/v1/embeddings (or baseURL may already be the full endpoint).
 type OpenAIEmbedder struct {
 	client  *http.Client
 	baseURL string
@@ -49,7 +51,8 @@ type OpenAIEmbedder struct {
 	model   string
 }
 
-// NewOpenAIEmbedder 构造；baseURL 空 = OpenAI 官方；model 空 = text-embedding-3-small。
+// NewOpenAIEmbedder constructs an OpenAIEmbedder; empty baseURL defaults to the official
+// OpenAI API; empty model defaults to text-embedding-3-small.
 func NewOpenAIEmbedder(apiKey, baseURL, model string) *OpenAIEmbedder {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
@@ -98,10 +101,10 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 	return out.Data[0].Embedding, nil
 }
 
-// embeddingsURL 由 baseURL 拼出 /embeddings 端点,兼容三种写法:
-//   - 完整端点（.../embeddings）→ 原样
-//   - 已带 /v1（.../v1）→ 补 /embeddings（避免出现 /v1/v1/embeddings）
-//   - 裸 host（https://host）→ 补 /v1/embeddings
+// embeddingsURL builds the /embeddings endpoint from baseURL, handling three forms:
+//   - a full endpoint (.../embeddings) → used as-is
+//   - already ends with /v1 (.../v1) → append /embeddings (avoids /v1/v1/embeddings)
+//   - a bare host (https://host) → append /v1/embeddings
 func embeddingsURL(base string) string {
 	u := strings.TrimRight(base, "/")
 	switch {
@@ -114,5 +117,5 @@ func embeddingsURL(base string) string {
 	}
 }
 
-// 编译期断言。
+// Compile-time interface assertion.
 var _ Embedder = (*OpenAIEmbedder)(nil)

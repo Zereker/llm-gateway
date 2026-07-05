@@ -65,9 +65,8 @@ func TestNewTokenProvider_OAuth2SA_BadPayload_Error(t *testing.T) {
 }
 
 func TestNewTokenProvider_UnsupportedType_Error(t *testing.T) {
-	auth := domain.AuthConfig{Type: "bearer"} // bearer 不在 gemini 支持列表里
+	auth := domain.AuthConfig{Type: "bearer"} // "bearer" isn't in gemini's supported list
 	if _, err := newTokenProvider(context.Background(), auth); err == nil {
 		t.Fatal("expected err for unsupported type")
 	}
 }
-

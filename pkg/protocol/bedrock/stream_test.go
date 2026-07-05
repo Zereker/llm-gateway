@@ -11,8 +11,8 @@ import (
 	"github.com/aws/smithy-go/eventstream"
 )
 
-// encodeFrame 用 smithy encoder 造一个 Bedrock 风格的 event-stream 帧:
-// payload = {"bytes": base64(anthropic event)}。
+// encodeFrame uses the smithy encoder to build a Bedrock-style event-stream frame:
+// payload = {"bytes": base64(anthropic event)}.
 func encodeFrame(t *testing.T, w io.Writer, anthropicEvent string) {
 	t.Helper()
 	payload := []byte(`{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(anthropicEvent)) + `"}`)
@@ -33,30 +33,30 @@ func TestBedrock_DecodeTransport_EventStreamToAnthropicSSE(t *testing.T) {
 	}
 	dec := Factory{}.DecodeTransport(resp)
 	if dec == nil {
-		t.Fatal("eventstream 响应应返回解码 reader")
+		t.Fatal("eventstream response should return a decoded reader")
 	}
 	out, err := io.ReadAll(dec)
 	if err != nil {
 		t.Fatalf("read decoded: %v", err)
 	}
 	s := string(out)
-	// 每帧 → 一行 Anthropic SSE data:
+	// each frame → one line of Anthropic SSE data:
 	for _, want := range []string{
 		`data: {"type":"message_start"`,
 		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}`,
 		`data: {"type":"message_stop"}`,
 	} {
 		if !strings.Contains(s, want) {
-			t.Errorf("解码输出缺 %q\n全文:\n%s", want, s)
+			t.Errorf("decoded output missing %q\nfull text:\n%s", want, s)
 		}
 	}
-	// SSE 分隔
+	// SSE separator
 	if !strings.Contains(s, "\n\n") {
-		t.Error("缺 SSE 事件分隔符")
+		t.Error("missing SSE event separator")
 	}
 }
 
-// encodeException 造一个 :message-type=exception 的 Bedrock 异常帧。
+// encodeException builds a Bedrock exception frame with :message-type=exception.
 func encodeException(t *testing.T, w io.Writer, excType, body string) {
 	t.Helper()
 	msg := eventstream.Message{
@@ -71,7 +71,7 @@ func encodeException(t *testing.T, w io.Writer, excType, body string) {
 	}
 }
 
-// mid-stream 异常帧必须被识别成 error（而非当成干净截断静默吞掉）。
+// A mid-stream exception frame must be recognized as an error (rather than being silently swallowed as a clean truncation).
 func TestBedrock_DecodeTransport_ExceptionFrameSurfacesError(t *testing.T) {
 	var raw bytes.Buffer
 	encodeFrame(t, &raw, `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}`)
@@ -83,18 +83,18 @@ func TestBedrock_DecodeTransport_ExceptionFrameSurfacesError(t *testing.T) {
 	}
 	dec := Factory{}.DecodeTransport(resp)
 	if dec == nil {
-		t.Fatal("eventstream 响应应返回解码 reader")
+		t.Fatal("eventstream response should return a decoded reader")
 	}
 	out, err := io.ReadAll(dec)
 	if err == nil {
-		t.Fatal("异常帧后 ReadAll 应返回 error（不能静默截断）")
+		t.Fatal("ReadAll after an exception frame should return an error (must not silently truncate)")
 	}
 	if !strings.Contains(err.Error(), "modelStreamErrorException") {
-		t.Errorf("error 应含异常类型, got: %v", err)
+		t.Errorf("error should contain the exception type, got: %v", err)
 	}
-	// 异常帧前的正常内容仍应解出。
+	// Normal content preceding the exception frame should still be decoded.
 	if !strings.Contains(string(out), `"text":"Hi"`) {
-		t.Errorf("异常前的内容应已解出, got: %s", out)
+		t.Errorf("content preceding the exception should already be decoded, got: %s", out)
 	}
 }
 
@@ -105,21 +105,21 @@ func TestBedrock_DecodeTransport_NonStreamReturnsNil(t *testing.T) {
 	}
 	f := Factory{}
 	if f.DecodeTransport(resp) != nil {
-		t.Error("非 eventstream(JSON)响应应返 nil(不解帧)")
+		t.Error("non-eventstream (JSON) response should return nil (no frame decoding)")
 	}
 }
 
 func TestBedrockURL(t *testing.T) {
 	base := "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude/invoke"
 	if got := bedrockURL(base, false); got != base {
-		t.Errorf("非流式应不变: %s", got)
+		t.Errorf("non-streaming should be unchanged: %s", got)
 	}
 	want := "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude/invoke-with-response-stream"
 	if got := bedrockURL(base, true); got != want {
-		t.Errorf("流式 URL = %s, want %s", got, want)
+		t.Errorf("streaming URL = %s, want %s", got, want)
 	}
-	// 已是流式端点 → 不变
+	// already a streaming endpoint → unchanged
 	if got := bedrockURL(want, true); got != want {
-		t.Errorf("已流式端点应不变: %s", got)
+		t.Errorf("already-streaming endpoint should be unchanged: %s", got)
 	}
 }

@@ -38,7 +38,8 @@ func TestAuth_RejectsMissingCreds(t *testing.T) {
 	}
 }
 
-// 凭证无效（wrap domain.ErrInvalidCredentials）→ 401，固定文案，**不**泄漏内部细节。
+// Invalid credentials (wrapping domain.ErrInvalidCredentials) -> 401 with a fixed
+// message; internal details must **not** leak.
 func TestAuth_RejectsInvalidCreds(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), Auth(
 		WithIdentityProvider(stubProvider{
@@ -59,12 +60,13 @@ func TestAuth_RejectsInvalidCreds(t *testing.T) {
 		t.Errorf("body = %s", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), "revoked") {
-		t.Errorf("内部错误细节不该出现在响应 body：%s", w.Body.String())
+		t.Errorf("internal error details should not appear in the response body: %s", w.Body.String())
 	}
 }
 
-// 依赖故障（非 sentinel 的裸错误，如 SQL 连不上）→ fail-closed 503 + Retry-After，
-// 不得伪装成 401（docs/01 §7），错误细节不进 body。
+// A dependency failure (a bare, non-sentinel error such as an unreachable SQL server)
+// -> fail-closed 503 + Retry-After; it must not masquerade as 401 (docs/01 §7), and
+// error details must not leak into the body.
 func TestAuth_DependencyFailureFailsClosed503(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover(), Auth(
 		WithIdentityProvider(stubProvider{err: errors.New("apikey: lookup: dial tcp 10.0.0.5:3306: i/o timeout")}),
@@ -77,13 +79,13 @@ func TestAuth_DependencyFailureFailsClosed503(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != 503 {
-		t.Errorf("status = %d, want 503 (DB 故障不能伪装成 401)", w.Code)
+		t.Errorf("status = %d, want 503 (a DB failure must not masquerade as 401)", w.Code)
 	}
 	if w.Header().Get("Retry-After") == "" {
-		t.Error("503 应带 Retry-After")
+		t.Error("503 should carry Retry-After")
 	}
 	if strings.Contains(w.Body.String(), "dial tcp") {
-		t.Errorf("SQL 错误细节不该出现在响应 body：%s", w.Body.String())
+		t.Errorf("SQL error details should not appear in the response body: %s", w.Body.String())
 	}
 }
 
@@ -117,7 +119,7 @@ func TestAuth_LoggerGetsSubAccountID(t *testing.T) {
 		WithIdentityProvider(stubProvider{user: &want}),
 	))
 	r.GET("/x", func(c *gin.Context) {
-		_ = GetRequestContext(c) // Logger 字段已删；改 ctx-aware 后这个 test 不再断言 logger
+		_ = GetRequestContext(c) // Logger field was removed; after the ctx-aware change this test no longer asserts on the logger
 		c.Status(200)
 	})
 

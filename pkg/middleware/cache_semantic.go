@@ -13,21 +13,27 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// SemanticCache 是响应缓存的进阶:按请求 prompt 的**向量相似度**命中,而非字节精确
-// 匹配——paraphrase / 措辞不同但语义相同的请求也能共享缓存。
+// SemanticCache is an advanced form of response caching: it hits based on the **vector
+// similarity** of the request prompt, rather than exact byte matching — paraphrased
+// requests with different wording but the same meaning can share a cache entry.
 //
-// 流程(命中/回写/usage 逻辑跟精确缓存共用 helper,继承 H1 毒化防线 + M4 流式兜底):
-//  1. 抽 prompt(messages 内容 + system)→ Embedder 转向量
-//  2. 在 (protocol|model) 命名空间里找 cosine 相似度 ≥ threshold 的历史条目 → 命中返回
-//  3. 未命中:tee 响应,干净 200 就连同向量存起来
+// Flow (hit/write-back/usage logic shares helpers with the exact cache, inheriting the H1
+// poisoning safeguard + M4 streaming fallback):
+//  1. Extract the prompt (messages content + system) → convert to a vector via Embedder
+//  2. Look for a prior entry with cosine similarity ≥ threshold within the (protocol|model)
+//     namespace → return it on a hit
+//  3. On a miss: tee the response, and if it's a clean 200, store it along with the vector
 //
-// **安全默认同精确缓存**:非流式 + temperature=0;X-Gateway-Cache off/on 覆盖。
-// Embed 失败 → 不缓存、正常放行(不因 embedder 报错中断请求)。
-// **注意**:语义查找需先对 prompt 取向量,embedder.Embed 在 c.Next() 前**同步**
-// 调用——embedder 慢会给 eligible 请求叠加最多一个 embed 超时的延迟(见
-// OpenAIEmbedder client.Timeout)。部署时 embedder 端点须低延迟高可用,否则
-// 语义缓存反而拖累 p99;可用 X-Gateway-Cache=off 或 temperature≠0 绕开。
-// store / embedder 任一 nil → 整个中间件 no-op。
+// **Same safety defaults as the exact cache**: non-streaming + temperature=0;
+// X-Gateway-Cache off/on override this. If Embed fails → don't cache, pass through
+// normally (an embedder error never aborts the request).
+// **Note**: a semantic lookup requires vectorizing the prompt first, and embedder.Embed is
+// called **synchronously** before c.Next() — a slow embedder adds up to one embed timeout
+// of latency to eligible requests (see OpenAIEmbedder's client.Timeout). In production the
+// embedder endpoint must be low-latency and highly available, otherwise the semantic cache
+// ends up hurting p99 instead of helping; use X-Gateway-Cache=off or temperature≠0 to work
+// around this.
+// If either store or embedder is nil, the whole middleware is a no-op.
 func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold float64, ttl time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if store == nil || embedder == nil {
@@ -59,7 +65,7 @@ func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold 
 		ctx := c.Request.Context()
 		vec, err := embedder.Embed(ctx, prompt)
 		if err != nil {
-			// embedder 抖动 → 不缓存,放行(不阻塞请求)。
+			// embedder hiccup → don't cache, pass through (don't block the request).
 			metric.Inc(metric.ResponseCacheTotal, "result", "embed_error")
 			c.Next()
 			return
@@ -84,20 +90,25 @@ func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold 
 	}
 }
 
-// SemanticCacheStore 语义缓存存储端口（Redis 实现见 pkg/respcache）。
+// SemanticCacheStore is the semantic-cache storage port (Redis implementation in pkg/respcache).
 type SemanticCacheStore interface {
-	// Lookup 在 namespace 里找与 vec 相似度 ≥ threshold 的条目；找不到返回 (_, false)。
+	// Lookup finds an entry in namespace with similarity ≥ threshold to vec; returns
+	// (_, false) if none is found.
 	Lookup(ctx context.Context, namespace string, vec []float32, threshold float64) (CachedResponse, bool)
-	// Store 把 vec + 响应存进 namespace（带 TTL；实现自行做条目上限）。
+	// Store saves vec + the response into namespace (with a TTL; the implementation is
+	// responsible for enforcing its own entry cap).
 	Store(ctx context.Context, namespace string, vec []float32, resp CachedResponse, ttl time.Duration)
 }
 
-// extractPrompt 从请求 body 抽出用于 embedding 的文本,覆盖三种客户端入口:
-//   - OpenAI / Anthropic ChatCompletion：messages 各 content + 顶层 system
-//   - OpenAI Responses：顶层 input（string 或 array）+ instructions
+// extractPrompt extracts the text to embed from the request body, covering three client
+// entry points:
+//   - OpenAI / Anthropic ChatCompletion: each message's content + the top-level system field
+//   - OpenAI Responses: the top-level input (string or array) + instructions
 //
-// content/input 是数组(多模态)时取其 JSON 串——够 embedding 用。Responses body 走
-// RawBytes(翻译前客户端原文)到这里,不覆盖它语义缓存会对 Responses 客户端静默失效。
+// When content/input is an array (multimodal), its JSON string is used as-is — good enough
+// for embedding. The Responses body reaches here via RawBytes (the client's original text
+// before translation); failing to cover it would leave the semantic cache silently
+// non-functional for Responses clients.
 func extractPrompt(body []byte) string {
 	var sb strings.Builder
 	gjson.GetBytes(body, "messages.#.content").ForEach(func(_, v gjson.Result) bool {
@@ -109,7 +120,7 @@ func extractPrompt(body []byte) string {
 		sb.WriteString(s.String())
 		sb.WriteByte('\n')
 	}
-	// Responses 协议：input 可能是 string 或 array of items。
+	// Responses protocol: input may be a string or an array of items.
 	if in := gjson.GetBytes(body, "input"); in.Exists() {
 		if in.IsArray() {
 			in.ForEach(func(_, v gjson.Result) bool {

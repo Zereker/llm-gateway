@@ -11,20 +11,21 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// tokenProvider Gemini 的认证抽象——三种凭证形态：
+// tokenProvider is Gemini's auth abstraction — three credential forms:
 //
-//	gemini-key   → AI Studio API key（x-goog-api-key 头）
-//	vertex-adc   → Application Default Credentials（Authorization: Bearer <oauth2_token>）
-//	oauth2-sa    → 嵌入的 Service Account JSON（Authorization: Bearer <oauth2_token>）
+//	gemini-key   → AI Studio API key (x-goog-api-key header)
+//	vertex-adc   → Application Default Credentials (Authorization: Bearer <oauth2_token>)
+//	oauth2-sa    → embedded Service Account JSON (Authorization: Bearer <oauth2_token>)
 //
-// session 内一次性 build；token 缓存复用 oauth2.TokenSource 内置（自动刷新）。
+// built once per session; token caching is reused from oauth2.TokenSource's
+// built-in behavior (auto-refresh).
 type tokenProvider interface {
-	// AuthHeader 返回要加到 HTTP request 的 (header_name, header_value)。
-	// 失败（OAuth refresh 错等）返回 err。
+	// AuthHeader returns the (header_name, header_value) pair to add to the
+	// HTTP request. Returns err on failure (e.g. OAuth refresh error).
 	AuthHeader(ctx context.Context) (string, string, error)
 }
 
-// newTokenProvider 按 auth.type 构造合适的 provider。
+// newTokenProvider constructs the appropriate provider based on auth.type.
 func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvider, error) {
 	switch auth.Type {
 	case domain.AuthTypeGeminiKey:
@@ -38,10 +39,10 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 		return staticAPIKey{key: p.APIKey}, nil
 
 	case domain.AuthTypeVertexADC:
-		// payload 可选 scopes；不填走 default
+		// payload may optionally specify scopes; falls back to default if omitted
 		var p domain.VertexADCAuth
 		if len(auth.Payload) > 0 {
-			_ = json.Unmarshal(auth.Payload, &p) // 失败忽略，用 default scopes
+			_ = json.Unmarshal(auth.Payload, &p) // ignore failure, use default scopes
 		}
 		scopes := p.Scopes
 		if len(scopes) == 0 {
@@ -76,7 +77,7 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 	}
 }
 
-// staticAPIKey AI Studio 用 x-goog-api-key 头。
+// staticAPIKey uses the x-goog-api-key header for AI Studio.
 type staticAPIKey struct {
 	key string
 }
@@ -85,10 +86,11 @@ func (s staticAPIKey) AuthHeader(_ context.Context) (string, string, error) {
 	return "x-goog-api-key", s.key, nil
 }
 
-// oauthBearer Vertex 走 Authorization: Bearer <oauth2 access token>。
+// oauthBearer uses Authorization: Bearer <oauth2 access token> for Vertex.
 //
-// oauth2.TokenSource 内置缓存（go-oauth2 lib），同一 source 重复 .Token() 调用
-// 大多数返回缓存 token，只在过期前自动 refresh。
+// oauth2.TokenSource has built-in caching (go-oauth2 lib); repeated .Token()
+// calls on the same source mostly return the cached token, only auto-refreshing
+// before it expires.
 type oauthBearer struct {
 	ts oauth2.TokenSource
 }
@@ -100,4 +102,3 @@ func (o *oauthBearer) AuthHeader(_ context.Context) (string, string, error) {
 	}
 	return "Authorization", "Bearer " + tok.AccessToken, nil
 }
-

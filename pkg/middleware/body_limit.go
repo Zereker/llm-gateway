@@ -6,9 +6,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// BodyLimit 限制请求体大小；超限读到 EOF 后由 http.MaxBytesReader 触发 413。
+// BodyLimit limits the request body size; once the limit is exceeded, reading
+// to EOF triggers a 413 via http.MaxBytesReader.
 //
-// maxBytes <= 0 时返回 no-op，方便各 modality 文件无脑调用而不必判 0。
+// Returns a no-op when maxBytes <= 0, so each modality file can call this
+// unconditionally without checking for zero.
 func BodyLimit(maxBytes int64) gin.HandlerFunc {
 	if maxBytes <= 0 {
 		return passthrough
@@ -20,5 +22,6 @@ func BodyLimit(maxBytes int64) gin.HandlerFunc {
 	}
 }
 
-// passthrough 是不做任何事的 middleware，让 0-value 配置可以无差别注册。
+// passthrough is a middleware that does nothing, so zero-value configuration
+// can still be registered uniformly.
 func passthrough(c *gin.Context) { c.Next() }

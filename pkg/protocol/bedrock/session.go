@@ -20,7 +20,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// bedrockURL 流式时把 .../invoke 换成 .../invoke-with-response-stream。
+// bedrockURL swaps .../invoke for .../invoke-with-response-stream when streaming.
 func bedrockURL(base string, streaming bool) string {
 	if !streaming || strings.HasSuffix(base, "/invoke-with-response-stream") {
 		return base
@@ -28,16 +28,16 @@ func bedrockURL(base string, streaming bool) string {
 	if strings.HasSuffix(base, "/invoke") {
 		return base[:len(base)-len("/invoke")] + "/invoke-with-response-stream"
 	}
-	return base // 非标准 URL：原样（deployer 可能已直接给流式端点）
+	return base // non-standard URL: leave as-is (deployer may already point at the streaming endpoint)
 }
 
-// bedrockAnthropicVersion 是 Bedrock 上 Anthropic 模型必需的 body 字段值。
+// bedrockAnthropicVersion is the required body field value for Anthropic models on Bedrock.
 const bedrockAnthropicVersion = "bedrock-2023-05-31"
 
-// signer 进程级共享——v4.Signer 无 per-call 可变状态，SignHTTP 并发安全。
+// signer is shared process-wide — v4.Signer has no per-call mutable state, so SignHTTP is concurrency-safe.
 var signer = v4.NewSigner()
 
-// session 管 Bedrock 的 HTTP 层（body 改写 + SigV4 签名）。协议 shape 复用 Anthropic。
+// session handles Bedrock's HTTP layer (body rewriting + SigV4 signing). The protocol shape is reused from Anthropic.
 type session struct {
 	ctx context.Context
 	ep  *domain.Endpoint
@@ -48,7 +48,7 @@ func newSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvel
 	return &session{ctx: c, ep: ep, env: env}
 }
 
-// BuildRequest 改写 body（Anthropic→Bedrock）后 SigV4 签名。
+// BuildRequest rewrites the body (Anthropic→Bedrock) and then applies a SigV4 signature.
 func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Request, error) {
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("bedrock: ep.routing.url empty")
@@ -64,8 +64,9 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 		return nil, errors.New("bedrock: aws-sigv4 auth needs access_key / secret_key / region")
 	}
 
-	// 客户端要流式 → 用 invoke-with-response-stream 端点（响应是 AWS event-stream，
-	// 由 Factory.DecodeTransport 解帧成 Anthropic SSE）。stream 标志在改写里会被删掉。
+	// Client wants streaming → use the invoke-with-response-stream endpoint (the
+	// response is AWS event-stream, decoded into Anthropic SSE by
+	// Factory.DecodeTransport). The stream flag is stripped during the rewrite below.
 	streaming := gjson.GetBytes(body, "stream").Bool()
 	reqBody, err := toBedrockBody(body)
 	if err != nil {
@@ -76,7 +77,7 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
-	// 先 quirks header，再协议必需 header（覆盖）。
+	// Quirks headers first, then protocol-required headers (which override them).
 	for k, vs := range extraHeaders {
 		for _, v := range vs {
 			req.Header.Add(k, v)
@@ -85,7 +86,7 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	// SigV4 签名（官方 signer）。payloadHash = hex(sha256(body))。
+	// SigV4 signature (official signer). payloadHash = hex(sha256(body)).
 	sum := sha256.Sum256(reqBody)
 	creds := awssdk.Credentials{AccessKeyID: auth.AccessKey, SecretAccessKey: auth.SecretKey}
 	if err := signer.SignHTTP(s.ctx, creds, req, hex.EncodeToString(sum[:]), "bedrock", auth.Region, time.Now()); err != nil {
@@ -94,12 +95,13 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	return req, nil
 }
 
-// toBedrockBody 把 Anthropic Messages body 改成 Bedrock InvokeModel body：
-//   - 删顶层 model（modelId 在 URL 里）
-//   - 补 anthropic_version（Bedrock 必需）
-//   - 删 stream（v1 只做非流式 InvokeModel）
+// toBedrockBody turns an Anthropic Messages body into a Bedrock InvokeModel body:
+//   - removes the top-level model field (modelId is already in the URL)
+//   - fills in anthropic_version (required by Bedrock)
+//   - removes stream (v1 only does non-streaming InvokeModel)
 //
-// 用 map[string]RawMessage 保留其余字段原值，不重解析 messages/tools。
+// Uses map[string]RawMessage to preserve the other fields' original values without
+// re-parsing messages/tools.
 func toBedrockBody(body []byte) ([]byte, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
@@ -113,8 +115,8 @@ func toBedrockBody(body []byte) ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// Close 幂等 no-op。
+// Close is an idempotent no-op.
 func (s *session) Close() error { return nil }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ protocol.Session = (*session)(nil)

@@ -4,28 +4,33 @@ import (
 	"context"
 )
 
-// EndpointReader gateway 数据平面（M7 Schedule middleware）的 endpoints 读接口。
+// EndpointReader is the endpoints read interface for the gateway data plane
+// (M7 Schedule middleware).
 //
-// **v0.3 改动**：去 accountID 参数——endpoints 是全局上游池，不再 per-account。
-// 未来 BYOK（account 自带 endpoint）需要时再加 nullable account_id 过滤。
+// **v0.3 change**: dropped the accountID parameter — endpoints are now a
+// global upstream pool, no longer per-account. Add back a nullable
+// account_id filter later if BYOK (account brings its own endpoint) is needed.
 //
-// 写直接走 SQL（endpoints 表）——本仓库不带控制平面。
+// Writes go straight through SQL (the endpoints table) — this repo ships no control plane.
 //
-// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调用）。
+// Implementations MUST be safe for concurrent use (called by multiple gin
+// handler goroutines at once).
 type EndpointReader interface {
-	// ListForModel 返回 (model, group) 匹配的全部候选 endpoints，按 weight DESC 排序。
-	// M7 LimitReadFilter 据此遍历做 endpoint quota 检查（第一个未超限的入选）。
-	// 找不到任何候选时返回空切片 + nil error；M7 自己 abort 503。
+	// ListForModel returns all candidate endpoints matching (model, group),
+	// sorted by weight DESC. M7 LimitReadFilter iterates over this to check
+	// endpoint quota (the first one not over limit is selected). Returns an
+	// empty slice + nil error when no candidate is found; M7 aborts with 503 itself.
 	ListForModel(c context.Context, model, group string) ([]*Endpoint, error)
 
-	// PickForModel 从 (model, group) 匹配的 endpoints 里选第一个；M7 v0.1 简化路径用。
-	// 不参与 quota / cooldown / weight 等筛选——这些在 ListForModel + Filter 链里做。
-	// 找不到时返回错误。
+	// PickForModel selects the first endpoint matching (model, group); used
+	// by M7's v0.1 simplified path. Does not participate in quota / cooldown /
+	// weight filtering — that's done in the ListForModel + Filter chain.
+	// Returns an error when none is found.
 	PickForModel(c context.Context, model, group string) (*Endpoint, error)
 
-	// GetByID 按 id 精确取一条。
+	// GetByID fetches exactly one record by id.
 	GetByID(c context.Context, id int64) (*Endpoint, error)
 
-	// List 返回所有未删 endpoint（健康探针 / 巡检用）。
+	// List returns all non-deleted endpoints (used by health probes / inspection).
 	List(c context.Context) ([]*Endpoint, error)
 }

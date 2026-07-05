@@ -4,80 +4,88 @@ import (
 	"time"
 )
 
-// RequestContext 一次 HTTP 请求的全链路可变状态。
+// RequestContext is the full-pipeline mutable state for a single HTTP request.
 //
-// 字段定义参见 docs/architecture/01-request-pipeline.md §3。
+// See docs/architecture/01-request-pipeline.md §3 for field definitions.
 //
-// 写入规则：
-//   - 每个字段标注了写入它的 middleware（M1-M10）
-//   - 后注册的 middleware 不应改写前者已写入的字段（除注释明确允许）
-//   - Handler / Adapter 视为只读消费者；Usage / Error / SchedulingDecision 是响应阶段产物
+// Write rules:
+//   - Each field is annotated with the middleware (M1-M10) that writes it
+//   - A later-registered middleware should not overwrite a field already written by an earlier one (unless a comment explicitly allows it)
+//   - Handler / Adapter are treated as read-only consumers; Usage / Error / SchedulingDecision are response-phase products
 //
-// 读取规则：
-//   - 通过 pkg/middleware.GetRequestContext(c) 取出，杜绝裸调 c.MustGet/c.Get
+// Read rules:
+//   - Obtained via pkg/middleware.GetRequestContext(c); bare c.MustGet/c.Get calls are forbidden
 type RequestContext struct {
-	// === M1 TraceContext 写入 ===
+	// === Written by M1 TraceContext ===
 	//
-	// trace_id / span_id **不**作为 RC 字段——它们是 OTel SpanContext 的内容；
-	// 要拿 string 形态用 middleware.TraceIDFromCtx 提取。这避免双源 drift。
-	RequestID string    // 形如 req_<12hex>；同请求唯一；客户端报障定位用
+	// trace_id / span_id are **not** RC fields — they belong to the OTel
+	// SpanContext; use middleware.TraceIDFromCtx to extract the string form.
+	// This avoids a dual-source drift.
+	RequestID string // shaped like req_<12hex>; unique per request; used to locate client-reported issues
 	StartTime time.Time
 
-	// === M2 Auth 写入 ===
+	// === Written by M2 Auth ===
 	Identity UserIdentity
 
-	// === M3 Envelope 写入 ===
+	// === Written by M3 Envelope ===
 	Envelope *RequestEnvelope
 
-	// === M3 Envelope 写入默认值；后续 middleware 可覆盖（多租户 / 灰度场景） ===
+	// === Default written by M3 Envelope; later middleware may override it (multi-tenant / canary scenarios) ===
 	//
-	// 类型 = protocol.Lookup（用 any 是为了避 pkg/domain → pkg/dispatch →
-	// pkg/protocol → pkg/protocol → pkg/domain 循环依赖）。访问走
-	// middleware.HandlersFrom(rc) 类型安全 helper，不要直接 type-assert。
+	// Type = protocol.Lookup (using any to avoid a pkg/domain → pkg/dispatch →
+	// pkg/protocol → pkg/protocol → pkg/domain import cycle). Access via the
+	// type-safe helper middleware.HandlersFrom(rc); don't type-assert directly.
 	//
-	// **v0.6 融合**：原 v0.5 把 adapter / translator 两个独立 lookup 挂在 RC 上
-	// （rc.Adapters + rc.Translators），消费侧两次查找；v0.6 融合成单一
-	// protocol.Lookup，consumer 只需要 (endpoint, srcProto) → Handler 一次。
+	// **v0.6 merge**: v0.5 originally hung two independent lookups, adapter
+	// and translator, on the RC (rc.Adapters + rc.Translators), requiring
+	// two lookups on the consumer side; v0.6 merged them into a single
+	// protocol.Lookup, so a consumer only needs one (endpoint, srcProto) → Handler lookup.
 	//
-	// 默认值 protocol.DefaultLookup 包装全局 adapter + translator registry。
+	// The default value protocol.DefaultLookup wraps the global adapter + translator registry.
 	Handlers any
 
-	// === M5 ModelService 写入（原始请求 model） ===
+	// === Written by M5 ModelService (the originally requested model) ===
 	//
-	// **重要**：M5 不查 active pricing（docs/01 §7、docs/05 §6）。Pricing 匹配由
-	// 下游计费平台按 Usage Event 的 RequestTime 完成；网关不维护 PricingSnapshot。
+	// **Important**: M5 does not query active pricing (docs/01 §7, docs/05
+	// §6). Pricing matching is done by the downstream billing platform based
+	// on the Usage Event's RequestTime; the gateway does not maintain a
+	// PricingSnapshot.
 	ModelService *ModelService
 
-	// === M5 ModelService 写入（预解析的尝试序列） ===
+	// === Written by M5 ModelService (the pre-resolved attempt sequence) ===
 	//
-	// ModelChain[0] = primary（== ModelService）；后续 = X-Gateway-Fallback-Models
-	// 按声明顺序去重并经过 catalog + subscription 校验后保留的 fallback model。
-	// 未声明 fallback 时长度 = 1。M7 outer loop 直接遍历这个序列，不再重做 M5。
+	// ModelChain[0] = primary (== ModelService); the rest are fallback
+	// models from X-Gateway-Fallback-Models, deduplicated in declared order
+	// and kept after passing catalog + subscription validation. Length = 1
+	// when no fallback is declared. The M7 outer loop iterates this sequence
+	// directly instead of redoing M5.
 	ModelChain []*ModelService
 
-	// === M7 写入（实际成功 model） ===
+	// === Written by M7 (the model that actually succeeded) ===
 	//
-	// 跨 model fallback 时 RoutedModelService != ModelService。
-	// 没 fallback 时 RoutedModelService == ModelService。
+	// RoutedModelService != ModelService on cross-model fallback.
+	// RoutedModelService == ModelService when there's no fallback.
 	RoutedModelService *ModelService
 
-	// === M6 Limit 写入 ===
-	// nil = 没有任何 quota policy 应用到本请求。
+	// === Written by M6 Limit ===
+	// nil = no quota policy applies to this request.
 	RateLimit *RateLimitState
 
-	// === M7 Schedule 写入 ===
+	// === Written by M7 Schedule ===
 	Endpoint *Endpoint
 
-	// === 响应阶段写入（M7 内部 / M10） ===
+	// === Written during the response phase (inside M7 / by M10) ===
 	Usage              *Usage
 	Error              *AdapterError
 	SchedulingDecision *SchedulingDecision
 
-	// === 扩展点 ===
+	// === Extension point ===
 	//
-	// **context.Context 不在 RC 里**：单源真相是 `c.Request.Context()`，每个 mw
-	// 通过 `c.Request = c.Request.WithContext(ctx)` 接力。把 ctx 字段挂在 mutable
-	// struct 上违反 Go 「context is values, not state」原则，还会跟 gin 原生
-	// `c.Request.Context()` drift（M1 之后只更新 RC.Ctx 不更新 c.Request 时丢 span）。
-	Extras map[string]any // 临时性 / 实验性字段
+	// **context.Context is not on RC**: the single source of truth is
+	// `c.Request.Context()`, relayed by each middleware via
+	// `c.Request = c.Request.WithContext(ctx)`. Hanging a ctx field on a
+	// mutable struct violates Go's "context is values, not state" principle,
+	// and would drift from gin's native `c.Request.Context()` (a span gets
+	// lost if, after M1, only RC.Ctx is updated but not c.Request).
+	Extras map[string]any // transient / experimental fields
 }

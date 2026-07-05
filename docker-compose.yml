@@ -1,23 +1,24 @@
-# 本地开发 stack——只包含 gateway 跑起来需要的底层 infra：
-#   - mysql       业务数据（model_services / endpoints / api_keys / pricing 等）
-#   - redis       ratelimit bucket store + scheduler cooldown 状态
-#   - redpanda    usage event Kafka 投递（billing.usage.recorded.v1）
+# Local dev stack -- contains only the underlying infra needed to run the gateway:
+#   - mysql       business data (model_services / endpoints / api_keys / pricing, etc.)
+#   - redis       ratelimit bucket store + scheduler cooldown state
+#   - redpanda    usage event Kafka delivery (billing.usage.recorded.v1)
 #
-# 命令速查：
-#   docker compose up -d        # 起 stack
-#   docker compose down -v      # 全清（数据卷一起删）
+# Command cheat sheet:
+#   docker compose up -d        # bring up the stack
+#   docker compose down -v      # tear down everything (volumes included)
 #
-# 上层进程（gateway / mockupstream）跑在宿主：
-#   make run-gateway       # 启动期自跑 infra.Migrate 建表
-#   make run-mockupstream  # 调试用 mock 上游（接 mockupstream 见 cmd/mockupstream）
+# Upper-level processes (gateway / mockupstream) run on the host:
+#   make run-gateway       # runs infra.Migrate at startup to create tables
+#   make run-mockupstream  # mock upstream for debugging (see cmd/mockupstream)
 #
-# 端口映射（host → container）：
-#   3306  → mysql
-#   6379  → redis
-#   9092  → redpanda kafka
+# Port mapping (host -> container):
+#   3306  -> mysql
+#   6379  -> redis
+#   9092  -> redpanda kafka
 #
-# **数据新鲜度**：repo 层用 TTL 缓存（默认 30s）；deployer SQL 改完业务表
-# （endpoints / api_keys / quota_policies 等）后 ~30s 内 gateway 看到新值。
+# **Data freshness**: the repo layer uses a TTL cache (default 30s); after the deployer
+# updates business tables via SQL (endpoints / api_keys / quota_policies, etc.), the
+# gateway picks up the new values within ~30s.
 
 services:
 
@@ -83,7 +84,7 @@ services:
       retries: 20
 
   redpanda-init:
-    # 一次性：预建 billing 用的 topic（gateway outbox 投递目的地）
+    # one-shot: pre-creates the topic used for billing (the gateway outbox's delivery target)
     image: redpandadata/redpanda:latest
     container_name: llm-gateway-redpanda-init
     depends_on:

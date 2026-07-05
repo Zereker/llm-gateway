@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Protocol 客户端使用的协议族。
+// Protocol is the protocol family used by the client.
 type Protocol int
 
 const (
@@ -13,10 +13,10 @@ const (
 	ProtoOpenAI             // /v1/chat/completions, /v1/embeddings, /v1/images, ...
 	ProtoAnthropic          // /v1/messages
 	ProtoGemini             // /v1beta/models/.../generateContent
-	ProtoBedrock            // AWS Bedrock 格式
-	ProtoCustom             // 厂商自定义；Adapter 自行解释
-	ProtoResponses          // OpenAI Responses API（/v1/responses；2024 H2 推出的新协议）
-	ProtoCohere             // Cohere v2 /v2/chat（message.content 数组 + usage.tokens 嵌套）
+	ProtoBedrock            // AWS Bedrock format
+	ProtoCustom             // vendor-custom; the Adapter interprets it itself
+	ProtoResponses          // OpenAI Responses API (/v1/responses; a new protocol introduced in 2024 H2)
+	ProtoCohere             // Cohere v2 /v2/chat (message.content array + nested usage.tokens)
 )
 
 func (p Protocol) String() string {
@@ -40,8 +40,9 @@ func (p Protocol) String() string {
 	}
 }
 
-// ParseProtocol 反 String()——SQL VARCHAR 列读出来转 Protocol。
-// 未知字符串返回 ProtoUnknown（caller 自行决定如何处理）。
+// ParseProtocol is the inverse of String() — converts a value read from a SQL
+// VARCHAR column back into a Protocol.
+// An unknown string returns ProtoUnknown (the caller decides how to handle it).
 func ParseProtocol(s string) Protocol {
 	switch s {
 	case "openai":
@@ -63,14 +64,15 @@ func ParseProtocol(s string) Protocol {
 	}
 }
 
-// MarshalJSON 把 Protocol 序列化成字符串（HTTP / 日志显示给人看）。
+// MarshalJSON serializes Protocol to a string (for human-readable HTTP / log display).
 func (p Protocol) MarshalJSON() ([]byte, error) {
 	return json.Marshal(p.String())
 }
 
-// UnmarshalJSON 接受字符串形式（"openai" / "anthropic" / ...）。
+// UnmarshalJSON accepts the string form ("openai" / "anthropic" / ...).
 //
-// 严格模式：未知值返 error，避免 配置错协议名静默落库。
+// Strict mode: an unknown value returns an error, so a misconfigured protocol
+// name doesn't get silently persisted.
 func (p *Protocol) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {

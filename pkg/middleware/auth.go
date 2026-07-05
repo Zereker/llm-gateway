@@ -14,21 +14,23 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// IdentityProvider M2 Auth 依赖的凭证 → 身份解析 port。
+// IdentityProvider is the credentials → identity resolution port depended on by M2 Auth.
 //
-// 接口是 middleware-owned；实现者（pkg/repo.SQLAPIKeyProvider 等）按自己的领域
-// 写代码、顺便满足这个 port。SQL 装配的小适配层放在 cmd/gateway/middleware_adapters.go
-// （避免 middleware → ratelimit → repo → middleware 的 import cycle）。
+// The interface is middleware-owned; implementers (pkg/repo.SQLAPIKeyProvider, etc.)
+// write code for their own domain and happen to satisfy this port. The small SQL
+// wiring adapter lives in cmd/gateway/middleware_adapters.go (to avoid a
+// middleware → ratelimit → repo → middleware import cycle).
 //
-// Implementations MUST be safe for concurrent use（多 gin handler goroutine 同时调）。
+// Implementations MUST be safe for concurrent use (called concurrently from
+// multiple gin handler goroutines).
 type IdentityProvider interface {
 	Resolve(ctx context.Context, creds *domain.Credentials) (*domain.UserIdentity, error)
 }
 
-// AuthOption 配置 Auth middleware。
+// AuthOption configures the Auth middleware.
 //
-// 走 otelgin v0.68.0 同款 interface-Option 模式：cfg 在 Auth() 启动期一次性 build，
-// hot path 闭包持有 tracer，per-request 0 lookup。
+// Follows the same interface-Option pattern as otelgin v0.68.0: cfg is built once
+// at Auth() startup, the hot-path closure holds the tracer, zero per-request lookup.
 type AuthOption interface {
 	apply(*authConfig)
 }
@@ -37,25 +39,27 @@ type authOptionFunc func(*authConfig)
 
 func (f authOptionFunc) apply(c *authConfig) { f(c) }
 
-// authConfig Auth middleware 私有配置。
+// authConfig holds private configuration for the Auth middleware.
 type authConfig struct {
 	provider IdentityProvider
 }
 
-// WithIdentityProvider 注入 IdentityProvider 实现。必填；缺则 Auth() 构造期 panic。
+// WithIdentityProvider injects an IdentityProvider implementation. Required;
+// Auth() panics at construction time if missing.
 func WithIdentityProvider(p IdentityProvider) AuthOption {
 	return authOptionFunc(func(c *authConfig) { c.provider = p })
 }
 
-// Auth 是 M2：从 header 提取凭证 → 调 IdentityProvider → 写 rc.Identity。
+// Auth is M2: extracts credentials from headers → calls IdentityProvider → writes rc.Identity.
 //
-// 失败行为（统一走 abort → M9 写出 JSON）：
-//   - 缺凭证 → 401 / ErrPermanent / "missing credentials"
-//   - Provider 返回错误 → 401 / ErrPermanent / "invalid credentials: <err>"
+// Failure behavior (all go through abort → M9 writes out JSON):
+//   - Missing credentials → 401 / ErrPermanent / "missing credentials"
+//   - Provider returns an error → 401 / ErrPermanent / "invalid credentials: <err>"
 //
-// 成功后：
-//   - rc.Identity 字段全部填充
-//   - sub_account_id 写入 OTel baggage；trace.CtxHandler 让所有后续 log record 自动带 sub_account_id 字段
+// On success:
+//   - All rc.Identity fields are populated
+//   - sub_account_id is written into OTel baggage; trace.CtxHandler makes all
+//     subsequent log records automatically carry the sub_account_id field
 func Auth(opts ...AuthOption) gin.HandlerFunc {
 	cfg := authConfig{}
 	for _, opt := range opts {
@@ -80,11 +84,14 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 
 		u, err := cfg.provider.Resolve(ctx, creds)
 		if err != nil {
-			// 错误分两类（docs/01 §5 + §7；sentinel 契约见 domain.ErrInvalidCredentials）：
-			//   凭证无效  → 401；固定文案，不带 err 细节（不细分 unknown/disabled/
-			//               expired，防枚举；也防内部信息泄漏）
-			//   依赖故障  → fail-closed 503 + Retry-After；不得伪装成 401。
-			//               细节只进日志，不进响应 body。
+			// Errors fall into two classes (docs/01 §5 + §7; sentinel contract in
+			// domain.ErrInvalidCredentials):
+			//   invalid credentials → 401; fixed message, no err detail (does not
+			//               distinguish unknown/disabled/expired, to prevent
+			//               enumeration and internal info leakage)
+			//   dependency failure  → fail-closed 503 + Retry-After; must not be
+			//               disguised as a 401. Details go to logs only, never
+			//               into the response body.
 			if errors.Is(err, domain.ErrInvalidCredentials) {
 				metric.Inc(metric.AuthTotal, "result", "invalid")
 				abortWithCode(c, 401, domain.ErrPermanent, domain.ErrCodeUnauthorized, "invalid credentials")
@@ -111,14 +118,14 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 	}
 }
 
-// extractCredentials 从请求头提取 Credentials。
+// extractCredentials extracts Credentials from the request headers.
 //
-// 优先级（同字段被覆盖时后者胜）：
-//  1. Authorization: Bearer xxx → BearerToken（兼容 OpenAI / Anthropic SDK）
-//     若 X-API-Key 未设置，同时也填入 APIKey
-//  2. X-API-Key: xxx → APIKey（覆盖上面 Bearer 同步过来的值）
+// Priority (when the same field is set by both, the latter wins):
+//  1. Authorization: Bearer xxx → BearerToken (compatible with OpenAI / Anthropic SDK)
+//     If X-API-Key is not set, this also fills in APIKey
+//  2. X-API-Key: xxx → APIKey (overrides the value synced from Bearer above)
 //
-// 没有任何凭证时返回 nil。
+// Returns nil if there are no credentials at all.
 func extractCredentials(c *gin.Context) *domain.Credentials {
 	creds := &domain.Credentials{Headers: make(map[string]string, len(c.Request.Header))}
 	for k, v := range c.Request.Header {

@@ -12,18 +12,19 @@ import (
 	"testing"
 )
 
-// samplePayload 模拟 M10 Tracing marshal 出来的典型 UsageEvent JSON——
-// 包含 envelope + 嵌套 Usage / Meta 字段，长度约 400-500 B。
+// samplePayload simulates a typical UsageEvent JSON marshaled by M10 Tracing —
+// includes the envelope + nested Usage / Meta fields, roughly 400-500 B long.
 var samplePayload = []byte(`{"schema_version":"usage.v1","event_id":"01JABCDEF1234567890ABCDEF","request_id":"req_abc123def456","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","usage":{"input":128,"output":256,"total":384,"source":"upstream","confidence":"exact","meta":{"account_id":"acct_alice","sub_account_id":"team1","api_key_id":"key_xyz","model":"gpt-4o","vendor":"openai","endpoint_id":"ep_openai_main","start_time":"2026-05-17T10:00:00Z","end_time":"2026-05-17T10:00:02Z"}},"created_at":"2026-05-17T10:00:02Z"}`)
 
 // =============================================================================
-// 并发正确性：去掉显式 mutex 后是否仍保证 JSONL 行不交错
+// Concurrency correctness: does removing the explicit mutex still guarantee JSONL lines don't interleave
 // =============================================================================
 
-// TestFileOutbox_ConcurrentPublishDoesNotInterleave 验证 *os.File.Write 内部
-// fdmutex 在单次 Write 调用下保证 JSONL 行原子，即使多 goroutine 并发也不会
-// 把一行劈成两半（写 4000 行后用 bufio.Scanner 按行扫，每行必须能反序列化为
-// 完整 payload）。
+// TestFileOutbox_ConcurrentPublishDoesNotInterleave verifies that *os.File.Write's
+// internal fdmutex guarantees JSONL line atomicity under a single Write call,
+// so even with multiple goroutines concurrently publishing, a line never
+// gets split in half (writes 4000 lines, then scans line-by-line with
+// bufio.Scanner — every line must deserialize into the complete payload).
 func TestFileOutbox_ConcurrentPublishDoesNotInterleave(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "u.log")
@@ -54,7 +55,7 @@ func TestFileOutbox_ConcurrentPublishDoesNotInterleave(t *testing.T) {
 	wg.Wait()
 	_ = o.Close()
 
-	// 验证：每行原样等于 samplePayload，没有错位 / 截断 / 交错
+	// Verify: every line equals samplePayload exactly, with no misalignment / truncation / interleaving
 	f, _ := os.Open(path)
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -78,7 +79,7 @@ func TestFileOutbox_ConcurrentPublishDoesNotInterleave(t *testing.T) {
 }
 
 // =============================================================================
-// Benchmark: FileOutbox 当前实现（优化后）
+// Benchmark: FileOutbox's current implementation (optimized)
 // =============================================================================
 
 func BenchmarkFileOutbox_Publish(b *testing.B) {
@@ -115,13 +116,14 @@ func BenchmarkFileOutbox_PublishParallel(b *testing.B) {
 }
 
 // =============================================================================
-// Benchmark: slog.JSONHandler 作为对照（写同一个 file，相似 payload 字段）
+// Benchmark: slog.JSONHandler as a control (writes to the same file, similar payload fields)
 // =============================================================================
 
-// BenchmarkSlog_JSONFile 用 slog 写等价的 JSON 到文件做对照。
+// BenchmarkSlog_JSONFile uses slog to write equivalent JSON to a file as a control.
 //
-// 注意：slog 不能完全替代 FileOutbox（error 被吞 + 强制 time/level/msg 包装），
-// 这里只为性能对比；详见 docs/05 §5 + FileOutbox 注释。
+// Note: slog cannot fully replace FileOutbox (errors are swallowed + it
+// forces a time/level/msg wrapper) — this is only for performance
+// comparison; see docs/05 §5 + the FileOutbox comment for details.
 func BenchmarkSlog_JSONFile(b *testing.B) {
 	dir := b.TempDir()
 	f, _ := os.Create(filepath.Join(dir, "slog.log"))
@@ -148,7 +150,7 @@ func BenchmarkSlog_JSONFile(b *testing.B) {
 	}
 }
 
-// BenchmarkSlog_JSONFileParallel slog 并发版本（slog handler 内部用 mutex 串行化 Write）
+// BenchmarkSlog_JSONFileParallel is the concurrent version of slog (slog's handler internally serializes Write with a mutex)
 func BenchmarkSlog_JSONFileParallel(b *testing.B) {
 	dir := b.TempDir()
 	f, _ := os.Create(filepath.Join(dir, "slog.log"))
@@ -172,11 +174,12 @@ func BenchmarkSlog_JSONFileParallel(b *testing.B) {
 }
 
 // =============================================================================
-// Benchmark: DualWriteOutbox（file + 空 Kafka 桩）
+// Benchmark: DualWriteOutbox (file + a no-op Kafka stub)
 // =============================================================================
 
-// noopKafka 模拟 AsyncKafkaOutbox.Publish 的"入队即返回"语义——实际的
-// AsyncKafkaOutbox 是 channel send，跟 noop 在 hot path 上开销同量级。
+// noopKafka simulates AsyncKafkaOutbox.Publish's "return as soon as
+// enqueued" semantics — the real AsyncKafkaOutbox does a channel send,
+// which is the same order of magnitude of overhead as a no-op on the hot path.
 type noopKafka struct{}
 
 func (noopKafka) Publish(_ context.Context, _ *OutboxEvent) error { return nil }
@@ -221,5 +224,5 @@ func BenchmarkDualWriteOutbox_PublishParallel(b *testing.B) {
 	})
 }
 
-// 防 unused
+// avoid unused
 var _ = strings.Contains

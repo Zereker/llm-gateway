@@ -11,13 +11,15 @@ import (
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// chunkBufPool 复用 stream forward 用的 4KiB read buffer。
+// chunkBufPool reuses the 4KiB read buffer used for stream forwarding.
 //
-// 高 QPS 流式场景下每请求 make([]byte, 4096) 会显著增加 GC 压力。
-// pool 存 *[]byte，避免 sync.Pool interface{} 装箱（Go FAQ 推荐做法）。
+// Under high-QPS streaming, allocating make([]byte, 4096) per request would
+// noticeably increase GC pressure. The pool stores *[]byte to avoid
+// sync.Pool interface{} boxing (the pattern recommended by the Go FAQ).
 //
-// 4KiB：典型 SSE chunk 几百字节到 1KiB；4KiB 一次 Read 通常拿一两个 chunk，刚好。
-// 走 io.CopyBuffer 时这个 buf 直接喂给 stdlib，零额外分配。
+// 4KiB: a typical SSE chunk is a few hundred bytes to 1KiB; one 4KiB Read
+// usually grabs one or two chunks — a good fit. When going through
+// io.CopyBuffer this buf is fed straight to stdlib, zero extra allocation.
 var chunkBufPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 4096)
@@ -25,30 +27,37 @@ var chunkBufPool = sync.Pool{
 	},
 }
 
-// ForwardResult Forward 完成后的返回值。
+// ForwardResult is the return value once Forward completes.
 //
-// Usage 可能为 nil（translator 没解析到 / 上游没返回）。
-// FeedErr 是流式过程中的中止错误（resp.Body Read / handler.Feed / Flush 出错）；
-// 非 nil 表示流已经从客户端角度看也中断（已写出的字节无法召回）。
+// Usage may be nil (translator didn't parse one out / upstream returned
+// none). FeedErr is an abort error encountered during streaming (resp.Body
+// Read / handler.Feed / Flush failed); non-nil means the stream is also
+// interrupted from the client's point of view (bytes already written can't
+// be recalled).
 //
-// TTFTMs：从 Forward 开始到首个有内容的客户端 chunk 之间的耗时（docs/05 §4）。
-// 0 表示未捕获（buffer-then-translate / 上游空响应 / handler 在 Feed 阶段不输出）。
+// TTFTMs: the elapsed time from the start of Forward to the first
+// content-bearing client chunk (docs/05 §4). 0 means it wasn't captured
+// (buffer-then-translate / empty upstream response / handler produces no
+// output during Feed).
 type ForwardResult struct {
 	Usage   *domain.Usage
 	FeedErr error
 	TTFTMs  int64
 }
 
-// startTimeKey 给 Forward 注入 "请求开始时间" 用于 TTFT 计算的 context key。
+// startTimeCtxKey is the context key used to inject the "request start
+// time" into Forward for TTFT computation.
 //
-// 如果 caller（M7）希望 TTFT 从 Sender.Send 之前开始计时（包含 BuildRequest /
-// translator / client.Do 全程），就 ctx 里塞 startTime。否则 Forward 用自己开始
-// 时刻当 baseline（仅算"客户端可见的首字节延迟"）。
+// If the caller (M7) wants TTFT timed from before Sender.Send (covering the
+// whole BuildRequest / translator / client.Do span), it stashes startTime in
+// ctx. Otherwise Forward uses its own start moment as the baseline (only
+// counting "first-byte latency visible to the client").
 type startTimeCtxKey struct{}
 
-// WithRequestStartTime 让 caller 把 "请求开始时间" 注入 ctx 供 Forward 计算 TTFT。
+// WithRequestStartTime lets the caller inject the "request start time" into
+// ctx so Forward can compute TTFT from it.
 //
-// M7 应在 Send 之前调一次：`ctx = invoker.WithRequestStartTime(ctx, time.Now())`。
+// M7 should call this once before Send: `ctx = invoker.WithRequestStartTime(ctx, time.Now())`.
 func WithRequestStartTime(ctx context.Context, t time.Time) context.Context {
 	return context.WithValue(ctx, startTimeCtxKey{}, t)
 }
@@ -60,28 +69,34 @@ func requestStartTime(ctx context.Context, fallback time.Time) time.Time {
 	return fallback
 }
 
-// Forward 把成功上游响应流式 forward 给 ResponseWriter。
+// Forward streams a successful upstream response forward to ResponseWriter.
 //
-// **w 是 stdlib `http.ResponseWriter`**：gin.ResponseWriter / echo.Response /
-// httptest.NewRecorder 全都自动满足，pkg/upstream 不绑定任何 framework。
+// **w is the stdlib `http.ResponseWriter`**: gin.ResponseWriter /
+// echo.Response / httptest.NewRecorder all satisfy it automatically —
+// pkg/upstream is not tied to any framework.
 //
-// 内部用 io.CopyBuffer 驱动 chunk 流动，写入 dst 是 translatorWriter——
-// 把 handler.Feed 包装成 io.Writer 形态：每个 chunk 经 Feed 翻译 → 客户端 Write + Flush。
-// CopyBuffer 用 chunkBufPool 拿来的 buf 直接做 read buffer，零额外分配。
+// Internally it drives chunk flow with io.CopyBuffer, writing to a
+// translatorWriter destination — which wraps handler.Feed as an io.Writer:
+// each chunk is translated by Feed → written to the client + flushed.
+// CopyBuffer uses the buf obtained from chunkBufPool directly as the read
+// buffer, zero extra allocation.
 //
-// **不能直接 io.Copy(w, resp.Body)**：每个 chunk 必须经 translator（协议翻译 /
-// moderator output 检查 / SSE 重新分帧 / usage 解析），还要在 EOF 后 handler.Flush()
-// 收尾——这两件事 io.Copy 都不知道。
+// **Cannot use io.Copy(w, resp.Body) directly**: every chunk must go through
+// the translator (protocol translation / moderator output check / SSE
+// reframing / usage parsing), and handler.Flush() must run after EOF —
+// io.Copy knows about neither of these.
 //
-// **Hook fan-out**（详见 hooks.go）：
-//   - UpstreamChunkObserver：translatorWriter.Write 入口、Feed 之前——上游原始 chunk
-//   - ClientChunkObserver：inner.Write 之后 + Flush 收尾的 finalOut——客户端实际看到的字节
+// **Hook fan-out** (see hooks.go for details):
+//   - UpstreamChunkObserver: at the entry of translatorWriter.Write, before Feed — the raw upstream chunk
+//   - ClientChunkObserver: after inner.Write + the finalOut write at Flush time — the bytes the client actually sees
 //
-// chunk 切片仅在回调期间有效；observer 要持久化必须自己 copy。
+// The chunk slice is only valid during the callback; an observer that needs
+// to persist it must copy it itself.
 //
-// **失败语义**：流式开始（Header 已写）后任何错误都不能回滚状态码。中止错误
-// 写在 ForwardResult.FeedErr，caller 自行写 rc.Error / log；客户端看到的是
-// 截断的流。
+// **Failure semantics**: once streaming has started (headers already
+// written), no error can roll back the status code. Abort errors are
+// written to ForwardResult.FeedErr; the caller writes rc.Error / logs on its
+// own — what the client sees is a truncated stream.
 func (s *Sender) Forward(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -111,7 +126,8 @@ func (s *Sender) Forward(
 
 	finalOut, usage, fErr := stream.Flush()
 	if len(finalOut) > 0 {
-		// 流式过程没输出过任何 chunk（buffer-then-translate），把 Flush 当首包记 TTFT
+		// No chunk was output during streaming (buffer-then-translate); treat
+		// Flush as the first packet for TTFT purposes.
 		if tw.ttftMs == 0 {
 			tw.ttftMs = time.Since(startTime).Milliseconds()
 		}
@@ -127,13 +143,17 @@ func (s *Sender) Forward(
 	return ForwardResult{Usage: usage, FeedErr: feedErr, TTFTMs: tw.ttftMs}
 }
 
-// streamWriter 把上游 chunk 喂给 protocol.ResponseStream.Feed，把 Feed
-// 输出 forward 给真正的 ResponseWriter + flush；同时在 Feed 两侧 fan-out hook。
+// streamWriter feeds an upstream chunk into protocol.ResponseStream.Feed,
+// forwards Feed's output to the real ResponseWriter + flushes it, and
+// fans out hooks on both sides of Feed.
 //
-// 这层包装让 io.CopyBuffer 能驱动整个流式管道（src=resp.Body, dst=streamWriter）。
+// This wrapping layer lets io.CopyBuffer drive the whole streaming pipeline
+// (src=resp.Body, dst=streamWriter).
 //
-// **Write 返回值约定**：返回 len(chunk)（原 chunk 长度，不是 Feed 输出长度）——
-// 这是 io.Copy 协议要求的"消费完整个输入"。Feed 出错时返 (0, err) 让 CopyBuffer 立即停。
+// **Write return-value convention**: returns len(chunk) (the length of the
+// original chunk, not Feed's output length) — this is what the io.Copy
+// contract requires ("the entire input was consumed"). When Feed errors, it
+// returns (0, err) so CopyBuffer stops immediately.
 type streamWriter struct {
 	inner     http.ResponseWriter
 	stream    protocol.ResponseStream
@@ -141,7 +161,7 @@ type streamWriter struct {
 	ep        *domain.Endpoint
 	hooks     hookSet
 	startTime time.Time
-	ttftMs    int64 // 首个非空客户端 chunk 写出后填；0=未捕获
+	ttftMs    int64 // filled once the first non-empty client chunk is written; 0 = not captured
 }
 
 func (tw *streamWriter) Write(chunk []byte) (int, error) {
@@ -156,7 +176,8 @@ func (tw *streamWriter) Write(chunk []byte) (int, error) {
 			return 0, werr
 		}
 		flush(tw.inner)
-		// 记 TTFT：首个非空 chunk 写出后到 startTime 的耗时（docs/05 §4）
+		// Record TTFT: elapsed time from startTime to the first non-empty
+		// chunk being written out (docs/05 §4).
 		if tw.ttftMs == 0 {
 			tw.ttftMs = time.Since(tw.startTime).Milliseconds()
 		}
@@ -165,18 +186,21 @@ func (tw *streamWriter) Write(chunk []byte) (int, error) {
 	return len(chunk), nil
 }
 
-// flush 调 http.Flusher.Flush；w 没实现 Flusher 时 noop。
+// flush calls http.Flusher.Flush; a no-op if w doesn't implement Flusher.
 //
-// 生产环境的 http.ResponseWriter（net/http stdlib server / gin / echo）都实现
-// Flusher；只有 httptest.NewRecorder 等测试桩可能不带。退化语义：等 buffer 满
-// / EOF 才送，正确性不变只是失去流式。
+// Production http.ResponseWriter implementations (net/http stdlib server /
+// gin / echo) all implement Flusher; only test stubs like
+// httptest.NewRecorder may not. Degraded semantics: data is sent only once
+// the buffer is full / at EOF — correctness is unaffected, only streaming
+// is lost.
 func flush(w http.ResponseWriter) {
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
-// copyHeaders 把上游响应头拷贝到客户端响应头（除 Content-Length，下游 server 重算）。
+// copyHeaders copies upstream response headers to the client response
+// headers (except Content-Length, which the downstream server recomputes).
 func copyHeaders(dst, src http.Header) {
 	for k, vs := range src {
 		if k == "Content-Length" {

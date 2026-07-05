@@ -1,35 +1,44 @@
 package dispatch
 
-// AttemptCap 决定本请求的最大 attempt 数。
+// AttemptCap decides the maximum number of attempts for this request.
 //
-// 默认实现 HeaderAttemptCap：cfg 默认值 + X-Gateway-Max-Attempts header
-// 只允许往更紧（更小）的方向覆盖。
+// Default implementation HeaderAttemptCap: cfg default + the
+// X-Gateway-Max-Attempts header, which is only allowed to override in the
+// tighter (smaller) direction.
 //
-// **输入是 Input 不是 RC**：dispatch 不接触 RequestContext；客户端 header 之类
-// 的 override 由 middleware 解析后塞进 Input.AttemptCapOverride 透传。
+// **The input is Input, not RC**: dispatch never touches RequestContext;
+// client-header-style overrides are parsed by middleware and passed through
+// via Input.AttemptCapOverride.
 type AttemptCap interface {
 	Resolve(in Input) int
 }
 
-// RetryPolicy 一次 Invoker.Invoke 完成后，决定 driver loop 的下一步。
+// RetryPolicy decides the driver loop's next step after one
+// Invoker.Invoke completes.
 //
-// 输入：state（read-only 投影）+ verdict（本次调用结果）
-// 输出：Action（Continue / Stream / Abort，不返 Switch——切 model 由 FallbackPolicy 管）
+// Input: state (a read-only projection) + verdict (this call's result)
+// Output: Action (Continue / Stream / Abort — never Switch, model switching
+// is FallbackPolicy's job)
 //
-// **默认实现** DefaultRetry：按 Class.IsRetryable 决定。
-// **扩展空间**：cost-aware retry / circuit breaker / exponential backoff
-// 都是实现新的 RetryPolicy，不动 Dispatcher。
+// **Default implementation** DefaultRetry: decides based on
+// Class.IsRetryable.
+// **Extension point**: cost-aware retry / circuit breaker / exponential
+// backoff are all just new RetryPolicy implementations, without touching
+// Dispatcher.
 type RetryPolicy interface {
 	Decide(s State, v Verdict) Action
 }
 
-// FallbackPolicy 当前 model 候选耗尽（Selector.Select 返 nil）时，决定下一步。
+// FallbackPolicy decides the next step when the current model's candidates
+// are exhausted (Selector.Select returned nil).
 //
-// 输入：state（含 RemainingModels）
-// 输出：Action（Switch / Abort，不返 Continue / Stream）
+// Input: state (including RemainingModels)
+// Output: Action (Switch / Abort — never Continue / Stream)
 //
-// **默认实现** ModelChainFallback：按 rc.ModelChain 顺序切。
-// **扩展空间**：race fallback（并发试多个 model）/ weighted fallback 等。
+// **Default implementation** ModelChainFallback: switches in rc.ModelChain
+// order.
+// **Extension point**: race fallback (try multiple models concurrently) /
+// weighted fallback, etc.
 type FallbackPolicy interface {
 	OnExhausted(s State) Action
 }

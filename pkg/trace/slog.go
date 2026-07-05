@@ -5,15 +5,17 @@ import (
 	"log/slog"
 )
 
-// SlogTracer 是 Tracer 的零依赖默认实现，把每条 Log 写到 slog。
+// SlogTracer is Tracer's zero-dependency default implementation; it writes each
+// Log call to slog.
 //
-// Span 走 NoOp（slog 本身不带 span 概念）；如需真正的 span 树，
-// 在 v1.0 用 pkg/trace/otel 替换。
+// Span is a NoOp (slog itself has no span concept); replace with pkg/trace/otel
+// in v1.0 if a real span tree is needed.
 type SlogTracer struct {
 	Logger *slog.Logger
 }
 
-// NewSlogTracer 用给定 logger 构造；nil 时退到 slog.Default()。
+// NewSlogTracer builds a tracer from the given logger; falls back to
+// slog.Default() when nil.
 func NewSlogTracer(logger *slog.Logger) *SlogTracer {
 	if logger == nil {
 		logger = slog.Default()
@@ -21,17 +23,17 @@ func NewSlogTracer(logger *slog.Logger) *SlogTracer {
 	return &SlogTracer{Logger: logger}
 }
 
-// Log 实现 Tracer.Log：把 name 作为 message、payload 作为 attr 落 slog。
+// Log implements Tracer.Log: writes name as the message and payload as an attr to slog.
 func (t *SlogTracer) Log(c context.Context, name string, payload any) {
 	t.Logger.LogAttrs(c, slog.LevelInfo, name, slog.Any("payload", payload))
 }
 
-// StartSpan 实现 Tracer.StartSpan：返回 NoOp Span，不记录 span 树。
+// StartSpan implements Tracer.StartSpan: returns a NoOp Span and records no span tree.
 func (t *SlogTracer) StartSpan(c context.Context, name string) (context.Context, Span) {
 	return c, noopSpan{}
 }
 
-// noopSpan SetAttribute / End 都不做任何事。
+// noopSpan's SetAttribute / End do nothing.
 type noopSpan struct{}
 
 func (noopSpan) SetAttribute(key string, value any) {}

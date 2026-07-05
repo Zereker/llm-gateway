@@ -12,7 +12,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// 注入一个 Identity 的小 helper（M4 只看 SubAccountID）。
+// attachIdentity is a small helper to inject an Identity (M4 only looks at SubAccountID).
 func attachIdentity(sub string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -95,5 +95,5 @@ func TestBudget_PassesSubAccountIDToGate(t *testing.T) {
 	}
 }
 
-// 兼容 import：避免 context unused 警告
+// keep the import: avoids an unused-context warning
 var _ = context.Background

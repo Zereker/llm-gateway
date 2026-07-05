@@ -13,8 +13,9 @@ import (
 	"github.com/zereker/llm-gateway/pkg/embed"
 )
 
-// keywordEmbedder 把 prompt 按关键词映射到一个固定向量——同桶的 prompt 向量相同
-// （cosine=1），跨桶正交（cosine=0）。用来确定性地测语义命中/未命中。
+// keywordEmbedder maps a prompt to a fixed vector by keyword — prompts in the same bucket
+// get the same vector (cosine=1), and buckets are orthogonal to each other (cosine=0). Used
+// to deterministically test semantic hits/misses.
 type keywordEmbedder struct{ fail bool }
 
 func (e keywordEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
@@ -32,7 +33,7 @@ func (e keywordEmbedder) Embed(_ context.Context, text string) ([]float32, error
 	}
 }
 
-// memSemanticStore 内存版 SemanticCacheStore，用真 cosine 做相似度。
+// memSemanticStore is an in-memory SemanticCacheStore that uses real cosine similarity.
 type memSemanticStore struct {
 	entries map[string][]struct {
 		vec  []float32
@@ -95,49 +96,50 @@ func chatBody(content string) string {
 	return `{"model":"m","temperature":0,"messages":[{"role":"user","content":"` + content + `"}]}`
 }
 
-// 语义命中：措辞不同但同语义(同关键词桶)的第二个请求命中第一个的缓存。
+// Semantic hit: a second request with different wording but the same meaning (same
+// keyword bucket) hits the first request's cache entry.
 func TestSemanticCache_ParaphraseHit(t *testing.T) {
 	store := newMemSemanticStore()
 	e, calls := semanticHarness(store, keywordEmbedder{})
 
-	// 首次：miss + store
+	// First call: miss + store
 	w1 := postCache(e, chatBody("what is the weather today"), "")
 	if w1.Code != 200 || *calls != 1 || store.stores != 1 {
 		t.Fatalf("miss: code=%d calls=%d stores=%d, want 200/1/1", w1.Code, *calls, store.stores)
 	}
-	// 措辞不同、同桶(weather) → 语义命中，不打 downstream
+	// Different wording, same bucket (weather) → semantic hit, doesn't reach downstream
 	w2 := postCache(e, chatBody("how's the weather looking right now"), "")
 	if *calls != 1 || w2.Header().Get(HeaderGatewayCache) != "hit" {
-		t.Fatalf("paraphrase 应语义命中: calls=%d hit=%q", *calls, w2.Header().Get(HeaderGatewayCache))
+		t.Fatalf("paraphrase should be a semantic hit: calls=%d hit=%q", *calls, w2.Header().Get(HeaderGatewayCache))
 	}
 	if w2.Body.String() != `{"resp":true}` {
-		t.Errorf("命中 body = %q", w2.Body.String())
+		t.Errorf("hit body = %q", w2.Body.String())
 	}
 }
 
-// 语义未命中：不同语义(不同桶)的请求不命中。
+// Semantic miss: requests with different meaning (different buckets) don't hit.
 func TestSemanticCache_DifferentTopicMiss(t *testing.T) {
 	store := newMemSemanticStore()
 	e, calls := semanticHarness(store, keywordEmbedder{})
 
-	postCache(e, chatBody("what is the weather"), "") // weather 桶
-	postCache(e, chatBody("write some code please"), "") // code 桶,正交 → miss
+	postCache(e, chatBody("what is the weather"), "")    // weather bucket
+	postCache(e, chatBody("write some code please"), "") // code bucket, orthogonal → miss
 	if *calls != 2 || store.stores != 2 {
-		t.Errorf("不同语义应各自 miss: calls=%d stores=%d, want 2/2", *calls, store.stores)
+		t.Errorf("different meanings should each miss: calls=%d stores=%d, want 2/2", *calls, store.stores)
 	}
 }
 
-// embedder 抖动 → 不缓存、放行（不阻塞请求）。
+// embedder hiccup → don't cache, pass through (don't block the request).
 func TestSemanticCache_EmbedErrorBypass(t *testing.T) {
 	store := newMemSemanticStore()
 	e, calls := semanticHarness(store, keywordEmbedder{fail: true})
 	postCache(e, chatBody("anything"), "")
 	if *calls != 1 || store.stores != 0 {
-		t.Errorf("embed 失败应放行不缓存: calls=%d stores=%d, want 1/0", *calls, store.stores)
+		t.Errorf("embed failure should pass through without caching: calls=%d stores=%d, want 1/0", *calls, store.stores)
 	}
 }
 
-// 非确定请求（无 temperature）默认 bypass。
+// Non-deterministic request (no temperature) bypasses by default.
 func TestSemanticCache_NonDeterministicBypass(t *testing.T) {
 	store := newMemSemanticStore()
 	e, calls := semanticHarness(store, keywordEmbedder{})
@@ -145,7 +147,7 @@ func TestSemanticCache_NonDeterministicBypass(t *testing.T) {
 	postCache(e, body, "")
 	postCache(e, body, "")
 	if *calls != 2 || store.stores != 0 {
-		t.Errorf("非确定应 bypass: calls=%d stores=%d, want 2/0", *calls, store.stores)
+		t.Errorf("non-deterministic should bypass: calls=%d stores=%d, want 2/0", *calls, store.stores)
 	}
 }
 
@@ -156,7 +158,8 @@ func TestExtractPrompt(t *testing.T) {
 	}
 }
 
-// Responses 客户端 body 用 input + instructions（无 messages）——语义缓存不能对它静默失效。
+// Responses client bodies use input + instructions (no messages) -- the semantic cache
+// must not silently stop working for them.
 func TestExtractPrompt_Responses(t *testing.T) {
 	got := extractPrompt([]byte(`{"model":"gpt-4o","input":"summarize this","instructions":"be terse"}`))
 	if !strings.Contains(got, "summarize this") || !strings.Contains(got, "be terse") {

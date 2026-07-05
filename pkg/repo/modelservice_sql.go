@@ -9,25 +9,28 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// SQLModelServiceReader 是 ModelServiceReader 的 sqlx 实现。
+// SQLModelServiceReader is the sqlx implementation of ModelServiceReader.
 //
-// **v0.3 改动**：去 account_id（model_services 是全局 catalog）；GetByModel 签名去 accountID 参数。
+// **v0.3 change**: dropped account_id (model_services is now a global
+// catalog); GetByModel's signature dropped the accountID parameter.
 type SQLModelServiceReader struct {
 	db *sqlx.DB
 }
 
-// NewSQLModelServiceReader 用现成的 *sqlx.DB 构造（不打开新连接）。
+// NewSQLModelServiceReader builds one from an existing *sqlx.DB (opens no new connection).
 func NewSQLModelServiceReader(db *sqlx.DB) *SQLModelServiceReader {
 	return &SQLModelServiceReader{db: db}
 }
 
 const msColumns = `id, service_id, model, created_at, updated_at, deleted_at`
 
-// GetByModel 实现 ModelServiceReader.GetByModel；按 model 全局查。
+// GetByModel implements ModelServiceReader.GetByModel; queries globally by model.
 //
-// **别名解析**：直查 model_services miss 时，再经 model_aliases 把 alias 重定向到
-// canonical model 查一次。别名对下游透明——返回的是 canonical ModelService，之后
-// 订阅 / 选路 / 计量全按 canonical model 走。
+// **Alias resolution**: when a direct query on model_services misses, it
+// tries once more via model_aliases, redirecting the alias to the canonical
+// model. Aliasing is transparent to downstream consumers — the returned value
+// is the canonical ModelService, and subscription / routing / metering all
+// proceed against the canonical model afterward.
 func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*ModelService, error) {
 	if model == "" {
 		return nil, errors.New("model_service: empty model name")
@@ -44,7 +47,7 @@ func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*
 		return nil, fmt.Errorf("model_service: get by model: %w", err)
 	}
 
-	// 直查 miss —— 试别名重定向（alias → canonical model → model_services）。
+	// Direct query missed -- try alias redirection (alias -> canonical model -> model_services).
 	var aliased ModelService
 	aerr := r.db.GetContext(ctx, &aliased, r.db.Rebind(
 		`SELECT `+prefixCols("ms", msColumns)+`
@@ -53,7 +56,8 @@ func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*
 		 WHERE a.alias = ? AND a.enabled = 1 AND a.deleted_at IS NULL`),
 		model)
 	if aerr != nil {
-		// 别名也没有 —— 真 not found（返 nil,nil 让 M5 走 404）；DB 故障才 wrap。
+		// No alias either -- genuinely not found (return nil, nil so M5 takes
+		// the 404 path); only a DB failure gets wrapped.
 		if errors.Is(aerr, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -62,8 +66,8 @@ func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*
 	return &aliased, nil
 }
 
-// prefixCols 给逗号分隔列名统一加表别名前缀（"id, model" → "ms.id, ms.model"）——
-// JOIN 查询里消歧用。
+// prefixCols adds a table-alias prefix to each comma-separated column name
+// ("id, model" -> "ms.id, ms.model") — used to disambiguate JOIN queries.
 func prefixCols(prefix, cols string) string {
 	var b []byte
 	field := make([]byte, 0, 16)
@@ -101,7 +105,7 @@ func trimSpace(s string) string {
 	return s[start:end]
 }
 
-// List 实现 ModelServiceReader.List；列全部未删 records（全局 catalog）。
+// List implements ModelServiceReader.List; lists all non-deleted records (the global catalog).
 func (r *SQLModelServiceReader) List(ctx context.Context) ([]*ModelService, error) {
 	var rows []ModelService
 	if err := r.db.SelectContext(ctx, &rows,
@@ -117,5 +121,5 @@ func (r *SQLModelServiceReader) List(ctx context.Context) ([]*ModelService, erro
 	return out, nil
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ ModelServiceReader = (*SQLModelServiceReader)(nil)

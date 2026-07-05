@@ -1,43 +1,47 @@
-// Package openai 是 OpenAI 协议（chat completions）的 vendor 实现。
+// Package openai is the vendor implementation of the OpenAI protocol (chat
+// completions).
 //
-// init() 注册到 protocol registry：(vendor, srcProto) → Handler，覆盖三个 src
-// 协议组合：
+// init() registers into the protocol registry: (vendor, srcProto) → Handler,
+// covering three src protocol combinations:
 //
-//	(openai, OpenAI)     ── identity 透传
+//	(openai, OpenAI)     ── identity passthrough
 //	(openai, Anthropic)  ── anthropic_openai translator
 //	(openai, Responses)  ── responses_openai translator
 //
-// 想接入 OpenAI 时在 cmd/gateway/main.go 加 blank import：
+// To wire up OpenAI, add a blank import in cmd/gateway/main.go:
 //
 //	import _ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 //
-// 用作 OpenAI-compatible 上游（Azure / DeepSeek / vLLM-OpenAI / Ollama）也直接复用本 Factory，
-// 只要 Endpoint.URL 指向各自的 /v1/chat/completions 路径——别名注册见 aliases.go。
+// This Factory is also reused directly for OpenAI-compatible upstreams
+// (Azure / DeepSeek / vLLM-OpenAI / Ollama), as long as Endpoint.URL points
+// at their respective /v1/chat/completions path — see aliases.go for alias
+// registration.
 package openai
 
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// Factory 实现 protocol.Factory——给 protocol.Combine 内部包成 Handler 用。
+// Factory implements protocol.Factory — used by protocol.Combine to wrap
+// this into a Handler internally.
 type Factory struct{}
 
-// Metadata 返回静态元信息。
+// Metadata returns static metadata.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
 		Vendor: "openai",
 		SupportedModalities: []domain.Modality{
 			domain.ModalityChat,
 			domain.ModalityEmbedding,
-			domain.ModalityImage, // /v1/images/generations 等；deployer 配 endpoint 时 routing.url 指向 image API
+			domain.ModalityImage, // e.g. /v1/images/generations; the deployer points routing.url at the image API when configuring the endpoint
 		},
 	}
 }
 
-// NewSession 为本次请求构造 Session。
+// NewSession builds a Session for this request.
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	return newSession(c, ep, env), nil
 }

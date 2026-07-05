@@ -1,4 +1,5 @@
-// Package router 装配 gin.Engine：注册按模态拆分的 LLM 路由 + 操作端点。
+// Package router assembles the gin.Engine: registers the modality-split LLM
+// routes plus operational endpoints.
 package router
 
 import (
@@ -11,18 +12,22 @@ import (
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
-// Deps 是 NewEngine 的依赖集合：直接持有 middleware 各 port 的实现引用 +
-// 几个 pre-middleware 标量参数。
+// Deps is the dependency set for NewEngine: it directly holds reference
+// implementations for each middleware port, plus a handful of pre-middleware
+// scalar parameters.
 //
-// **不再用 `[]middleware.XxxOption` 包装**——那层 wrapping 把 middleware 内部
-// 装配语法 leak 到了 router 的公开接口，让 caller / 测试都得写
-// `middleware.WithFoo(stubFoo)` 才能传一个 stub。现在 Deps 字段就是 port 类型
-// 本身，caller 直接传 stub / impl，router 内部各模态文件再 wrap 成 With* 选项
-// 喂给 middleware factory。
+// **No longer wrapped in `[]middleware.XxxOption`**——that wrapping layer used
+// to leak middleware's internal assembly syntax into router's public
+// interface, forcing callers / tests to write `middleware.WithFoo(stubFoo)`
+// just to pass a stub. Now Deps fields are the port types themselves; callers
+// pass a stub / impl directly, and each modality file inside router wraps it
+// into a With* option to feed the middleware factory.
 //
-// 添加 middleware 可选项时：扩 Deps 加一个 port 类型字段；各模态文件按需 wrap。
+// When adding a middleware option: extend Deps with a port-typed field; each
+// modality file wraps it as needed.
 type Deps struct {
-	// BodyLimit / Timeout 是 pre-middleware 标量参数（per-request HTTP 默认值）。
+	// BodyLimit / Timeout are pre-middleware scalar parameters (per-request
+	// HTTP defaults).
 	BodyLimit int64
 	Timeout   time.Duration
 
@@ -36,24 +41,28 @@ type Deps struct {
 	ModelCatalog        middleware.ModelCatalog
 	SubscriptionChecker middleware.SubscriptionChecker
 
-	// M6 Limit（user 侧 RPM/RPS + TPM）
+	// M6 Limit (user-side RPM/RPS + TPM)
 	RateLimitStore ratelimit.Store
 	QuotaPolicies  middleware.QuotaPolicies
 
 	// M7 Schedule
 	//
-	// Dispatcher 是 Selector + Invoker + Policy 的协调器（pkg/dispatch）。
-	// M7 middleware 现在是 thin adapter，调 Dispatcher.Dispatch 完事——
-	// fallback model / retry / streaming 全部在 dispatch 内编排，router 不再认
-	// EndpointReader / Scheduler / Sender / MaxAttempts 等细节。
+	// Dispatcher is the coordinator of Selector + Invoker + Policy
+	// (pkg/dispatch). The M7 middleware is now a thin adapter that just calls
+	// Dispatcher.Dispatch — fallback model / retry / streaming are all
+	// orchestrated inside dispatch, and router no longer knows about
+	// EndpointReader / Scheduler / Sender / MaxAttempts details.
 	Dispatcher *dispatch.Dispatcher
 
-	// 响应缓存中间件（M6 之后、M7 之前），由 cmd 装配（精确 / 语义 / no-op）。
-	// chat 模态用；nil 时各模态文件跳过挂载。
+	// Response cache middleware (after M6, before M7), assembled by cmd
+	// (exact / semantic / no-op). Used by the chat modality; modality files
+	// skip mounting it when nil.
 	Cache gin.HandlerFunc
 
-	// EmbeddingCache embedding 模态专用缓存——**只精确**（语义相似度对 embedding
-	// 无意义，必须精确）。由 cmd 独立装配（任一缓存开关打开就上精确缓存）。
+	// EmbeddingCache is the embedding-modality-specific cache — **exact match
+	// only** (semantic similarity is meaningless for embeddings and must be
+	// exact). Assembled independently by cmd (exact cache is mounted whenever
+	// either cache switch is on).
 	EmbeddingCache gin.HandlerFunc
 
 	// M8 Moderation
@@ -63,26 +72,30 @@ type Deps struct {
 	UsageOutbox UsageOutbox
 	AuditTracer AuditTracer
 
-	// Readiness /readyz 的依赖检查项（SQL ping / Redis ping）；空 = 静态 200。
-	// cmd 装配时注入，检查逻辑见 helpers.go readyzHandler。
+	// Readiness holds the dependency checks for /readyz (SQL ping / Redis
+	// ping); empty = static 200. Injected by cmd during assembly; see the
+	// check logic in helpers.go readyzHandler.
 	Readiness []ReadinessChecker
 }
 
-// UsageOutbox / AuditTracer 类型别名让 Deps 字段类型描述跟 middleware port 名一致，
-// 同时给 router 测试桩一个清晰的目标。
+// UsageOutbox / AuditTracer type aliases keep the Deps field type description
+// consistent with the middleware port names, and give router test stubs a
+// clear target.
 type (
 	UsageOutbox = middleware.UsageOutbox
 	AuditTracer = middleware.AuditTracer
 )
 
-// NewEngine 构造 gin.Engine 并完成全部装配。
+// NewEngine constructs the gin.Engine and completes all assembly.
 func NewEngine(deps Deps) *gin.Engine {
 	engine := gin.New()
 
-	// 兜底 recovery：M9 Recover 挂在 M1 之后，BodyLimit / Timeout（M1 之前）的
-	// panic 覆盖不到——没有这层时那类 panic 只有 net/http 的连接级 recover，
-	// 客户端看到的是连接重置而不是 500。gin.Recovery 的 500 没有我们的 JSON
-	// 错误结构，但它只是最后防线，正常路径永远走不到。
+	// Fallback recovery: M9 Recover is mounted after M1, so it doesn't cover
+	// panics from BodyLimit / Timeout (which run before M1) — without this
+	// layer, that class of panic only gets net/http's connection-level
+	// recover, and the client sees a connection reset instead of a 500.
+	// gin.Recovery's 500 doesn't carry our JSON error structure, but it's
+	// only the last line of defense; the normal path never reaches it.
 	engine.Use(gin.Recovery())
 
 	registerOpsRoutes(engine, deps.Readiness)

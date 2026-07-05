@@ -1,15 +1,16 @@
-// dispatch_wiring.go：composition root 装配 dispatch.Dispatcher。
+// dispatch_wiring.go: composition root that assembles dispatch.Dispatcher.
 //
-// **零业务逻辑**——所有 dispatch port 实现都集中在 pkg/dispatch/adapters
-// （primitive 包不反向依赖 dispatch，由 adapters 层做组合）：
+// **Zero business logic**—all dispatch port implementations live in
+// pkg/dispatch/adapters (the primitive packages don't depend back on
+// dispatch; composition happens in the adapters layer):
 //
 //	dispatch.CandidateSource ← cmd middleware_adapters.go adaptEndpoints (repo bridge)
 //	dispatch.Selector        ← adapters.PickerAdapter (selector.Scheduler)
 //	dispatch.InvokerFactory  ← adapters.InvokerFactoryAdapter (invoker.Sender)
 //	dispatch.EndpointQuota   ← adapters.EndpointQuotaAdapter (ratelimit.Store + bucket helpers)
-//	Policies                 ← pkg/dispatch 内置默认（HeaderAttemptCap / DefaultRetry / ModelChainFallback）
+//	Policies                 ← built-in defaults from pkg/dispatch (HeaderAttemptCap / DefaultRetry / ModelChainFallback)
 //
-// cmd 只做"按依赖图把 type new 出来塞进 dispatch.New"。
+// cmd only "news up the types per the dependency graph and feeds them into dispatch.New".
 package main
 
 import (
@@ -21,15 +22,15 @@ import (
 	"github.com/zereker/llm-gateway/pkg/trace"
 )
 
-// buildDispatcher 装配 dispatch.Dispatcher。
+// buildDispatcher assembles dispatch.Dispatcher.
 //
-// 参数：
-//   - candidates  端点候选源（middleware_adapters.go adaptEndpoints 桥接 repo 出来）
-//   - sched       selector.Scheduler 实现（filter chain + scorer + picker）
-//   - sender      invoker.Sender（HTTP 调用 + forward）
-//   - rateStore   ratelimit.Store；nil = endpoint-quota noop
-//   - maxAttempts AttemptCap default 值
-//   - tracer      trace.Tracer；nil = SlogTracer NoOp（dispatch 内部兜底）
+// Parameters:
+//   - candidates  endpoint candidate source (bridged from repo via middleware_adapters.go adaptEndpoints)
+//   - sched       selector.Scheduler implementation (filter chain + scorer + picker)
+//   - sender      invoker.Sender (HTTP call + forward)
+//   - rateStore   ratelimit.Store; nil = endpoint-quota noop
+//   - maxAttempts AttemptCap default value
+//   - tracer      trace.Tracer; nil = SlogTracer NoOp (dispatch's internal fallback)
 func buildDispatcher(
 	candidates dispatch.CandidateSource,
 	sched selector.Scheduler,

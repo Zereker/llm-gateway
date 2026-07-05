@@ -12,32 +12,35 @@ import (
 	"sync/atomic"
 )
 
-// secret_crypto.go 提供静态包级 AES-256-GCM 加解密：
+// secret_crypto.go provides static package-level AES-256-GCM encryption/decryption:
 //
-// 唯一对外 API：
+// The only public API:
 //
-//	SetDataKey(hex)  —— 启动期一次（cmd/* 从 cfg.DataKey 装载）
+//	SetDataKey(hex)  -- called once at startup (cmd/* loads it from cfg.DataKey)
 //
-// 内部实现给 AuthConfig.Scanner/Valuer 用——其它 typed JSON（Routing/Quota/Capabilities）
-// 不加密（非敏感）。未来需要给更多列加密时也走这套 encryptBlob/decryptBlob。
+// The internals are used by AuthConfig.Scanner/Valuer — the other typed JSON
+// columns (Routing/Quota/Capabilities) aren't encrypted (not sensitive). Any
+// future column that needs encryption should also go through this
+// encryptBlob/decryptBlob pair.
 //
-// **格式**：blobPrefix + base64( nonce || ciphertext || tag )
-// blobPrefix 用 "v1:"，未来 KEK 轮转可加 "v2:"。
+// **Format**: blobPrefix + base64( nonce || ciphertext || tag )
+// blobPrefix is "v1:"; a future KEK rotation could add "v2:".
 //
-// **未设置 KEK**：encrypt/decrypt 返回错误（不 panic）；调用栈一直冒到
-// startup CheckSchema → fail-fast。
+// **KEK not set**: encrypt/decrypt return an error (never panic); the error
+// propagates up the call stack until startup's CheckSchema fails fast.
 
 const blobPrefix = "v1:"
 
-// aeadAtomic 持有 cipher.AEAD 的指针，SetDataKey 后被 publish。
-// 用 atomic.Pointer 而不是 sync.Mutex —— hot path 是 read-mostly。
+// aeadAtomic holds a pointer to the cipher.AEAD, published after SetDataKey.
+// Uses atomic.Pointer instead of sync.Mutex -- the hot path is read-mostly.
 var aeadAtomic atomic.Pointer[cipher.AEAD]
 
-// SetDataKey 用 hex-encoded 32 字节 key 初始化 AES-256-GCM cipher。
+// SetDataKey initializes the AES-256-GCM cipher from a hex-encoded 32-byte key.
 //
-//	hexKey 必须正好 64 个 hex 字符（= 256 bit）；其它长度直接报错。
+//	hexKey must be exactly 64 hex characters (= 256 bit); any other length is an error.
 //
-// 重复调用会替换旧的 cipher（生产正常不会发生，测试可能反复 set）。
+// Calling it again replaces the previous cipher (doesn't normally happen in
+// production; tests may set it repeatedly).
 func SetDataKey(hexKey string) error {
 	if len(hexKey) != 64 {
 		return fmt.Errorf("repo: data_key must be 64 hex chars (got %d)", len(hexKey))
@@ -58,9 +61,10 @@ func SetDataKey(hexKey string) error {
 	return nil
 }
 
-// encryptBlob 加密 plain → "v1:" + base64(nonce||ct||tag)。
+// encryptBlob encrypts plain -> "v1:" + base64(nonce||ct||tag).
 //
-// 每次新随机 nonce；可以反复调用同一份 plain 得到不同 ciphertext。
+// A fresh random nonce every time; calling it repeatedly with the same plain
+// yields different ciphertext.
 func encryptBlob(plain []byte) ([]byte, error) {
 	a, err := loadAEAD()
 	if err != nil {
@@ -78,7 +82,7 @@ func encryptBlob(plain []byte) ([]byte, error) {
 	return []byte(blobPrefix + encoded), nil
 }
 
-// decryptBlob 还原 plain。
+// decryptBlob recovers the plaintext.
 func decryptBlob(b []byte) ([]byte, error) {
 	a, err := loadAEAD()
 	if err != nil {
@@ -103,7 +107,7 @@ func decryptBlob(b []byte) ([]byte, error) {
 	return plain, nil
 }
 
-// loadAEAD 取当前 cipher.AEAD；nil 时报错（KEK 未装载）。
+// loadAEAD returns the current cipher.AEAD; errors if nil (KEK not loaded).
 func loadAEAD() (cipher.AEAD, error) {
 	p := aeadAtomic.Load()
 	if p == nil {

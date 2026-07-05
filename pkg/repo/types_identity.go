@@ -2,10 +2,13 @@ package repo
 
 import "github.com/zereker/llm-gateway/pkg/domain"
 
-// 类型迁移到 pkg/domain（docs/06 §3：domain 是业务结构真相，repo 只提供 SQL 实现）。
-// 保留 type alias 是为了让 SQLAPIKeyProvider.Resolve 等内部代码继续返回原名。
+// These types have migrated to pkg/domain (docs/06 §3: domain is the source
+// of truth for business structs; repo only provides the SQL implementation).
+// The type aliases are kept so internal code like SQLAPIKeyProvider.Resolve
+// can keep returning the original names.
 //
-// **新代码用 domain.UserIdentity / domain.Credentials**；本 alias 仅为内部过渡。
+// **New code should use domain.UserIdentity / domain.Credentials**; these
+// aliases exist only as an internal transition.
 type (
 	UserIdentity = domain.UserIdentity
 	Credentials  = domain.Credentials

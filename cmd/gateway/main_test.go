@@ -18,7 +18,8 @@ import (
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
-// devDataKey 是 e2e tests 用的 AES KEK；TestMain 装载，供 endpoints.auth 加解密。
+// devDataKey is the AES KEK used by the e2e tests; TestMain loads it so
+// endpoints.auth can be encrypted/decrypted.
 const devDataKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestMain(m *testing.M) {
@@ -28,8 +29,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// e2e: 响应缓存开启时，确定性请求（temperature=0，非流式）第二次命中缓存——不再打
-// 上游，且带 X-Gateway-Cache: hit。用 body 里的唯一 nonce 保证首次必 miss。
+// e2e: with the response cache enabled, a deterministic request
+// (temperature=0, non-streaming) hits the cache the second time — no more
+// upstream calls, and it carries X-Gateway-Cache: hit. A unique nonce in the
+// body guarantees the first call is always a miss.
 func TestE2E_ResponseCacheHit(t *testing.T) {
 	var upstreamCalls int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,14 +111,16 @@ func strconvItoa(n int64) string {
 	return string(b[i:])
 }
 
-// e2e: 语义缓存——两个措辞不同但同语义(mock embedder 给相同向量)的确定性请求，
-// 第二个语义命中,不打上游 + X-Gateway-Cache: hit。证明 embedder→向量→相似度命中的
-// 全链路。需 REDIS_ADDR。
+// e2e: semantic cache — two deterministic requests worded differently but
+// semantically equivalent (the mock embedder returns the same vector for
+// both); the second one hits semantically, skipping upstream, with
+// X-Gateway-Cache: hit. Proves the full embedder→vector→similarity-hit chain.
+// Requires REDIS_ADDR.
 func TestE2E_SemanticCacheHit(t *testing.T) {
 	if os.Getenv("REDIS_ADDR") == "" {
 		t.Skip("REDIS_ADDR not set")
 	}
-	// mock embeddings：weather 相关 → [1,0,0]，否则 [0,1,0]。
+	// mock embeddings: weather-related → [1,0,0], otherwise [0,1,0].
 	embSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		vec := "[0,1,0]"
@@ -135,7 +140,7 @@ func TestE2E_SemanticCacheHit(t *testing.T) {
 	}))
 	defer chat.Close()
 
-	// 清掉可能残留的语义索引，保证首次必 miss。
+	// Clear any leftover semantic index, guaranteeing the first call is a miss.
 	rdb := redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
 	defer rdb.Close()
 	rdb.Del(context.Background(), "llm-gateway:respcache:sem:openai|gpt-4o")
@@ -165,17 +170,18 @@ func TestE2E_SemanticCacheHit(t *testing.T) {
 	if w := send("what is the weather today"); w.Code != 200 || chatCalls != 1 {
 		t.Fatalf("first = %d chatCalls=%d, want 200/1", w.Code, chatCalls)
 	}
-	// 措辞不同、同语义 → 语义命中，不打上游
+	// Different wording, same meaning → semantic hit, doesn't hit upstream
 	w2 := send("how is the weather right now")
 	if w2.Header().Get("X-Gateway-Cache") != "hit" {
-		t.Errorf("paraphrase 应语义命中, header=%q", w2.Header().Get("X-Gateway-Cache"))
+		t.Errorf("paraphrase should be a semantic hit, header=%q", w2.Header().Get("X-Gateway-Cache"))
 	}
 	if chatCalls != 1 {
-		t.Errorf("语义命中不该打上游, chatCalls=%d want 1", chatCalls)
+		t.Errorf("a semantic hit should not call upstream, chatCalls=%d want 1", chatCalls)
 	}
 }
 
-// e2e: denylist guard 开启时，body 命中 pattern → M8 拒 400；干净 body → 200。
+// e2e: with the denylist guard enabled, a body matching the pattern → M8
+// rejects with 400; a clean body → 200.
 func TestE2E_DenylistGuardBlocks(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -204,14 +210,15 @@ func TestE2E_DenylistGuardBlocks(t *testing.T) {
 	}
 
 	if code := send("this is forbidden content"); code != 400 {
-		t.Errorf("命中 denylist 应 400, got %d", code)
+		t.Errorf("matching the denylist should give 400, got %d", code)
 	}
 	if code := send("perfectly fine question"); code != 200 {
-		t.Errorf("干净 body 应 200, got %d", code)
+		t.Errorf("clean body should give 200, got %d", code)
 	}
 }
 
-// e2e: 用 httptest 模拟 OpenAI 上游，把 gateway 的全套 middleware 串起来跑一遍。
+// e2e: uses httptest to simulate the OpenAI upstream, exercising gateway's full
+// middleware chain end to end.
 func TestE2E_OpenAIChatCompletions(t *testing.T) {
 	var capturedAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -306,10 +313,11 @@ func TestE2E_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// writeTestConfig 准备好 outbox 输出路径，把 Database 段指向本地 MySQL（MYSQL_DSN env），
-// 然后 seedDB 直接 INSERT 进 model_services / endpoints / api_keys 三张表。
+// writeTestConfig prepares the outbox output path, points the Database section
+// at the local MySQL instance (MYSQL_DSN env var), and then seedDB directly
+// INSERTs into the model_services / endpoints / api_keys tables.
 //
-// 没设 MYSQL_DSN 直接 t.Skip 整组 e2e 测试。
+// If MYSQL_DSN isn't set, t.Skip skips this whole group of e2e tests.
 func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	t.Helper()
 
@@ -340,13 +348,15 @@ func writeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 	return cfg
 }
 
-// seedDB 连本地 MySQL，Migrate + TRUNCATE + 写测试用 ModelService + Endpoint + APIKey。
+// seedDB connects to the local MySQL, Migrates + TRUNCATEs, and writes a test
+// ModelService + Endpoint + APIKey.
 //
-// **endpoint 的 auth/routing 走 NamedExec**，让 AuthConfig.Value() 加密、
-// RoutingConfig.Value() 序列化 JSON——raw SQL 字符串拿不到这层魔法。
+// **The endpoint's auth/routing go through NamedExec**, so AuthConfig.Value()
+// encrypts and RoutingConfig.Value() serializes to JSON — a raw SQL string
+// can't get that magic.
 //
-// **api_key 走 hash**：SHA-256(plaintext) 落 api_key_hash 列，gateway Resolve
-// 时入参 hash 后能查到。
+// **api_key goes through hash**: SHA-256(plaintext) lands in the api_key_hash
+// column, so gateway can look it up by hashing the input at Resolve time.
 func seedDB(t *testing.T, dsn, upstreamURL string) {
 	t.Helper()
 	db, err := infra.Open(infra.DBConfig{Driver: infra.DriverMySQL, DSN: dsn})
@@ -359,8 +369,8 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	if err := infra.Migrate(ctx, db); err != nil {
 		t.Fatalf("infra.Migrate seed: %v", err)
 	}
-	// FK 引用时 MySQL 拒 TRUNCATE 父表（pricing_versions → model_services）；
-	// 关 FK check 一把扫
+	// MySQL refuses to TRUNCATE a parent table while an FK references it
+	// (pricing_versions → model_services); disable FK checks to blow through it all at once
 	if _, err := db.Exec(`SET FOREIGN_KEY_CHECKS = 0`); err != nil {
 		t.Fatalf("disable FK checks: %v", err)
 	}
@@ -381,7 +391,8 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("re-enable FK checks: %v", err)
 	}
 
-	// 必须先有 accounts("default")（FK 锚点；schema.sql seed 已 INSERT IGNORE 但 TRUNCATE 清掉了）
+	// accounts("default") must exist first (FK anchor; schema.sql's seed already
+	// does INSERT IGNORE, but TRUNCATE wiped it out)
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO accounts (pin, name) VALUES (?, ?)`,
 		"default", "Default Account",
@@ -389,7 +400,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("seed account: %v", err)
 	}
 
-	// model_services 全局 catalog（无 account_id / group_name / spec_detail）
+	// model_services is a global catalog (no account_id / group_name / spec_detail)
 	res, err := db.ExecContext(ctx,
 		`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
 		"openai/gpt-4o", "gpt-4o",
@@ -399,7 +410,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 	}
 	msID, _ := res.LastInsertId()
 
-	// account 必须订阅 model 才能用（不然 M5 → 403）
+	// the account must be subscribed to the model to use it (otherwise M5 → 403)
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO account_model_subscriptions (account_id, model_service_id, enabled) VALUES (?, ?, 1)`,
 		"default", msID,
@@ -407,7 +418,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("seed subscription: %v", err)
 	}
 
-	// M5 强制要求 active price，否则 503；e2e 必须 seed 价格
+	// M5 requires an active price, or it returns 503; the e2e test must seed a price
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO pricing_versions
 		 (account_id, model_service_id, rule_class, effective_from, effective_to, rule_json, created_by, notes)

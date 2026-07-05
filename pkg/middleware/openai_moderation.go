@@ -13,38 +13,45 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// openaiModerationDefaultBaseURL OpenAI 官方 moderation endpoint。
+// openaiModerationDefaultBaseURL is OpenAI's official moderation endpoint.
 const openaiModerationDefaultBaseURL = "https://api.openai.com"
 
-// openaiModerationModel v0.5 用 omni-moderation-latest（支持 text+image，免费）。
-// 想换 text-moderation-latest 自己改实现。
+// openaiModerationModel: v0.5 uses omni-moderation-latest (supports text+image,
+// free). Change the implementation if you want text-moderation-latest instead.
 const openaiModerationModel = "omni-moderation-latest"
 
-// OpenAIModerator 调 OpenAI /v1/moderations 接口做内容审核。
+// OpenAIModerator calls OpenAI's /v1/moderations API for content moderation.
 //
-// **CheckInput**：从 rc.Envelope.RawBytes 提取 user / system 文本拼起来发给
-// OpenAI moderation；任一类别命中（"hate" / "harassment" / "sexual" / "violence" 等）
-// → 返 error 让 M8 拒绝请求。
+// **CheckInput**: extracts user / system text from rc.Envelope.RawBytes,
+// concatenates it, and sends it to OpenAI moderation; any category flagged
+// ("hate" / "harassment" / "sexual" / "violence", etc.) → returns an error so
+// M8 rejects the request.
 //
-// **CheckOutput**：v1.0 装饰器架构已就绪（M8 → ctx → M7 wrapWithModerator），但
-// 本 Moderator 实现还是 noop——chunk 级 moderation 需要：(a) 解 SSE / 拼成连续文本
-// (b) 按 sentence boundary 累积调 OpenAI API (c) 控制 API QPS 防被限流。
-// 这些 v1.x 单独 ticket 真做；当前 stub 让架构能跑通端到端测试。
+// **CheckOutput**: the v1.0 decorator architecture is ready (M8 → ctx → M7
+// wrapWithModerator), but this Moderator implementation is still a noop —
+// chunk-level moderation requires: (a) parsing SSE / joining into continuous
+// text (b) accumulating by sentence boundary before calling the OpenAI API
+// (c) controlling API QPS to avoid being rate-limited. These will be done in
+// separate v1.x tickets; the current stub lets the architecture run end-to-end
+// tests.
 //
-// **HTTP client**：内置 http.Client（Timeout 5s）；moderation 走轻量 endpoint，
-// 一般 < 200ms。timeout 5s 给慢网络留余地。
+// **HTTP client**: built-in http.Client (Timeout 5s); moderation hits a
+// lightweight endpoint, typically < 200ms. The 5s timeout leaves headroom for
+// slow networks.
 //
-// **Concurrent-safe**：内部 http.Client + 配置不变；多 goroutine 安全。
+// **Concurrent-safe**: the internal http.Client + config never change; safe
+// for multiple goroutines.
 type OpenAIModerator struct {
 	apiKey  string
 	baseURL string
 	client  *http.Client
 }
 
-// NewOpenAIModerator 构造一个 OpenAI moderation client。
+// NewOpenAIModerator constructs an OpenAI moderation client.
 //
-// baseURL 留空走 OpenAI 官方 https://api.openai.com（生产可指 Azure OpenAI 之类
-// OpenAI-compat 上游，但要先确认对方 /v1/moderations 兼容）。
+// Leave baseURL empty to use OpenAI's official https://api.openai.com
+// (production can point to an OpenAI-compatible upstream such as Azure OpenAI,
+// but confirm first that its /v1/moderations is compatible).
 func NewOpenAIModerator(apiKey, baseURL string) *OpenAIModerator {
 	if baseURL == "" {
 		baseURL = openaiModerationDefaultBaseURL
@@ -73,19 +80,20 @@ type openaiModerationResponse struct {
 	} `json:"error"`
 }
 
-// CheckInput 实现 Moderator.CheckInput。
+// CheckInput implements Moderator.CheckInput.
 //
-// 行为：
-//  1. 从 envelope 抽 text payload（messages content + system）
-//  2. 调 /v1/moderations
-//  3. flagged=true → return error 列出命中的 categories
-//  4. HTTP 错（非 200 / network）：return error；M8 把它当客户端 400 拒（保守）
+// Behavior:
+//  1. Extracts the text payload from the envelope (messages content + system)
+//  2. Calls /v1/moderations
+//  3. flagged=true → returns an error listing the flagged categories
+//  4. HTTP error (non-200 / network): returns an error; M8 treats it as a
+//     client 400 rejection (conservative)
 //
-// 返 nil = 通过审核。
+// Returning nil = passed moderation.
 func (m *OpenAIModerator) CheckInput(ctx context.Context, env *domain.RequestEnvelope) error {
 	text := extractTextForModeration(env)
 	if text == "" {
-		// 没文本可审（纯工具调用 / 空 messages）→ 通过
+		// No text to moderate (pure tool call / empty messages) → pass
 		return nil
 	}
 
@@ -133,7 +141,7 @@ func (m *OpenAIModerator) CheckInput(ctx context.Context, env *domain.RequestEnv
 	if !r.Flagged {
 		return nil
 	}
-	// 收集命中类别给客户端看
+	// Collect the flagged categories to show the client
 	hits := make([]string, 0, 4)
 	for cat, flagged := range r.Categories {
 		if flagged {
@@ -146,24 +154,27 @@ func (m *OpenAIModerator) CheckInput(ctx context.Context, env *domain.RequestEnv
 	return fmt.Errorf("flagged by moderation: %s", strings.Join(hits, ","))
 }
 
-// CheckOutput stub：装饰器架构（pkg/middleware/moderation_handler.go）会调本方法
-// 传 chunk 字节，但本实现暂返 nil 透过——真做需要 SSE 解析 + sentence 累积 +
-// API 限流，留 v1.x 单独 ticket。
+// CheckOutput stub: the decorator architecture (pkg/middleware/moderation_handler.go)
+// calls this method with chunk bytes, but this implementation currently just
+// returns nil to pass through — actually doing it requires SSE parsing +
+// sentence accumulation + API rate limiting, left for a separate v1.x ticket.
 //
-// 自定义 Moderator 实现想接 chunk-level 审核可基于 chunk 字节做（注意 chunk
-// 是经 translator 翻译后**客户端会真看到的字节**，不是上游原始 chunk）。
+// A custom Moderator implementation wanting chunk-level moderation can work
+// off the chunk bytes (note: the chunk is the bytes **the client actually
+// sees** after translator translation, not the raw upstream chunk).
 func (m *OpenAIModerator) CheckOutput(_ context.Context, _ []byte) error {
 	return nil
 }
 
-// extractTextForModeration 从 envelope 抽要审的文本。
+// extractTextForModeration extracts the text to moderate from the envelope.
 //
-// **抽取策略**（v0.5 简化）：
-//   - 走 RawBytes（Envelope.Parsed.Messages 是 json.RawMessage，需要再解一层不划算）
-//   - 抓 messages[].content 字段（string 或 array of text blocks）
-//   - 抓 system / systemInstruction
+// **Extraction strategy** (v0.5 simplified):
+//   - Uses RawBytes (Envelope.Parsed.Messages is json.RawMessage; parsing
+//     another layer isn't worth it)
+//   - Grabs the messages[].content field (string or array of text blocks)
+//   - Grabs system / systemInstruction
 //
-// 返空字符串说明无可审文本。
+// An empty string means there's no text to moderate.
 func extractTextForModeration(env *domain.RequestEnvelope) string {
 	if env == nil || len(env.RawBytes) == 0 {
 		return ""
@@ -201,7 +212,8 @@ func extractTextForModeration(env *domain.RequestEnvelope) string {
 	return strings.TrimSpace(b.String())
 }
 
-// decodeStringField content / system 字段可能是 string 或 {parts:[{text}]} 形态；都尝试。
+// decodeStringField: the content / system field may be a string or a
+// {parts:[{text}]} shape; try both.
 func decodeStringField(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -226,7 +238,8 @@ func decodeStringField(raw json.RawMessage) string {
 	return ""
 }
 
-// decodeContentField OpenAI/Anthropic 的 message.content 可能是 string 或 array of blocks。
+// decodeContentField: OpenAI/Anthropic's message.content may be a string or
+// an array of blocks.
 func decodeContentField(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -251,7 +264,8 @@ func decodeContentField(raw json.RawMessage) string {
 	return ""
 }
 
-// truncate 截断字符串到 max 长度（用于 error message 防止上游大量 HTML 顶进日志）。
+// truncate truncates a string to max length (used for error messages to
+// prevent large upstream HTML from flooding the logs).
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -259,5 +273,5 @@ func truncate(s string, max int) string {
 	return s[:max] + "..."
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ Moderator = (*OpenAIModerator)(nil)

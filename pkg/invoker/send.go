@@ -16,26 +16,30 @@ import (
 	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
-// Send 调一次上游，不做 retry / cooldown / 选路。
+// Send makes a single call to an upstream; it does not do retry / cooldown /
+// routing.
 //
-// **v0.6 融合后**：Send 不再自己查 adapter / translator——caller 已经按
-// (endpoint, srcProto) 从 rc.Handlers 取出 protocol.Handler 传进来。invoker
-// 只负责：PrepareCall（让 handler 做完 pre-call 协议转换 + HTTP 构造）→
-// client.Do → classify → 填 Outcome。
+// **After the v0.6 merge**: Send no longer looks up adapter / translator
+// itself — the caller has already fetched a protocol.Handler from
+// rc.Handlers keyed by (endpoint, srcProto) and passes it in. invoker is
+// only responsible for: PrepareCall (letting the handler finish pre-call
+// protocol conversion + HTTP construction) → client.Do → classify →
+// populate Outcome.
 //
-// 流程：
-//  1. handler.PrepareCall(ctx, ep, srcBody) → *protocol.Call（req + upstreamBody）
-//  2. fan-out OnUpstreamRequest hook（拿到 upstreamBody）
+// Flow:
+//  1. handler.PrepareCall(ctx, ep, srcBody) → *protocol.Call (req + upstreamBody)
+//  2. fan out the OnUpstreamRequest hook (with upstreamBody)
 //  3. client.Do
-//  4. 按 HTTP status + handler 的 Classify（如果实现）分类，填 Outcome
-//  5. defer fan-out OnAttemptComplete hook（成功 / 失败都触发）
+//  4. classify by HTTP status + the handler's Classify (if implemented), populate Outcome
+//  5. defer fan out the OnAttemptComplete hook (fires on both success and failure)
 //
-// 任意步骤失败 → Outcome.Class != ClassSuccess + Response==nil。
-// 成功 → Response.Body 交给 caller 自行 forward + close。
+// Any step failing → Outcome.Class != ClassSuccess and Response==nil.
+// Success → Response.Body is handed to the caller to forward + close itself.
 //
-// **PrepareCall 失败处理**：通过 errors.As(*protocol.PrepareError) 判定阶段：
-//   - PhaseTranslate → ClassInvalid + ErrInvalidRequest（caller 应 abort 400）
-//   - PhaseBuild     → ClassPermanent（caller 走 retry 也无意义；新 ep 可能也失败）
+// **PrepareCall failure handling**: the phase is determined via
+// errors.As(*protocol.PrepareError):
+//   - PhaseTranslate → ClassInvalid + ErrInvalidRequest (caller should abort with 400)
+//   - PhaseBuild     → ClassPermanent (retrying is pointless; a new endpoint may fail too)
 func (s *Sender) Send(
 	ctx context.Context,
 	ep *domain.Endpoint,
@@ -50,8 +54,9 @@ func (s *Sender) Send(
 		emitUpstreamMetrics(ep, out)
 	}()
 
-	// ClientRequest fan-out：最早期，无论后续 handler 走不走得通都触发。
-	// 这是网关接收到的原始字节——审计 / 合规观察这里就够了。
+	// ClientRequest fan-out: as early as possible, fires regardless of
+	// whether the handler downstream succeeds. This is the raw bytes the
+	// gateway received — sufficient for audit / compliance observation.
 	s.hooks.fireClientRequest(ctx, ep, srcBody)
 
 	if handler == nil {
@@ -70,9 +75,11 @@ func (s *Sender) Send(
 		return out, retErr
 	}
 
-	// UpstreamRequest fan-out：handler.PrepareCall 已确定上游字节形态；必须在
-	// client.Do 之前，让 observer 能在请求真正发出前看到 body（审计 / 备份场景
-	// 需要"先记录后发送"）。跨协议下这里跟 ClientRequest 内容不同。
+	// UpstreamRequest fan-out: handler.PrepareCall has already determined
+	// the upstream byte shape; this must happen before client.Do so the
+	// observer sees the body before the request is actually sent out (audit
+	// / backup scenarios need "record before send"). Across protocols this
+	// differs in content from ClientRequest.
 	s.hooks.fireUpstreamRequest(ctx, ep, call.UpstreamBody)
 
 	req := call.Request.WithContext(ctx)
@@ -87,8 +94,10 @@ func (s *Sender) Send(
 	}
 
 	class := classifyHTTPStatus(resp.StatusCode)
-	// 可选 Classifier 接管：handler 自定义看 error body 细化 class。
-	// combined Handler 自动透传到底层 protocol.Classifier；vendor 直接实现 Classifier 也 OK。
+	// Optional Classifier takeover: the handler can inspect the error body
+	// to refine the class. A combined Handler automatically forwards this to
+	// the underlying protocol.Classifier; a vendor implementing Classifier
+	// directly also works.
 	if class != selector.ClassSuccess {
 		if cls, ok := handler.(protocol.Classifier); ok {
 			peeked := peekBodyForClassify(resp)
@@ -114,13 +123,14 @@ func (s *Sender) Send(
 		Class:    class,
 		HTTPCode: resp.StatusCode,
 		Latency:  time.Since(start),
-		Handler:  handler, // 给 Forward 阶段拿 ResponseStream 用
+		Handler:  handler, // used by the Forward stage to obtain a ResponseStream
 	}
 	return out, nil
 }
 
-// handlePrepareError 把 protocol.PrepareError 翻译成 Outcome + retErr。
-// 所有 prepare 阶段失败一律标 Stage=StagePrepare，让 Policy 区分 prepare vs invoke。
+// handlePrepareError translates a protocol.PrepareError into Outcome + retErr.
+// All prepare-stage failures are uniformly tagged Stage=StagePrepare so
+// Policy can distinguish prepare failures from invoke failures.
 func handlePrepareError(err error, start time.Time) (Outcome, error) {
 	var pe *protocol.PrepareError
 	if errors.As(err, &pe) {
@@ -149,7 +159,7 @@ func handlePrepareError(err error, start time.Time) (Outcome, error) {
 	}, nil
 }
 
-// emitUpstreamMetrics 发 docs/08 §3 的 upstream_requests_total + upstream_duration_seconds。
+// emitUpstreamMetrics emits the upstream_requests_total + upstream_duration_seconds metrics from docs/08 §3.
 func emitUpstreamMetrics(ep *domain.Endpoint, out Outcome) {
 	if ep == nil {
 		return
@@ -180,8 +190,9 @@ func emitUpstreamMetrics(ep *domain.Endpoint, out Outcome) {
 	)
 }
 
-// peekBodyForClassify 错误响应时小量读 body（≤4KiB）让 Classifier 解析；
-// 读完替换 resp.Body 让后续路径还能读到完整 body。
+// peekBodyForClassify reads a small amount of the body (<=4KiB) on error
+// responses so Classifier can parse it; afterward it replaces resp.Body so
+// downstream code can still read the full body.
 func peekBodyForClassify(resp *http.Response) []byte {
 	if resp == nil || resp.Body == nil {
 		return nil
@@ -197,7 +208,7 @@ func peekBodyForClassify(resp *http.Response) []byte {
 	return peeked
 }
 
-// classifyHTTPStatus 把 HTTP 状态码归类成 selector.ErrorClass。
+// classifyHTTPStatus maps an HTTP status code to a selector.ErrorClass.
 func classifyHTTPStatus(code int) selector.ErrorClass {
 	switch {
 	case code >= 200 && code < 300:
@@ -215,9 +226,10 @@ func classifyHTTPStatus(code int) selector.ErrorClass {
 	}
 }
 
-// adapterErrToScheduleClass domain.ErrorClass → selector.ErrorClass。
+// adapterErrToScheduleClass maps domain.ErrorClass → selector.ErrorClass.
 //
-// 不能 1:1 映射：domain.ErrUnknown 兜底到原 fallback class（HTTP-status 推导的那个）。
+// Not a 1:1 mapping: domain.ErrUnknown falls back to the original fallback
+// class (the one derived from HTTP status).
 func adapterErrToScheduleClass(c domain.ErrorClass, fallback selector.ErrorClass) selector.ErrorClass {
 	switch c {
 	case domain.ErrInvalid:

@@ -2,45 +2,50 @@ package openai
 
 import "github.com/zereker/llm-gateway/pkg/protocol"
 
-// init 注册一组 OpenAI-compatible 的 vendor 别名。
+// init registers a set of OpenAI-compatible vendor aliases.
 //
-// 这些 vendor 都跑 OpenAI 协议（同样的 /v1/chat/completions、同样的请求/响应格式
-// 和 Bearer token 鉴权），区别只在 endpoint URL / API key / 实际模型名。
-// 共用 Factory{} 即可，不需要复制实现。
+// These vendors all run the OpenAI protocol (the same /v1/chat/completions,
+// the same request/response format, and Bearer token auth) — the only
+// differences are endpoint URL / API key / actual model name. They can
+// share Factory{} without duplicating any implementation.
 //
-// **协议归属**：deployer 写 endpoint SQL 时显式填 `protocol: openai`；DefaultLookup
-// 拿 endpoint 时按 ep.Protocol 取 translator，跟 vendor 解耦。
+// **Protocol ownership**: when a deployer writes endpoint SQL, they
+// explicitly set `protocol: openai`; DefaultLookup picks the translator by
+// ep.Protocol, decoupled from vendor.
 //
-// 当某个 vendor 出现专属处理需求时（例如 DeepSeek-R1 响应里的 reasoning_content
-// 字段、或 Anthropic 那种完全不同的协议），把它从这个列表里抽出去独立成子包。
+// When a vendor needs vendor-specific handling (e.g. the reasoning_content
+// field in DeepSeek-R1 responses, or a completely different protocol like
+// Anthropic's), pull it out of this list into its own sub-package.
 func init() {
-	// 都是 OpenAI-compatible（/v1/chat/completions + Bearer）。deployer 写 endpoint 时
-	// vendor 填这些名之一、protocol 填 openai、routing.url 指各家端点、auth 填 bearer。
-	// 出现专属处理需求（DeepSeek-R1 的 reasoning_content 等）再抽独立子包。
+	// All OpenAI-compatible (/v1/chat/completions + Bearer). When a deployer
+	// writes an endpoint, they set vendor to one of these names, protocol to
+	// openai, routing.url to the respective vendor's endpoint, and auth to
+	// bearer. Pull one out into its own sub-package only if it later needs
+	// vendor-specific handling (e.g. DeepSeek-R1's reasoning_content).
 	aliases := []string{
-		// 中国厂商
-		"ark",         // 火山方舟（字节）—— DeepSeek / GLM / Qwen 托管
-		"deepseek",    // DeepSeek 官方
-		"moonshot",    // 月之暗面 Kimi
-		"zhipu",       // 智谱 GLM（open.bigmodel.cn 的 OpenAI-compat 端点）
-		"qwen",        // 阿里 DashScope compatible-mode
-		"doubao",      // 豆包（火山，独立命名便于区分计费）
+		// Chinese vendors
+		"ark",         // Volcano Engine Ark (ByteDance) — hosts DeepSeek / GLM / Qwen
+		"deepseek",    // DeepSeek official
+		"moonshot",    // Moonshot AI Kimi
+		"zhipu",       // Zhipu GLM (open.bigmodel.cn's OpenAI-compat endpoint)
+		"qwen",        // Alibaba DashScope compatible-mode
+		"doubao",      // Doubao (Volcano Engine, named separately for billing distinction)
 		"minimax",     // MiniMax
-		"siliconflow", // 硅基流动（聚合多模型）
-		"stepfun",     // 阶跃星辰
-		// 海外聚合 / 推理平台
-		"groq",       // Groq LPU 推理
+		"siliconflow", // SiliconFlow (aggregates multiple models)
+		"stepfun",     // StepFun
+		// Overseas aggregators / inference platforms
+		"groq",       // Groq LPU inference
 		"together",   // Together AI
 		"fireworks",  // Fireworks AI
-		"openrouter", // OpenRouter 聚合
-		"perplexity", // Perplexity（sonar 系列）
+		"openrouter", // OpenRouter aggregator
+		"perplexity", // Perplexity (sonar series)
 		"deepinfra",  // DeepInfra
-		"xai",        // xAI Grok（OpenAI-compat 端点）
-		"mistral",    // Mistral La Plateforme（OpenAI-compat）
-		// 自托管
+		"xai",        // xAI Grok (OpenAI-compat endpoint)
+		"mistral",    // Mistral La Plateforme (OpenAI-compat)
+		// Self-hosted
 		"vllm",     // vLLM OpenAI server
 		"ollama",   // Ollama /v1
-		"lmstudio", // LM Studio 本地服务
+		"lmstudio", // LM Studio local server
 	}
 	for _, v := range aliases {
 		protocol.RegisterFactory(v, Factory{})

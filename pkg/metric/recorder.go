@@ -7,23 +7,28 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Inc / Observe / Gauge 是业务侧使用的轻量门面：
+// Inc / Observe / Gauge are the lightweight facade used by business-side code:
 //
 //	metric.Inc(metric.AuthTotal, "result", "ok")
 //	metric.Observe(metric.HTTPRequestDurationSeconds, secs, "path", "/v1/chat/completions")
 //
-// labels 是 flat key,value pairs（奇数个或不成对会被丢掉尾值）。
+// labels is a flat list of key,value pairs (an odd count, or an unpaired trailing
+// value, is dropped).
 //
-// **命名约定**：name 直接用 Prometheus-native 下划线格式（详见 names.go）；本包不做
-// 任何 string rewrite——const 字面值就是 Prometheus 端展示的 metric name。
+// **Naming convention**: name uses the Prometheus-native underscore format directly
+// (see names.go); this package does no string rewriting — the const literal is exactly
+// the metric name shown on the Prometheus side.
 //
-// 实现说明：
-//   - 同一 metric 名首次调用时按当时的 label keys 注册到 Prometheus default registry；
-//     后续调用必须使用相同的 label keys（否则 Prometheus 会 panic——属于编程错）。
-//   - histogram 桶按 LLM 延迟范围预设秒级（见 secondsBuckets）；如果你测的不是延迟，
-//     自定义桶请直接用 prometheus 包的 promauto.NewHistogramVec。
+// Implementation notes:
+//   - The first call for a given metric name registers it to the Prometheus default
+//     registry with whatever label keys were passed at that time; subsequent calls must
+//     use the same label keys (otherwise Prometheus panics — this is a programming error).
+//   - Histogram buckets are preset in seconds for the LLM latency range (see
+//     secondsBuckets); if what you're measuring isn't latency, use promauto.NewHistogramVec
+//     from the prometheus package directly with custom buckets.
 //
-// /metrics 端点由 pkg/router/helpers.go 暴露，走 promhttp.Handler() 直读 default registry。
+// The /metrics endpoint is exposed by pkg/router/helpers.go, reading the default registry
+// directly via promhttp.Handler().
 
 var (
 	mu       sync.Mutex
@@ -32,20 +37,22 @@ var (
 	gauges   = make(map[string]*prometheus.GaugeVec)
 )
 
-// secondsBuckets：1ms ~ 120s 的指数分布，覆盖 LLM 请求 P50 ~ P99 延迟范围。
-// LLM 流式长输出可达 30s+，所以右侧拖到 120s 防止 P99 算不准。
+// secondsBuckets: an exponential distribution from 1ms to 120s, covering the P50 ~ P99
+// latency range of LLM requests. LLM streaming with long output can take 30s+, so the
+// upper end extends to 120s to keep P99 accurate.
 var secondsBuckets = []float64{
 	0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
 	1, 2.5, 5, 10, 30, 60, 120,
 }
 
-// Inc 增加 1 次计数。
+// Inc increments the counter by 1.
 func Inc(name string, labels ...string) {
 	keys, vals := splitLabels(labels)
 	getCounter(name, keys).WithLabelValues(vals...).Inc()
 }
 
-// Add 给 counter 累加任意值（用于 usage tokens 之类的"数值型计数"）。
+// Add accumulates an arbitrary value onto the counter (used for "numeric count" cases
+// such as usage tokens).
 func Add(name string, val float64, labels ...string) {
 	if val <= 0 {
 		return
@@ -54,19 +61,19 @@ func Add(name string, val float64, labels ...string) {
 	getCounter(name, keys).WithLabelValues(vals...).Add(val)
 }
 
-// Observe 记录一次观测值（histogram，默认秒级桶）。
+// Observe records one observed value (histogram, default second-scale buckets).
 func Observe(name string, val float64, labels ...string) {
 	keys, vals := splitLabels(labels)
 	getHistogram(name, keys).WithLabelValues(vals...).Observe(val)
 }
 
-// Gauge 设置一个 gauge 值。
+// Gauge sets a gauge value.
 func Gauge(name string, val float64, labels ...string) {
 	keys, vals := splitLabels(labels)
 	getGauge(name, keys).WithLabelValues(vals...).Set(val)
 }
 
-// splitLabels 把 [k1,v1,k2,v2,...] 切成 keys / values；奇数个尾部丢弃。
+// splitLabels splits [k1,v1,k2,v2,...] into keys / values; an odd trailing element is dropped.
 func splitLabels(pairs []string) ([]string, []string) {
 	n := len(pairs) / 2
 	keys := make([]string, n)

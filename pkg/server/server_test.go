@@ -55,7 +55,7 @@ func TestServer_CloseIsIdempotent(t *testing.T) {
 	s.AddCloser("x", func() error { calls++; return nil })
 
 	s.Close()
-	s.Close() // 第二次不应再跑（closer 列表已清空）
+	s.Close() // second call should not run again (closer list already cleared)
 	s.Close()
 
 	if calls != 1 {
@@ -97,7 +97,7 @@ func TestServer_NewKafkaProducerRegistersClose(t *testing.T) {
 		t.Fatal("producer is nil")
 	}
 
-	// Close 链应该跑到 kafka 的 Close（never-used producer 关掉是 no-op，不报错）
+	// The close chain should reach kafka's Close (closing a never-used producer is a no-op, no error)
 	s.Close()
 }
 
@@ -107,7 +107,7 @@ func TestServer_NewKafkaProducer_BadConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error for empty brokers")
 	}
-	// 关键：失败时不能错误注册 closer
+	// Key: a closer must not be registered on failure
 	if len(s.closers) != 0 {
 		t.Errorf("closers = %d, want 0 after failed open", len(s.closers))
 	}
@@ -119,7 +119,7 @@ func TestServer_ServeShutdownOnCtxCancel(t *testing.T) {
 	var closeRan atomic.Bool
 	s.AddCloser("test", func() error { closeRan.Store(true); return nil })
 
-	// 先占一个空闲端口（避免 OS 复用导致 listen 冲突）
+	// Grab a free port first (avoids listen conflicts from OS port reuse)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -137,7 +137,7 @@ func TestServer_ServeShutdownOnCtxCancel(t *testing.T) {
 		done <- s.serveCtx(ctx, addr, handler, time.Second, 2*time.Second)
 	}()
 
-	// 等监听起来再发请求验证（最多 1s）
+	// Wait for the listener to come up before sending a verification request (up to 1s)
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		c, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
@@ -148,7 +148,7 @@ func TestServer_ServeShutdownOnCtxCancel(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	cancel() // 触发 shutdown
+	cancel() // trigger shutdown
 
 	select {
 	case err := <-done:
@@ -166,8 +166,8 @@ func TestServer_ServeShutdownOnCtxCancel(t *testing.T) {
 
 func TestServer_ServeReturnsListenError(t *testing.T) {
 	s := New(silent())
-	// "0.0.0.0:1" 之类 privileged port 在大部分环境会拒绝，但更可靠的做法是
-	// 用一个明确无效的 addr：":99999"（端口越界）
+	// A privileged port like "0.0.0.0:1" is rejected in most environments, but a more
+	// reliable approach is to use a clearly invalid addr: ":99999" (port out of range)
 	err := s.serveCtx(context.Background(), ":99999",
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}),
 		time.Second, time.Second)
@@ -176,7 +176,7 @@ func TestServer_ServeReturnsListenError(t *testing.T) {
 	}
 }
 
-// silent 返回一个丢弃所有日志的 logger，让测试输出干净。
+// silent returns a logger that discards all output, keeping test output clean.
 func silent() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

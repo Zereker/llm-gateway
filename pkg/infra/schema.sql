@@ -1,48 +1,53 @@
--- v0.3 schema：MySQL 8.0+ 方言。
--- 全部 DDL 用 IF NOT EXISTS 保证 Migrate 幂等，反复 Run 不报错。
--- charset / collation 统一 utf8mb4 / utf8mb4_unicode_ci。
+-- v0.3 schema: MySQL 8.0+ dialect.
+-- All DDL uses IF NOT EXISTS to keep Migrate idempotent, safe to re-run.
+-- charset / collation unified to utf8mb4 / utf8mb4_unicode_ci.
 --
--- **架构定位**：开放平台 SaaS。几十个上游模型，几百几千主账号（pin / 计费主体）按权限订阅。
+-- **Architecture positioning**: open-platform SaaS. Dozens of upstream models, hundreds to thousands
+-- of primary accounts (pin / billing subjects) subscribing based on permissions.
 --
--- **核心关系**：
---  accounts (pin)              ── 主账号 / 计费主体；挂 quota_policy
---      ↓ 1:N
---   api_keys                   ── 凭证；可独立挂 quota_policy
---  account_model_subscriptions ── 主账号 × model_services；决定可见性
---   pricing_versions           ── 主账号 × model_services × rule_class × time；决定单价
+-- **Core relationships**:
+--  accounts (pin)              -- primary account / billing subject; has a quota_policy attached
+--      | 1:N
+--   api_keys                   -- credentials; can independently attach a quota_policy
+--  account_model_subscriptions -- primary account x model_services; determines visibility
+--   pricing_versions           -- primary account x model_services x rule_class x time; determines unit price
 --
---   model_services             ── 全局模型 catalog（无 account_id）
---   endpoints                  ── 全局上游连接点（无 account_id；BYOK 是未来 v0.x+）
---   quota_policies             ── 限流策略（被 accounts 和 api_keys 引用，N:M 共享）
+--   model_services             -- global model catalog (no account_id)
+--   endpoints                  -- global upstream connection points (no account_id; BYOK is future v0.x+)
+--   quota_policies             -- rate-limit policies (referenced by accounts and api_keys, N:M shared)
 --
--- **设计要点**：
---   - id 一律 BIGINT UNSIGNED AUTO_INCREMENT；唯一业务键复合 UNIQUE
---   - accounts 表存主账号 pin / 计费主体元信息
---   - accounts 用 pin (VARCHAR PK) 作为业务键；其它表 account_id 字段 FK → accounts(pin)
---   - 字符串字段 VARCHAR + 明确长度（不用 TEXT，方便走索引）
---   - JSON blob 列用 MySQL 8.0 原生 JSON 类型
---   - 时间戳全部 TIMESTAMP(6) 微秒精度，跟 Go time.Time 对齐
---   - 三件套：created_at + updated_at(ON UPDATE) + deleted_at(NULL) 软删除
+-- **Design highlights**:
+--   - id is always BIGINT UNSIGNED AUTO_INCREMENT; unique business keys use composite UNIQUE
+--   - the accounts table stores primary account pin / billing subject metadata
+--   - accounts uses pin (VARCHAR PK) as the business key; the account_id column in other tables
+--     is a FK -> accounts(pin)
+--   - string fields are VARCHAR with explicit length (not TEXT, so they can be indexed)
+--   - JSON blob columns use MySQL 8.0's native JSON type
+--   - all timestamps are TIMESTAMP(6) with microsecond precision, aligned with Go time.Time
+--   - the standard trio: created_at + updated_at (ON UPDATE) + deleted_at (NULL) soft delete
 --
--- **soft delete 限制**：deleted_at = NULL 的行仍占用 UNIQUE 键，软删后不能直接复用同名键
--- （需 hard-delete）。v0.x 接受此限制。
+-- **Soft-delete limitation**: a row with deleted_at = NULL still occupies its UNIQUE key,
+-- so after a soft delete the same key cannot be reused directly (a hard delete is required).
+-- v0.x accepts this limitation.
 --
--- **schema 加载顺序敏感**：FK 依赖决定 CREATE 顺序：
---   quota_policies → accounts → model_services → endpoints
---                  → account_model_subscriptions → api_keys → pricing_versions
--- DROP 时反向（DROP 父表前 child 必须先走）。
+-- **Schema load order matters**: FK dependencies determine the CREATE order:
+--   quota_policies -> accounts -> model_services -> endpoints
+--                  -> account_model_subscriptions -> api_keys -> pricing_versions
+-- DROP order is the reverse (child tables must be dropped before their parent tables).
 
 -- =====================================================================
--- quota_policies：限流策略库（N:M 被主账号 / api_keys 引用）
+-- quota_policies: rate-limit policy library (referenced N:M by primary accounts / api_keys)
 --
--- rule_json shape（M6 RateLimit 解释；gateway 不解析）：
+-- rule_json shape (interpreted by M6 RateLimit; the gateway itself does not parse it):
 --   {
 --     "default":   {"rpm":60, "tpm":100000, "rps":null, "concurrent_requests":null},
 --     "per_model": {"gpt-4o":{"rpm":10, "tpm":30000}, "gpt-4o-mini":{"rpm":100}}
 --   }
--- M6 选择策略：先看 per_model[currentModel]，没有就用 default；都没就该层不限。
+-- M6 selection strategy: check per_model[currentModel] first, fall back to default,
+-- and if neither exists this layer applies no limit.
 --
--- 可改（与 pricing_versions 不同，pricing 是 append-only；quota 调整不影响历史计费）。
+-- Mutable (unlike pricing_versions, which is append-only; adjusting quota does not
+-- affect historical billing).
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS quota_policies (
     id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -58,19 +63,21 @@ CREATE TABLE IF NOT EXISTS quota_policies (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
--- accounts：主账号 pin / 计费主体元信息（首屏挂 quota_policy 引用）
+-- accounts: primary account pin / billing subject metadata (quota_policy reference attached up front)
 --
--- 这里的 account 不是子账户，而是主账号 / 计费主体。
--- pin 直接 PK：业务键就是身份键，不引入 BIGINT 中转层。其它表的 account_id
--- VARCHAR(64) 列就是这个 pin（FK → accounts.pin）。
+-- An "account" here is not a sub-account, but a primary account / billing subject.
+-- pin is the PK directly: the business key is the identity key, no BIGINT indirection layer
+-- is introduced. The account_id VARCHAR(64) column in other tables is this same pin
+-- (FK -> accounts.pin).
 --
--- quota_policy_id NULL = 主账号层不限（M6 跳过主账号层检查）。
+-- quota_policy_id NULL = no limit at the primary-account layer (M6 skips the primary-account
+-- layer check).
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS accounts (
     pin             VARCHAR(64)  NOT NULL PRIMARY KEY,
-    name            VARCHAR(128) NOT NULL,                -- 显示名（"广告业务线" / "搜索业务线" / "默认主账号"）
+    name            VARCHAR(128) NOT NULL,                -- display name ("Ads business line" / "Search business line" / "Default primary account")
     enabled         TINYINT(1)   NOT NULL DEFAULT 1,
-    quota_policy_id BIGINT UNSIGNED NULL,                 -- NULL = 主账号层不限
+    quota_policy_id BIGINT UNSIGNED NULL,                 -- NULL = no limit at the primary-account layer
     created_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     deleted_at      TIMESTAMP(6) NULL DEFAULT NULL,
@@ -79,22 +86,24 @@ CREATE TABLE IF NOT EXISTS accounts (
     CONSTRAINT fk_account_quota FOREIGN KEY (quota_policy_id) REFERENCES quota_policies(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- seed default account（gateway 启动时如果有 default account 用）
+-- seed default account (used by the gateway at startup if a default account exists)
 INSERT IGNORE INTO accounts (pin, name) VALUES ('default', 'Default Account');
 
 -- =====================================================================
--- model_services：M5 ModelService middleware 查询的"全局模型 catalog"
+-- model_services: the "global model catalog" queried by the M5 ModelService middleware
 --
--- **v0.3 改动**：
---   - 删 account_id（catalog 全局共享，可见性由 account_model_subscriptions 决定）
---   - 删 group_name（M5 不查 group；group 是 endpoint 维度概念）
---   - 删 spec_detail（无消费者；将来真要按 model 配 spec 再走 typed struct）
---   - UNIQUE 改 (service_id), (model)（无主账号分区）
+-- **v0.3 changes**:
+--   - removed account_id (the catalog is globally shared; visibility is decided by
+--     account_model_subscriptions)
+--   - removed group_name (M5 does not look up group; group is an endpoint-level concept)
+--   - removed spec_detail (no consumer; if per-model spec is really needed later, use a
+--     typed struct)
+--   - UNIQUE changed to (service_id), (model) (no per-account partitioning)
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS model_services (
     id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    service_id   VARCHAR(191) NOT NULL,                   -- "openai/gpt-4o" / "ark/deepseek-v3-2"；业务/审计分组
-    model        VARCHAR(191) NOT NULL,                   -- 用户请求 body 里的 model 字段值（canonical name）
+    service_id   VARCHAR(191) NOT NULL,                   -- "openai/gpt-4o" / "ark/deepseek-v3-2"; business/audit grouping
+    model        VARCHAR(191) NOT NULL,                   -- the value of the model field in the client's request body (canonical name)
 
     created_at   TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at   TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
@@ -106,14 +115,17 @@ CREATE TABLE IF NOT EXISTS model_services (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
--- model_aliases：model 别名 → canonical model 重定向
+-- model_aliases: model alias -> canonical model redirect
 --
--- 客户端请求 alias（如 "fast" / 厂商中立名），M5 解析成 canonical model_services.model
--- （如 "gpt-4o-mini"），之后一切按 canonical 走（订阅 / 选路 / 计量）。别名对下游透明。
--- 无 FK：轻量重定向，canonical 不存在时解析 miss → M5 走 404，不因引用完整性卡住。
+-- Clients request an alias (e.g. "fast" / a vendor-neutral name), and M5 resolves it to
+-- the canonical model_services.model (e.g. "gpt-4o-mini"); everything downstream
+-- (subscription / routing / metering) then operates on the canonical name. The alias
+-- is transparent to downstream consumers.
+-- No FK: this is a lightweight redirect; if the canonical model is missing, resolution
+-- simply misses and M5 returns 404, rather than being blocked by referential integrity.
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS model_aliases (
-    alias      VARCHAR(191) NOT NULL PRIMARY KEY,     -- 客户端请求的名字（唯一）
+    alias      VARCHAR(191) NOT NULL PRIMARY KEY,     -- the name requested by the client (unique)
     model      VARCHAR(191) NOT NULL,                 -- canonical model_services.model
     enabled    TINYINT(1)   NOT NULL DEFAULT 1,
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -124,15 +136,16 @@ CREATE TABLE IF NOT EXISTS model_aliases (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
--- account_model_subscriptions：主账号 × model_services 的可见性 N:M 表
+-- account_model_subscriptions: N:M visibility table between primary accounts and model_services
 --
--- 没订阅的主账号请求该 model → M5 返回 403 "model not subscribed"。
+-- A primary account that requests a model it hasn't subscribed to -> M5 returns
+-- 403 "model not subscribed".
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS account_model_subscriptions (
     id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-   account_id         VARCHAR(64)  NOT NULL,              -- 主账号 pin → accounts.pin
-    model_service_id  BIGINT UNSIGNED NOT NULL,           -- → model_services.id
-    enabled           TINYINT(1)   NOT NULL DEFAULT 1,    -- 软禁用（保留订阅记录但禁用）
+   account_id         VARCHAR(64)  NOT NULL,              -- primary account pin -> accounts.pin
+    model_service_id  BIGINT UNSIGNED NOT NULL,           -- -> model_services.id
+    enabled           TINYINT(1)   NOT NULL DEFAULT 1,    -- soft-disable (keeps the subscription record but disables it)
 
     created_at        TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at        TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
@@ -146,31 +159,33 @@ CREATE TABLE IF NOT EXISTS account_model_subscriptions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
--- endpoints：M7 Schedule middleware 选路的"全局上游接入点"
+-- endpoints: the "global upstream access points" that the M7 Schedule middleware routes to
 --
--- **v0.3 改动**：删 account_id（平台运营者统一管理上游；BYOK 等真要做时
--- 加 nullable account_id 列）。UNIQUE 改 (name) 全局唯一。
+-- **v0.3 changes**: removed account_id (the platform operator manages upstreams uniformly;
+-- when BYOK etc. are actually needed, add a nullable account_id column). UNIQUE changed to
+-- (name), globally unique.
 --
--- 核心列只放调度选路 hot path 用得到的；vendor-specific 全进 typed JSON。
+-- Core columns hold only what the scheduling/routing hot path needs; everything
+-- vendor-specific goes into typed JSON.
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS endpoints (
     id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    name         VARCHAR(128) NOT NULL,                    -- 业务名（运维 / 监控显示）
+    name         VARCHAR(128) NOT NULL,                    -- business name (shown in ops / monitoring)
     vendor       VARCHAR(32)  NOT NULL,                    -- openai|anthropic|gemini|bedrock|vertex|azure-openai|ark
-    protocol     VARCHAR(32)  NOT NULL,                    -- openai|anthropic|gemini|responses|... 上游说什么协议（v0.6 加；endpoint 级属性，不再 vendor 级）
-    model        VARCHAR(191) NOT NULL,                    -- M7 选路用
-    group_name   VARCHAR(64)  NOT NULL DEFAULT 'default',  -- endpoint 池分组
+    protocol     VARCHAR(32)  NOT NULL,                    -- openai|anthropic|gemini|responses|... which protocol the upstream speaks (added in v0.6; an endpoint-level property, no longer vendor-level)
+    model        VARCHAR(191) NOT NULL,                    -- used by M7 for routing
+    group_name   VARCHAR(64)  NOT NULL DEFAULT 'default',  -- endpoint pool grouping
     weight       INT UNSIGNED NOT NULL DEFAULT 100,
     enabled      TINYINT(1)   NOT NULL DEFAULT 1,
 
-    -- typed JSON：schema 由 Go struct 决定（pkg/repo/{auth,routing,quota}_config.go）
-    -- auth 列存的是 AES-GCM 密文（"v1:" + base64），不是合法 JSON，所以用 VARCHAR；
-    -- 其它列还是 JSON 让 MySQL 做形态校验。
-    auth         VARCHAR(2048) NOT NULL,                   -- AuthConfig 密文 (Scanner/Valuer 在 Go 端 encrypt/decrypt)
+    -- typed JSON: schema determined by the Go struct (pkg/repo/{auth,routing,quota}_config.go)
+    -- the auth column stores AES-GCM ciphertext ("v1:" + base64), which is not valid JSON,
+    -- hence VARCHAR; the other columns remain JSON so MySQL performs shape validation.
+    auth         VARCHAR(2048) NOT NULL,                   -- AuthConfig ciphertext (encrypt/decrypt via Scanner/Valuer on the Go side)
     routing      JSON          NOT NULL,                   -- RoutingConfig (url/region/project/...)
-    quota        JSON          DEFAULT NULL,               -- 上游硬约束 quota（区别于 quota_policies；这个是 vendor-side 限制）
-    capabilities JSON          DEFAULT NULL,               -- EndpointCapabilities: modalities + self_hosted + prefix_cache_enabled 等
-    quirks       JSON          DEFAULT NULL,               -- 端点级 body / header 微调 DSL（pkg/protocol/quirks）
+    quota        JSON          DEFAULT NULL,                -- upstream hard-constraint quota (distinct from quota_policies; this is a vendor-side limit)
+    capabilities JSON          DEFAULT NULL,               -- EndpointCapabilities: modalities + self_hosted + prefix_cache_enabled, etc.
+    quirks       JSON          DEFAULT NULL,               -- endpoint-level body / header tweak DSL (pkg/protocol/quirks)
     extra        JSON          DEFAULT NULL,
 
     created_at   TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -182,32 +197,33 @@ CREATE TABLE IF NOT EXISTS endpoints (
     INDEX idx_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 注意：本文件只放 CREATE TABLE IF NOT EXISTS。给已存在的表补列走 infra.Migrate
--- 里的 ensureColumn（information_schema 判断后 ALTER）——MySQL **不支持**
--- `ADD COLUMN IF NOT EXISTS`（那是 MariaDB 语法），直接写在这里会让 Migrate
--- 在 mysql:8.0 上语法报错、gateway 无法启动。
+-- Note: this file only contains CREATE TABLE IF NOT EXISTS statements. Adding columns to
+-- existing tables goes through ensureColumn in infra.Migrate (which ALTERs after checking
+-- information_schema) -- MySQL does **not** support `ADD COLUMN IF NOT EXISTS` (that's
+-- MariaDB syntax); writing it here would cause a syntax error on mysql:8.0 and prevent
+-- the gateway from starting.
 
 -- =====================================================================
--- api_keys：M2 Auth middleware 凭证查表
+-- api_keys: credential lookup table for the M2 Auth middleware
 --
--- **v0.3 改动**：加 quota_policy_id 列（API key 级限流；与主账号级 accounts.quota_policy
--- 叠加）。account_id FK → accounts.pin。
+-- **v0.3 changes**: added the quota_policy_id column (API-key-level rate limiting; stacks
+-- with the primary-account-level accounts.quota_policy). account_id FK -> accounts.pin.
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS api_keys (
     id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-   account_id       VARCHAR(64)  NOT NULL DEFAULT 'default', -- 主账号 pin / 计费主体
-    api_key_hash    CHAR(64)     NOT NULL,                 -- SHA-256(sk-XXX) 的 hex
-    api_key_prefix  VARCHAR(16)  NOT NULL,                 -- "sk-abc1de2f" 显示用
-    api_key_id      VARCHAR(64)  NOT NULL,                 -- 审计稳定 ID（如 ak_alice_xxxxx）
-    name            VARCHAR(64)  NOT NULL DEFAULT '',      -- key 可读标签：prod/dev/ci-bot
-    sub_account_id         VARCHAR(64)  NOT NULL,                 -- 子账户 / 操作者
+   account_id       VARCHAR(64)  NOT NULL DEFAULT 'default', -- primary account pin / billing subject
+    api_key_hash    CHAR(64)     NOT NULL,                 -- hex of SHA-256(sk-XXX)
+    api_key_prefix  VARCHAR(16)  NOT NULL,                 -- "sk-abc1de2f" for display
+    api_key_id      VARCHAR(64)  NOT NULL,                 -- stable audit ID (e.g. ak_alice_xxxxx)
+    name            VARCHAR(64)  NOT NULL DEFAULT '',      -- human-readable key label: prod/dev/ci-bot
+    sub_account_id         VARCHAR(64)  NOT NULL,                 -- sub-account / operator
     group_name      VARCHAR(64)  NOT NULL DEFAULT 'default',
     external_user   TINYINT(1)   NOT NULL DEFAULT 0,
     enabled         TINYINT(1)   NOT NULL DEFAULT 1,
     expires_at      TIMESTAMP(6) NULL DEFAULT NULL,
     last_used_at    TIMESTAMP(6) NULL DEFAULT NULL,
     revoked_at      TIMESTAMP(6) NULL DEFAULT NULL,
-    quota_policy_id BIGINT UNSIGNED NULL,                  -- NULL = key 层不限；非 NULL 与主账号 quota 叠加
+    quota_policy_id BIGINT UNSIGNED NULL,                  -- NULL = no limit at the key layer; non-NULL stacks with the primary-account quota
 
     created_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
@@ -224,10 +240,11 @@ CREATE TABLE IF NOT EXISTS api_keys (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
--- pricing_versions：M5 ModelService middleware 在请求路径上做"价格快照"
+-- pricing_versions: the M5 ModelService middleware takes a "price snapshot" on the request path
 --
--- **append-only**：rule_json 一旦发布 NEVER UPDATE。改价 = 一次事务封盘旧 + insert 新。
--- 详见前一版 docstring；这版只加了 FK → accounts.pin。
+-- **append-only**: once rule_json is published it is NEVER UPDATEd. Changing a price =
+-- one transaction that closes out the old row and inserts a new one.
+-- See the previous version's docstring for details; this version only adds the FK -> accounts.pin.
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS pricing_versions (
     id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -250,20 +267,23 @@ CREATE TABLE IF NOT EXISTS pricing_versions (
     CONSTRAINT fk_pricing_model_service FOREIGN KEY (model_service_id) REFERENCES model_services(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 用量/计量刻意不建聚合表：网关只负责把 usage 事件经 outbox（file source-of-truth
--- + Kafka 广播）产出，下游 metering/billing 系统消费。控制面不做 usage 聚合，避免
--- 把"计费"这个独立复杂域拉进数据面/控制面。
+-- Usage/metering deliberately has no aggregate table: the gateway is only responsible for
+-- emitting usage events through the outbox (file source-of-truth + Kafka broadcast); the
+-- downstream metering/billing system consumes them. The control plane does not aggregate
+-- usage, to keep the independently complex "billing" domain out of the data plane / control plane.
 
 -- =====================================================================
--- audit_log：控制面写操作审计（谁·何时·对什么·结果）
+-- audit_log: audit trail for control-plane write operations (who - when - on what - result)
 --
--- **刻意不记 request body**：endpoint 创建 body 带上游密钥、发 key 涉及凭证——
--- 只记 actor / method / path / status_code，审计有据可查又绝不落密文。
--- 数据面不读这张表；纯控制面用。
+-- **Deliberately does not record the request body**: an endpoint-creation body carries an
+-- upstream secret, and issuing a key involves credentials -- only actor / method / path /
+-- status_code are recorded, so the audit trail is traceable without ever persisting
+-- ciphertext/secrets.
+-- The data plane never reads this table; it is control-plane only.
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS audit_log (
     id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    actor       VARCHAR(128) NOT NULL DEFAULT '',    -- token 的 name（或 role 兜底）
+    actor       VARCHAR(128) NOT NULL DEFAULT '',    -- the token's name (or role as fallback)
     role        VARCHAR(32)  NOT NULL DEFAULT '',
     method      VARCHAR(8)   NOT NULL,
     path        VARCHAR(512) NOT NULL,

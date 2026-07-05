@@ -88,7 +88,7 @@ func TestProtocol_UnmarshalJSON_StrictRejectsUnknown(t *testing.T) {
 }
 
 func TestProtocol_UnmarshalJSON_EmptyAndUnknownTokens(t *testing.T) {
-	// 空字符串 + 字面 "unknown" 都解析成 ProtoUnknown 不报错
+	// both the empty string and the literal "unknown" parse to ProtoUnknown without error
 	for _, in := range []string{`""`, `"unknown"`} {
 		var p Protocol
 		if err := json.Unmarshal([]byte(in), &p); err != nil {

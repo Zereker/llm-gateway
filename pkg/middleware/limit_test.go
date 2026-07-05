@@ -104,7 +104,7 @@ func TestLimit_RPMOnly_Reserves(t *testing.T) {
 }
 
 func TestLimit_TPM_NotInReserve(t *testing.T) {
-	// docs/04 §7：TPM 不预扣，不进 ReserveBatch
+	// docs/04 §7: TPM is not pre-reserved, so it does not go into ReserveBatch
 	pol := makePolicy(1, map[string]any{
 		"default": map[string]any{"tpm": 100000},
 	})
@@ -123,7 +123,7 @@ func TestLimit_TPM_NotInReserve(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	// 只有 TPM 没 RPM/RPS → ReserveBatch 不应被调（reserve buckets 为空）
+	// TPM only, no RPM/RPS -> ReserveBatch should not be called (reserve buckets are empty)
 	if store.reserveCalls.Load() != 0 {
 		t.Errorf("TPM-only policy should NOT call ReserveBatch, got %d", store.reserveCalls.Load())
 	}
@@ -185,7 +185,7 @@ func TestLimit_Violated_429_WithRetryAfterAndDetails(t *testing.T) {
 	if w.Header().Get("Retry-After") != "30" {
 		t.Errorf("Retry-After=%q", w.Header().Get("Retry-After"))
 	}
-	// 不应该写 X-RateLimit-* headers（docs/04 §9）
+	// X-RateLimit-* headers should NOT be written (docs/04 §9)
 	if w.Header().Get("X-RateLimit-Limit") != "" {
 		t.Errorf("X-RateLimit-Limit should NOT be set (docs/04 §9)")
 	}
@@ -211,7 +211,7 @@ func TestLimit_StoreError_503(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
-	// docs/04 §8：fail-closed → 503
+	// docs/04 §8: fail-closed -> 503
 	if w.Code != 503 {
 		t.Fatalf("status=%d, want=503", w.Code)
 	}

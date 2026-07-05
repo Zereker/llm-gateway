@@ -9,30 +9,42 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// DenylistGuard 基于正则的内容拦截 guard——命中任一 pattern 即 block。
+// DenylistGuard is a regex-based content-blocking guard — a match on any
+// pattern blocks the request.
 //
-// 便宜的确定性护栏(PII 关键字 / 敏感词 / 注入探针等),补在可能很贵的 LLM moderator
-// 之前。CheckInput 扫请求 body(env.RawBytes);check_output=true 时也逐 chunk 扫响应。
+// A cheap, deterministic guardrail (PII keywords / sensitive terms / prompt
+// injection probes, etc.), applied ahead of the potentially expensive LLM
+// moderator. CheckInput scans the request body (env.RawBytes); when
+// check_output=true it also scans the response chunk by chunk.
 //
-// **不泄漏命中的 pattern**：阻断错误只说"blocked by content policy",避免把 deny
-// 规则通过 400 body 暴露给客户端探测(M8 会把错误串拼进响应)。命中细节进 span/log。
+// **Doesn't leak the matched pattern**: the block error only says "blocked by
+// content policy", to avoid exposing the deny rules to client probing via the
+// 400 body (M8 splices the error string into the response). Match details go
+// to the span/log instead.
 //
-// **流式输出是 best-effort，不是硬保证**：check_output 逐 chunk 扫的是**已翻译的
-// SSE 分帧字节**（data: {...}\n\n），不是解码后的正文。流式里每个 token 各自成一
-// 帧，帧与帧之间夹着 JSON/SSE framing，所以跨帧拆分的模式（如正文 "kill" 被切成
-// "ki"/"ll" 两帧）扫不出来——即便跨 chunk 缓冲也拼不回连续正文。要**完全阻止**违规
-// 输出，必须走非流式（buffer-then-scan）：非流式路径 Flush 一次拿到整个 body，扫的
-// 是完整文本，能真正拦下。安全关键的 denylist 应配合非流式使用；流式下它只能拦到
-// 落在单帧内的模式。CheckInput（前置、整 body 一次过）不受此限。
+// **Streaming output is best-effort, not a hard guarantee**: check_output
+// scans **already-translated SSE-framed bytes** (data: {...}\n\n) chunk by
+// chunk, not the decoded body text. Under streaming, each token typically
+// forms its own frame with JSON/SSE framing in between, so patterns split
+// across frames (e.g. the body text "kill" cut into "ki"/"ll" across two
+// frames) can't be scanned — even buffering across chunks can't reassemble
+// the continuous body text. To **fully block** a violating output you must
+// use the non-streaming path (buffer-then-scan): the non-streaming path's
+// Flush delivers the entire body at once, so the scan covers the complete
+// text and can truly block it. Security-critical denylists should be paired
+// with non-streaming mode; under streaming it can only catch patterns that
+// fall within a single frame. CheckInput (pre-side, scanning the whole body
+// at once) isn't subject to this limitation.
 type DenylistGuard struct {
 	patterns    []*regexp.Regexp
 	checkOutput bool
 }
 
-// ErrDenied 通用阻断错误(不含命中的 pattern)。
+// ErrDenied is the generic block error (does not include the matched pattern).
 var ErrDenied = errors.New("blocked by content policy")
 
-// NewDenylistGuard 编译 patterns（Go RE2 语法）。任一编译失败即返错（启动 fail-fast）。
+// NewDenylistGuard compiles the patterns (Go RE2 syntax). Any compile failure
+// returns an error immediately (startup fail-fast).
 func NewDenylistGuard(patterns []string, checkOutput bool) (*DenylistGuard, error) {
 	compiled := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {
@@ -45,7 +57,7 @@ func NewDenylistGuard(patterns []string, checkOutput bool) (*DenylistGuard, erro
 	return &DenylistGuard{patterns: compiled, checkOutput: checkOutput}, nil
 }
 
-// CheckInput 扫请求 body。
+// CheckInput scans the request body.
 func (g *DenylistGuard) CheckInput(_ context.Context, env *domain.RequestEnvelope) error {
 	if env == nil {
 		return nil
@@ -53,11 +65,12 @@ func (g *DenylistGuard) CheckInput(_ context.Context, env *domain.RequestEnvelop
 	return g.scan(env.RawBytes)
 }
 
-// CheckOutput 逐 chunk 扫响应（仅 check_output=true 时）。
+// CheckOutput scans the response chunk by chunk (only when check_output=true).
 //
-// **流式下 chunk 是单个 SSE 帧的字节**——跨帧拆分的模式扫不出来（见类型文档）。
-// 非流式(buffer-then-translate)时 Flush 把整个 body 作为一个 chunk 送进来，扫的是
-// 完整正文，才是硬保证。
+// **Under streaming, chunk is the bytes of a single SSE frame** — patterns
+// split across frames can't be scanned (see the type doc). In non-streaming
+// mode (buffer-then-translate), Flush delivers the entire body as one chunk,
+// so the scan covers the complete body text and is a true hard guarantee.
 func (g *DenylistGuard) CheckOutput(_ context.Context, chunk []byte) error {
 	if !g.checkOutput {
 		return nil
@@ -74,5 +87,5 @@ func (g *DenylistGuard) scan(b []byte) error {
 	return nil
 }
 
-// 编译期断言。
+// Compile-time assertion.
 var _ Moderator = (*DenylistGuard)(nil)

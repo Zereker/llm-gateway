@@ -13,25 +13,28 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// MaxFallbackModels X-Gateway-Fallback-Models header 允许的最多 model 数（docs/03 §5）。
+// MaxFallbackModels is the maximum number of models allowed in the
+// X-Gateway-Fallback-Models header (docs/03 §5).
 //
-// 解析在 M5（ModelService middleware）完成；dispatch.Dispatcher 直接消费 rc.ModelChain。
+// Parsing is done in M5 (the ModelService middleware); dispatch.Dispatcher
+// consumes rc.ModelChain directly.
 const MaxFallbackModels = 3
 
-// Schedule 是 M7 middleware——thin adapter：把 gin / RC 转 dispatch.Input，
-// 跑 dispatcher.Dispatch，再把 dispatch.Outcome 映射回 RC + HTTP。
+// Schedule is the M7 middleware — a thin adapter: converts gin / RC into
+// dispatch.Input, runs dispatcher.Dispatch, then maps dispatch.Outcome back
+// onto RC + HTTP.
 //
-// **职责**：
-//   1. 前置检查 rc.Envelope / rc.ModelChain（M3/M5 必须先跑过）
-//   2. 注入 content log enrichment（Invoker hook 通过 ctx 拿请求元信息；docs/05 §2）
-//   3. 构造 dispatch.Input（envelope / identity / modelChain / handlers / 客户端 header override）
-//   4. 调 dispatcher.Dispatch 跑业务编排
-//   5. metric: scheduling_duration_seconds
-//   6. 从 outcome 写回 RC（RoutedModelService / Usage / Error / SchedulingDecision）
-//   7. 把 Outcome 翻译成 HTTP 错误响应（成功路径已 stream，啥也不做）
+// **Responsibilities**:
+//  1. Pre-flight checks on rc.Envelope / rc.ModelChain (M3/M5 must have already run)
+//  2. Injects content log enrichment (the Invoker hook gets request metadata via ctx; docs/05 §2)
+//  3. Builds dispatch.Input (envelope / identity / modelChain / handlers / client header overrides)
+//  4. Calls dispatcher.Dispatch to run the business orchestration
+//  5. Metric: scheduling_duration_seconds
+//  6. Writes fields back onto RC from the outcome (RoutedModelService / Usage / Error / SchedulingDecision)
+//  7. Translates the Outcome into an HTTP error response (the success path has already streamed, nothing to do)
 //
-// **不做**：retry / fallback / verdict 决策 / reserve / charge / TTFT——全部在
-// pkg/dispatch 内编排。
+// **Does NOT do**: retry / fallback / verdict decisions / reserve / charge /
+// TTFT — all orchestrated inside pkg/dispatch.
 func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 	if d == nil {
 		panic("middleware.Schedule: dispatch.Dispatcher required")
@@ -50,7 +53,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 			return
 		}
 
-		// content log enrichment（Logger 通过 ctx 拿请求元信息）
+		// content log enrichment (the Logger gets request metadata via ctx)
 		ctx = contentlog.EnrichCtx(ctx, contentlog.RequestEnrich{
 			RequestID:    rc.RequestID,
 			TraceID:      TraceIDFromCtx(ctx),
@@ -63,7 +66,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 		})
 		c.Request = c.Request.WithContext(ctx)
 
-		// 构造 dispatch.Input —— RC → typed input 单向投影（dispatch 不接触 RC）
+		// Builds dispatch.Input — a one-way RC → typed input projection (dispatch never touches RC)
 		in := dispatch.Input{
 			Envelope:           rc.Envelope,
 			Identity:           rc.Identity,
@@ -73,7 +76,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 			SessionKey:         c.GetHeader(HeaderGatewaySession),
 		}
 
-		// metric: scheduling_duration_seconds（docs/08 §3）
+		// metric: scheduling_duration_seconds (docs/08 §3)
 		start := time.Now()
 		out := d.Dispatch(ctx, c.Writer, in)
 
@@ -86,10 +89,11 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 			"attempts", strconv.Itoa(attempts),
 		)
 
-		// dispatch.Outcome → RC 单向回写（dispatch 不直接动 RC）
+		// dispatch.Outcome → RC one-way write-back (dispatch never touches RC directly)
 		applyOutcomeToRC(rc, out)
 
-		// 失败路径翻译成 HTTP（成功路径已通过 c.Writer stream 完）
+		// Translate the failure path into HTTP (the success path has already
+		// finished streaming via c.Writer)
 		if out.Result == dispatch.OutcomeStreamed {
 			return
 		}
@@ -97,8 +101,8 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 	}
 }
 
-// applyOutcomeToRC 把 dispatch 产出的字段映射回 RC（dispatch 已解耦 RC，
-// 所有副作用集中在这里）。
+// applyOutcomeToRC maps fields produced by dispatch back onto RC (dispatch is
+// decoupled from RC; all side effects are centralized here).
 func applyOutcomeToRC(rc *domain.RequestContext, out dispatch.Outcome) {
 	if out.RoutedModel != nil {
 		rc.RoutedModelService = out.RoutedModel
@@ -114,7 +118,7 @@ func applyOutcomeToRC(rc *domain.RequestContext, out dispatch.Outcome) {
 	}
 }
 
-// abortByOutcome 把 dispatch.Outcome 翻译成 HTTP 错误。
+// abortByOutcome translates dispatch.Outcome into an HTTP error.
 func abortByOutcome(c *gin.Context, out dispatch.Outcome) {
 	cls := dispatchClassToDomain(out.Class)
 	code := errCodeFromDispatchClass(out.Class, out.Result)
@@ -123,7 +127,7 @@ func abortByOutcome(c *gin.Context, out dispatch.Outcome) {
 	})
 }
 
-// dispatchClassToDomain dispatch.Class → domain.ErrorClass。
+// dispatchClassToDomain converts dispatch.Class → domain.ErrorClass.
 func dispatchClassToDomain(c dispatch.Class) domain.ErrorClass {
 	switch c {
 	case dispatch.ClassTransient:
@@ -139,10 +143,10 @@ func dispatchClassToDomain(c dispatch.Class) domain.ErrorClass {
 	}
 }
 
-// errCodeFromDispatchClass 选 domain.ErrCode 字符串。
+// errCodeFromDispatchClass picks a domain.ErrCode string.
 //
-// 优先看 Result（OutcomeInvalid 一律走 invalid_request；NoEndpoint 走 no_endpoint_available），
-// 否则按 Class 兜底。
+// Prefers Result (OutcomeInvalid always maps to invalid_request; NoEndpoint
+// maps to no_endpoint_available), otherwise falls back based on Class.
 func errCodeFromDispatchClass(c dispatch.Class, r dispatch.OutcomeResult) string {
 	switch r {
 	case dispatch.OutcomeInvalid:

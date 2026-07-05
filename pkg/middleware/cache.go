@@ -15,35 +15,44 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// ResponseCache 是响应缓存中间件——命中直接返回缓存,跳过 M7 调度(不打上游),省钱降
-// 延迟。放在 M6 Limit 之后、M7 Schedule 之前:命中仍计 RPM(缓存后 Limit 已扣),但零
-// 上游成本。
+// ResponseCache is the response-cache middleware — on a hit it returns the cached response
+// directly, skipping M7 Schedule (no upstream call), saving cost and latency. It sits after
+// M6 Limit and before M7 Schedule: a hit still counts against RPM (Limit has already
+// deducted it), but incurs zero upstream cost.
 //
-// **默认只缓存确定性请求**:非流式 + temperature=0。非确定请求(temperature≠0 / 缺省)
-// 缓存会返回旧结果、行为诡异,所以默认跳过;客户端可用 X-Gateway-Cache: on 强制缓存
-// (自负风险),off 完全绕过。流式**从不**缓存(v1)。
+// **By default only deterministic requests are cached**: non-streaming + temperature=0.
+// Non-deterministic requests (temperature≠0 / omitted) would get stale results back from
+// the cache and behave unpredictably, so they're skipped by default; the client can force
+// caching with X-Gateway-Cache: on (at their own risk), or bypass entirely with off.
+// Streaming is **never** cached (v1).
 //
-// **embeddings 例外**:embedding 请求无采样参数,同 input 恒定同 vector,天然确定
-// (Modality==ModalityEmbedding)→ 默认可缓存,不需要 temperature=0。高命中场景
-// (RAG 反复 embed 同批文本)收益很大。
+// **embeddings exception**: embedding requests have no sampling parameters, so the same
+// input always produces the same vector — inherently deterministic
+// (Modality==ModalityEmbedding) → cacheable by default, no temperature=0 required. This
+// pays off big in high-hit-rate scenarios (RAG repeatedly embedding the same batch of text).
 //
-// **key** = SHA256(sourceProtocol | canonical model | 请求 body)。同协议 + 同 model +
-// 同 body → 同响应字节。跨账号共享(响应是 model 的输出,与账号无关),命中率更高。
+// **key** = SHA256(sourceProtocol | canonical model | request body). Same protocol + same
+// model + same body → same response bytes. Shared across accounts (the response is the
+// model's output, unrelated to the account), which improves the hit rate.
 //
-// **usage**:命中时透传缓存里的 usage(Source=cache),M10 照常出 usage 事件、M6 照常
-// 后扣 TPM——下游按 source=cache 可零成本计费。
+// **usage**: on a hit, the usage stored in the cache is passed through (Source=cache), M10
+// still emits the usage event as normal, and M6 still deducts TPM afterward — downstream can
+// decide to bill zero cost based on source=cache.
 //
-// store == nil(未配置)时整个中间件是 no-op,不影响链。
+// When store == nil (not configured), the whole middleware is a no-op and doesn't affect the chain.
 //
-// **已知取舍（opt-in 功能,默认关;deployer 开启时须知）**:
-//   - key 用 canonical model 名(不含具体 endpoint/上游版本)——缓存在 M7 选路**之前**
-//     命中,此刻还没选 endpoint,无法按 endpoint 入 key。所以假设一个 model_service
-//     映射到**稳定**的上游输出;别给同名下挂多版本上游(gpt-4o-2024-05 vs -11)的
-//     model_service 开缓存。
-//   - 跨账号共享(响应是 model 的输出,与账号无关):命中率更高,但缓存里的
-//     system_fingerprint/id 会跨租户。可接受即开。
-//   - 命中仍发 usage 事件(source=cache)+ 计 TPM(软计数器):缓存命中算一次"交付了
-//     N token",下游按 source=cache 决定是否零成本计费。
+// **Known trade-offs (opt-in feature, off by default; deployers should be aware when enabling it)**:
+//   - The key uses the canonical model name (not the specific endpoint/upstream version) —
+//     the cache is checked **before** M7 routing picks an endpoint, so no endpoint is known
+//     yet to fold into the key. This assumes a model_service maps to **stable** upstream
+//     output; don't enable caching for a model_service backed by multiple upstream versions
+//     under the same name (gpt-4o-2024-05 vs -11).
+//   - Shared across accounts (the response is the model's output, unrelated to the
+//     account): improves the hit rate, but system_fingerprint/id in the cached response
+//     will leak across tenants. Enable only if that's acceptable.
+//   - A hit still emits a usage event (source=cache) + counts TPM (a soft counter): a cache
+//     hit still counts as having "delivered N tokens," and downstream decides whether to
+//     bill it as zero cost based on source=cache.
 func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if store == nil {
@@ -59,32 +68,34 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 
 		stream, deterministic := analyzeBody(rc.Envelope.RawBytes)
 		if stream {
-			c.Next() // 流式从不缓存
+			c.Next() // streaming is never cached
 			return
 		}
-		// embeddings 无采样参数（temperature/top_p 不参与）——同 input 恒定同 vector，
-		// 天然确定，默认就该缓存（不必 temperature=0 / X-Gateway-Cache: on）。命中率高、
-		// 收益大（embedding 常对同一批文本反复算）。
+		// Embeddings have no sampling parameters (temperature/top_p don't apply) — the same
+		// input always yields the same vector, inherently deterministic, so it should be
+		// cached by default (no need for temperature=0 / X-Gateway-Cache: on). High hit rate,
+		// big payoff (embedding is often recomputed repeatedly over the same batch of text).
 		if rc.Envelope.Modality == domain.ModalityEmbedding {
 			deterministic = true
 		}
 		if mode != "on" && !deterministic {
 			metric.Inc(metric.ResponseCacheTotal, "result", "bypass")
-			c.Next() // 默认只缓存确定性请求
+			c.Next() // by default only deterministic requests are cached
 			return
 		}
 
 		ctx := c.Request.Context()
 		key := cacheKey(rc.Envelope.SourceProtocol, rc.Envelope.Modality, rc.ModelService.Model, rc.Envelope.RawBytes)
 
-		// 命中:写缓存响应 + 透传 usage,abort 跳过 M7（M6-post/M10 在洋葱返程仍跑）。
+		// Hit: write the cached response + pass through usage, abort to skip M7 (M6-post/M10
+		// still run on the onion's return leg).
 		if cached, ok := store.Get(ctx, key); ok {
 			metric.Inc(metric.ResponseCacheTotal, "result", "hit")
 			writeCacheHit(c, rc, cached)
 			return
 		}
 
-		// 未命中:tee response,成功则回写缓存。
+		// Miss: tee the response, write it back to the cache on success.
 		metric.Inc(metric.ResponseCacheTotal, "result", "miss")
 		tw := &teeWriter{ResponseWriter: c.Writer, buf: &bytes.Buffer{}}
 		c.Writer = tw
@@ -97,8 +108,8 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 	}
 }
 
-// writeCacheHit 把缓存响应写给客户端 + 透传 usage(Source=cache) + abort 跳过 M7。
-// 精确缓存和语义缓存命中共用。
+// writeCacheHit writes the cached response to the client + passes through usage
+// (Source=cache) + aborts to skip M7. Shared by exact-cache and semantic-cache hits.
 func writeCacheHit(c *gin.Context, rc *domain.RequestContext, cached CachedResponse) {
 	ct := cached.ContentType
 	if ct == "" {
@@ -114,12 +125,15 @@ func writeCacheHit(c *gin.Context, rc *domain.RequestContext, cached CachedRespo
 	c.Abort()
 }
 
-// cacheableResponse 判断 tee 到的响应是否可入缓存,是则返回 CachedResponse。
-// 只缓存**干净、完整、非流式**的 200:
-//   - rc.Error != nil:200 后流中断 / 上游错,body 可能截断,缓存会毒化后续请求。
-//   - text/event-stream:analyzeBody 漏判流式时的兜底(绝不缓存 SSE)。
+// cacheableResponse determines whether the teed response is cacheable, returning a
+// CachedResponse if so. Only **clean, complete, non-streaming** 200s are cached:
+//   - rc.Error != nil: the stream broke / upstream errored after a 200, the body may be
+//     truncated, and caching it would poison subsequent requests.
+//   - text/event-stream: a fallback for when analyzeBody misclassifies a request as
+//     non-streaming (SSE must never be cached).
 //
-// 精确缓存和语义缓存回写共用——H1 毒化防线 / M4 流式兜底两个都继承。
+// Shared by exact-cache and semantic-cache write-back — both inherit the H1 poisoning
+// safeguard and the M4 streaming fallback.
 func cacheableResponse(tw *teeWriter, rc *domain.RequestContext) (CachedResponse, bool) {
 	ct := tw.Header().Get("Content-Type")
 	if tw.Status() == 200 && tw.buf.Len() > 0 && rc.Error == nil && !isEventStream(ct) {
@@ -128,13 +142,14 @@ func cacheableResponse(tw *teeWriter, rc *domain.RequestContext) (CachedResponse
 	return CachedResponse{}, false
 }
 
-// ResponseCacheStore 响应缓存存储端口（Redis 实现见 cmd 装配点）。
+// ResponseCacheStore is the response-cache storage port (Redis implementation lives at the
+// cmd wiring point).
 type ResponseCacheStore interface {
 	Get(ctx context.Context, key string) (CachedResponse, bool)
 	Set(ctx context.Context, key string, resp CachedResponse, ttl time.Duration)
 }
 
-// CachedResponse 缓存的一次完整非流式响应。
+// CachedResponse is one complete cached non-streaming response.
 type CachedResponse struct {
 	StatusCode  int
 	ContentType string
@@ -142,13 +157,14 @@ type CachedResponse struct {
 	Usage       *domain.Usage
 }
 
-// cacheKey = SHA256(protocol | modality | model | body) 的 hex。
+// cacheKey is the hex of SHA256(protocol | modality | model | body).
 //
-// **modality 必须入 key**：chat 与 embeddings 都是 ProtoOpenAI，且精确缓存共用一个
-// Redis store/prefix；只按 protocol|model|body 入 key 时，一个 byte-identical 的
-// body（如 {"model":"m","input":"x","temperature":0}）发到 /v1/embeddings 和
-// /v1/chat/completions 会撞同一 key → 跨模态返回错响应（且 key 与账号无关，跨租户）。
-// 折入 modality 后两个 keyspace 干净隔离。
+// **modality must be folded into the key**: chat and embeddings are both ProtoOpenAI, and
+// the exact cache shares one Redis store/prefix; if the key were only protocol|model|body,
+// a byte-identical body (e.g. {"model":"m","input":"x","temperature":0}) sent to
+// /v1/embeddings and /v1/chat/completions would collide on the same key → a cross-modality
+// request would get back the wrong response (and since the key is account-agnostic, this
+// would also cross tenants). Folding in modality keeps the two keyspaces cleanly separated.
 func cacheKey(proto domain.Protocol, modality domain.Modality, model string, body []byte) string {
 	h := sha256.New()
 	h.Write([]byte(proto.String()))
@@ -161,13 +177,16 @@ func cacheKey(proto domain.Protocol, modality domain.Modality, model string, bod
 	return "resp:" + hex.EncodeToString(h.Sum(nil))
 }
 
-// analyzeBody 从请求 body 解析 (stream, deterministic)。
+// analyzeBody parses (stream, deterministic) from the request body.
 //
-// **用 gjson 且宽松判 stream**：跟 Envelope 一致的 schema-less 提取，且
-// gjson.Bool() 对 "true" / 1 这类畸形值也强制成 true——避免 encoding/json 严格解析
-// 失败后把一个实际会流式的请求误判成非流式、进而把整条 SSE 缓冲进缓存。
+// **Uses gjson with a lenient stream check**: consistent with Envelope's schema-less
+// extraction, and gjson.Bool() coerces malformed values like "true" / 1 to true too —
+// avoiding the case where encoding/json's strict parsing fails and a request that will
+// actually stream gets misclassified as non-streaming, causing the whole SSE stream to get
+// buffered into the cache.
 //
-// deterministic = temperature 显式为 0（缺省 temperature 各家默认多为 1，视为非确定）。
+// deterministic = temperature is explicitly 0 (most vendors default temperature to 1 when
+// omitted, treated as non-deterministic).
 func analyzeBody(body []byte) (stream, deterministic bool) {
 	stream = gjson.GetBytes(body, "stream").Bool()
 	t := gjson.GetBytes(body, "temperature")
@@ -175,12 +194,13 @@ func analyzeBody(body []byte) (stream, deterministic bool) {
 	return stream, deterministic
 }
 
-// isEventStream 判断 Content-Type 是否 SSE（缓存回写的兜底防线）。
+// isEventStream reports whether Content-Type is SSE (a fallback safeguard for cache write-back).
 func isEventStream(ct string) bool {
 	return strings.Contains(strings.ToLower(ct), "text/event-stream")
 }
 
-// teeWriter 包 gin.ResponseWriter，把写出的 body 同时抄一份到 buf（缓存回写用）。
+// teeWriter wraps gin.ResponseWriter, also copying the written body into buf (used for
+// cache write-back).
 type teeWriter struct {
 	gin.ResponseWriter
 	buf *bytes.Buffer

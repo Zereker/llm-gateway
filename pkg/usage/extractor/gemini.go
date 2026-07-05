@@ -6,22 +6,25 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// NewGemini 构造一个 Gemini 协议 usage Session。
+// NewGemini constructs a Gemini-protocol usage Session.
 //
-// 适用场景（按上游协议匹配）：
-//   - openai_gemini：上游 Gemini（OpenAI 客户端 → Gemini 上游，目前 buffer-then-translate）
+// Applicable scenarios (matched by upstream protocol):
+//   - openai_gemini: upstream is Gemini (OpenAI client -> Gemini upstream, currently
+//     buffer-then-translate).
 //
-// **Gemini usage shape**（顶层 usageMetadata）：
+// **Gemini usage shape** (top-level usageMetadata):
 //
 //	{ "candidates": [...],
 //	  "usageMetadata": {
 //	      "promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15
 //	  } }
 //
-// **只解非流式 JSON body**：这是设计选择,不是缺口。Gemini SSE 流式
-// （streamGenerateContent）的 usage 由 openai_gemini responseHandler 直接从末帧的
-// usageMetadata 抽（见该包 translateChunk），不走本 extractor——所以本 Session 保持
-// JSON-only,Final() 把整个 buf 当一个 JSON 解析。JSON 路径才用它。
+// **Only parses non-streaming JSON bodies**: this is a design choice, not a gap. For
+// Gemini SSE streaming (streamGenerateContent), usage is extracted directly from the
+// usageMetadata of the last frame by the openai_gemini responseHandler (see
+// translateChunk in that package), bypassing this extractor entirely — so this Session
+// stays JSON-only, and Final() parses the whole buf as one JSON document. Only the JSON
+// path uses it.
 func NewGemini() Session { return &geminiSession{} }
 
 type geminiSession struct {

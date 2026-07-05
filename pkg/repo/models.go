@@ -9,31 +9,36 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// models.go 定义"业务实体"——gateway（sqlx Reader）使用；写入由 deployer 走 SQL 维护。
+// models.go defines the "business entities" — used by the gateway (sqlx
+// Reader); writes are maintained by the deployer via SQL.
 //
-// **schema 真相在 pkg/infra/schema.sql**；这里的 `db:` tag 只描述列名给 sqlx 用。
-// 不再带 gorm tag——gateway 是只读数据面，不用 AutoMigrate，DDL 演进只走 SQL。
+// **The schema of record lives in pkg/infra/schema.sql**; the `db:` tags here
+// only describe column names for sqlx. No gorm tags — the gateway is a
+// read-only data plane, doesn't use AutoMigrate, and DDL evolves via SQL only.
 //
-// JSON 列两种处理方式：
-//   - **已知结构**（EndpointCapabilities / AuthConfig / RoutingConfig / QuotaConfig）：
-//     typed struct + 自定义 Scanner/Valuer，调用方直接读字段，DB 端透明 JSON 序列化
-//   - **未知 / 可扩展结构**（rule_json / Extra）：用 json.RawMessage——
-//     字节透传，gateway 不解析
+// JSON columns are handled two ways:
+//   - **known structure** (EndpointCapabilities / AuthConfig / RoutingConfig /
+//     QuotaConfig): a typed struct + custom Scanner/Valuer, callers read
+//     fields directly, JSON (de)serialization is transparent on the DB side
+//   - **unknown / extensible structure** (rule_json / Extra): json.RawMessage —
+//     bytes passed through, the gateway doesn't parse them
 //
-// **三件套审计字段**：
-//   - CreatedAt / UpdatedAt / DeletedAt 软删除指针
-//   - 软删后同 UNIQUE 键不能直接复用，需 hard-delete
+// **The standard trio of audit fields**:
+//   - CreatedAt / UpdatedAt / DeletedAt (soft-delete pointer)
+//   - After a soft delete, the same UNIQUE key can't be reused directly; needs a hard delete
 
 // =============================================================================
-// Account：主账号 pin / 计费主体元信息
+// Account: primary account pin / billing entity metadata
 // =============================================================================
 
-// Account 对应表 accounts，业务语义是主账号 / 计费主体。
+// Account maps to table accounts; its business meaning is a primary account / billing entity.
 //
-// **pin 直接做主键**：业务键 = 身份键，不引入 BIGINT 中转。其它表的 account_id
-// VARCHAR(64) 列就是这个 pin，FK → accounts.pin。
+// **pin is the primary key directly**: business key = identity key, no BIGINT
+// surrogate is introduced. Other tables' account_id VARCHAR(64) column is
+// exactly this pin, FK -> accounts.pin.
 //
-// QuotaPolicyID NULL = 主账号层不限流（M6 跳过主账号层检查）。
+// QuotaPolicyID NULL = no rate limiting at the account level (M6 skips the
+// account-level check).
 type Account struct {
 	Pin           string `db:"pin"`
 	Name          string `db:"name"`
@@ -46,20 +51,21 @@ type Account struct {
 }
 
 // =============================================================================
-// QuotaPolicy：限流策略库（被主账号 / api_keys 引用，N:M 共享）
+// QuotaPolicy: the rate-limit policy library (referenced by accounts / api_keys, shared N:M)
 // =============================================================================
 
-// QuotaPolicy 对应表 quota_policies。
+// QuotaPolicy maps to table quota_policies.
 //
-// rule_json 形态：
+// rule_json shape:
 //
 //	{
 //	  "default":   {"rpm":60, "tpm":100000, "rps":null, "concurrent_requests":null},
 //	  "per_model": {"gpt-4o":{"rpm":10}, "gpt-4o-mini":{"rpm":100}}
 //	}
 //
-// gateway 不解析 rule_json；M6 RateLimit 是唯一消费者：
-// 先 per_model[currentModel]，没有 fallback default，都没就该层不限。
+// The gateway doesn't parse rule_json; M6 RateLimit is the sole consumer:
+// tries per_model[currentModel] first, falls back to default, and if neither
+// exists that layer isn't limited.
 type QuotaPolicy struct {
 	ID          int64           `db:"id"`
 	Name        string          `db:"name"`
@@ -73,13 +79,14 @@ type QuotaPolicy struct {
 }
 
 // =============================================================================
-// ModelService：全局模型 catalog
+// ModelService: the global model catalog
 // =============================================================================
 
-// ModelService 对应表 model_services。
+// ModelService maps to table model_services.
 //
-// **v0.3 改动**：删 account_id（改为全局 catalog）/ group_name / spec_detail。
-// 模型可见性走 account_model_subscriptions；group 是 endpoint 维度。
+// **v0.3 change**: dropped account_id (became a global catalog) / group_name /
+// spec_detail. Model visibility now goes through account_model_subscriptions;
+// group is an endpoint-level dimension.
 type ModelService struct {
 	ID        int64  `db:"id"`
 	ServiceID string `db:"service_id"`
@@ -91,13 +98,13 @@ type ModelService struct {
 }
 
 // =============================================================================
-// AccountModelSubscription：主账号 × model 的可见性 N:M
+// AccountModelSubscription: account x model visibility N:M
 // =============================================================================
 
-// AccountModelSubscription 对应表 account_model_subscriptions。
+// AccountModelSubscription maps to table account_model_subscriptions.
 //
-// M5 在确认 model 在 catalog 后，按 (主账号 pin, model_service_id) 查这张表；
-// 没找到 → 403 "model not subscribed"。
+// After M5 confirms the model is in the catalog, it queries this table by
+// (account pin, model_service_id); not found -> 403 "model not subscribed".
 type AccountModelSubscription struct {
 	ID             int64  `db:"id"`
 	AccountID      string `db:"account_id"`
@@ -110,33 +117,36 @@ type AccountModelSubscription struct {
 }
 
 // =============================================================================
-// Endpoint：全局上游接入点
+// Endpoint: global upstream access point
 // =============================================================================
 
-// Endpoint 对应表 endpoints。
+// Endpoint maps to table endpoints.
 //
-// **v0.3 改动**：删 account_id（改为全局；BYOK 等真要做时加 nullable account_id）。
+// **v0.3 change**: dropped account_id (became global; add a nullable
+// account_id if BYOK etc. is actually needed later).
 //
-// 核心列只放调度选路 hot path 用得到的；vendor-specific 全进 typed JSON。
+// Core columns hold only what the scheduling/routing hot path needs;
+// everything vendor-specific goes into typed JSON.
 type Endpoint struct {
 	ID       int64  `db:"id"`
 	Name     string `db:"name"`
 	Vendor   string `db:"vendor"`
-	Protocol string `db:"protocol"` // domain.Protocol.String()——mappers 来回转
+	Protocol string `db:"protocol"` // domain.Protocol.String() -- converted back and forth by mappers
 	Model    string `db:"model"`
 	Group    string `db:"group_name"`
 	Weight   uint32 `db:"weight"`
 	Enabled  bool   `db:"enabled"`
 
-	// typed JSON 三段；Scanner/Valuer 在各自的文件里
+	// The three typed-JSON columns; Scanner/Valuer live in their own files
 	Auth         AuthConfig           `db:"auth"`
 	Routing      RoutingConfig        `db:"routing"`
 	Quota        QuotaConfig          `db:"quota"`
 	Capabilities EndpointCapabilities `db:"capabilities"`
-	// quirks / extra 是 DEFAULT NULL 列，用 rawJSON（NULL-safe Scanner）而非裸
-	// json.RawMessage——database/sql 无法把 SQL NULL 扫进 json.RawMessage，没配
-	// quirks 的 endpoint 一读就 "unsupported Scan" 挂掉。
-	Quirks rawJSON `db:"quirks"` // v0.7: pkg/protocol/quirks DSL；NULL → no-op
+	// quirks / extra are DEFAULT NULL columns, so they use rawJSON (a
+	// NULL-safe Scanner) instead of bare json.RawMessage — database/sql can't
+	// scan a SQL NULL into json.RawMessage, so an endpoint with no quirks
+	// configured would fail with "unsupported Scan" on read.
+	Quirks rawJSON `db:"quirks"` // v0.7: the pkg/protocol/quirks DSL; NULL -> no-op
 	Extra  rawJSON `db:"extra"`
 
 	CreatedAt time.Time  `db:"created_at"`
@@ -144,10 +154,11 @@ type Endpoint struct {
 	DeletedAt *time.Time `db:"deleted_at"`
 }
 
-// EndpointCapabilities 已知结构的能力标记；JSON 序列化进 endpoints.capabilities 列。
+// EndpointCapabilities is the known-structure capability flags; serialized as
+// JSON into the endpoints.capabilities column.
 //
-// 跟 domain.EndpointCapabilities 同形（mapper 用 type conversion 平移）。
-// 新增字段时两边同步加。
+// Shares its shape with domain.EndpointCapabilities (the mapper does a
+// straight type conversion). Add new fields to both sides in sync.
 type EndpointCapabilities struct {
 	Modalities          []domain.Modality `json:"modalities,omitempty"`
 	SelfHosted          bool              `json:"self_hosted,omitempty"`
@@ -156,13 +167,13 @@ type EndpointCapabilities struct {
 	PrefixCacheEnabled  bool              `json:"prefix_cache_enabled,omitempty"`
 }
 
-// isEmpty 替代 == 比较（带 slice 的 struct 不可 ==）。
+// isEmpty substitutes for == comparison (a struct with a slice field isn't comparable with ==).
 func (c EndpointCapabilities) isEmpty() bool {
 	return len(c.Modalities) == 0 && !c.SelfHosted &&
 		c.KVMetricEndpoint == "" && c.HealthProbeEndpoint == "" && !c.PrefixCacheEnabled
 }
 
-// Scan 实现 sql.Scanner：从 DB JSON 字节反序列化。
+// Scan implements sql.Scanner: deserializes from the DB's JSON bytes.
 func (c *EndpointCapabilities) Scan(value any) error {
 	if value == nil {
 		*c = EndpointCapabilities{}
@@ -179,7 +190,7 @@ func (c *EndpointCapabilities) Scan(value any) error {
 	return json.Unmarshal(b, c)
 }
 
-// Value 实现 driver.Valuer：marshal 到 JSON；零值写 NULL。
+// Value implements driver.Valuer: marshals to JSON; the zero value writes NULL.
 func (c EndpointCapabilities) Value() (driver.Value, error) {
 	if c.isEmpty() {
 		return nil, nil
@@ -191,19 +202,21 @@ func (c EndpointCapabilities) Value() (driver.Value, error) {
 // APIKey
 // =============================================================================
 
-// APIKey 对应表 api_keys。
+// APIKey maps to table api_keys.
 //
-// **v0.3 改动**：加 quota_policy_id 列（API key 级限流；与主账号级 quota 叠加）。
+// **v0.3 change**: added the quota_policy_id column (API-key-level rate
+// limiting; stacks with the account-level quota).
 //
-// DB 不存明文：服务端生成 sk-XXX → SHA-256 → api_key_hash 入库。
+// The DB never stores plaintext: the server generates sk-XXX -> SHA-256 ->
+// stores api_key_hash.
 type APIKey struct {
 	ID            int64      `db:"id"`
-	AccountID     string     `db:"account_id"` // 主账号 pin / 计费主体
+	AccountID     string     `db:"account_id"` // primary account pin / billing entity
 	APIKeyHash    string     `db:"api_key_hash"`
 	APIKeyPrefix  string     `db:"api_key_prefix"`
 	APIKeyID      string     `db:"api_key_id"`
 	Name          string     `db:"name"`
-	SubAccountID  string     `db:"sub_account_id"` // 子账户 / 操作者
+	SubAccountID  string     `db:"sub_account_id"` // sub-account / operator
 	Group         string     `db:"group_name"`
 	ExternalUser  bool       `db:"external_user"`
 	Enabled       bool       `db:"enabled"`
@@ -217,11 +230,13 @@ type APIKey struct {
 	DeletedAt *time.Time `db:"deleted_at"`
 }
 
-// ToUserIdentity 把 DB 行映射成 M2 Auth 给后续 middleware 用的 UserIdentity。
+// ToUserIdentity maps a DB row into the UserIdentity that M2 Auth hands to
+// subsequent middleware.
 //
-// **不含 AccountQuotaPolicyID**：那个字段只能从 JOIN accounts 拿，APIKey 单行没有。
-// SQLAPIKeyProvider.Resolve 直接构造完整 UserIdentity（带 AccountQuotaPolicyID），
-// 不走这个方法。
+// **Does not include AccountQuotaPolicyID**: that field can only come from a
+// JOIN with accounts; a single APIKey row doesn't have it.
+// SQLAPIKeyProvider.Resolve constructs the full UserIdentity directly (with
+// AccountQuotaPolicyID) and does not go through this method.
 func (a APIKey) ToUserIdentity() UserIdentity {
 	return UserIdentity{
 		AccountID:           a.AccountID,
@@ -234,18 +249,20 @@ func (a APIKey) ToUserIdentity() UserIdentity {
 }
 
 // =============================================================================
-// PricingVersion：append-only 价格版本
+// PricingVersion: append-only pricing versions
 // =============================================================================
 
-// PricingVersion 对应表 pricing_versions。
+// PricingVersion maps to table pricing_versions.
 //
-// **append-only**：rule_json 一旦发布永不 UPDATE；改价 = 一次事务里
+// **append-only**: once published, rule_json is never UPDATEd; changing a
+// price = one transaction that
 //
-//  1. 给当前 active 行 UPDATE effective_to = NOW()
-//  2. INSERT 新行 effective_from = NOW(), effective_to = NULL
+//  1. UPDATEs the current active row's effective_to = NOW()
+//  2. INSERTs a new row with effective_from = NOW(), effective_to = NULL
 //
-// gateway 只读：M5 GetActive 拿当前版本，rc.Pricing 快照引用 ID。
-// gateway 不 unmarshal rule_json，billing engine 自己定义 schema。
+// The gateway only reads: M5 GetActive fetches the current version, and
+// rc.Pricing's snapshot references the ID. The gateway does not unmarshal
+// rule_json — the billing engine defines its own schema.
 type PricingVersion struct {
 	ID             int64           `db:"id"`
 	AccountID      string          `db:"account_id"`
@@ -263,7 +280,7 @@ type PricingVersion struct {
 // EndpointForm helper
 // =============================================================================
 
-// EndpointForm 由 Capabilities 派生（保留原 domain 的 helper）。
+// EndpointForm is derived from Capabilities (retained from the original domain helper).
 type EndpointForm int
 
 const (
@@ -278,7 +295,7 @@ func (f EndpointForm) String() string {
 	return "vendor"
 }
 
-// Form 派生方法。
+// Form is a derived method.
 func (e *Endpoint) Form() EndpointForm {
 	if e.Capabilities.SelfHosted {
 		return FormSelfHosted
@@ -286,18 +303,22 @@ func (e *Endpoint) Form() EndpointForm {
 	return FormVendor
 }
 
-// rawJSON 是可空 JSON 列（quirks / extra）的 NULL-safe 承载类型。
+// rawJSON is the NULL-safe carrier type for nullable JSON columns (quirks / extra).
 //
-// **为什么不用裸 json.RawMessage**：database/sql 的 convertAssign 对 "SQL NULL →
-// json.RawMessage（[]byte 的 named type）" 没有兜底分支，reflection fallback 撞到
-// nil→slice 直接返 "unsupported Scan, storing driver.Value type <nil> into type
-// *json.RawMessage"。裸类型只在列恒非 NULL 时侥幸不炸；quirks / extra 都是
-// DEFAULT NULL，deployer 没配就是 NULL，一 SELECT 就挂——整个 endpoint 读不出来，
-// 等于该 endpoint 直接不可用。这里显式把 NULL / 空 归一成 nil。
+// **Why not bare json.RawMessage**: database/sql's convertAssign has no
+// fallback branch for "SQL NULL -> json.RawMessage (a named []byte type)";
+// the reflection fallback hits nil->slice and just returns "unsupported Scan,
+// storing driver.Value type <nil> into type *json.RawMessage". The bare type
+// only survives when the column is guaranteed non-NULL; quirks / extra are
+// both DEFAULT NULL, so an endpoint the deployer didn't configure them for is
+// NULL, and a single SELECT blows up — the whole endpoint can't be read,
+// which effectively makes that endpoint unusable. Here NULL / empty is
+// explicitly normalized to nil.
 type rawJSON []byte
 
-// Scan 实现 sql.Scanner：NULL / 空 → nil；否则 copy 一份（driver 的 []byte 缓冲
-// 在下次 rows.Next() 可能被复用，不能直接持有）。
+// Scan implements sql.Scanner: NULL / empty -> nil; otherwise copies the
+// bytes (the driver's []byte buffer may be reused on the next rows.Next(), so
+// it can't be held onto directly).
 func (r *rawJSON) Scan(value any) error {
 	if value == nil {
 		*r = nil
@@ -317,7 +338,7 @@ func (r *rawJSON) Scan(value any) error {
 	return nil
 }
 
-// Value 实现 driver.Valuer：空 → NULL；否则原样写字节。
+// Value implements driver.Valuer: empty -> NULL; otherwise writes the bytes as-is.
 func (r rawJSON) Value() (driver.Value, error) {
 	if len(r) == 0 {
 		return nil, nil
@@ -325,7 +346,7 @@ func (r rawJSON) Value() (driver.Value, error) {
 	return []byte(r), nil
 }
 
-// bytesFromScan 把 driver.Value 标准化成 []byte；JSON 列 Scanner 复用。
+// bytesFromScan normalizes a driver.Value into []byte; reused by JSON-column Scanners.
 func bytesFromScan(value any, typeName string) ([]byte, error) {
 	switch v := value.(type) {
 	case []byte:

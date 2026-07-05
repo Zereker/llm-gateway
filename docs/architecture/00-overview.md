@@ -1,92 +1,92 @@
 # 00 — Overview
 
-## 1. 项目目标
+## 1. Project Goals
 
-`llm-gateway` 是 LLM 请求网关，提供统一客户端入口，按主账号、模型、分组和 endpoint 配置把请求转发到上游厂商或自部署模型服务。
+`llm-gateway` is an LLM request gateway that provides a unified client entry point, forwarding requests to upstream vendors or self-hosted model services according to the primary account, model, group, and endpoint configuration.
 
-目标架构重点解决：
+The target architecture focuses on solving:
 
-1. **多协议入口与上游协议转换**：OpenAI Chat / Responses、Anthropic Messages 等入口统一进入路由链路，再由 translator 转成上游原生协议。
-2. **主账号控制**：API key 解析出主账号 pin、子账户/操作者、group 和 quota policy，模型可见性由订阅表控制。
-3. **endpoint 选择与重试**：按 model + group 拉候选，先做协议/模态资格过滤，再在同 model 内换 endpoint；跨 model fallback 只按 header 显式声明执行。
-4. **Redis 限流**：主账号 + API key 双层 quota policy，RPM/RPS 请求前 reserve，TPM 按真实 usage 后扣；endpoint quota 只对最终选中的 endpoint 扣减。
-5. **记录与计量输出**：内容记录、Usage Event、Metrics / Trace 三条通道独立；网关只产生事实数据，计价由下游完成。
-6. **可观测性**：slog trace 字段、Prometheus metrics、可选 OpenTelemetry tracer。
+1. **Multi-protocol entry and upstream protocol conversion**: OpenAI Chat / Responses, Anthropic Messages, and other entry points all flow into the same routing pipeline, then get converted to the upstream's native protocol by the translator.
+2. **Primary account control**: the API key resolves into the primary account's pin, sub-account/operator, group, and quota policy; model visibility is controlled by the subscription table.
+3. **Endpoint selection and retry**: candidates are pulled by model + group, filtered first for protocol/modality eligibility, then endpoints are swapped within the same model; cross-model fallback only executes when explicitly declared via header.
+4. **Redis rate limiting**: a two-layer quota policy (primary account + API key); RPM/RPS are reserved before the request, TPM is deducted after based on actual usage; endpoint quota is only deducted for the finally selected endpoint.
+5. **Logging and metering output**: content logging, Usage Events, and Metrics/Trace are three independent channels; the gateway only produces factual data — pricing is done downstream.
+6. **Observability**: slog trace fields, Prometheus metrics, optional OpenTelemetry tracer.
 
-## 2. 非目标
+## 2. Non-goals
 
-- 不实现模型推理服务本身。
-- 不实现 RAG、prompt 编排、agent 或业务 BFF 逻辑。
-- 不做管理 UI；无独立管理面 binary——业务表由 deployer 直接 SQL 维护。
-- 不在 gateway 进程内做账单聚合；gateway 只产出 usage 事件，计价聚合由下游任务完成。
+- Does not implement the model inference service itself.
+- Does not implement RAG, prompt orchestration, agent, or business BFF logic.
+- No admin UI; no standalone control-plane binary — business tables are maintained directly via SQL by the deployer.
+- Does not do billing aggregation inside the gateway process; the gateway only emits usage events, and pricing aggregation is done by a downstream job.
 
-## 3. 运行进程
+## 3. Running Processes
 
-| 进程 | 入口 | 职责 |
+| Process | Entry point | Responsibility |
 |------|------|------|
-| gateway | `cmd/gateway` | 数据面：鉴权、解析、限流、调度、上游转发、usage outbox；启动期自跑 `infra.Migrate` 建表 |
+| gateway | `cmd/gateway` | Data plane: auth, parsing, rate limiting, scheduling, upstream forwarding, usage outbox; automatically runs `infra.Migrate` to create tables at startup |
 
-业务数据（accounts / api_keys / model_services / endpoints / quota_policies /
-subscriptions / pricing_versions）由 deployer 直接 SQL INSERT/UPDATE/DELETE 维护——
-本项目不带控制面 binary。
+Business data (accounts / api_keys / model_services / endpoints / quota_policies /
+subscriptions / pricing_versions) is maintained directly via SQL INSERT/UPDATE/DELETE by the deployer —
+this project ships no control-plane binary.
 
-gateway 启动流程：
+Gateway startup sequence:
 
-1. 加载 `configs/*/gateway.yaml`。
-2. 初始化 endpoint auth 加密 data key。
-3. 打开 **SQL DB（必需）**，执行 `infra.Migrate` 建表（`schema.sql` 全 `IF NOT EXISTS`，
-   幂等）+ `repo.CheckSchema` 防御性校验；缺表直接退出。
-4. 打开 **Redis（必需）**；M6 限流、scheduler cooldown 都依赖 Redis。
-5. 装配 SQL reader/provider（外面包一层 `repo.CachedXxxReader` TTL LRU，详见
-   [06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)）、
-   Redis rate limit store、scheduler、outbox、tracer。
-6. 扫描 enabled endpoints，校验 vendor adapter 存在、`endpoint.Protocol` 合法、必要 translator 已注册；缺失只记 warn 和 metric，不阻塞启动。
-7. 调用 `router.NewEngine` 注册路由和 middleware。
-8. 交给 `pkg/server` 处理 listen、signal、graceful shutdown 和资源倒序关闭。
+1. Load `configs/*/gateway.yaml`.
+2. Initialize the endpoint auth encryption data key.
+3. Open the **SQL DB (required)**, run `infra.Migrate` to create tables (`schema.sql` is entirely `IF NOT EXISTS`,
+   idempotent) + `repo.CheckSchema` defensive validation; exit immediately if tables are missing.
+4. Open **Redis (required)**; M6 rate limiting and scheduler cooldown both depend on Redis.
+5. Assemble SQL reader/provider (wrapped in a `repo.CachedXxxReader` TTL LRU layer, see
+   [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation)),
+   Redis rate limit store, scheduler, outbox, tracer.
+6. Scan enabled endpoints, validate that the vendor adapter exists, `endpoint.Protocol` is valid, and the required translator is registered; if missing, only log a warning and emit a metric, without blocking startup.
+7. Call `router.NewEngine` to register routes and middleware.
+8. Hand off to `pkg/server` for listen, signal handling, graceful shutdown, and reverse-order resource teardown.
 
-部署顺序：
+Deployment order:
 
-1. docker stack 起 MySQL + Redis（+ Kafka/Redpanda 如果走 kafka outbox driver）。
-2. 启动 gateway——`infra.Migrate` 自动建表。
-3. deployer SQL INSERT 录入账号、API key、model service、subscription、endpoint、
-   quota policy 等业务数据（endpoint.auth 列要用 `repo.EncodePayload` 加密，
-   api_keys.api_key_hash 列要用 `repo.HashAPIKey` 算 SHA-256 hex）。
+1. docker stack brings up MySQL + Redis (+ Kafka/Redpanda if using the kafka outbox driver).
+2. Start gateway — `infra.Migrate` automatically creates the tables.
+3. The deployer SQL-INSERTs business data such as accounts, API keys, model services, subscriptions, endpoints,
+   and quota policies (the endpoint.auth column must be encrypted with `repo.EncodePayload`,
+   and the api_keys.api_key_hash column must be computed with `repo.HashAPIKey` as a SHA-256 hex).
 
-SQL → gateway 数据传播走 **repo 层进程内 TTL LRU 缓存**（默认 30s）：deployer 写
-MySQL → gateway repo cache 自然过期后 miss 走 SQL 直查取到新值。**不直连同库每请求
-查表**（QPS 起来 MySQL 是瓶颈），也**不**做 push-based 失效（data plane 是 100% 只读，
-TTL 已经足够；业务表变更不需要秒级生效）。详见
-[06 §8](./06-pluggable-infra.md#8-repo-缓存deployer-sql--gateway-数据传播)。
+SQL → gateway data propagation goes through the **repo layer's in-process TTL LRU cache** (default 30s): the deployer writes to
+MySQL → once the gateway repo cache naturally expires, a miss triggers a direct SQL lookup to fetch the new value. **There is no direct per-request
+query against the same DB** (MySQL becomes the bottleneck once QPS rises), nor is there push-based
+invalidation (the data plane is 100% read-only, so TTL is already sufficient; business table changes don't need to take effect within seconds). See
+[06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details.
 
-schema 变更走 `pkg/infra/schema.sql`，gateway 启动期跑 `infra.Migrate` 应用。
-变更必须保持向后兼容：先部署带新 schema 的新 gateway，让它建好新表/新列（旧字段保留）；
-全部 gateway 升级完成后再执行删除字段或破坏性变更。
+Schema changes go through `pkg/infra/schema.sql`, applied by `infra.Migrate` when the gateway starts.
+Changes must remain backward compatible: first deploy a new gateway with the new schema, letting it create the new tables/columns (keeping old fields);
+only after all gateways have finished upgrading should you drop fields or make breaking changes.
 
-## 4. 请求生命周期
+## 4. Request Lifecycle
 
 ```text
 HTTP request
   |
   | pre: BodyLimit / Timeout
   v
-M1 TraceContext      生成 RequestID，注入 OTel SpanContext/Baggage，创建 RequestContext
-M9 Recover           defer 兜底 panic 和统一错误响应
-M2 Auth              API key/JWT 解析为 domain.UserIdentity
-M3 Envelope          读取原始 body，提取 model，记录 source protocol + modality
-M4 Budget            alwayspass 或 inmemory gate；失败直接 abort
-M5 ModelService      查全局 model catalog、主账号订阅
-M8 Moderation        可选内容审核；默认 none
-M6 Limit             用户侧 RPM/RPS 前扣，响应后按 usage 后扣 TPM
-M7 Schedule          拉 endpoint 候选，调度、重试、上游转发，写 Usage/Decision/Error
-M10 Tracing          metric、usage meta、outbox、scheduling trace
+M1 TraceContext      Generates RequestID, injects OTel SpanContext/Baggage, creates RequestContext
+M9 Recover           defer-based fallback for panics and unified error responses
+M2 Auth              Parses API key/JWT into domain.UserIdentity
+M3 Envelope          Reads the raw body, extracts model, records source protocol + modality
+M4 Budget            alwayspass or inmemory gate; failure aborts immediately
+M5 ModelService      Looks up the global model catalog and the primary account's subscription
+M8 Moderation        Optional content moderation; defaults to none
+M6 Limit             Pre-deducts the user-side RPM/RPS, post-deducts TPM based on usage after the response
+M7 Schedule          Pulls endpoint candidates, schedules, retries, forwards upstream, writes Usage/Decision/Error
+M10 Tracing          metric, usage meta, outbox, scheduling trace
   |
   v
 HTTP response
 ```
 
-注意：M6 使用 gin 洋葱模型，在 `c.Next()` 后执行用户侧 TPM `ChargeBatch`；这件事不在 M10 里做。
+Note: M6 uses gin's onion model, executing the user-side TPM `ChargeBatch` after `c.Next()`; this is not done in M10.
 
-## 5. 组件分层
+## 5. Component Layering
 
 ```text
 cmd/gateway
@@ -96,59 +96,59 @@ cmd/gateway
   -> router.NewEngine
 
 pkg/router
-  -> 按模态注册完整 /v1/... 路由
-  -> 组合 middleware 链
+  -> Registers the full /v1/... routes per modality
+  -> Composes the middleware chain
 
 pkg/middleware
-  -> 请求生命周期、RequestContext 读写、错误 abort
-  -> 每个 middleware 自定义 Option (interface) + WithXxxTracerProvider，对齐 otelgin v0.68.0
+  -> Request lifecycle, RequestContext read/write, error abort
+  -> Each middleware has its own custom Option (interface) + WithXxxTracerProvider, aligned with otelgin v0.68.0
 
 pkg/repo (cached)
-  -> SQL Reader/Provider 外面包一层 TTL LRU (repo.TTLCache[K,V] + CachedXxx wrapper)
-  -> ModelCatalog / EndpointReader / APIKeyProvider 等 middleware-owned reader 直接用 cached 版本
+  -> SQL Reader/Provider wrapped in a TTL LRU layer (repo.TTLCache[K,V] + CachedXxx wrapper)
+  -> ModelCatalog / EndpointReader / APIKeyProvider and other middleware-owned readers use the cached version directly
 
 pkg/selector
-  -> 对一批候选 endpoint 做 filter / pick / report；不持有 repo，不切 fallback model
+  -> Performs filter / pick / report over a batch of candidate endpoints; holds no repo, does not switch fallback model
 
 pkg/invoker
-  -> Handler lookup、HTTP Do、响应 forward
+  -> Handler lookup, HTTP Do, response forward
 
 pkg/protocol
-  -> Handler facade（PrepareCall → NewResponseStream）
-  -> Factory / Session：厂商 HTTP 层（URL、认证 header、request 构造）
-  -> protocol/quirks：endpoint 级 body / header 微调 DSL（rename / strip / set / set_default）
+  -> Handler facade (PrepareCall → NewResponseStream)
+  -> Factory / Session: vendor HTTP layer (URL, auth header, request construction)
+  -> protocol/quirks: endpoint-level body/header tweak DSL (rename / strip / set / set_default)
 
 pkg/translator
-  -> 客户端协议与上游协议的请求/响应转换，usage 提取
+  -> Request/response conversion between the client protocol and the upstream protocol, usage extraction
 
 pkg/repo + pkg/infra
-  -> SQL schema、CRUD/readers、Redis、Kafka
+  -> SQL schema, CRUD/readers, Redis, Kafka
 ```
 
-## 6. 关键术语
+## 6. Key Terminology
 
-| 术语 | 目标含义 |
+| Term | Intended meaning |
 |------|----------|
-| pin | account 的稳定外部标识符，作为计费主体 ID；不同于数据库自增主键，deployer 创建 account 时分配，创建后不可变 |
-| Group | 主账号下的请求分组维度，影响 endpoint 候选过滤；默认 `default`，可用于 `reserved` / `experimental` 等隔离场景 |
-| `RequestContext` | 一次请求的状态对象，挂在 `c.Request.Context()`，通过 middleware helper 获取 |
-| `RequestEnvelope` | M3 产物：raw body、model、source protocol、modality；不再包含 canonical request |
-| `UserIdentity` | M2 产物，包含主账号 pin、子账户/操作者、API key、group、quota policy IDs |
-| `ModelService` | 全局模型 catalog 记录；主账号是否可用由 subscription 表决定 |
-| `Endpoint` | 全局上游接入点，按 model + group 匹配；包含 vendor、weight、auth、routing、quota、capabilities |
-| `Adapter` | 厂商 HTTP 层 factory/session；不负责协议转换和 usage 聚合 |
-| `Translator` | 协议转换层；负责 request body 转换、response handler、usage 提取 |
-| `Scheduler` | M7 的批内 endpoint 选择器，暴露 Pick/Report，不负责跨 model fallback |
-| `RateLimitState` | M6/M7 写入的限流状态，供 TPM 后扣和排障使用；不作为客户端 header 契约 |
-| `Usage` | 单次请求资源消耗和 meta，M10 发布到 outbox |
-| `TTLCache` | gateway 端进程内 LRU + TTL 缓存（`pkg/repo/cache.go`），repo 唯一缓存策略 |
-| `CachedXxxReader` | repo 层的 cached wrapper，把 SQL Reader 包一层 TTL LRU；default 30s |
+| pin | The account's stable external identifier, used as the billing subject ID; distinct from the database auto-increment primary key, assigned by the deployer when the account is created, and immutable thereafter |
+| Group | A request grouping dimension under the primary account, affecting endpoint candidate filtering; defaults to `default`, can be used for isolation scenarios such as `reserved` / `experimental` |
+| `RequestContext` | The state object for a single request, attached to `c.Request.Context()`, retrieved via a middleware helper |
+| `RequestEnvelope` | M3's output: raw body, model, source protocol, modality; no longer contains the canonical request |
+| `UserIdentity` | M2's output, containing the primary account's pin, sub-account/operator, API key, group, and quota policy IDs |
+| `ModelService` | Global model catalog record; whether the primary account can use it is determined by the subscription table |
+| `Endpoint` | A global upstream access point, matched by model + group; includes vendor, weight, auth, routing, quota, capabilities |
+| `Adapter` | The vendor's HTTP-layer factory/session; not responsible for protocol conversion or usage aggregation |
+| `Translator` | The protocol conversion layer; responsible for request body conversion, response handler, usage extraction |
+| `Scheduler` | M7's within-batch endpoint selector, exposing Pick/Report, not responsible for cross-model fallback |
+| `RateLimitState` | Rate-limit state written by M6/M7, used for TPM post-deduction and troubleshooting; not a client header contract |
+| `Usage` | Resource consumption and metadata for a single request, published by M10 to the outbox |
+| `TTLCache` | The gateway's in-process LRU + TTL cache (`pkg/repo/cache.go`), the repo's sole caching strategy |
+| `CachedXxxReader` | The repo layer's cached wrapper, wrapping a SQL Reader with a TTL LRU layer; default 30s |
 
-## 7. 文档版本
+## 7. Document Version
 
-| 版本 | 日期 | 说明 |
+| Version | Date | Notes |
 |------|------|------|
-| v0.3-target | 2026-05-16 | 对齐目标边界：协议能力下沉 endpoint、简化 scheduler、RPM/RPS 前扣、TPM 后扣、下游计费 |
-| v0.4-target | 2026-05-17 | middleware Option 对齐 otelgin v0.68.0；domain/repo 彻底解耦 |
-| v0.6-target | 2026-05-21 | 删 `cmd/admin` + Flink + Debezium CDC：data plane 是 100% 只读 MySQL，repo 用 TTL LRU 缓存替代实时失效 |
-| v0.7-target | 2026-05-22 | 合并 `pkg/adapter` 进 `pkg/protocol`（vendor Factory / Session / Classifier 都在 protocol 包内）；endpoint.quirks JSON 列 + DSL；dispatch / repo cache 接入 OTel & Prom |
+| v0.3-target | 2026-05-16 | Aligned target boundaries: protocol capabilities pushed down to endpoint, simplified scheduler, RPM/RPS pre-deduction, TPM post-deduction, downstream billing |
+| v0.4-target | 2026-05-17 | middleware Option aligned with otelgin v0.68.0; domain/repo fully decoupled |
+| v0.6-target | 2026-05-21 | Removed `cmd/admin` + Flink + Debezium CDC: the data plane is 100% read-only MySQL, repo uses TTL LRU cache instead of real-time invalidation |
+| v0.7-target | 2026-05-22 | Merged `pkg/adapter` into `pkg/protocol` (vendor Factory / Session / Classifier all live in the protocol package); endpoint.quirks JSON column + DSL; dispatch / repo cache wired into OTel & Prom |

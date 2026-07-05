@@ -6,65 +6,65 @@ import (
 	"time"
 )
 
-// Scorer Runtime Scoring 接口（docs/architecture/03-endpoint-scheduling.md §8）。
+// Scorer is the Runtime Scoring interface (docs/architecture/03-endpoint-scheduling.md §8).
 //
-// 输入候选（已过 filter），输出调权后的候选；不淘汰候选（只调 EffectiveWeight）。
-// Soft 调整，跟 hard filter 互补：
+// Takes candidates (already filtered) as input, outputs candidates with adjusted weights; it doesn't
+// eliminate candidates (only adjusts EffectiveWeight). A soft adjustment, complementary to hard filters:
 //
-//	hard filter（能不能选）→ scorer（更倾向选谁）→ selector（按 weight 选 1）
+//	hard filter (can it be picked) → scorer (which one is preferred) → selector (pick 1 by weight)
 //
-// 实现 MUST be safe for concurrent use（多 gin handler 并发调）。
+// Implementations MUST be safe for concurrent use (called concurrently by multiple gin handlers).
 type Scorer interface {
 	Score(ctx context.Context, candidates []Candidate, req *Request) []Candidate
 }
 
-// EndpointStatsStore Scheduler 内部读模型：按 endpoint 聚合的 EMA / 滑窗摘要。
+// EndpointStatsStore is the Scheduler's internal read model: an EMA / sliding-window summary aggregated per endpoint.
 //
-// 跟 Metrics / Trace 分层（docs/03 §8）：
-//   - Metrics：观测输出，丰富标签
-//   - EndpointStatsStore：调度内部状态，只保留 per-endpoint 摘要
+// Layered separately from Metrics / Trace (docs/03 §8):
+//   - Metrics: observability output, richly labeled
+//   - EndpointStatsStore: internal scheduling state, keeps only a per-endpoint summary
 //
-// **写入**：Scheduler.Report 异步 Record；**读取**：Scorer.Score 同步 Snapshot。
+// **Write**: Scheduler.Report Records asynchronously; **Read**: Scorer.Score Snapshots synchronously.
 //
-// 实现 MUST be safe for concurrent use。
+// Implementations MUST be safe for concurrent use.
 type EndpointStatsStore interface {
 	Record(ctx context.Context, endpointID int64, result Result)
 	Snapshot(ctx context.Context, endpointID int64) EndpointStats
 }
 
-// EndpointStats 单个 endpoint 的运行时统计快照。
+// EndpointStats is the runtime stats snapshot for a single endpoint.
 type EndpointStats struct {
-	// Latency EMA / 滑窗平均（ms）
+	// LatencyMs is the EMA / sliding-window average (ms)
 	LatencyMs float64
 
-	// SuccessRate 最近窗口成功率 [0, 1]；新 endpoint 无样本时为 1.0
+	// SuccessRate is the recent-window success rate [0, 1]; 1.0 for a new endpoint with no samples
 	SuccessRate float64
 
-	// SampleCount 窗口内采样数；小于阈值时 Scorer 应给中性 factor
+	// SampleCount is the sample count within the window; Scorer should give a neutral factor below the threshold
 	SampleCount uint32
 
-	// Updated 最近一次 Record 时间
+	// Updated is the time of the most recent Record
 	Updated time.Time
 }
 
 // =============================================================================
-// InMemoryStatsStore：进程内 EMA 实现
+// InMemoryStatsStore: in-process EMA implementation
 // =============================================================================
 
-// InMemoryStatsStore 进程内 EndpointStatsStore 实现。
+// InMemoryStatsStore is an in-process EndpointStatsStore implementation.
 //
-// **算法**：EMA（指数加权移动平均），decay 默认 0.2（每次新数据占 20% 权重）。
-// 简单稳定，无需外部存储；多副本部署下每实例独立累积（适合 dev / 单副本 / runtime
-// 评分容忍多副本差异的场景）。
+// **Algorithm**: EMA (exponential moving average), decay defaults to 0.2 (each new data point gets 20% weight).
+// Simple and stable, no external storage needed; each instance accumulates independently in a multi-replica
+// deployment (suitable for dev / single-replica / scenarios where runtime scoring tolerates cross-replica variance).
 //
-// **生产多副本一致性需求**：替换成 Redis-backed 实现；接口不变。
+// **For production multi-replica consistency needs**: swap in the Redis-backed implementation; the interface stays the same.
 type InMemoryStatsStore struct {
 	mu    sync.RWMutex
 	stats map[int64]*EndpointStats
-	decay float64 // EMA decay；0 < decay <= 1
+	decay float64 // EMA decay; 0 < decay <= 1
 }
 
-// NewInMemoryStatsStore 构造一个进程内 stats store；decay <= 0 用 0.2 默认。
+// NewInMemoryStatsStore constructs an in-process stats store; decay <= 0 uses the 0.2 default.
 func NewInMemoryStatsStore(decay float64) *InMemoryStatsStore {
 	if decay <= 0 || decay > 1 {
 		decay = 0.2
@@ -75,7 +75,7 @@ func NewInMemoryStatsStore(decay float64) *InMemoryStatsStore {
 	}
 }
 
-// Record EMA 更新单 endpoint 的 latency / success。
+// Record updates a single endpoint's latency / success via EMA.
 func (s *InMemoryStatsStore) Record(_ context.Context, endpointID int64, result Result) {
 	if endpointID == 0 {
 		return
@@ -84,7 +84,7 @@ func (s *InMemoryStatsStore) Record(_ context.Context, endpointID int64, result 
 	defer s.mu.Unlock()
 	st, ok := s.stats[endpointID]
 	if !ok {
-		// 第一次：直接取本次值
+		// first time: take this value directly
 		st = &EndpointStats{
 			LatencyMs:   float64(result.Latency.Milliseconds()),
 			SuccessRate: success01(result.Class),
@@ -100,7 +100,7 @@ func (s *InMemoryStatsStore) Record(_ context.Context, endpointID int64, result 
 	st.Updated = time.Now()
 }
 
-// Snapshot 取单 endpoint 当前快照；没有数据时返回中性快照（SuccessRate=1, SampleCount=0）。
+// Snapshot takes the current snapshot for a single endpoint; returns a neutral snapshot (SuccessRate=1, SampleCount=0) when there's no data.
 func (s *InMemoryStatsStore) Snapshot(_ context.Context, endpointID int64) EndpointStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -110,12 +110,12 @@ func (s *InMemoryStatsStore) Snapshot(_ context.Context, endpointID int64) Endpo
 	return EndpointStats{SuccessRate: 1.0}
 }
 
-// ema 标准指数加权移动平均：new_avg = decay * sample + (1-decay) * old_avg。
+// ema is the standard exponential moving average: new_avg = decay * sample + (1-decay) * old_avg.
 func ema(old, sample, decay float64) float64 {
 	return decay*sample + (1-decay)*old
 }
 
-// success01 把 ErrorClass 映射到 0/1（Success=1，其它=0）。
+// success01 maps ErrorClass to 0/1 (Success=1, everything else=0).
 func success01(c ErrorClass) float64 {
 	if c == ClassSuccess {
 		return 1.0
@@ -124,28 +124,29 @@ func success01(c ErrorClass) float64 {
 }
 
 // =============================================================================
-// DefaultScorer：success / latency factor
+// DefaultScorer: success / latency factor
 // =============================================================================
 
-// DefaultScorer Runtime Scoring 第一版实现（docs/03 §8 公式）。
+// DefaultScorer is the first-version Runtime Scoring implementation (docs/03 §8 formula).
 //
 //	effective_weight = base_weight * success_factor * latency_factor
 //
-// 各 factor 上下限 [0.1, 2.0] 防止某指标把权重打爆。
-// 缺数据（SampleCount < MinSamples）的 endpoint 给中性 factor=1.0 保留探索流量。
+// Each factor is bounded to [0.1, 2.0] to prevent any single metric from blowing up the weight.
+// Endpoints lacking data (SampleCount < MinSamples) get a neutral factor=1.0 to preserve exploration traffic.
 type DefaultScorer struct {
 	store      EndpointStatsStore
-	minSamples uint32  // 样本数少于此返回中性 factor
-	minFactor  float64 // factor 下限（默认 0.1）
-	maxFactor  float64 // factor 上限（默认 2.0）
+	minSamples uint32  // return a neutral factor below this sample count
+	minFactor  float64 // factor lower bound (default 0.1)
+	maxFactor  float64 // factor upper bound (default 2.0)
 
-	// latencyBaseline 用来归一 latency 到 factor：
+	// latencyBaselineMs normalizes latency into a factor:
 	//   factor = baseline / actual_latency
-	// 默认 200ms。同集群所有 endpoint 用一个 baseline；不打算适配 vendor 间数量级差异。
+	// Defaults to 200ms. All endpoints in the same cluster use one baseline; not intended to
+	// adapt to order-of-magnitude differences between vendors.
 	latencyBaselineMs float64
 }
 
-// NewDefaultScorer 构造 scorer；零值参数自动取合理默认。
+// NewDefaultScorer constructs a scorer; zero-value parameters automatically get sensible defaults.
 func NewDefaultScorer(store EndpointStatsStore, minSamples uint32, baselineMs float64) *DefaultScorer {
 	if minSamples == 0 {
 		minSamples = 5
@@ -162,7 +163,7 @@ func NewDefaultScorer(store EndpointStatsStore, minSamples uint32, baselineMs fl
 	}
 }
 
-// Score 按 success / latency factor 调每个候选的 EffectiveWeight。
+// Score adjusts each candidate's EffectiveWeight by success / latency factor.
 func (s *DefaultScorer) Score(ctx context.Context, candidates []Candidate, _ *Request) []Candidate {
 	if s.store == nil {
 		return candidates
@@ -172,7 +173,7 @@ func (s *DefaultScorer) Score(ctx context.Context, candidates []Candidate, _ *Re
 		out[i] = c
 		stats := s.store.Snapshot(ctx, c.Endpoint.ID)
 		if stats.SampleCount < s.minSamples {
-			continue // 中性 factor，保留 base weight
+			continue // neutral factor, keep base weight
 		}
 		successFactor := clampFactor(stats.SuccessRate, s.minFactor, s.maxFactor)
 		latencyFactor := clampFactor(s.latencyBaselineMs/maxFloat(stats.LatencyMs, 1), s.minFactor, s.maxFactor)

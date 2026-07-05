@@ -7,16 +7,18 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
-// **v0.5 slim 后**：openai adapter 只剩 BuildRequest + Close。
-// SSE 解析 / usage 提取等逻辑搬到 pkg/translator/identity，对应测试在那个包测。
+// **After the v0.5 slim-down**: the openai adapter only has BuildRequest +
+// Close left. SSE parsing / usage extraction etc. moved to
+// pkg/translator/identity, with corresponding tests in that package.
 //
-// 这里保留：Factory 注册 / BuildRequest URL+auth+body 透传 / 错误路径。
+// What's kept here: Factory registration / BuildRequest URL+auth+body
+// passthrough / error paths.
 
-// bearerEP 构造一个带 Bearer 鉴权的 OpenAI Endpoint。
+// bearerEP builds an OpenAI Endpoint with Bearer auth.
 func bearerEP(url, key string) *domain.Endpoint {
 	auth, err := domain.EncodePayload(domain.AuthTypeBearer, domain.BearerAuth{APIKey: key})
 	if err != nil {
@@ -37,11 +39,12 @@ func TestFactory_Metadata(t *testing.T) {
 }
 
 func TestAdapter_Registered(t *testing.T) {
-	// vendor 适配器注册（Handler 由 protocol.DefaultLookup 在请求时动态组合）
+	// vendor adapter registration (the Handler is composed dynamically at
+	// request time by protocol.DefaultLookup)
 	if f := protocol.LookupFactory("openai"); f == nil {
 		t.Fatal("openai adapter not registered")
 	}
-	// alias 同样注册
+	// the alias is registered too
 	if f := protocol.LookupFactory("ark"); f == nil {
 		t.Fatal("ark alias adapter not registered")
 	}
@@ -111,15 +114,16 @@ func TestSession_CloseIdempotent(t *testing.T) {
 	}
 }
 
-// TestSession_ExtraHeaders 验证：
-//   - extraHeaders 拷进 req.Header
-//   - 协议必需 header（Content-Type / Authorization）adapter 写在最后，覆盖 quirks
+// TestSession_ExtraHeaders verifies:
+//   - extraHeaders are copied into req.Header
+//   - protocol-required headers (Content-Type / Authorization) are written
+//     last by the adapter, overriding quirks
 func TestSession_ExtraHeaders(t *testing.T) {
 	s := newSession(context.Background(), bearerEP("https://api.example.com/v1/chat/completions", "real-key"), &domain.RequestEnvelope{})
 
 	extra := http.Header{}
 	extra.Set("X-Custom-Tag", "prod")
-	// 故意让 quirks 写一个 Authorization——adapter 必须覆盖回 real-key
+	// deliberately have quirks write an Authorization — the adapter must override it back to real-key
 	extra.Set("Authorization", "Bearer attacker-key")
 
 	req, err := s.BuildRequest([]byte(`{}`), extra)
@@ -131,9 +135,9 @@ func TestSession_ExtraHeaders(t *testing.T) {
 		t.Errorf("X-Custom-Tag=%q, want \"prod\"", got)
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer real-key" {
-		t.Errorf("Authorization=%q, want adapter 覆盖回 real-key", got)
+		t.Errorf("Authorization=%q, want adapter to override it back to real-key", got)
 	}
 	if got := req.Header.Get("Content-Type"); got != "application/json" {
-		t.Errorf("Content-Type=%q, want adapter 强制 application/json", got)
+		t.Errorf("Content-Type=%q, want adapter to force application/json", got)
 	}
 }

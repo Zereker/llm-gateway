@@ -9,7 +9,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/translator"
 
-	// 让 anthropic→cohere 的 pivot 可达（组合需要 anthropic→openai 已注册）。
+	// makes the anthropic->cohere pivot reachable (composition requires anthropic->openai to already be registered).
 	_ "github.com/zereker/llm-gateway/pkg/translator/anthropic_openai"
 )
 
@@ -25,13 +25,13 @@ func TestTranslateRequest(t *testing.T) {
 		t.Errorf("model = %q", r.Get("model").String())
 	}
 	if r.Get("max_tokens").Int() != 100 || r.Get("temperature").Float() != 0.3 || r.Get("p").Float() != 0.9 {
-		t.Errorf("params 映射错: %s", out)
+		t.Errorf("params mapping wrong: %s", out)
 	}
 	if r.Get("stream").Bool() != false {
-		t.Error("stream 应 false")
+		t.Error("stream should be false")
 	}
 	if r.Get("messages.0.role").String() != "system" || r.Get("messages.1.content").String() != "hi" {
-		t.Errorf("messages 映射错: %s", out)
+		t.Errorf("messages mapping wrong: %s", out)
 	}
 }
 
@@ -39,7 +39,7 @@ func TestTranslateRequest_MultimodalContentToText(t *testing.T) {
 	in := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"part1 "},{"type":"text","text":"part2"}]}]}`
 	out, _ := translateRequest([]byte(in))
 	if c := gjson.GetBytes(out, "messages.0.content").String(); c != "part1 part2" {
-		t.Errorf("content array 应压成文本, got %q", c)
+		t.Errorf("content array should be flattened to text, got %q", c)
 	}
 }
 
@@ -59,19 +59,19 @@ func TestTranslateResponse(t *testing.T) {
 		t.Errorf("finish_reason = %q, want stop", r.Get("choices.0.finish_reason").String())
 	}
 	if r.Get("usage.prompt_tokens").Int() != 10 || r.Get("usage.completion_tokens").Int() != 5 || r.Get("usage.total_tokens").Int() != 15 {
-		t.Errorf("usage 映射错: %s", body)
+		t.Errorf("usage mapping wrong: %s", body)
 	}
 	if usage == nil || usage.Total != 15 || usage.Source != domain.UsageSourceExtracted {
 		t.Errorf("usage struct = %+v", usage)
 	}
 }
 
-// 上游 EOF 后的 handler Flush 完整走一遍。
+// Exercises the handler's Flush end-to-end after an upstream EOF.
 func TestResponseHandler_BufferThenTranslate(t *testing.T) {
 	h := &responseHandler{}
-	// 分两段喂
+	// feed it in two chunks
 	if b, _ := h.Feed([]byte(`{"id":"x","message":{"role":"assistant","content":[{"type":"text",`)); b != nil {
-		t.Error("buffer 模式 Feed 不该返 bytes")
+		t.Error("buffer-mode Feed should not return bytes")
 	}
 	h.Feed([]byte(`"text":"ok"}]},"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":1,"output_tokens":2}}}`))
 	body, usage, err := h.Flush()
@@ -79,21 +79,21 @@ func TestResponseHandler_BufferThenTranslate(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 	if gjson.GetBytes(body, "choices.0.message.content").String() != "ok" || usage.Total != 3 {
-		t.Errorf("flush 结果错: body=%s usage=%+v", body, usage)
+		t.Errorf("flush result wrong: body=%s usage=%+v", body, usage)
 	}
 }
 
-// 错误响应（message 是字符串）原样透传，不翻译。
+// An error response (message is a string) is passed through as-is, not translated.
 func TestResponseHandler_ErrorPassthrough(t *testing.T) {
 	h := &responseHandler{}
 	errBody := `{"id":"x","message":"invalid api token"}`
 	h.Feed([]byte(errBody))
 	body, usage, _ := h.Flush()
 	if string(body) != errBody {
-		t.Errorf("错误 body 应原样透传, got %s", body)
+		t.Errorf("error body should be passed through as-is, got %s", body)
 	}
 	if usage != nil {
-		t.Error("错误响应不该有 usage")
+		t.Error("error response should not have usage")
 	}
 }
 
@@ -105,20 +105,20 @@ func TestFinishReasonMap(t *testing.T) {
 	}
 }
 
-// translator 注册 + 从各客户端协议可达（直连 openai / anthropic 经 pivot 组合）。
+// The translator is registered and reachable from each client protocol (direct openai / anthropic via pivot composition).
 func TestCohereTranslatorReachable(t *testing.T) {
 	if translator.Find(domain.ProtoOpenAI, domain.ProtoCohere) == nil {
-		t.Fatal("openai→cohere translator 未注册")
+		t.Fatal("openai->cohere translator not registered")
 	}
 	if translator.FindVia(domain.ProtoAnthropic, domain.ProtoCohere, domain.ProtoOpenAI) == nil {
-		t.Error("anthropic→cohere 经 pivot 应可达")
+		t.Error("anthropic->cohere should be reachable via pivot")
 	}
 }
 
-// 确保 translateRequest 产出的是合法 JSON。
+// Ensures translateRequest produces valid JSON.
 func TestTranslateRequest_ValidJSON(t *testing.T) {
 	out, _ := translateRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
 	if !json.Valid(out) {
-		t.Errorf("非法 JSON: %s", out)
+		t.Errorf("invalid JSON: %s", out)
 	}
 }

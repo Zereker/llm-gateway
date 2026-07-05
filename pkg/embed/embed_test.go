@@ -10,13 +10,13 @@ func TestCosine(t *testing.T) {
 		a, b []float32
 		want float64
 	}{
-		{[]float32{1, 0}, []float32{1, 0}, 1},      // 相同
-		{[]float32{1, 0}, []float32{0, 1}, 0},      // 正交
-		{[]float32{1, 0}, []float32{-1, 0}, -1},    // 反向
-		{[]float32{1, 1}, []float32{2, 2}, 1},      // 同向不同模
-		{[]float32{1, 0}, []float32{0, 0}, 0},      // 零向量
-		{[]float32{1, 0}, []float32{1, 0, 0}, 0},   // 长度不匹配
-		{[]float32{}, []float32{}, 0},              // 空
+		{[]float32{1, 0}, []float32{1, 0}, 1},    // identical
+		{[]float32{1, 0}, []float32{0, 1}, 0},    // orthogonal
+		{[]float32{1, 0}, []float32{-1, 0}, -1},  // opposite
+		{[]float32{1, 1}, []float32{2, 2}, 1},    // same direction, different magnitude
+		{[]float32{1, 0}, []float32{0, 0}, 0},    // zero vector
+		{[]float32{1, 0}, []float32{1, 0, 0}, 0}, // length mismatch
+		{[]float32{}, []float32{}, 0},            // empty
 	}
 	for i, c := range cases {
 		if got := Cosine(c.a, c.b); math.Abs(got-c.want) > 1e-9 {
@@ -29,9 +29,9 @@ func TestEmbeddingsURL(t *testing.T) {
 	cases := []struct{ base, want string }{
 		{"https://api.openai.com", "https://api.openai.com/v1/embeddings"},
 		{"https://api.openai.com/", "https://api.openai.com/v1/embeddings"},
-		{"https://host/v1", "https://host/v1/embeddings"},          // 不能变成 /v1/v1/embeddings
-		{"https://host/v1/", "https://host/v1/embeddings"},         // 尾斜杠
-		{"https://host/v1/embeddings", "https://host/v1/embeddings"}, // 完整端点原样
+		{"https://host/v1", "https://host/v1/embeddings"},            // must not become /v1/v1/embeddings
+		{"https://host/v1/", "https://host/v1/embeddings"},           // trailing slash
+		{"https://host/v1/embeddings", "https://host/v1/embeddings"}, // full endpoint used as-is
 	}
 	for _, c := range cases {
 		if got := embeddingsURL(c.base); got != c.want {

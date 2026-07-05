@@ -42,16 +42,16 @@ func TestCohere_WrongAuthType(t *testing.T) {
 	}
 	sess, _ := Factory{}.NewSession(context.Background(), ep, &domain.RequestEnvelope{})
 	if _, err := sess.BuildRequest([]byte(`{}`), http.Header{}); err == nil {
-		t.Error("非 bearer auth 应报错")
+		t.Error("non-bearer auth should error")
 	}
 }
 
 func TestCohere_FactoryRegistered(t *testing.T) {
 	if protocol.LookupFactory("cohere") == nil {
-		t.Fatal("cohere vendor 未注册")
+		t.Fatal("cohere vendor not registered")
 	}
 	f := Factory{}
 	if f.Metadata().Vendor != "cohere" {
-		t.Error("vendor 名错")
+		t.Error("wrong vendor name")
 	}
 }

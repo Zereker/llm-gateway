@@ -1,18 +1,23 @@
-// Command llm-gateway 是数据面：接 LLM 客户端请求 → 跑 10-middleware 链 → 转发上游。
+// Command llm-gateway is the data plane: accepts LLM client requests, runs them
+// through the 10-middleware chain, and forwards them upstream.
 //
-// 用法（最小起步）：
+// Usage (minimal quickstart):
 //
 //	go run ./cmd/gateway -config ./configs/local/gateway.yaml
 //
-// gateway.yaml 见 configs/local/gateway.yaml；包含 server / middleware /
-// database / outbox 四段（apikeys 已迁 DB，不再有 paths.apikeys）。
+// See configs/local/gateway.yaml for gateway.yaml; it has four sections —
+// server / middleware / database / outbox (apikeys has moved to the DB, so
+// there's no more paths.apikeys).
 //
-// 路由与 middleware 装配在 pkg/router；DB（model_services / endpoints / api_keys）
-// 启动时 gateway 自己跑 infra.Migrate 建表；业务数据（model_services / endpoints /
-// api_keys / pricing 等）由 deployer 直接 SQL 插入维护（本仓库不带控制平面）。
+// Routing and middleware assembly live in pkg/router; for the DB
+// (model_services / endpoints / api_keys), gateway runs infra.Migrate itself at
+// startup to create tables. Business data (model_services / endpoints /
+// api_keys / pricing, etc.) is maintained by the deployer via direct SQL inserts
+// (this repo ships no control plane).
 //
-// lifecycle（infra Open + 信号处理 + 倒序 close）走 pkg/server，本文件只做
-// 配置加载 + 业务装配 + 把 engine 交给 server。
+// Lifecycle (infra Open + signal handling + reverse-order close) is handled by
+// pkg/server; this file only does config loading + business wiring + handing
+// the engine off to server.
 package main
 
 import (
@@ -45,7 +50,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/trace"
 	"github.com/zereker/llm-gateway/pkg/usage"
 
-	// vendor Factory blank imports：init() 自动注册到 protocol vendor registry
+	// vendor Factory blank imports: init() auto-registers into the protocol vendor registry
 	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/bedrock"
@@ -53,7 +58,7 @@ import (
 	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 
-	// translator blank imports：init() 自动注册到 translator registry
+	// translator blank imports: init() auto-registers into the translator registry
 	_ "github.com/zereker/llm-gateway/pkg/translator/anthropic_openai"
 	_ "github.com/zereker/llm-gateway/pkg/translator/identity"
 	_ "github.com/zereker/llm-gateway/pkg/translator/openai_anthropic"
@@ -66,9 +71,10 @@ func main() {
 	configPath := flag.String("config", "./configs/local/gateway.yaml", "path to gateway YAML config")
 	flag.Parse()
 
-	// slog default：用 trace.CtxHandler 包 JSON handler，让所有 *Context 系列调用
-	// （slog.InfoContext / ErrorContext 等）自动从 ctx 抽 trace_id / span_id /
-	// baggage（sub_account_id / request_id 等）加进 record。
+	// slog default: wrap the JSON handler with trace.CtxHandler so that all
+	// *Context-style calls (slog.InfoContext / ErrorContext, etc.) automatically
+	// pull trace_id / span_id / baggage (sub_account_id / request_id, etc.) from
+	// ctx and add them to the record.
 	slog.SetDefault(slog.New(trace.NewCtxHandler(slog.NewJSONHandler(os.Stderr, nil))))
 
 	if err := run(*configPath); err != nil {
@@ -83,7 +89,8 @@ func run(configPath string) error {
 		return err
 	}
 
-	// 装载 endpoints.auth 列加密 KEK；缺失或长度错 fail-fast。
+	// Load the KEK for encrypting the endpoints.auth column; missing or
+	// wrong-length key fails fast.
 	if err := repo.SetDataKey(cfg.DataKey); err != nil {
 		return fmt.Errorf("load data_key: %w", err)
 	}
@@ -96,19 +103,24 @@ func run(configPath string) error {
 	return srv.Serve(cfg.Server.Addr, engine, cfg.Server.ReadHeaderTimeout, cfg.Server.ShutdownTimeout)
 }
 
-// buildEngine 构造 deps 并装配 router.NewEngine；同时返回 *server.Server，
-// 供调用方决定 Serve（生产）或 Close（测试）。
+// buildEngine constructs the deps and wires up router.NewEngine; it also
+// returns *server.Server so the caller can decide whether to Serve
+// (production) or Close (tests).
 //
-// gateway 启动期：OpenDB → infra.Migrate（IF NOT EXISTS 幂等）→ repo.CheckSchema
-// 验证表存在。schema 演进直接改 pkg/infra/schema.sql；表里没有
-// model_service / endpoint / api_key 时 gateway 仍能启动，请求过来时 M5 / M7 / M2
-// 会 404 / 503 / 401。
+// gateway startup sequence: OpenDB → infra.Migrate (idempotent, IF NOT EXISTS)
+// → repo.CheckSchema to verify the tables exist. Evolve the schema by editing
+// pkg/infra/schema.sql directly; gateway can still start even if the
+// model_service / endpoint / api_key tables are empty — requests will then get
+// 404 / 503 / 401 from M5 / M7 / M2 respectively.
 //
-// 任意中间步骤失败时通过 defer 把已 open 的 infra 一并 Close，避免泄漏。
+// If any intermediate step fails, a defer Closes whatever infra has already
+// been opened, to avoid leaking resources.
 func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, err error) {
-	// 用局部 s 持有真实 server：error 路径 `return nil, nil, err` 会把 named
-	// return srv 覆盖成 nil，若 defer 依赖 srv 就会 Close nil → panic，反而盖掉
-	// 真正的启动错误。defer 只认 s，任何早退都能干净 Close 已 open 的 infra。
+	// Hold the real server in a local variable s: on the error path
+	// `return nil, nil, err` would overwrite the named return srv with nil, and
+	// if a defer relied on srv it would Close nil → panic, masking the real
+	// startup error. The defer only refers to s, so any early return can
+	// cleanly Close whatever infra is already open.
 	s := server.New(slog.Default())
 	srv = s
 	defer func() {
@@ -128,23 +140,26 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		return nil, nil, err
 	}
 
-	// M6 RateLimit 必须有 Redis；启动期 ping fail-fast
+	// M6 RateLimit requires Redis; ping fail-fast at startup
 	rdb, err := srv.OpenRedis(cfg.Redis)
 	if err != nil {
 		return nil, nil, fmt.Errorf("infra.OpenRedis: %w", err)
 	}
 
-	// repo TTL LRU 缓存的 Prom counter（hit / miss / error per table）。
-	// 5 个 cached wrapper 共享同一个 metrics 实例；nil 时不上报。
+	// Prometheus counter for the repo TTL LRU cache (hit / miss / error per
+	// table). The 5 cached wrappers share this single metrics instance; no
+	// reporting happens when it's nil.
 	cacheMetrics := newRepoCacheMetrics()
 
 	apikeyProvider := repo.NewCachedAPIKeyProvider(
 		repo.NewSQLAPIKeyProvider(sqldb), 10240, 30*time.Second, cacheMetrics,
 	)
 
-	// 快速吊销：订阅控制面的 cachebus 失效频道，收到 apikey 失效就精准 evict——
-	// 把"key 已吊销但数据面仍缓存有效"的窗口从 ≤30s TTL 收到亚秒级。best-effort：
-	// 订阅失败只 warn（退化成纯 TTL），不阻塞启动。
+	// Fast revocation: subscribe to the control plane's cachebus invalidation
+	// channel and evict precisely on apikey invalidation events — this shrinks
+	// the "key already revoked but data plane still has it cached" window from
+	// ≤30s TTL down to sub-second. Best-effort: a subscribe failure only warns
+	// (degrading to TTL-only invalidation) and doesn't block startup.
 	if stop, subErr := cachebus.NewSubscriber(rdb, "", func(inv cachebus.Invalidation) {
 		if inv.Kind == cachebus.KindAPIKey {
 			apikeyProvider.Evict(inv.Key)
@@ -160,25 +175,27 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		return nil, nil, fmt.Errorf("usage outbox: %w", err)
 	}
 
-	// Content Log（docs/05 §2 + docs/08 §6）。none = 不构造，零开销
+	// Content Log (docs/05 §2 + docs/08 §6). none = not constructed, zero overhead
 	contentLogger := buildContentLogger(srv, cfg.ContentLog)
 
-	// Runtime Scoring（docs/03 §8）：未启用时 scorer = nil，scheduler 走纯静态 weight
+	// Runtime Scoring (docs/03 §8): when disabled, scorer = nil and the
+	// scheduler falls back to pure static weight
 	stats, scorer := buildScoring(cfg.Scoring, rdb)
 
-	// Health Probing（docs/03 §10）：未启用时不启动 prober
+	// Health Probing (docs/03 §10): the prober isn't started when disabled
 	startHealthProber(srv, cfg.Health, healthListerAdapter{p: repo.NewSQLEndpointReader(sqldb)}, stats)
 
-	// Sender 装配：Content Logger 通过 hooks 接入字节流（可选）
+	// Sender assembly: the Content Logger hooks into the byte stream via hooks (optional)
 	senderOpts := []invoker.Option{}
 	if contentLogger != nil {
 		senderOpts = append(senderOpts, invoker.WithHooks(contentLogger))
 	}
 	sender := invoker.New(senderOpts...)
 
-	// 进程内 TTL LRU 缓存——repo 唯一的缓存策略。
-	// deployer SQL 改完业务表后 ≤ TTL（默认 30s）gateway 看到新值。
-	// 每个 cached wrapper 自带 metrics → llm_gateway_repo_cache_total{table,result}。
+	// In-process TTL LRU cache — the repo's only caching strategy.
+	// After the deployer changes a business table via SQL, gateway sees the new
+	// value within ≤ TTL (default 30s).
+	// Each cached wrapper carries its own metrics → llm_gateway_repo_cache_total{table,result}.
 	cacheTTL := 30 * time.Second
 	catalog := adaptCatalog(repo.NewCachedModelServiceReader(
 		repo.NewSQLModelServiceReader(sqldb), 256, cacheTTL, cacheMetrics,
@@ -192,12 +209,15 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		repo.NewSQLEndpointReader(sqldb), 1024, 4096, cacheTTL, cacheMetrics,
 	)
 
-	// 启动期 endpoint 配置扫描（docs/00 §3 step 6）：protocol typo / vendor 未注册 /
-	// translator 不可达 / metadata URL / quirks 编译失败——warn + metric，不阻塞启动。
+	// Startup-time endpoint config scan (docs/00 §3 step 6): protocol typos /
+	// unregistered vendor / unreachable translator / metadata URL / quirks
+	// compile failures — warn + metric, doesn't block startup.
 	scanEndpoints(context.Background(), endpointReader, slog.Default())
-	// quota policy 只有一层缓存：ratelimit.PolicyCache（缓存**解析后**的 PolicyRule，
-	// TTL 30s）。这里直接喂 SQL provider——不再叠 repo.CachedQuotaPolicyProvider，
-	// 双层 30s 会让改 policy 最坏 60s 才生效，且两层各自的 miss 语义叠加难排障。
+	// quota policy has only one caching layer: ratelimit.PolicyCache (caches the
+	// **parsed** PolicyRule, TTL 30s). We feed it the SQL provider directly here
+	// — we don't stack repo.CachedQuotaPolicyProvider on top, since two 30s
+	// layers would mean a policy change takes up to 60s to take effect, and the
+	// two layers' distinct miss semantics stacked together would be hard to debug.
 	quotaPolicyReader := repo.NewSQLQuotaPolicyProvider(sqldb)
 	rateStore := ratelimit.NewRedisStore(rdb)
 	cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{
@@ -216,10 +236,12 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		Affinity: buildAffinity(cfg.Selector.SessionAffinity, rdb),
 	})
 
-	// Dispatcher 装配（M7 业务编排：Selector + Invoker + EndpointQuota + Policy）。
-	// 实现在各自的包里；cmd/gateway/dispatch_wiring.go 只做 wiring。
-	// dispatchTracer 跟 middleware AuditTracer 共用同一个 trace.Tracer，保证
-	// dispatch.request / dispatch.attempt span 跟 M10 audit 在同一棵 trace 树下。
+	// Dispatcher assembly (M7 business orchestration: Selector + Invoker +
+	// EndpointQuota + Policy). The implementations live in their own packages;
+	// cmd/gateway/dispatch_wiring.go only does the wiring.
+	// dispatchTracer shares the same trace.Tracer as the middleware AuditTracer,
+	// ensuring the dispatch.request / dispatch.attempt spans and the M10 audit
+	// live in the same trace tree.
 	dispatchTracer := buildTracer(srv, cfg.Trace)
 	dispatcher := buildDispatcher(
 		adaptEndpoints(endpointReader),
@@ -248,10 +270,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		RateLimitStore: rateStore,
 		QuotaPolicies:  ratelimit.NewPolicyCache(quotaPolicyReader, 0),
 
-		// M7 Schedule (Dispatcher 编排：fallback / retry / streaming 在 pkg/dispatch 内)
+		// M7 Schedule (Dispatcher orchestration: fallback / retry / streaming live in pkg/dispatch)
 		Dispatcher: dispatcher,
 
-		// 响应缓存中间件（M6 之后、M7 之前）：精确 / 语义 / no-op
+		// Response cache middleware (after M6, before M7): exact / semantic / no-op
 		Cache:          buildCacheMiddleware(cfg.Cache, rdb),
 		EmbeddingCache: buildEmbeddingCache(cfg.Cache, rdb),
 
@@ -262,8 +284,9 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		UsageOutbox: outbox,
 		AuditTracer: dispatchTracer,
 
-		// /readyz 依赖检查（docs/06 §13：readiness 检查 SQL + Redis 可达；
-		// 不检查 Kafka——usage 发布失败不应摘流量）
+		// /readyz dependency checks (docs/06 §13: readiness checks SQL + Redis
+		// reachability; Kafka is not checked — a usage-publish failure shouldn't
+		// pull traffic out of rotation)
 		Readiness: []router.ReadinessChecker{
 			{Name: "mysql", Check: sqldb.PingContext},
 			{Name: "redis", Check: func(ctx context.Context) error { return rdb.Ping(ctx).Err() }},
@@ -273,12 +296,13 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	return engine, srv, nil
 }
 
-// buildSchedulerFilters 按 cfg.Selector.Filters 列表名字 → Filter 实例。
+// buildSchedulerFilters maps names from cfg.Selector.Filters to Filter instances.
 //
-// 不在 schedule pkg 里 hardcode 这个映射——cmd 才知道有哪些 deps（redis client / store /
-// cooldown manager）。新加 filter 类型时在这里加一个 case。
+// This mapping isn't hardcoded in the schedule package — only cmd knows what
+// deps are available (redis client / store / cooldown manager). Add a case
+// here when introducing a new filter type.
 //
-// 找不到的名字直接 panic（fail-fast；启动期暴露配置错）。
+// An unrecognized name panics directly (fail-fast; surfaces config errors at startup).
 func buildSchedulerFilters(names []string, store ratelimit.Store, cd selector.CooldownManager) []selector.Filter {
 	out := make([]selector.Filter, 0, len(names))
 	for _, n := range names {
@@ -288,13 +312,14 @@ func buildSchedulerFilters(names []string, store ratelimit.Store, cd selector.Co
 		case "limit_read":
 			out = append(out, selector.NewLimitReadFilter(store))
 		case "weighted_random":
-			// weighted_random 是 Selector 而非 Filter；它在 cfg.Selector 单独配，
-			// 这里忽略（仅为了向后兼容旧 yaml 列表）。
+			// weighted_random is a Selector, not a Filter; it's configured
+			// separately under cfg.Selector, so it's ignored here (kept only for
+			// backward compatibility with older yaml lists).
 			continue
 		case "prefix_cache":
-			out = append(out, selector.NewPrefixCacheFilter(0)) // 0 = 默认 vnodes=64
+			out = append(out, selector.NewPrefixCacheFilter(0)) // 0 = default vnodes=64
 		case "busy":
-			out = append(out, selector.NewBusyFilter(0)) // 0 = 默认 threshold=0.85
+			out = append(out, selector.NewBusyFilter(0)) // 0 = default threshold=0.85
 		default:
 			panic("unknown scheduler filter: " + n)
 		}
@@ -302,12 +327,12 @@ func buildSchedulerFilters(names []string, store ratelimit.Store, cd selector.Co
 	return out
 }
 
-// buildTracer 按 cfg.Driver 构造 trace.Tracer。
+// buildTracer constructs a trace.Tracer according to cfg.Driver.
 //
-//   - slog: 默认；本地结构化日志（log/slog）
-//   - otel: OpenTelemetry OTLP gRPC export，注册 srv.AddCloser 让退出时 flush
+//   - slog: default; local structured logging (log/slog)
+//   - otel: OpenTelemetry OTLP gRPC export; registers srv.AddCloser to flush on exit
 //
-// 找不到的 driver 直接 panic（fail-fast）。
+// An unrecognized driver panics directly (fail-fast).
 func buildTracer(srv *server.Server, cfg config.TraceConfig) trace.Tracer {
 	switch cfg.Driver {
 	case "", "slog":
@@ -326,14 +351,17 @@ func buildTracer(srv *server.Server, cfg config.TraceConfig) trace.Tracer {
 	}
 }
 
-// buildScoring 构造 Runtime Scoring 的 stats store + scorer（docs/03 §8）。
+// buildScoring constructs the Runtime Scoring stats store + scorer (docs/03 §8).
 //
-// 未启用时返回 (nil, nil) —— scheduler 将走纯静态 weight，无任何运行时打分。
+// Returns (nil, nil) when disabled — the scheduler then falls back to pure
+// static weight, with no runtime scoring at all.
 //
-// **driver**（cfg.Driver，按 P5 fail-fast）：
-//   - inmemory（默认）：进程内 EMA，每副本独立累积；单副本 / 容忍副本间差异用。
-//   - redis：多副本共享同一份 per-endpoint EMA，打分一致；生产多副本用。
-//   - 未知 driver → panic（暴露配置错）。
+// **driver** (cfg.Driver, fail-fast per P5):
+//   - inmemory (default): in-process EMA, accumulated independently per
+//     replica; use for a single replica or when cross-replica variance is tolerable.
+//   - redis: replicas share the same per-endpoint EMA for consistent scoring;
+//     use for production multi-replica deployments.
+//   - unknown driver → panic (surfaces config errors).
 func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.EndpointStatsStore, selector.Scorer) {
 	if !cfg.Enabled {
 		return nil, nil
@@ -359,13 +387,14 @@ func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.Endpoin
 	return store, scorer
 }
 
-// buildCacheMiddleware 装配响应缓存中间件（M6 之后、M7 之前）。
+// buildCacheMiddleware assembles the response cache middleware (after M6, before M7).
 //
-//   - semantic.enabled → 语义缓存（embed prompt + cosine 命中，取代精确缓存）
-//   - enabled          → 精确缓存（SHA256 body 命中）
-//   - 都关              → no-op（不改链）
+//   - semantic.enabled → semantic cache (embed the prompt + cosine hit, replaces the exact cache)
+//   - enabled          → exact cache (SHA256 body hit)
+//   - both off         → no-op (chain unchanged)
 //
-// 都 Redis-backed（多副本共享）。语义缓存的 embedder 未配好则启动 fail-fast。
+// Both are Redis-backed (shared across replicas). If the semantic cache's
+// embedder isn't configured properly, startup fails fast.
 func buildCacheMiddleware(cfg config.CacheConfig, rdb *redis.Client) gin.HandlerFunc {
 	switch {
 	case cfg.Semantic.Enabled:
@@ -383,12 +412,16 @@ func buildCacheMiddleware(cfg config.CacheConfig, rdb *redis.Client) gin.Handler
 	}
 }
 
-// buildEmbeddingCache 装配 embedding 模态专用缓存——**只精确**。
+// buildEmbeddingCache assembles the cache dedicated to the embedding
+// modality — **exact-match only**.
 //
-// embeddings 天然确定（无采样），精确缓存纯收益（RAG 反复 embed 同批文本命中率高）；
-// 语义缓存对 embedding 无意义（必须精确匹配）。所以不复用 buildCacheMiddleware（可能
-// 是语义）——任一缓存开关打开就给 embeddings 上精确缓存，共用同一 Redis store。
-// cacheKey 已折入 modality，chat 与 embeddings 即便 body 全同也不撞 key。
+// Embeddings are inherently deterministic (no sampling), so an exact cache is
+// pure win (RAG workloads re-embedding the same batch of text repeatedly get
+// good hit rates); a semantic cache makes no sense for embeddings (they must
+// match exactly). So this doesn't reuse buildCacheMiddleware (which may be
+// semantic) — whichever cache switch is on, embeddings get the exact cache,
+// sharing the same Redis store. cacheKey already folds in modality, so chat and
+// embeddings won't collide on key even with an identical body.
 func buildEmbeddingCache(cfg config.CacheConfig, rdb *redis.Client) gin.HandlerFunc {
 	if cfg.Enabled || cfg.Semantic.Enabled {
 		return middleware.ResponseCache(respcache.NewRedisStore(rdb, "llm-gateway:respcache"), cfg.TTL)
@@ -396,7 +429,7 @@ func buildEmbeddingCache(cfg config.CacheConfig, rdb *redis.Client) gin.HandlerF
 	return func(c *gin.Context) { c.Next() } // no-op
 }
 
-// buildEmbedder 装配文本向量化后端（P5 fail-fast：未知 driver panic）。
+// buildEmbedder assembles the text embedding backend (P5 fail-fast: unknown driver panics).
 func buildEmbedder(cfg config.EmbedderConfig) embed.Embedder {
 	switch cfg.Driver {
 	case "openai":
@@ -409,10 +442,12 @@ func buildEmbedder(cfg config.EmbedderConfig) embed.Embedder {
 	}
 }
 
-// buildAffinity 构造会话亲和 store（Redis-backed，多副本共享）。
+// buildAffinity constructs the session affinity store (Redis-backed, shared across replicas).
 //
-// 未启用返回 nil —— scheduler 不粘会话。启用时客户端带 X-Gateway-Session 头即把
-// 该 session 粘到同一 endpoint（软亲和：pinned endpoint 被 cooldown/排除时自动重选）。
+// Returns nil when disabled — the scheduler won't stick sessions. When
+// enabled, a client sending the X-Gateway-Session header gets that session
+// pinned to the same endpoint (soft affinity: automatically re-selects if the
+// pinned endpoint is cooled down / excluded).
 func buildAffinity(cfg config.SessionAffinityConfig, rdb *redis.Client) selector.AffinityStore {
 	if !cfg.Enabled {
 		return nil
@@ -420,7 +455,7 @@ func buildAffinity(cfg config.SessionAffinityConfig, rdb *redis.Client) selector
 	return selector.NewRedisAffinityStore(rdb, "llm-gateway:sched", cfg.TTL)
 }
 
-// healthListerAdapter 把 repo.EndpointReader → health.EndpointLister（List 返 domain.Endpoint）。
+// healthListerAdapter adapts repo.EndpointReader to health.EndpointLister (List returns domain.Endpoint).
 type healthListerAdapter struct{ p repo.EndpointReader }
 
 func (a healthListerAdapter) List(ctx context.Context) ([]*domain.Endpoint, error) {
@@ -431,9 +466,10 @@ func (a healthListerAdapter) List(ctx context.Context) ([]*domain.Endpoint, erro
 	return repo.ToDomainEndpoints(rows), nil
 }
 
-// startHealthProber 按 cfg 启动 Health Prober（docs/03 §10）。
+// startHealthProber starts the Health Prober according to cfg (docs/03 §10).
 //
-// 未启用时不做任何事。stats == nil 时也跳过（probe 结果没人消费没意义）。
+// Does nothing when disabled. Also skipped when stats == nil (no point
+// probing if nothing consumes the results).
 func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister health.EndpointLister, stats selector.EndpointStatsStore) {
 	if !cfg.Enabled || stats == nil {
 		return
@@ -454,14 +490,16 @@ func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister healt
 	})
 }
 
-// buildContentLogger 按 cfg.Driver 构造 ContentLogger（返回 nil = 不开启）。
+// buildContentLogger constructs a ContentLogger according to cfg.Driver
+// (returns nil = disabled).
 //
-//   - none/"":  返回 nil，零开销（不挂 hooks）
-//   - file:     JSONL append 到本地文件；下游分流（S3 / Loki / Kafka 内容安全 /
-//     训练数据回流）交给 fluent-bit / vector，gateway 不内嵌 Kafka producer。
-//     理由见 docs/architecture/05-metering-billing.md §2。
+//   - none/"":  returns nil, zero overhead (no hooks attached)
+//   - file:     JSONL-appends to a local file; downstream fan-out (S3 / Loki /
+//     Kafka content-safety / training-data replay) is left to fluent-bit /
+//     vector — gateway doesn't embed a Kafka producer. See
+//     docs/architecture/05-metering-billing.md §2 for the rationale.
 //
-// 找不到的 driver 直接 panic（启动期暴露配置错）。
+// An unrecognized driver panics directly (surfaces config errors at startup).
 func buildContentLogger(srv *server.Server, cfg config.ContentLogConfig) *contentlog.Logger {
 	var pub contentlog.Publisher
 	switch cfg.Driver {
@@ -501,12 +539,13 @@ func buildContentLogger(srv *server.Server, cfg config.ContentLogConfig) *conten
 	return logger
 }
 
-// buildBudgetGate 按 cfg.Driver 构造 BudgetGate。
+// buildBudgetGate constructs a BudgetGate according to cfg.Driver.
 //
-//   - alwayspass: 永远放行（默认；开发 / 无付费体系）
-//   - inmemory:   进程内余额跟踪（demo / 单主账号；丢内存重启清零）
+//   - alwayspass: always allow (default; dev / no billing system)
+//   - inmemory:   in-process balance tracking (demo / single primary account;
+//     resets to zero on restart since it's in memory)
 //
-// 找不到的 driver 直接 panic（启动期暴露配置错）。
+// An unrecognized driver panics directly (surfaces config errors at startup).
 func buildBudgetGate(cfg config.BudgetConfig) middleware.BudgetGate {
 	switch cfg.Driver {
 	case "", "alwayspass":
@@ -518,23 +557,25 @@ func buildBudgetGate(cfg config.BudgetConfig) middleware.BudgetGate {
 	}
 }
 
-// buildModerator 按 cfg.Driver 构造 Moderator。返回 nil 时 M8 静默 pass-through。
+// buildModerator constructs a Moderator according to cfg.Driver. When it
+// returns nil, M8 silently passes through.
 //
-//   - none:   nil（默认；不审核）
-//   - openai: OpenAI moderation API client（需要 cfg.APIKey）
+//   - none:   nil (default; no moderation)
+//   - openai: OpenAI moderation API client (requires cfg.APIKey)
 //
-// buildModerator 组装 guardrail 链（Chain 自身是 Moderator，插进 M8 零改动）。
+// buildModerator assembles the guardrail chain (Chain itself is a Moderator,
+// so it slots into M8 with zero changes there).
 //
-// driver 的 moderator（openai）+ 可选 denylist guard 组合：
-//   - 0 个 guard → nil（M8 pass-through）
-//   - 1 个 guard → 直接返回它（省 Chain 开销）
-//   - ≥2 个 guard → Chain 顺序跑
+// Combines the driver's moderator (openai) with an optional denylist guard:
+//   - 0 guards  → nil (M8 pass-through)
+//   - 1 guard   → return it directly (saves the Chain overhead)
+//   - ≥2 guards → Chain runs them in order
 func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 	var guards []moderation.NamedGuard
 
 	switch cfg.Driver {
 	case "", "none":
-		// 无 driver-side moderator
+		// no driver-side moderator
 	case "openai":
 		if cfg.APIKey == "" {
 			panic("moderation.driver=openai requires moderation.api_key")
@@ -549,7 +590,7 @@ func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 	if len(cfg.Denylist.Patterns) > 0 {
 		g, err := moderation.NewDenylistGuard(cfg.Denylist.Patterns, cfg.Denylist.CheckOutput)
 		if err != nil {
-			panic("moderation.denylist: " + err.Error()) // 启动 fail-fast：坏正则
+			panic("moderation.denylist: " + err.Error()) // startup fail-fast: bad regex
 		}
 		guards = append(guards, moderation.NamedGuard{Name: "denylist", Guard: g})
 	}
@@ -564,12 +605,13 @@ func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 	}
 }
 
-// buildOutbox 按 cfg.Driver 构造 OutboxPublisher。
+// buildOutbox constructs an OutboxPublisher according to cfg.Driver.
 //
-// 把 close 注册进 srv：
-//   - file: file 句柄关闭
-//   - kafka: producer 关闭由 srv.NewKafkaProducer 自动注册；KafkaOutbox 自身共享
-//     producer 引用，不再额外 AddCloser（避免双关）。
+// Registers close with srv:
+//   - file: closes the file handle
+//   - kafka: producer close is auto-registered by srv.NewKafkaProducer;
+//     KafkaOutbox shares the same producer reference and doesn't add its own
+//     AddCloser (to avoid closing it twice).
 func buildOutbox(srv *server.Server, cfg config.UsageEventsConfig) (usage.OutboxPublisher, error) {
 	switch cfg.Driver {
 	case "file":
@@ -597,8 +639,9 @@ func buildOutbox(srv *server.Server, cfg config.UsageEventsConfig) (usage.Outbox
 		}
 		return usage.NewKafkaOutbox(producer, cfg.Kafka.Topic), nil
 	case "file_and_kafka":
-		// dual-write：file 是 source of truth（sync commit），Kafka 是 best-effort 异步广播。
-		// broker 挂了仍能 commit；外部 replay 工具读 file 补发（详见 docs/05 §5）。
+		// dual-write: file is the source of truth (sync commit), Kafka is a
+		// best-effort async broadcast. Commits still succeed even if the broker
+		// is down; an external replay tool reads the file to resend (see docs/05 §5).
 		fileSink, err := usage.NewFileOutbox(cfg.File.Path)
 		if err != nil {
 			return nil, fmt.Errorf("file_and_kafka: file sink: %w", err)
@@ -607,17 +650,18 @@ func buildOutbox(srv *server.Server, cfg config.UsageEventsConfig) (usage.Outbox
 		if err != nil {
 			return nil, fmt.Errorf("file_and_kafka: kafka producer: %w", err)
 		}
-		// kafka 段一律走 async：dual-write 模式下 Kafka 是 best-effort，不应阻塞 file commit
+		// The kafka side always goes through async: in dual-write mode Kafka is
+		// best-effort and must not block the file commit
 		kafkaSink := usage.NewAsyncKafkaOutbox(producer, cfg.Kafka.Topic, usage.AsyncOptions{
 			BufferSize:  cfg.Kafka.BufferSize,
 			MaxRetries:  cfg.Kafka.MaxRetries,
 			BackoffBase: cfg.Kafka.BackoffBase,
-			DLQTopic:    cfg.Kafka.DLQTopic, // 可选；file 已是 truth，DLQ 仅做单消息级兜底
+			DLQTopic:    cfg.Kafka.DLQTopic, // optional; file is already the truth, DLQ is just a per-message fallback
 			Logger:      slog.Default(),
 		})
 		srv.AddCloser("dual-kafka-async", kafkaSink.Close)
 		ob := usage.NewDualWriteOutbox(fileSink, kafkaSink, slog.Default())
-		srv.AddCloser("dual-file-outbox", ob.Close) // 只关 file；kafka 由上面那行管
+		srv.AddCloser("dual-file-outbox", ob.Close) // only closes file; kafka is managed by the line above
 		return ob, nil
 	default:
 		return nil, fmt.Errorf("unknown usage_events driver %q (want file|kafka|async_kafka|file_and_kafka)", cfg.Driver)
