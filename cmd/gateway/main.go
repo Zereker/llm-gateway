@@ -46,6 +46,7 @@ import (
 	// vendor Factory blank imports：init() 自动注册到 protocol vendor registry
 	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 
 	// translator blank imports：init() 自动注册到 translator registry
