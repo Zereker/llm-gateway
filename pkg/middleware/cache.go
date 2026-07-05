@@ -70,18 +70,7 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 		// 命中:写缓存响应 + 透传 usage,abort 跳过 M7（M6-post/M10 在洋葱返程仍跑）。
 		if cached, ok := store.Get(ctx, key); ok {
 			metric.Inc(metric.ResponseCacheTotal, "result", "hit")
-			ct := cached.ContentType
-			if ct == "" {
-				ct = "application/json; charset=utf-8"
-			}
-			c.Header(HeaderGatewayCache, "hit")
-			c.Data(cached.StatusCode, ct, cached.Body)
-			if cached.Usage != nil {
-				u := *cached.Usage
-				u.Source = domain.UsageSourceCache
-				rc.Usage = &u
-			}
-			c.Abort()
+			writeCacheHit(c, rc, cached)
 			return
 		}
 
@@ -91,21 +80,42 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 		c.Writer = tw
 		c.Next()
 
-		// 只缓存**干净、完整、非流式**的 200：
-		//   - rc.Error != nil：200 之后流中断 / 上游错——body 可能截断，缓存会毒化
-		//     后续所有相同请求（forward 已把 200 header 写出，tw.buf 里是半个 body）。
-		//   - text/event-stream：analyzeBody 漏判流式时的兜底（绝不缓存 SSE）。
-		ct := tw.Header().Get("Content-Type")
-		if tw.Status() == 200 && tw.buf.Len() > 0 && rc.Error == nil && !isEventStream(ct) {
-			store.Set(ctx, key, CachedResponse{
-				StatusCode:  200,
-				ContentType: ct,
-				Body:        tw.buf.Bytes(),
-				Usage:       rc.Usage,
-			}, ttl)
+		if resp, ok := cacheableResponse(tw, rc); ok {
+			store.Set(ctx, key, resp, ttl)
 			metric.Inc(metric.ResponseCacheTotal, "result", "store")
 		}
 	}
+}
+
+// writeCacheHit 把缓存响应写给客户端 + 透传 usage(Source=cache) + abort 跳过 M7。
+// 精确缓存和语义缓存命中共用。
+func writeCacheHit(c *gin.Context, rc *domain.RequestContext, cached CachedResponse) {
+	ct := cached.ContentType
+	if ct == "" {
+		ct = "application/json; charset=utf-8"
+	}
+	c.Header(HeaderGatewayCache, "hit")
+	c.Data(cached.StatusCode, ct, cached.Body)
+	if cached.Usage != nil {
+		u := *cached.Usage
+		u.Source = domain.UsageSourceCache
+		rc.Usage = &u
+	}
+	c.Abort()
+}
+
+// cacheableResponse 判断 tee 到的响应是否可入缓存,是则返回 CachedResponse。
+// 只缓存**干净、完整、非流式**的 200:
+//   - rc.Error != nil:200 后流中断 / 上游错,body 可能截断,缓存会毒化后续请求。
+//   - text/event-stream:analyzeBody 漏判流式时的兜底(绝不缓存 SSE)。
+//
+// 精确缓存和语义缓存回写共用——H1 毒化防线 / M4 流式兜底两个都继承。
+func cacheableResponse(tw *teeWriter, rc *domain.RequestContext) (CachedResponse, bool) {
+	ct := tw.Header().Get("Content-Type")
+	if tw.Status() == 200 && tw.buf.Len() > 0 && rc.Error == nil && !isEventStream(ct) {
+		return CachedResponse{StatusCode: 200, ContentType: ct, Body: tw.buf.Bytes(), Usage: rc.Usage}, true
+	}
+	return CachedResponse{}, false
 }
 
 // ResponseCacheStore 响应缓存存储端口（Redis 实现见 cmd 装配点）。

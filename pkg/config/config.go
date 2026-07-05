@@ -260,9 +260,28 @@ type SelectorConfig struct {
 
 // CacheConfig 响应缓存：命中直接返回、跳过上游。Redis-backed（多副本共享）。
 // 默认只缓存非流式 + temperature=0 的确定性请求；客户端 X-Gateway-Cache 头可覆盖。
+//
+// semantic.enabled=true 时走**语义缓存**（按 prompt 向量相似度命中），取代精确缓存。
 type CacheConfig struct {
-	Enabled bool          `yaml:"enabled"`
-	TTL     time.Duration `yaml:"ttl"` // 默认 5m
+	Enabled  bool                 `yaml:"enabled"`
+	TTL      time.Duration        `yaml:"ttl"` // 默认 5m
+	Semantic SemanticCacheConfig  `yaml:"semantic"`
+}
+
+// SemanticCacheConfig 语义缓存：embed prompt + cosine 相似度命中（paraphrase 也命中）。
+type SemanticCacheConfig struct {
+	Enabled    bool           `yaml:"enabled"`
+	Threshold  float64        `yaml:"threshold"`   // cosine 命中阈值（默认 0.9）
+	MaxEntries int            `yaml:"max_entries"` // 每 namespace 条目上限（默认 500）
+	Embedder   EmbedderConfig `yaml:"embedder"`
+}
+
+// EmbedderConfig 文本向量化后端。
+type EmbedderConfig struct {
+	Driver  string `yaml:"driver"` // openai（OpenAI-compatible /v1/embeddings）
+	APIKey  string `yaml:"api_key"`
+	BaseURL string `yaml:"base_url"`
+	Model   string `yaml:"model"` // 默认 text-embedding-3-small
 }
 
 // SessionAffinityConfig 会话亲和（sticky routing）：客户端 X-Gateway-Session 头带

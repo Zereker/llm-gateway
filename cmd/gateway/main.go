@@ -30,6 +30,7 @@ import (
 	"github.com/zereker/llm-gateway/pkg/config"
 	"github.com/zereker/llm-gateway/pkg/contentlog"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/embed"
 	"github.com/zereker/llm-gateway/pkg/health"
 	"github.com/zereker/llm-gateway/pkg/infra"
 	"github.com/zereker/llm-gateway/pkg/middleware"
@@ -248,9 +249,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		// M7 Schedule (Dispatcher 编排：fallback / retry / streaming 在 pkg/dispatch 内)
 		Dispatcher: dispatcher,
 
-		// 响应缓存（M6 之后、M7 之前）；未启用 = nil no-op
-		ResponseCache: buildResponseCache(cfg.Cache, rdb),
-		CacheTTL:      cfg.Cache.TTL,
+		// 响应缓存中间件（M6 之后、M7 之前）：精确 / 语义 / no-op
+		Cache: buildCacheMiddleware(cfg.Cache, rdb),
 
 		// M8 Moderation
 		Moderator: buildModerator(cfg.Moderation),
@@ -356,13 +356,41 @@ func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.Endpoin
 	return store, scorer
 }
 
-// buildResponseCache 构造响应缓存 store（Redis-backed，多副本共享）。
-// 未启用返回 nil —— ResponseCache 中间件 no-op。
-func buildResponseCache(cfg config.CacheConfig, rdb *redis.Client) middleware.ResponseCacheStore {
-	if !cfg.Enabled {
-		return nil
+// buildCacheMiddleware 装配响应缓存中间件（M6 之后、M7 之前）。
+//
+//   - semantic.enabled → 语义缓存（embed prompt + cosine 命中，取代精确缓存）
+//   - enabled          → 精确缓存（SHA256 body 命中）
+//   - 都关              → no-op（不改链）
+//
+// 都 Redis-backed（多副本共享）。语义缓存的 embedder 未配好则启动 fail-fast。
+func buildCacheMiddleware(cfg config.CacheConfig, rdb *redis.Client) gin.HandlerFunc {
+	switch {
+	case cfg.Semantic.Enabled:
+		embedder := buildEmbedder(cfg.Semantic.Embedder)
+		store := respcache.NewRedisSemanticStore(rdb, "llm-gateway:respcache", cfg.Semantic.MaxEntries)
+		threshold := cfg.Semantic.Threshold
+		if threshold <= 0 {
+			threshold = 0.9
+		}
+		return middleware.SemanticCache(store, embedder, threshold, cfg.TTL)
+	case cfg.Enabled:
+		return middleware.ResponseCache(respcache.NewRedisStore(rdb, "llm-gateway:respcache"), cfg.TTL)
+	default:
+		return func(c *gin.Context) { c.Next() } // no-op
 	}
-	return respcache.NewRedisStore(rdb, "llm-gateway:respcache")
+}
+
+// buildEmbedder 装配文本向量化后端（P5 fail-fast：未知 driver panic）。
+func buildEmbedder(cfg config.EmbedderConfig) embed.Embedder {
+	switch cfg.Driver {
+	case "openai":
+		if cfg.APIKey == "" {
+			panic("cache.semantic.embedder.driver=openai requires api_key")
+		}
+		return embed.NewOpenAIEmbedder(cfg.APIKey, cfg.BaseURL, cfg.Model)
+	default:
+		panic("cache.semantic enabled but embedder.driver unknown: " + cfg.Driver + " (want openai)")
+	}
 }
 
 // buildAffinity 构造会话亲和 store（Redis-backed，多副本共享）。
