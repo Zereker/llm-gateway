@@ -168,6 +168,16 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	switch h.mode {
 	case modeSSE:
 		out := h.drainSSE()
+		// 末帧可能无结尾换行（上游 abrupt close）：drainSSE 只吐带 \n 的整行，
+		// 这里把残留行当最后一行补处理，避免丢 message-end 携带的 usage/finish_reason。
+		if rest := bytes.TrimSpace(h.lineBuf); len(rest) > 0 {
+			h.lineBuf = nil
+			if bytes.HasPrefix(rest, []byte("data:")) {
+				if data := bytes.TrimSpace(rest[len("data:"):]); len(data) > 0 {
+					out = append(out, h.translateEvent(data)...)
+				}
+			}
+		}
 		out = append(out, "data: [DONE]\n\n"...) // OpenAI 流终止符
 		return out, h.usage, nil
 	default: // JSON / 空

@@ -24,3 +24,18 @@ func TestCosine(t *testing.T) {
 		}
 	}
 }
+
+func TestEmbeddingsURL(t *testing.T) {
+	cases := []struct{ base, want string }{
+		{"https://api.openai.com", "https://api.openai.com/v1/embeddings"},
+		{"https://api.openai.com/", "https://api.openai.com/v1/embeddings"},
+		{"https://host/v1", "https://host/v1/embeddings"},          // 不能变成 /v1/v1/embeddings
+		{"https://host/v1/", "https://host/v1/embeddings"},         // 尾斜杠
+		{"https://host/v1/embeddings", "https://host/v1/embeddings"}, // 完整端点原样
+	}
+	for _, c := range cases {
+		if got := embeddingsURL(c.base); got != c.want {
+			t.Errorf("embeddingsURL(%q) = %q, want %q", c.base, got, c.want)
+		}
+	}
+}

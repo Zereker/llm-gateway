@@ -22,7 +22,11 @@ import (
 //  3. 未命中:tee 响应,干净 200 就连同向量存起来
 //
 // **安全默认同精确缓存**:非流式 + temperature=0;X-Gateway-Cache off/on 覆盖。
-// Embed 失败 → 不缓存、正常走(绝不因 embedder 抖动阻塞请求)。
+// Embed 失败 → 不缓存、正常放行(不因 embedder 报错中断请求)。
+// **注意**:语义查找需先对 prompt 取向量,embedder.Embed 在 c.Next() 前**同步**
+// 调用——embedder 慢会给 eligible 请求叠加最多一个 embed 超时的延迟(见
+// OpenAIEmbedder client.Timeout)。部署时 embedder 端点须低延迟高可用,否则
+// 语义缓存反而拖累 p99;可用 X-Gateway-Cache=off 或 temperature≠0 绕开。
 // store / embedder 任一 nil → 整个中间件 no-op。
 func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold float64, ttl time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -88,8 +92,12 @@ type SemanticCacheStore interface {
 	Store(ctx context.Context, namespace string, vec []float32, resp CachedResponse, ttl time.Duration)
 }
 
-// extractPrompt 从请求 body 抽出用于 embedding 的文本:拼 messages 各 content +
-// 顶层 system（Anthropic）。content 是数组(多模态)时取其 JSON 串——够 embedding 用。
+// extractPrompt 从请求 body 抽出用于 embedding 的文本,覆盖三种客户端入口:
+//   - OpenAI / Anthropic ChatCompletion：messages 各 content + 顶层 system
+//   - OpenAI Responses：顶层 input（string 或 array）+ instructions
+//
+// content/input 是数组(多模态)时取其 JSON 串——够 embedding 用。Responses body 走
+// RawBytes(翻译前客户端原文)到这里,不覆盖它语义缓存会对 Responses 客户端静默失效。
 func extractPrompt(body []byte) string {
 	var sb strings.Builder
 	gjson.GetBytes(body, "messages.#.content").ForEach(func(_, v gjson.Result) bool {
@@ -99,6 +107,23 @@ func extractPrompt(body []byte) string {
 	})
 	if s := gjson.GetBytes(body, "system"); s.Exists() {
 		sb.WriteString(s.String())
+		sb.WriteByte('\n')
+	}
+	// Responses 协议：input 可能是 string 或 array of items。
+	if in := gjson.GetBytes(body, "input"); in.Exists() {
+		if in.IsArray() {
+			in.ForEach(func(_, v gjson.Result) bool {
+				sb.WriteString(v.String())
+				sb.WriteByte('\n')
+				return true
+			})
+		} else {
+			sb.WriteString(in.String())
+			sb.WriteByte('\n')
+		}
+	}
+	if ins := gjson.GetBytes(body, "instructions"); ins.Exists() {
+		sb.WriteString(ins.String())
 	}
 	return strings.TrimSpace(sb.String())
 }
