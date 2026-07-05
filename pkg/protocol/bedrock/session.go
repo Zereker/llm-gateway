@@ -9,14 +9,27 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/tidwall/gjson"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
+
+// bedrockURL 流式时把 .../invoke 换成 .../invoke-with-response-stream。
+func bedrockURL(base string, streaming bool) string {
+	if !streaming || strings.HasSuffix(base, "/invoke-with-response-stream") {
+		return base
+	}
+	if strings.HasSuffix(base, "/invoke") {
+		return base[:len(base)-len("/invoke")] + "/invoke-with-response-stream"
+	}
+	return base // 非标准 URL：原样（deployer 可能已直接给流式端点）
+}
 
 // bedrockAnthropicVersion 是 Bedrock 上 Anthropic 模型必需的 body 字段值。
 const bedrockAnthropicVersion = "bedrock-2023-05-31"
@@ -51,12 +64,15 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 		return nil, errors.New("bedrock: aws-sigv4 auth needs access_key / secret_key / region")
 	}
 
+	// 客户端要流式 → 用 invoke-with-response-stream 端点（响应是 AWS event-stream，
+	// 由 Factory.DecodeTransport 解帧成 Anthropic SSE）。stream 标志在改写里会被删掉。
+	streaming := gjson.GetBytes(body, "stream").Bool()
 	reqBody, err := toBedrockBody(body)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: rewrite body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(s.ctx, "POST", s.ep.Routing.URL, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(s.ctx, "POST", bedrockURL(s.ep.Routing.URL, streaming), bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, err
 	}

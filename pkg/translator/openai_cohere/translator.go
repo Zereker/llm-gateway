@@ -5,13 +5,15 @@
 // usage.tokens.{input,output}_tokens、finish_reason 是大写枚举。本 translator 把
 // 请求翻过去、把响应翻回 OpenAI ChatCompletion 给客户端。
 //
-// **v1 限制**：只支持 chat 文本；非流式（buffer-then-translate at Flush；Cohere 流是
-// 带 event type 的 SSE，跟 OpenAI 不同，另迭代）；不支持 tool/vision。
+// **流式**：客户端 stream:true 时 Cohere 返回带 type 的 SSE 事件流,responseHandler
+// 增量翻成 OpenAI SSE chunk（见下）。非流式则 buffer-then-translate。**限制**：只支持
+// chat 文本;不支持 tool/vision。
 //
 // 其它客户端协议（Anthropic / Responses）经 OpenAI pivot 组合到达（见 translator.compose）。
 package openai_cohere
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -49,6 +51,7 @@ type openaiReq struct {
 	Temperature *float64        `json:"temperature,omitempty"`
 	TopP        *float64        `json:"top_p,omitempty"`
 	Stop        json.RawMessage `json:"stop,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
 }
 
 type openaiMsg struct {
@@ -80,7 +83,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		MaxTokens:   in.MaxTokens,
 		Temperature: in.Temperature,
 		P:           in.TopP,
-		Stream:      false, // v1 非流式
+		Stream:      in.Stream, // 透传客户端 stream 标志
 	}
 	out.Messages = make([]cohereMsg, 0, len(in.Messages))
 	for _, m := range in.Messages {
@@ -115,26 +118,128 @@ func contentToString(raw json.RawMessage) string {
 // 响应：Cohere v2 → OpenAI ChatCompletion（buffer-then-translate）
 // =============================================================================
 
+// responseHandler 自适应上游格式:
+//   - JSON(非流式):buffer-then-translate,Flush 一次性翻成 OpenAI ChatCompletion。
+//   - SSE(流式,客户端 stream:true):增量把 Cohere v2 事件翻成 OpenAI SSE chunk。
+//
+// 首个 chunk 按第一个非空字节嗅探:'{' → JSON;否则 → SSE。
+type respMode int
+
+const (
+	modeUnknown respMode = iota
+	modeJSON
+	modeSSE
+)
+
 type responseHandler struct {
-	buf []byte
+	mode    respMode
+	buf     []byte // JSON 模式累积 / 未定模式暂存
+	lineBuf []byte // SSE 模式的行缓冲（跨 Feed 保留半行）
+	id      string
+	usage   *domain.Usage
 }
 
 func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
-	h.buf = append(h.buf, chunk...)
-	return nil, nil // buffer 模式：不写客户端
+	switch h.mode {
+	case modeJSON:
+		h.buf = append(h.buf, chunk...)
+		return nil, nil
+	case modeSSE:
+		h.lineBuf = append(h.lineBuf, chunk...)
+		return h.drainSSE(), nil
+	default: // 未定：嗅探
+		h.buf = append(h.buf, chunk...)
+		t := bytes.TrimLeft(h.buf, " \t\r\n")
+		if len(t) == 0 {
+			return nil, nil // 还没拿到非空字节
+		}
+		if t[0] == '{' {
+			h.mode = modeJSON
+			return nil, nil
+		}
+		h.mode = modeSSE
+		h.lineBuf = h.buf
+		h.buf = nil
+		return h.drainSSE(), nil
+	}
 }
 
 func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
-	if len(h.buf) == 0 {
-		return nil, nil, nil
+	switch h.mode {
+	case modeSSE:
+		out := h.drainSSE()
+		out = append(out, "data: [DONE]\n\n"...) // OpenAI 流终止符
+		return out, h.usage, nil
+	default: // JSON / 空
+		if len(h.buf) == 0 {
+			return nil, nil, nil
+		}
+		// error path：成功响应 message 是对象；错误(message 字符串/缺)原样透传保 visibility。
+		if !gjson.GetBytes(h.buf, "message").IsObject() {
+			return h.buf, nil, nil
+		}
+		body, usage := translateResponse(h.buf)
+		return body, usage, nil
 	}
-	// error path：Cohere 成功响应 message 是对象；错误响应 message 是字符串或缺 content。
-	// 不翻译错误 body，原样透给客户端（保 error visibility，status 已是 upstream 的 4xx/5xx）。
-	if !gjson.GetBytes(h.buf, "message").IsObject() {
-		return h.buf, nil, nil
+}
+
+// drainSSE 从 lineBuf 抽出完整行,把 Cohere `data:` 事件翻成 OpenAI SSE chunk。
+func (h *responseHandler) drainSSE() []byte {
+	var out []byte
+	for {
+		i := bytes.IndexByte(h.lineBuf, '\n')
+		if i < 0 {
+			break // 半行,留到下次
+		}
+		line := bytes.TrimRight(h.lineBuf[:i], "\r")
+		h.lineBuf = h.lineBuf[i+1:]
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimSpace(line[len("data:"):])
+		if len(data) == 0 {
+			continue
+		}
+		out = append(out, h.translateEvent(data)...)
 	}
-	body, usage := translateResponse(h.buf)
-	return body, usage, nil
+	return out
+}
+
+// translateEvent 单个 Cohere v2 流事件 → OpenAI SSE chunk。
+func (h *responseHandler) translateEvent(data []byte) []byte {
+	ev := gjson.ParseBytes(data)
+	switch ev.Get("type").String() {
+	case "message-start":
+		return h.chunk(map[string]any{"role": "assistant"}, "")
+	case "content-delta":
+		text := ev.Get("delta.message.content.text").String()
+		if text == "" {
+			return nil
+		}
+		return h.chunk(map[string]any{"content": text}, "")
+	case "message-end":
+		in := ev.Get("delta.usage.tokens.input_tokens").Int()
+		outTok := ev.Get("delta.usage.tokens.output_tokens").Int()
+		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Source: domain.UsageSourceExtracted}
+		return h.chunk(map[string]any{}, mapFinishReason(ev.Get("delta.finish_reason").String()))
+	default: // content-start / content-end 等：跳过
+		return nil
+	}
+}
+
+// chunk 构造一个 OpenAI chat.completion.chunk 的 SSE 行。
+func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
+	if h.id == "" {
+		h.id = "chatcmpl-" + randHex(8)
+	}
+	choice := map[string]any{"index": 0, "delta": delta, "finish_reason": nil}
+	if finish != "" {
+		choice["finish_reason"] = finish
+	}
+	b, _ := json.Marshal(map[string]any{
+		"id": h.id, "object": "chat.completion.chunk", "choices": []any{choice},
+	})
+	return append(append([]byte("data: "), b...), '\n', '\n')
 }
 
 func translateResponse(buf []byte) ([]byte, *domain.Usage) {
