@@ -3,22 +3,27 @@
 // 客户端按 OpenAI ChatCompletion 格式发请求；本 translator 翻成 Gemini generateContent
 // 格式给 adapter 转发；上游响应再翻回 OpenAI 格式给客户端。
 //
-// **v0.5 限制**：
-//   - 只支持 chat（system/user/assistant/text content）
-//   - 不支持 streaming（buffer-then-translate at Flush；Gemini stream 格式跟 OpenAI SSE 不同，
-//     单独迭代加流式翻译）
-//   - 不支持 function calling / tool_use / vision
+// **支持**：
+//   - chat（system/user/assistant/text content）
+//   - streaming：客户端 stream:true 时上游走 :streamGenerateContent?alt=sse，
+//     responseHandler 增量把 Gemini SSE chunk 翻成 OpenAI SSE chunk（见下）。
+//     非流式则 buffer-then-translate（Flush 一次性翻）。
+//
+// **不支持**：function calling / tool_use / vision（parts 只 text）。
 //
 // 字段映射详见 translateRequest / translateResponse。
 package openai_gemini
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/translator"
@@ -38,24 +43,76 @@ func (openaiGemini) NewResponseHandler() translator.ResponseHandler {
 	return &responseHandler{ex: extractor.NewGemini()}
 }
 
-// responseHandler buffer-then-translate 模式：Feed 全部累积，Flush 一次性翻译。
+// responseHandler 自适应上游格式：
+//   - JSON（非流式）：buffer-then-translate，Flush 一次性翻成 OpenAI ChatCompletion。
+//   - SSE（流式，:streamGenerateContent?alt=sse）：增量把 Gemini SSE chunk 翻成
+//     OpenAI chat.completion.chunk SSE。
 //
-// v0.6 加流式翻译时改这里：解析 Gemini chunk JSON 并实时翻成 OpenAI SSE chunk。
-//
-// usage 走 extractor.Gemini 旁路（v0.5 G6 抽出）；translateResponse 不再返 usage。
+// 首个非空字节嗅探：'{' → JSON；否则 → SSE。usage：JSON 模式走 extractor.Gemini
+// 旁路；SSE 模式从末 chunk 的 usageMetadata 直接抽（extractor 不解 SSE）。
+type respMode int
+
+const (
+	modeUnknown respMode = iota
+	modeJSON
+	modeSSE
+)
+
 type responseHandler struct {
-	buf          []byte
-	requestModel string // 翻回 OpenAI 时填到 response.model；目前留空，客户端能接受
+	requestModel string // 翻回 OpenAI 时填到 response.model
 	ex           extractor.Session
+
+	mode     respMode
+	buf      []byte // JSON 模式累积 / 未定模式暂存
+	lineBuf  []byte // SSE 模式行缓冲（跨 Feed 保留半行）
+	id       string
+	roleSent bool // SSE：是否已发过 role delta
+	usage    *domain.Usage
 }
 
 func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
-	h.buf = append(h.buf, chunk...)
-	h.ex.Feed(chunk)
-	return nil, nil // buffer 模式：不写客户端
+	switch h.mode {
+	case modeJSON:
+		h.buf = append(h.buf, chunk...)
+		h.ex.Feed(chunk)
+		return nil, nil
+	case modeSSE:
+		h.lineBuf = append(h.lineBuf, chunk...)
+		return h.drainSSE(), nil
+	default: // 未定：嗅探首个非空字节
+		h.buf = append(h.buf, chunk...)
+		t := bytes.TrimLeft(h.buf, " \t\r\n")
+		if len(t) == 0 {
+			return nil, nil // 还没拿到非空字节
+		}
+		if t[0] == '{' {
+			h.mode = modeJSON
+			h.ex.Feed(h.buf) // 把已暂存的喂给 extractor
+			return nil, nil
+		}
+		h.mode = modeSSE
+		h.lineBuf = h.buf
+		h.buf = nil
+		return h.drainSSE(), nil
+	}
 }
 
 func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
+	if h.mode == modeSSE {
+		out := h.drainSSE()
+		// 末帧无结尾换行兜底（上游 abrupt close）：把残留行当最后一行补处理。
+		if rest := bytes.TrimSpace(h.lineBuf); len(rest) > 0 {
+			h.lineBuf = nil
+			if bytes.HasPrefix(rest, []byte("data:")) {
+				if data := bytes.TrimSpace(rest[len("data:"):]); len(data) > 0 {
+					out = append(out, h.translateChunk(data)...)
+				}
+			}
+		}
+		out = append(out, "data: [DONE]\n\n"...) // OpenAI 流终止符
+		return out, h.usage, nil
+	}
+	// JSON / 空
 	if len(h.buf) == 0 {
 		// 上游空 body（4xx/5xx + 空 body 可能性）；没东西可透；不报错让 M7 静默
 		return nil, nil, nil
@@ -69,6 +126,81 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	}
 	body, err := translateResponse(h.buf, h.requestModel)
 	return body, h.ex.Final(), err
+}
+
+// drainSSE 从 lineBuf 抽出完整行，把 Gemini `data:` 事件翻成 OpenAI SSE chunk。
+func (h *responseHandler) drainSSE() []byte {
+	var out []byte
+	for {
+		i := bytes.IndexByte(h.lineBuf, '\n')
+		if i < 0 {
+			break // 半行，留到下次
+		}
+		line := bytes.TrimRight(h.lineBuf[:i], "\r")
+		h.lineBuf = h.lineBuf[i+1:]
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimSpace(line[len("data:"):])
+		if len(data) == 0 {
+			continue
+		}
+		out = append(out, h.translateChunk(data)...)
+	}
+	return out
+}
+
+// translateChunk 单个 Gemini SSE chunk（一个完整 geminiResponse JSON，含增量
+// candidates）→ OpenAI chat.completion.chunk SSE。usageMetadata 只在末 chunk 出现。
+func (h *responseHandler) translateChunk(data []byte) []byte {
+	ev := gjson.ParseBytes(data)
+	if um := ev.Get("usageMetadata"); um.Exists() {
+		in := um.Get("promptTokenCount").Int()
+		outTok := um.Get("candidatesTokenCount").Int()
+		total := um.Get("totalTokenCount").Int()
+		if total == 0 {
+			total = in + outTok
+		}
+		h.usage = &domain.Usage{Input: in, Output: outTok, Total: total, Source: domain.UsageSourceUpstream, Confidence: domain.UsageConfidenceExact}
+	}
+	cand := ev.Get("candidates.0")
+	if !cand.Exists() {
+		return nil
+	}
+	var out []byte
+	if !h.roleSent {
+		h.roleSent = true
+		out = append(out, h.chunk(map[string]any{"role": "assistant"}, "")...)
+	}
+	var text strings.Builder
+	cand.Get("content.parts").ForEach(func(_, p gjson.Result) bool {
+		text.WriteString(p.Get("text").String())
+		return true
+	})
+	if t := text.String(); t != "" {
+		out = append(out, h.chunk(map[string]any{"content": t}, "")...)
+	}
+	// finishReason 只在末 chunk 非空——非空时才发带 finish_reason 的收尾 chunk。
+	if raw := cand.Get("finishReason").String(); raw != "" {
+		out = append(out, h.chunk(map[string]any{}, mapFinishReason(raw))...)
+	}
+	return out
+}
+
+// chunk 构造一个 OpenAI chat.completion.chunk 的 SSE 行。
+func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
+	if h.id == "" {
+		h.id = "chatcmpl-" + randID()
+	}
+	choice := map[string]any{"index": 0, "delta": delta, "finish_reason": nil}
+	if finish != "" {
+		choice["finish_reason"] = finish
+	}
+	b, _ := json.Marshal(map[string]any{
+		"id": h.id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
+		"model": h.requestModel, "choices": []any{choice},
+	})
+	return append(append([]byte("data: "), b...), '\n', '\n')
 }
 
 // =============================================================================
