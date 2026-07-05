@@ -98,6 +98,10 @@ func (r *invokerResult) StreamTo(ctx context.Context, w http.ResponseWriter) dis
 			// 保证 Forward 的 defer Close 仍关到真实连接。
 			orig := r.response.Body
 			r.response.Body = readClose{Reader: decoded, closeFn: orig.Close}
+			// 传输已从 vendor 分帧（如 application/vnd.amazon.eventstream）解成
+			// SSE：上游 Content-Type 不再描述客户端将收到的字节，强制成
+			// text/event-stream，否则 SSE 客户端会拒绝按流解析（Forward 直拷上游头）。
+			r.response.Header.Set("Content-Type", "text/event-stream")
 		}
 	}
 

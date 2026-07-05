@@ -155,3 +155,15 @@ func TestExtractPrompt(t *testing.T) {
 		t.Errorf("extractPrompt = %q", got)
 	}
 }
+
+// Responses 客户端 body 用 input + instructions（无 messages）——语义缓存不能对它静默失效。
+func TestExtractPrompt_Responses(t *testing.T) {
+	got := extractPrompt([]byte(`{"model":"gpt-4o","input":"summarize this","instructions":"be terse"}`))
+	if !strings.Contains(got, "summarize this") || !strings.Contains(got, "be terse") {
+		t.Errorf("Responses string input: extractPrompt = %q", got)
+	}
+	arr := extractPrompt([]byte(`{"input":["turn one","turn two"],"instructions":"tone"}`))
+	if !strings.Contains(arr, "turn one") || !strings.Contains(arr, "turn two") || !strings.Contains(arr, "tone") {
+		t.Errorf("Responses array input: extractPrompt = %q", arr)
+	}
+}

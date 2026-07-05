@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -66,10 +67,7 @@ func NewOpenAIEmbedder(apiKey, baseURL, model string) *OpenAIEmbedder {
 
 func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	body, _ := json.Marshal(map[string]any{"model": e.model, "input": text})
-	url := e.baseURL
-	if !bytes.HasSuffix([]byte(url), []byte("/embeddings")) {
-		url = e.baseURL + "/v1/embeddings"
-	}
+	url := embeddingsURL(e.baseURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -98,6 +96,22 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 		return nil, errors.New("embed: empty embedding")
 	}
 	return out.Data[0].Embedding, nil
+}
+
+// embeddingsURL 由 baseURL 拼出 /embeddings 端点,兼容三种写法:
+//   - 完整端点（.../embeddings）→ 原样
+//   - 已带 /v1（.../v1）→ 补 /embeddings（避免出现 /v1/v1/embeddings）
+//   - 裸 host（https://host）→ 补 /v1/embeddings
+func embeddingsURL(base string) string {
+	u := strings.TrimRight(base, "/")
+	switch {
+	case strings.HasSuffix(u, "/embeddings"):
+		return u
+	case strings.HasSuffix(u, "/v1"):
+		return u + "/embeddings"
+	default:
+		return u + "/v1/embeddings"
+	}
 }
 
 // 编译期断言。

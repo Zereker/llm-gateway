@@ -56,6 +56,48 @@ func TestBedrock_DecodeTransport_EventStreamToAnthropicSSE(t *testing.T) {
 	}
 }
 
+// encodeException 造一个 :message-type=exception 的 Bedrock 异常帧。
+func encodeException(t *testing.T, w io.Writer, excType, body string) {
+	t.Helper()
+	msg := eventstream.Message{
+		Headers: eventstream.Headers{
+			{Name: ":message-type", Value: eventstream.StringValue("exception")},
+			{Name: ":exception-type", Value: eventstream.StringValue(excType)},
+		},
+		Payload: []byte(body),
+	}
+	if err := eventstream.NewEncoder().Encode(w, msg); err != nil {
+		t.Fatalf("encode exception: %v", err)
+	}
+}
+
+// mid-stream 异常帧必须被识别成 error（而非当成干净截断静默吞掉）。
+func TestBedrock_DecodeTransport_ExceptionFrameSurfacesError(t *testing.T) {
+	var raw bytes.Buffer
+	encodeFrame(t, &raw, `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}`)
+	encodeException(t, &raw, "modelStreamErrorException", `{"message":"throttled"}`)
+
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"application/vnd.amazon.eventstream"}},
+		Body:   io.NopCloser(&raw),
+	}
+	dec := Factory{}.DecodeTransport(resp)
+	if dec == nil {
+		t.Fatal("eventstream 响应应返回解码 reader")
+	}
+	out, err := io.ReadAll(dec)
+	if err == nil {
+		t.Fatal("异常帧后 ReadAll 应返回 error（不能静默截断）")
+	}
+	if !strings.Contains(err.Error(), "modelStreamErrorException") {
+		t.Errorf("error 应含异常类型, got: %v", err)
+	}
+	// 异常帧前的正常内容仍应解出。
+	if !strings.Contains(string(out), `"text":"Hi"`) {
+		t.Errorf("异常前的内容应已解出, got: %s", out)
+	}
+}
+
 func TestBedrock_DecodeTransport_NonStreamReturnsNil(t *testing.T) {
 	resp := &http.Response{
 		Header: http.Header{"Content-Type": []string{"application/json"}},

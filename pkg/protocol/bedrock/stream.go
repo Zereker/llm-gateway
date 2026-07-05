@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -41,6 +42,9 @@ type eventStreamReader struct {
 }
 
 func (r *eventStreamReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil // io.Reader 约定：len(p)==0 不应返回 (0,nil) 以外的东西
+	}
 	for len(r.pending) == 0 {
 		if r.err != nil {
 			return 0, r.err
@@ -48,7 +52,21 @@ func (r *eventStreamReader) Read(p []byte) (int, error) {
 		msg, err := r.dec.Decode(r.src, nil)
 		if err != nil {
 			r.err = err
+			// 极端情形：若解码在给出数据的同时返回错误（如末帧 payload + io.EOF），
+			// 先把数据转出去，err 留到下次 Read 再抛，避免丢最后一帧。
+			if sse := frameToSSE(msg.Payload); sse != nil {
+				r.pending = sse
+				break
+			}
 			return 0, err
+		}
+		// Bedrock 把 mid-stream 故障（throttling / modelStreamErrorException / …）
+		// 作为 :message-type=exception 的帧下发，smithy 不会当成 Go error 返回。
+		// 必须显式识别并转成 error，否则会被当成干净截断——客户端收不到错误、
+		// FeedErr 不置位、截断流可能被计费/缓存成成功（error-propagation 盲区）。
+		if exErr := frameException(msg); exErr != nil {
+			r.err = exErr
+			return 0, exErr
 		}
 		if sse := frameToSSE(msg.Payload); sse != nil {
 			r.pending = sse
@@ -58,6 +76,28 @@ func (r *eventStreamReader) Read(p []byte) (int, error) {
 	n := copy(p, r.pending)
 	r.pending = r.pending[n:]
 	return n, nil
+}
+
+// frameException 检查一帧是否是 AWS event-stream 的异常/错误帧（:message-type
+// 为 exception 或 error）；是则返回携带异常类型 + payload 的 error 供上层中止流。
+// 普通事件帧（:message-type=event）返 nil。
+func frameException(msg eventstream.Message) error {
+	mt := msg.Headers.Get(":message-type")
+	if mt == nil {
+		return nil // 无 message-type 头：当普通帧处理（frameToSSE 兜底）
+	}
+	switch mt.String() {
+	case "exception", "error":
+		name := "unknown"
+		if et := msg.Headers.Get(":exception-type"); et != nil {
+			name = et.String()
+		} else if ec := msg.Headers.Get(":error-code"); ec != nil {
+			name = ec.String()
+		}
+		return fmt.Errorf("bedrock: stream %s %s: %s", mt.String(), name, strings.TrimSpace(string(msg.Payload)))
+	default:
+		return nil
+	}
 }
 
 // frameToSSE 把一帧 payload 转成一行 Anthropic SSE。
