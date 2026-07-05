@@ -578,7 +578,29 @@ func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error
 	}
 	class := orDefault(in.RuleClass, "standard")
 
-	tx, err := s.db.BeginTxx(ctx, nil)
+	// **并发串行化**：两个并发 PublishPrice（尤其首次发布，无既有 active 行可被
+	// FOR UPDATE 锁住）都会'封盘 0 行 + 各插一行'，留下两条 active（effective_to
+	// IS NULL），billing 的"当前价"查询变不确定。用独占连接 + MySQL 咨询锁串行化同
+	// (account,model,class) 的发布。锁在连接生命周期内持有——用 Connx 拿独占连接，
+	// 提交后显式 RELEASE 再归还连接池（否则锁泄漏到复用连接上）。
+	conn, err := s.db.Connx(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = conn.Close() }()
+
+	lockName := fmt.Sprintf("llmgw:pricing:%s:%d:%s", in.AccountID, in.ModelServiceID, class)
+	var locked int
+	if err := conn.GetContext(ctx, &locked, "SELECT GET_LOCK(?, 10)", lockName); err != nil {
+		return 0, fmt.Errorf("pricing: acquire lock: %w", err)
+	}
+	if locked != 1 {
+		return 0, fmt.Errorf("pricing: could not acquire publish lock (timeout)")
+	}
+	// RELEASE 在 Close 之前跑（defer LIFO：后注册先执行）——commit 后释放，不早放。
+	defer func() { _, _ = conn.ExecContext(context.WithoutCancel(ctx), "DO RELEASE_LOCK(?)", lockName) }()
+
+	tx, err := conn.BeginTxx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}

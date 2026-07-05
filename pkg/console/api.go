@@ -400,9 +400,22 @@ func writeStoreErr(c *gin.Context, err error) {
 		abortError(c, 404, "not_found", "resource not found")
 	case isDuplicateKey(err):
 		abortError(c, 409, "conflict", "resource already exists (unique key violation)")
+	case isForeignKeyViolation(err):
+		// 引用了不存在的资源（如 subscribe 到不存在的 model、发 key 到不存在的 account）
+		// 是**客户端**输入错，不是服务端故障。
+		abortError(c, 400, "invalid_reference", "references a resource that does not exist")
 	default:
 		abortError(c, 500, "internal", "internal error")
 	}
+}
+
+// isForeignKeyViolation 识别 MySQL 1452 外键约束失败。
+func isForeignKeyViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return containsAny(s, "foreign key constraint fails", "Error 1452")
 }
 
 // isDuplicateKey 识别 MySQL 1062 唯一键冲突（不依赖 driver 具体类型，匹配错误串）。

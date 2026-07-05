@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -491,6 +492,54 @@ func TestConsole_AuditLog(t *testing.T) {
 	// viewer 不能看审计
 	if code, _ := send("GET", "/admin/audit", "viewer-tok", ""); code != 403 {
 		t.Errorf("viewer GET /admin/audit = %d, want 403", code)
+	}
+}
+
+// TestConsole_PricingConcurrentSingleActive：并发发布同 (account,model,class) 只留
+// 一条 active——GET_LOCK 串行化的回归。
+func TestConsole_PricingConcurrentSingleActive(t *testing.T) {
+	engine, db := newTestEngine(t)
+	if code, _ := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
+		t.Fatal("account")
+	}
+	_, resp := do(t, engine, "POST", "/admin/model-services", ModelServiceInput{ServiceID: "o/m", Model: "cm"}, true)
+	msID := int64(resp["id"].(float64))
+
+	store := NewStore(db)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_, _ = store.PublishPrice(context.Background(), PricingInput{
+				AccountID: "default", ModelServiceID: msID,
+				Rule: json.RawMessage(`{"rates":{"input":` + itoa(int64(n)) + `}}`),
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	var active int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pricing_versions WHERE account_id='default' AND model_service_id=? AND effective_to IS NULL`, msID).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 {
+		t.Errorf("并发发布后 active 行数 = %d, want 1（GET_LOCK 应串行化）", active)
+	}
+}
+
+// TestConsole_FKViolationIs400：引用不存在资源（FK 1452）→ 400 而非 500。
+func TestConsole_FKViolationIs400(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	if code, _ := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
+		t.Fatal("account")
+	}
+	// 订阅一个不存在的 model_service_id → FK 失败 → 400
+	code, _ := do(t, engine, "POST", "/admin/subscriptions",
+		SubscriptionInput{AccountID: "default", ModelServiceID: 999999}, true)
+	if code != 400 {
+		t.Errorf("订阅不存在的 model = %d, want 400（invalid_reference）", code)
 	}
 }
 

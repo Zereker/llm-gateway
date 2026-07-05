@@ -71,12 +71,18 @@ func (s *RedisStatsStore) Record(ctx context.Context, endpointID int64, result R
 	if endpointID == 0 {
 		return
 	}
+	// 钳到 ≥1s：亚秒 TTL 被 int() 截成 0，而 EXPIRE key 0 会立刻删 key——每次 Record
+	// 写完即丢，Snapshot 永远中性、打分静默失效。
+	ttlSec := int64(s.ttl.Seconds())
+	if ttlSec < 1 {
+		ttlSec = 1
+	}
 	_ = recordScript.Run(ctx, s.rdb, []string{s.key(endpointID)},
 		float64(result.Latency.Milliseconds()),
 		success01(result.Class),
 		s.decay,
 		time.Now().Unix(),
-		int(s.ttl.Seconds()),
+		ttlSec,
 	).Err()
 }
 
