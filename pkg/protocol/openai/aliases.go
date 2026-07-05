@@ -14,9 +14,33 @@ import "github.com/zereker/llm-gateway/pkg/protocol"
 // 当某个 vendor 出现专属处理需求时（例如 DeepSeek-R1 响应里的 reasoning_content
 // 字段、或 Anthropic 那种完全不同的协议），把它从这个列表里抽出去独立成子包。
 func init() {
+	// 都是 OpenAI-compatible（/v1/chat/completions + Bearer）。deployer 写 endpoint 时
+	// vendor 填这些名之一、protocol 填 openai、routing.url 指各家端点、auth 填 bearer。
+	// 出现专属处理需求（DeepSeek-R1 的 reasoning_content 等）再抽独立子包。
 	aliases := []string{
-		"ark", // 火山方舟（Volcengine Ark）—— 字节跳动的模型托管平台，承载 DeepSeek / GLM / Qwen 等
-		// 后续可加：moonshot（月之暗面）/ zhipu（智谱）/ qwen（阿里）/ doubao（豆包）等
+		// 中国厂商
+		"ark",         // 火山方舟（字节）—— DeepSeek / GLM / Qwen 托管
+		"deepseek",    // DeepSeek 官方
+		"moonshot",    // 月之暗面 Kimi
+		"zhipu",       // 智谱 GLM（open.bigmodel.cn 的 OpenAI-compat 端点）
+		"qwen",        // 阿里 DashScope compatible-mode
+		"doubao",      // 豆包（火山，独立命名便于区分计费）
+		"minimax",     // MiniMax
+		"siliconflow", // 硅基流动（聚合多模型）
+		"stepfun",     // 阶跃星辰
+		// 海外聚合 / 推理平台
+		"groq",       // Groq LPU 推理
+		"together",   // Together AI
+		"fireworks",  // Fireworks AI
+		"openrouter", // OpenRouter 聚合
+		"perplexity", // Perplexity（sonar 系列）
+		"deepinfra",  // DeepInfra
+		"xai",        // xAI Grok（OpenAI-compat 端点）
+		"mistral",    // Mistral La Plateforme（OpenAI-compat）
+		// 自托管
+		"vllm",     // vLLM OpenAI server
+		"ollama",   // Ollama /v1
+		"lmstudio", // LM Studio 本地服务
 	}
 	for _, v := range aliases {
 		protocol.RegisterFactory(v, Factory{})
