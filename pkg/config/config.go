@@ -131,14 +131,18 @@ type HealthConfig struct {
 // ScoringConfig Runtime Scoring 配置（docs/architecture/03-endpoint-scheduling.md §8）。
 //
 //	enabled:           默认 false；true 时 Scorer 调权
+//	driver:            stats 存储 inmemory（默认，每副本独立）| redis（多副本共享）
 //	min_samples:       样本数 < min_samples 给中性 factor=1（默认 5）
 //	latency_baseline:  归一 latency 用的 baseline（默认 200ms）
 //	ema_decay:         EMA 衰减（0..1，默认 0.2）
+//	stats_ttl:         redis driver 下单 endpoint 统计的 TTL（默认 1h）
 type ScoringConfig struct {
 	Enabled         bool          `yaml:"enabled"`
+	Driver          string        `yaml:"driver"`
 	MinSamples      uint32        `yaml:"min_samples"`
 	LatencyBaseline time.Duration `yaml:"latency_baseline"`
 	EMADecay        float64       `yaml:"ema_decay"`
+	StatsTTL        time.Duration `yaml:"stats_ttl"`
 }
 
 // ServerConfig HTTP 服务器层配置。

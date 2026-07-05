@@ -69,6 +69,15 @@ selector:
   # 全局尝试上限；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
   max_attempts: 3
 
+scoring:
+  # Runtime Scoring（按 endpoint 运行时质量 soft 调权）；默认关。见 docs/03 §8。
+  enabled: false
+  driver: inmemory        # inmemory=每副本独立 | redis=多副本共享（生产多副本用）
+  min_samples: 5
+  latency_baseline: 200ms
+  ema_decay: 0.2
+  stats_ttl: 1h           # 仅 redis driver
+
 usage_events:
   # Transactional Outbox Pattern：file 是 source of truth（sync commit），
   # Kafka 是 best-effort 异步广播。broker 挂了仍能 commit；外部 replay 工具
