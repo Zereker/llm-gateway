@@ -26,6 +26,7 @@ import (
 
 	// vendor Factory 注册（endpointcheck vendor_not_registered 判定要用）
 	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
+	_ "github.com/zereker/llm-gateway/pkg/protocol/bedrock"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
 	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"
