@@ -97,6 +97,14 @@ func (o *AsyncKafkaOutbox) Publish(ctx context.Context, evt *OutboxEvent) error 
 	if evt == nil {
 		return errors.New("usage: AsyncKafkaOutbox.Publish: nil event")
 	}
+	// 已关闭优先返错：下面的三路 select 在 queue 有空位时会**随机**选中 queue-send
+	// （Go select 对多个 ready case 随机），导致 Close 后仍能入队——违反"Close 后
+	// Publish 拒绝"的契约。这里先做一次非阻塞 closed 检查兜住。
+	select {
+	case <-o.done:
+		return errors.New("usage: AsyncKafkaOutbox: closed")
+	default:
+	}
 	select {
 	case o.queue <- evt:
 		metric.Gauge(metric.OutboxBufferSize, float64(len(o.queue)))

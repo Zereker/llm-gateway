@@ -5,10 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
@@ -29,6 +30,16 @@ import (
 // 后扣 TPM——下游按 source=cache 可零成本计费。
 //
 // store == nil(未配置)时整个中间件是 no-op,不影响链。
+//
+// **已知取舍（opt-in 功能,默认关;deployer 开启时须知）**:
+//   - key 用 canonical model 名(不含具体 endpoint/上游版本)——缓存在 M7 选路**之前**
+//     命中,此刻还没选 endpoint,无法按 endpoint 入 key。所以假设一个 model_service
+//     映射到**稳定**的上游输出;别给同名下挂多版本上游(gpt-4o-2024-05 vs -11)的
+//     model_service 开缓存。
+//   - 跨账号共享(响应是 model 的输出,与账号无关):命中率更高,但缓存里的
+//     system_fingerprint/id 会跨租户。可接受即开。
+//   - 命中仍发 usage 事件(source=cache)+ 计 TPM(软计数器):缓存命中算一次"交付了
+//     N token",下游按 source=cache 决定是否零成本计费。
 func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if store == nil {
@@ -36,7 +47,7 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 			return
 		}
 		rc := GetRequestContext(c)
-		mode := c.GetHeader(HeaderGatewayCache)
+		mode := strings.ToLower(strings.TrimSpace(c.GetHeader(HeaderGatewayCache)))
 		if mode == "off" || rc.Envelope == nil || rc.ModelService == nil {
 			c.Next()
 			return
@@ -80,10 +91,15 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 		c.Writer = tw
 		c.Next()
 
-		if tw.Status() == 200 && tw.buf.Len() > 0 {
+		// 只缓存**干净、完整、非流式**的 200：
+		//   - rc.Error != nil：200 之后流中断 / 上游错——body 可能截断，缓存会毒化
+		//     后续所有相同请求（forward 已把 200 header 写出，tw.buf 里是半个 body）。
+		//   - text/event-stream：analyzeBody 漏判流式时的兜底（绝不缓存 SSE）。
+		ct := tw.Header().Get("Content-Type")
+		if tw.Status() == 200 && tw.buf.Len() > 0 && rc.Error == nil && !isEventStream(ct) {
 			store.Set(ctx, key, CachedResponse{
 				StatusCode:  200,
-				ContentType: tw.Header().Get("Content-Type"),
+				ContentType: ct,
 				Body:        tw.buf.Bytes(),
 				Usage:       rc.Usage,
 			}, ttl)
@@ -119,18 +135,21 @@ func cacheKey(proto domain.Protocol, model string, body []byte) string {
 
 // analyzeBody 从请求 body 解析 (stream, deterministic)。
 //
+// **用 gjson 且宽松判 stream**：跟 Envelope 一致的 schema-less 提取，且
+// gjson.Bool() 对 "true" / 1 这类畸形值也强制成 true——避免 encoding/json 严格解析
+// 失败后把一个实际会流式的请求误判成非流式、进而把整条 SSE 缓冲进缓存。
+//
 // deterministic = temperature 显式为 0（缺省 temperature 各家默认多为 1，视为非确定）。
-// 解析失败一律当 (stream=false, deterministic=false)——保守:默认不缓存。
 func analyzeBody(body []byte) (stream, deterministic bool) {
-	var probe struct {
-		Stream      bool     `json:"stream"`
-		Temperature *float64 `json:"temperature"`
-	}
-	if json.Unmarshal(body, &probe) != nil {
-		return false, false
-	}
-	deterministic = probe.Temperature != nil && *probe.Temperature == 0
-	return probe.Stream, deterministic
+	stream = gjson.GetBytes(body, "stream").Bool()
+	t := gjson.GetBytes(body, "temperature")
+	deterministic = t.Exists() && t.Num == 0
+	return stream, deterministic
+}
+
+// isEventStream 判断 Content-Type 是否 SSE（缓存回写的兜底防线）。
+func isEventStream(ct string) bool {
+	return strings.Contains(strings.ToLower(ct), "text/event-stream")
 }
 
 // teeWriter 包 gin.ResponseWriter，把写出的 body 同时抄一份到 buf（缓存回写用）。

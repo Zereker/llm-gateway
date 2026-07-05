@@ -9,6 +9,11 @@
 // **有意收窄**：它**不是**通用缓存一致性协议——只广播"这个 key/资源失效了，谁缓存
 // 了就删"。不做版本、不做全量刷新、不进认证热路径（认证仍走本地 LRU，只有失效事件
 // 才碰 Redis pub/sub）。Redis 不可用时退化成纯 TTL（打 warn），不阻塞任何一面。
+//
+// **已知窄窗（evict-without-version）**：一个在吊销**之前**就开始、在 evict 之后才
+// 完成的 in-flight Resolve，可能把"当时还有效"的身份写回缓存，最长残留一个正向 TTL
+// （30s）。窗口 = 单次 Resolve 跨越吊销的时长，很窄但真实存在。彻底关闭需要给缓存项
+// 引入 generation/version token；当前以 30s TTL 作兜底，属可接受取舍。
 package cachebus
 
 import (

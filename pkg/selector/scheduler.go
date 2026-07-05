@@ -95,7 +95,8 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		if id, ok := s.cfg.Affinity.Get(ctx, ak); ok {
 			for _, c := range survived {
 				if c.Endpoint.ID == id {
-					return c.Endpoint, nil // sticky hit
+					s.cfg.Affinity.Set(ctx, ak, id) // 刷 TTL——稳态命中也要续期，否则活跃会话在 TTL 后丢 pin
+					return c.Endpoint, nil          // sticky hit
 				}
 			}
 		}

@@ -32,6 +32,15 @@ func (f *fakeCacheStore) Set(_ context.Context, key string, r CachedResponse, _ 
 // cacheHarness 建一个 [seed RC] → [ResponseCache] → [downstream] 的 gin 引擎。
 // downstream 每次被调 calls++，写 rc.Usage + 一个 200 JSON body。
 func cacheHarness(store ResponseCacheStore) (*gin.Engine, *int) {
+	return cacheHarnessDown(store, func(c *gin.Context) {
+		rc := GetRequestContext(c)
+		rc.Usage = &domain.Usage{Input: 10, Output: 5, Total: 15}
+		c.Data(http.StatusOK, "application/json", []byte(`{"resp":true}`))
+	})
+}
+
+// cacheHarnessDown 同上但 downstream 可自定义（测试毒化 / SSE 等路径）。
+func cacheHarnessDown(store ResponseCacheStore, down gin.HandlerFunc) (*gin.Engine, *int) {
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
 	calls := 0
@@ -47,9 +56,7 @@ func cacheHarness(store ResponseCacheStore) (*gin.Engine, *int) {
 		ResponseCache(store, time.Minute),
 		func(c *gin.Context) {
 			calls++
-			rc := GetRequestContext(c)
-			rc.Usage = &domain.Usage{Input: 10, Output: 5, Total: 15}
-			c.Data(http.StatusOK, "application/json", []byte(`{"resp":true}`))
+			down(c)
 		},
 	)
 	return e, &calls
@@ -94,6 +101,51 @@ func TestResponseCache_DeterministicHitMiss(t *testing.T) {
 	}
 	if w2.Body.String() != `{"resp":true}` {
 		t.Errorf("hit body = %q, want cached body", w2.Body.String())
+	}
+}
+
+// 毒化防线：200 但 rc.Error 非空（流中断 / 上游错，body 截断）绝不入缓存。
+func TestResponseCache_TruncatedNotCached(t *testing.T) {
+	store := newFakeCacheStore()
+	e, calls := cacheHarnessDown(store, func(c *gin.Context) {
+		rc := GetRequestContext(c)
+		rc.Usage = &domain.Usage{Total: 15}
+		rc.Error = &domain.AdapterError{Class: domain.ErrTransient, Code: domain.ErrCodeUpstreamError, Message: "stream reset mid-body"}
+		c.Data(http.StatusOK, "application/json", []byte(`{"parti`)) // 半个 body
+	})
+	body := `{"model":"m","temperature":0,"messages":[]}`
+	postCache(e, body, "")
+	postCache(e, body, "")
+	if store.sets != 0 {
+		t.Errorf("截断响应(rc.Error!=nil)不该入缓存, sets=%d want 0", store.sets)
+	}
+	if *calls != 2 {
+		t.Errorf("既然没缓存，两次都该打 downstream, calls=%d want 2", *calls)
+	}
+}
+
+// SSE Content-Type 兜底：即使漏判成非流式，text/event-stream 响应也不入缓存。
+func TestResponseCache_EventStreamNotCached(t *testing.T) {
+	store := newFakeCacheStore()
+	e, _ := cacheHarnessDown(store, func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/event-stream", []byte("data: hi\n\n"))
+	})
+	body := `{"model":"m","temperature":0}`
+	postCache(e, body, "")
+	if store.sets != 0 {
+		t.Errorf("text/event-stream 响应不该入缓存, sets=%d want 0", store.sets)
+	}
+}
+
+// 畸形 stream 字段（字符串 "true"）宽松判定为流式 → bypass（即使 X-Gateway-Cache: on）。
+func TestResponseCache_MalformedStreamDetected(t *testing.T) {
+	store := newFakeCacheStore()
+	e, calls := cacheHarness(store)
+	body := `{"model":"m","stream":"true","temperature":0}`
+	postCache(e, body, "on")
+	postCache(e, body, "on")
+	if store.sets != 0 || *calls != 2 {
+		t.Errorf("畸形 stream 应被判流式并 bypass, sets=%d calls=%d want 0/2", store.sets, *calls)
 	}
 }
 
