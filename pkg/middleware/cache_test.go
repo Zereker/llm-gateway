@@ -29,8 +29,8 @@ func (f *fakeCacheStore) Set(_ context.Context, key string, r CachedResponse, _ 
 	f.sets++
 }
 
-// cacheHarness builds a gin engine chaining [seed RC] -> [ResponseCache] -> [downstream].
-// downstream increments calls++ on every call and writes rc.Usage plus a 200 JSON body.
+// cacheHarness builds a gin engine chaining [seed RC] → [ResponseCache] → [downstream].
+// downstream increments calls++ each time it's invoked, writing rc.Usage + a 200 JSON body.
 func cacheHarness(store ResponseCacheStore) (*gin.Engine, *int) {
 	return cacheHarnessDown(store, func(c *gin.Context) {
 		rc := GetRequestContext(c)
@@ -39,8 +39,8 @@ func cacheHarness(store ResponseCacheStore) (*gin.Engine, *int) {
 	})
 }
 
-// cacheHarnessDown is the same as above but lets downstream be customized (for testing
-// poisoning / SSE paths, etc).
+// cacheHarnessDown is the same as above but downstream is customizable (for testing
+// poisoning / SSE and other paths).
 func cacheHarnessDown(store ResponseCacheStore, down gin.HandlerFunc) (*gin.Engine, *int) {
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
@@ -80,7 +80,7 @@ func postCache(e *gin.Engine, body, cacheHdr string) *httptest.ResponseRecorder 
 }
 
 // Deterministic request (temperature=0, non-streaming): first call misses and stores,
-// second call hits (downstream is not called).
+// second call hits (doesn't reach downstream).
 func TestResponseCache_DeterministicHitMiss(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
@@ -91,23 +91,23 @@ func TestResponseCache_DeterministicHitMiss(t *testing.T) {
 		t.Fatalf("miss: code=%d calls=%d sets=%d, want 200/1/1", w1.Code, *calls, store.sets)
 	}
 	if w1.Header().Get(HeaderGatewayCache) == "hit" {
-		t.Error("the first call should not be a hit")
+		t.Error("first call should not be a hit")
 	}
 
 	w2 := postCache(e, body, "")
-	if w2.Code != 200 || *calls != 1 { // downstream must not be called again
+	if w2.Code != 200 || *calls != 1 { // downstream is not called again
 		t.Fatalf("hit: code=%d calls=%d, want 200/1 (a hit must not call downstream)", w2.Code, *calls)
 	}
 	if w2.Header().Get(HeaderGatewayCache) != "hit" {
-		t.Error("the second call should carry X-Gateway-Cache: hit")
+		t.Error("second call should carry X-Gateway-Cache: hit")
 	}
 	if w2.Body.String() != `{"resp":true}` {
 		t.Errorf("hit body = %q, want cached body", w2.Body.String())
 	}
 }
 
-// Poisoning defense: a 200 with a non-nil rc.Error (stream interrupted / upstream error,
-// truncated body) must never be cached.
+// Poisoning safeguard: a 200 with rc.Error non-nil (stream broke / upstream errored, body
+// truncated) must never be cached.
 func TestResponseCache_TruncatedNotCached(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarnessDown(store, func(c *gin.Context) {
@@ -127,8 +127,8 @@ func TestResponseCache_TruncatedNotCached(t *testing.T) {
 	}
 }
 
-// SSE Content-Type fallback: even if a request is misclassified as non-streaming, a
-// text/event-stream response must not be cached.
+// SSE Content-Type fallback: even if misclassified as non-streaming, a text/event-stream
+// response must never be cached.
 func TestResponseCache_EventStreamNotCached(t *testing.T) {
 	store := newFakeCacheStore()
 	e, _ := cacheHarnessDown(store, func(c *gin.Context) {
@@ -141,8 +141,8 @@ func TestResponseCache_EventStreamNotCached(t *testing.T) {
 	}
 }
 
-// A malformed stream field (the string "true") is leniently treated as streaming ->
-// bypass (even with X-Gateway-Cache: on).
+// A malformed stream field (string "true") is leniently detected as streaming → bypass
+// (even with X-Gateway-Cache: on).
 func TestResponseCache_MalformedStreamDetected(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
@@ -150,11 +150,11 @@ func TestResponseCache_MalformedStreamDetected(t *testing.T) {
 	postCache(e, body, "on")
 	postCache(e, body, "on")
 	if store.sets != 0 || *calls != 2 {
-		t.Errorf("a malformed stream field should be treated as streaming and bypassed, sets=%d calls=%d want 0/2", store.sets, *calls)
+		t.Errorf("a malformed stream field should be judged as streaming and bypass, sets=%d calls=%d want 0/2", store.sets, *calls)
 	}
 }
 
-// Non-deterministic request (no temperature): always bypass, never cached.
+// Non-deterministic request (no temperature): always bypasses, never cached.
 func TestResponseCache_NonDeterministicBypass(t *testing.T) {
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
@@ -164,6 +164,72 @@ func TestResponseCache_NonDeterministicBypass(t *testing.T) {
 	postCache(e, body, "")
 	if *calls != 2 || store.sets != 0 {
 		t.Errorf("non-deterministic: calls=%d sets=%d, want 2/0 (every call hits downstream, nothing cached)", *calls, store.sets)
+	}
+}
+
+// Embeddings are inherently deterministic: cached by default even without temperature
+// (Modality==ModalityEmbedding override).
+func TestResponseCache_EmbeddingsDeterministicByDefault(t *testing.T) {
+	store := newFakeCacheStore()
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	calls := 0
+	e.POST("/v1/embeddings",
+		func(c *gin.Context) {
+			rc := &domain.RequestContext{
+				Envelope: &domain.RequestEnvelope{
+					RawBytes: readBody(c), Model: "text-embedding-3-small",
+					SourceProtocol: domain.ProtoOpenAI, Modality: domain.ModalityEmbedding,
+				},
+				ModelService: &domain.ModelService{Model: "text-embedding-3-small"},
+			}
+			AttachRequestContext(c, rc)
+			c.Next()
+		},
+		ResponseCache(store, time.Minute),
+		func(c *gin.Context) {
+			calls++
+			rc := GetRequestContext(c)
+			rc.Usage = &domain.Usage{Input: 4, Total: 4}
+			c.Data(http.StatusOK, "application/json", []byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+		},
+	)
+	// No temperature, no stream -- for chat this would go through non-deterministic
+	// bypass, but embeddings should be cached by default.
+	body := `{"model":"text-embedding-3-small","input":"hello world"}`
+	req := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, r)
+		return w
+	}
+	w1 := req()
+	if w1.Code != 200 || calls != 1 || store.sets != 1 {
+		t.Fatalf("miss: code=%d calls=%d sets=%d, want 200/1/1", w1.Code, calls, store.sets)
+	}
+	w2 := req()
+	if w2.Code != 200 || calls != 1 {
+		t.Fatalf("hit: code=%d calls=%d, want 200/1 (a hit must not call downstream)", w2.Code, calls)
+	}
+	if w2.Header().Get(HeaderGatewayCache) != "hit" {
+		t.Error("second embeddings call should be a hit")
+	}
+}
+
+// cacheKey folds in modality: same protocol/model/body but different modality → different
+// key (prevents chat and embeddings from colliding and returning the wrong response across
+// modalities).
+func TestCacheKey_ModalityNamespaced(t *testing.T) {
+	body := []byte(`{"model":"m","input":"x","temperature":0}`)
+	kChat := cacheKey(domain.ProtoOpenAI, domain.ModalityChat, "m", body)
+	kEmb := cacheKey(domain.ProtoOpenAI, domain.ModalityEmbedding, "m", body)
+	if kChat == kEmb {
+		t.Errorf("chat and embedding with the same body should not collide on key: %s", kChat)
+	}
+	// Same modality, same input must be stable (so it can hit).
+	if cacheKey(domain.ProtoOpenAI, domain.ModalityEmbedding, "m", body) != kEmb {
+		t.Error("same modality + same input should produce a stable key")
 	}
 }
 
@@ -179,9 +245,9 @@ func TestResponseCache_StreamBypass(t *testing.T) {
 	}
 }
 
-// X-Gateway-Cache: off bypasses; on forces caching (even when temperature != 0).
+// X-Gateway-Cache: off bypasses; on forces caching (even when temperature≠0).
 func TestResponseCache_HeaderOverrides(t *testing.T) {
-	// off: bypass even a deterministic request
+	// off: bypasses even a deterministic request
 	store := newFakeCacheStore()
 	e, calls := cacheHarness(store)
 	det := `{"model":"m","temperature":0,"messages":[]}`
@@ -191,7 +257,7 @@ func TestResponseCache_HeaderOverrides(t *testing.T) {
 		t.Errorf("off: calls=%d sets=%d, want 2/0", *calls, store.sets)
 	}
 
-	// on: cache even a non-deterministic request
+	// on: caches even a non-deterministic request
 	store2 := newFakeCacheStore()
 	e2, calls2 := cacheHarness(store2)
 	nondet := `{"model":"m","temperature":0.9,"messages":[]}`

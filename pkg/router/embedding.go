@@ -52,6 +52,18 @@ func registerEmbeddingRoutes(engine *gin.Engine, deps Deps) {
 			middleware.WithLimitStore(deps.RateLimitStore),
 			middleware.WithLimitPolicies(deps.QuotaPolicies),
 		),
+		// Embeddings are inherently deterministic (no sampling parameters) —
+		// ResponseCache caches them by default, and a hit returns the vector
+		// directly, skipping the upstream. See the embeddings exception in
+		// middleware.ResponseCache.
+		//
+		// **Dedicated EmbeddingCache (exact match), not reusing deps.Cache**:
+		// when the global config uses semantic cache, deps.Cache is a
+		// SemanticCache, and an embedding request's input would get extracted
+		// by extractPrompt for similarity matching — a semantic hit is wrong
+		// for embeddings (paraphrases have different correct vectors).
+		// Embeddings must use exact-match caching.
+		deps.EmbeddingCache,
 		middleware.Schedule(deps.Dispatcher),
 		noopHandler,
 	)

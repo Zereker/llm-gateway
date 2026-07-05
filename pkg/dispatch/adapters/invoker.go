@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"io"
 	"net/http"
 
 	"github.com/zereker/llm-gateway/pkg/dispatch"
@@ -91,6 +92,29 @@ func (r *invokerResult) StreamTo(ctx context.Context, w http.ResponseWriter) dis
 	}
 	r.consumed = true
 
+	// Transport decoding seam: a vendor (e.g. Bedrock event-stream) decodes the
+	// upstream's framing into the byte stream the protocol handler
+	// understands, which then goes into Feed. TransportDecoder is optional —
+	// returning nil means no deframing is needed (SSE/JSON, the vast
+	// majority). This keeps the transport layer (framing) cleanly separated
+	// from the protocol layer (shape translation).
+	if dec, ok := r.handler.(protocol.TransportDecoder); ok {
+		if decoded := dec.DecodeTransport(r.response); decoded != nil {
+			// Replace body with decoded for Forward to read; hand the
+			// original body's Close over to the wrapper, so Forward's
+			// deferred Close still closes the real connection.
+			orig := r.response.Body
+			r.response.Body = readClose{Reader: decoded, closeFn: orig.Close}
+			// The transport has been deframed from the vendor's framing
+			// (e.g. application/vnd.amazon.eventstream) into SSE: the
+			// upstream Content-Type no longer describes the bytes the client
+			// will receive, so force it to text/event-stream — otherwise SSE
+			// clients will refuse to parse it as a stream (Forward copies
+			// upstream headers directly).
+			r.response.Header.Set("Content-Type", "text/event-stream")
+		}
+	}
+
 	stream := moderation.WrapStream(r.handler.NewResponseStream(), ctx)
 	fwd := r.sender.Forward(ctx, w, r.ep, r.response, stream)
 
@@ -143,3 +167,13 @@ var (
 	_ dispatch.Invoker        = (*invokerImpl)(nil)
 	_ dispatch.Result         = (*invokerResult)(nil)
 )
+
+// readClose combines an io.Reader (the deframed stream) with the original
+// body's Close into a ReadCloser — Forward reads the deframed bytes, and the
+// deferred Close still closes the real upstream connection.
+type readClose struct {
+	io.Reader
+	closeFn func() error
+}
+
+func (rc readClose) Close() error { return rc.closeFn() }

@@ -6,11 +6,11 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
-// NewGemini constructs a usage Session for the Gemini protocol.
+// NewGemini constructs a Gemini-protocol usage Session.
 //
 // Applicable scenarios (matched by upstream protocol):
-//   - openai_gemini: upstream is Gemini (OpenAI client -> Gemini upstream,
-//     currently buffer-then-translate)
+//   - openai_gemini: upstream is Gemini (OpenAI client -> Gemini upstream, currently
+//     buffer-then-translate).
 //
 // **Gemini usage shape** (top-level usageMetadata):
 //
@@ -19,10 +19,12 @@ import (
 //	      "promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15
 //	  } }
 //
-// **v0.5 limitation**: only non-streaming body mode is supported. Gemini SSE
-// streaming (streamGenerateContent) is not supported in v0.5, so SSE parsing
-// isn't implemented here either. The SSE path will be added when streaming
-// translation lands in v0.6.
+// **Only parses non-streaming JSON bodies**: this is a design choice, not a gap. For
+// Gemini SSE streaming (streamGenerateContent), usage is extracted directly from the
+// usageMetadata of the last frame by the openai_gemini responseHandler (see
+// translateChunk in that package), bypassing this extractor entirely — so this Session
+// stays JSON-only, and Final() parses the whole buf as one JSON document. Only the JSON
+// path uses it.
 func NewGemini() Session { return &geminiSession{} }
 
 type geminiSession struct {

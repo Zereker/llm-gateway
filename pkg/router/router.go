@@ -1,5 +1,5 @@
-// Package router assembles the gin.Engine: it registers the modality-split LLM
-// routes plus the ops endpoints.
+// Package router assembles the gin.Engine: registers the modality-split LLM
+// routes plus operational endpoints.
 package router
 
 import (
@@ -12,15 +12,15 @@ import (
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
-// Deps is the dependency set for NewEngine: it holds direct references to
-// each middleware port's implementation plus a handful of pre-middleware
+// Deps is the dependency set for NewEngine: it directly holds reference
+// implementations for each middleware port, plus a handful of pre-middleware
 // scalar parameters.
 //
-// **No longer wrapped in `[]middleware.XxxOption`** — that wrapping layer
-// leaked middleware's internal assembly syntax into router's public
-// interface, forcing callers/tests to write `middleware.WithFoo(stubFoo)`
+// **No longer wrapped in `[]middleware.XxxOption`**——that wrapping layer used
+// to leak middleware's internal assembly syntax into router's public
+// interface, forcing callers / tests to write `middleware.WithFoo(stubFoo)`
 // just to pass a stub. Now Deps fields are the port types themselves; callers
-// pass a stub/impl directly, and each modality file inside router wraps it
+// pass a stub / impl directly, and each modality file inside router wraps it
 // into a With* option to feed the middleware factory.
 //
 // When adding a middleware option: extend Deps with a port-typed field; each
@@ -54,9 +54,16 @@ type Deps struct {
 	// EndpointReader / Scheduler / Sender / MaxAttempts details.
 	Dispatcher *dispatch.Dispatcher
 
-	// Response cache (after M6, before M7); nil = no caching (middleware is a no-op).
-	ResponseCache middleware.ResponseCacheStore
-	CacheTTL      time.Duration
+	// Response cache middleware (after M6, before M7), assembled by cmd
+	// (exact / semantic / no-op). Used by the chat modality; modality files
+	// skip mounting it when nil.
+	Cache gin.HandlerFunc
+
+	// EmbeddingCache is the embedding-modality-specific cache — **exact match
+	// only** (semantic similarity is meaningless for embeddings and must be
+	// exact). Assembled independently by cmd (exact cache is mounted whenever
+	// either cache switch is on).
+	EmbeddingCache gin.HandlerFunc
 
 	// M8 Moderation
 	Moderator middleware.Moderator
@@ -65,13 +72,13 @@ type Deps struct {
 	UsageOutbox UsageOutbox
 	AuditTracer AuditTracer
 
-	// Readiness dependency checks for /readyz (SQL ping / Redis ping); empty =
-	// static 200. Injected during cmd assembly; see helpers.go readyzHandler
-	// for the check logic.
+	// Readiness holds the dependency checks for /readyz (SQL ping / Redis
+	// ping); empty = static 200. Injected by cmd during assembly; see the
+	// check logic in helpers.go readyzHandler.
 	Readiness []ReadinessChecker
 }
 
-// UsageOutbox / AuditTracer type aliases keep Deps' field type descriptions
+// UsageOutbox / AuditTracer type aliases keep the Deps field type description
 // consistent with the middleware port names, and give router test stubs a
 // clear target.
 type (
@@ -79,16 +86,16 @@ type (
 	AuditTracer = middleware.AuditTracer
 )
 
-// NewEngine builds the gin.Engine and completes all assembly.
+// NewEngine constructs the gin.Engine and completes all assembly.
 func NewEngine(deps Deps) *gin.Engine {
 	engine := gin.New()
 
 	// Fallback recovery: M9 Recover is mounted after M1, so it doesn't cover
 	// panics from BodyLimit / Timeout (which run before M1) — without this
-	// layer, such panics only get net/http's connection-level recover, and
-	// the client sees a connection reset instead of a 500. gin.Recovery's 500
-	// doesn't have our JSON error structure, but it's only the last line of
-	// defense; the normal path never reaches it.
+	// layer, that class of panic only gets net/http's connection-level
+	// recover, and the client sees a connection reset instead of a 500.
+	// gin.Recovery's 500 doesn't carry our JSON error structure, but it's
+	// only the last line of defense; the normal path never reaches it.
 	engine.Use(gin.Recovery())
 
 	registerOpsRoutes(engine, deps.Readiness)

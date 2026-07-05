@@ -55,6 +55,12 @@ moderation:
   # api_key: ""
   # leave base_url empty to use the official OpenAI endpoint
   # base_url: ""
+  # Optional regex content guardrail (one link in the guard chain, combined
+  # with the driver's moderator into a Chain); hitting any pattern is a 400
+  # rejection. Empty patterns = this guard is not added.
+  denylist:
+    patterns: []          # e.g. ['(?i)\bpassword\b', '\d{3}-\d{2}-\d{4}']
+    check_output: false   # when true, also scans the response chunk by chunk
 
 selector:
   # M7 endpoint routing Filter chain (order is execution order; weighted_random must be last)
@@ -86,6 +92,17 @@ cache:
   # the client's X-Gateway-Cache: on/off header overrides this.
   enabled: false
   ttl: 5m
+  # Semantic cache: hits based on prompt vector similarity (paraphrases also
+  # hit); when enabled it replaces the exact-match cache.
+  semantic:
+    enabled: false
+    threshold: 0.9        # cosine hit threshold
+    max_entries: 500      # entry cap per (protocol|model) namespace
+    embedder:
+      driver: openai      # OpenAI-compatible /v1/embeddings
+      api_key: ""
+      base_url: ""        # empty uses the official OpenAI endpoint
+      model: text-embedding-3-small
 
 scoring:
   # Runtime Scoring (soft weight adjustment based on per-endpoint runtime quality); off by default. See docs/03 §8.

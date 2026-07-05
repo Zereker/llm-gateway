@@ -15,43 +15,44 @@ import (
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
 
-// ResponseCache is the response-caching middleware — a hit returns the cached
-// response directly, skipping M7 scheduling (no upstream call), saving cost and
-// latency. Placed after M6 Limit and before M7 Schedule: a hit still counts
-// against RPM (Limit already deducted before the cache), but incurs zero
-// upstream cost.
+// ResponseCache is the response-cache middleware — on a hit it returns the cached response
+// directly, skipping M7 Schedule (no upstream call), saving cost and latency. It sits after
+// M6 Limit and before M7 Schedule: a hit still counts against RPM (Limit has already
+// deducted it), but incurs zero upstream cost.
 //
-// **By default only caches deterministic requests**: non-streaming + temperature=0.
-// Non-deterministic requests (temperature≠0 / unset) would get stale results from
-// the cache and behave strangely, so they're skipped by default; clients can force
+// **By default only deterministic requests are cached**: non-streaming + temperature=0.
+// Non-deterministic requests (temperature≠0 / omitted) would get stale results back from
+// the cache and behave unpredictably, so they're skipped by default; the client can force
 // caching with X-Gateway-Cache: on (at their own risk), or bypass entirely with off.
 // Streaming is **never** cached (v1).
 //
-// **key** = SHA256(sourceProtocol | canonical model | request body). Same protocol +
-// same model + same body → same response bytes. Shared across accounts (the response
-// is the model's output, unrelated to the account), giving a higher hit rate.
+// **embeddings exception**: embedding requests have no sampling parameters, so the same
+// input always produces the same vector — inherently deterministic
+// (Modality==ModalityEmbedding) → cacheable by default, no temperature=0 required. This
+// pays off big in high-hit-rate scenarios (RAG repeatedly embedding the same batch of text).
 //
-// **usage**: on a hit, the cached usage is passed through (Source=cache), M10 still
-// emits the usage event as normal, and M6 still deducts TPM afterward as normal —
-// downstream can bill zero cost based on source=cache.
+// **key** = SHA256(sourceProtocol | canonical model | request body). Same protocol + same
+// model + same body → same response bytes. Shared across accounts (the response is the
+// model's output, unrelated to the account), which improves the hit rate.
 //
-// When store == nil (not configured), the whole middleware is a no-op and does not
-// affect the chain.
+// **usage**: on a hit, the usage stored in the cache is passed through (Source=cache), M10
+// still emits the usage event as normal, and M6 still deducts TPM afterward — downstream can
+// decide to bill zero cost based on source=cache.
 //
-// **Known trade-offs (opt-in feature, off by default; deployers should be aware
-// when enabling)**:
-//   - The key uses the canonical model name (not the specific endpoint/upstream
-//     version) — the cache hits **before** M7 routing, at which point no endpoint
-//     has been selected yet, so the key can't be scoped per endpoint. This assumes
-//     a model_service maps to a **stable** upstream output; don't enable caching
-//     for a model_service that fans out to multiple upstream versions under the
-//     same name (gpt-4o-2024-05 vs -11).
-//   - Shared across accounts (the response is the model's output, unrelated to
-//     the account): higher hit rate, but the system_fingerprint/id in the cached
-//     response will cross tenants. Enable only if that's acceptable.
-//   - A hit still emits a usage event (source=cache) + counts TPM (soft counter):
-//     a cache hit counts as having "delivered N tokens"; downstream decides whether
-//     to bill zero cost based on source=cache.
+// When store == nil (not configured), the whole middleware is a no-op and doesn't affect the chain.
+//
+// **Known trade-offs (opt-in feature, off by default; deployers should be aware when enabling it)**:
+//   - The key uses the canonical model name (not the specific endpoint/upstream version) —
+//     the cache is checked **before** M7 routing picks an endpoint, so no endpoint is known
+//     yet to fold into the key. This assumes a model_service maps to **stable** upstream
+//     output; don't enable caching for a model_service backed by multiple upstream versions
+//     under the same name (gpt-4o-2024-05 vs -11).
+//   - Shared across accounts (the response is the model's output, unrelated to the
+//     account): improves the hit rate, but system_fingerprint/id in the cached response
+//     will leak across tenants. Enable only if that's acceptable.
+//   - A hit still emits a usage event (source=cache) + counts TPM (a soft counter): a cache
+//     hit still counts as having "delivered N tokens," and downstream decides whether to
+//     bill it as zero cost based on source=cache.
 func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if store == nil {
@@ -70,62 +71,79 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 			c.Next() // streaming is never cached
 			return
 		}
+		// Embeddings have no sampling parameters (temperature/top_p don't apply) — the same
+		// input always yields the same vector, inherently deterministic, so it should be
+		// cached by default (no need for temperature=0 / X-Gateway-Cache: on). High hit rate,
+		// big payoff (embedding is often recomputed repeatedly over the same batch of text).
+		if rc.Envelope.Modality == domain.ModalityEmbedding {
+			deterministic = true
+		}
 		if mode != "on" && !deterministic {
 			metric.Inc(metric.ResponseCacheTotal, "result", "bypass")
-			c.Next() // only deterministic requests are cached by default
+			c.Next() // by default only deterministic requests are cached
 			return
 		}
 
 		ctx := c.Request.Context()
-		key := cacheKey(rc.Envelope.SourceProtocol, rc.ModelService.Model, rc.Envelope.RawBytes)
+		key := cacheKey(rc.Envelope.SourceProtocol, rc.Envelope.Modality, rc.ModelService.Model, rc.Envelope.RawBytes)
 
-		// Hit: write the cached response + pass through usage, abort to skip M7
-		// (M6-post/M10 still run on the onion's return trip).
+		// Hit: write the cached response + pass through usage, abort to skip M7 (M6-post/M10
+		// still run on the onion's return leg).
 		if cached, ok := store.Get(ctx, key); ok {
 			metric.Inc(metric.ResponseCacheTotal, "result", "hit")
-			ct := cached.ContentType
-			if ct == "" {
-				ct = "application/json; charset=utf-8"
-			}
-			c.Header(HeaderGatewayCache, "hit")
-			c.Data(cached.StatusCode, ct, cached.Body)
-			if cached.Usage != nil {
-				u := *cached.Usage
-				u.Source = domain.UsageSourceCache
-				rc.Usage = &u
-			}
-			c.Abort()
+			writeCacheHit(c, rc, cached)
 			return
 		}
 
-		// Miss: tee the response, and write it back to the cache on success.
+		// Miss: tee the response, write it back to the cache on success.
 		metric.Inc(metric.ResponseCacheTotal, "result", "miss")
 		tw := &teeWriter{ResponseWriter: c.Writer, buf: &bytes.Buffer{}}
 		c.Writer = tw
 		c.Next()
 
-		// Only cache a **clean, complete, non-streaming** 200:
-		//   - rc.Error != nil: stream interrupted after 200 / upstream error —
-		//     the body may be truncated, which would poison the cache for all
-		//     future identical requests (the 200 header has already been
-		//     forwarded, and tw.buf holds a half body).
-		//   - text/event-stream: a fallback for when analyzeBody misses a
-		//     streaming request (never cache SSE).
-		ct := tw.Header().Get("Content-Type")
-		if tw.Status() == 200 && tw.buf.Len() > 0 && rc.Error == nil && !isEventStream(ct) {
-			store.Set(ctx, key, CachedResponse{
-				StatusCode:  200,
-				ContentType: ct,
-				Body:        tw.buf.Bytes(),
-				Usage:       rc.Usage,
-			}, ttl)
+		if resp, ok := cacheableResponse(tw, rc); ok {
+			store.Set(ctx, key, resp, ttl)
 			metric.Inc(metric.ResponseCacheTotal, "result", "store")
 		}
 	}
 }
 
-// ResponseCacheStore is the response-cache storage port (see the cmd wiring
-// point for the Redis implementation).
+// writeCacheHit writes the cached response to the client + passes through usage
+// (Source=cache) + aborts to skip M7. Shared by exact-cache and semantic-cache hits.
+func writeCacheHit(c *gin.Context, rc *domain.RequestContext, cached CachedResponse) {
+	ct := cached.ContentType
+	if ct == "" {
+		ct = "application/json; charset=utf-8"
+	}
+	c.Header(HeaderGatewayCache, "hit")
+	c.Data(cached.StatusCode, ct, cached.Body)
+	if cached.Usage != nil {
+		u := *cached.Usage
+		u.Source = domain.UsageSourceCache
+		rc.Usage = &u
+	}
+	c.Abort()
+}
+
+// cacheableResponse determines whether the teed response is cacheable, returning a
+// CachedResponse if so. Only **clean, complete, non-streaming** 200s are cached:
+//   - rc.Error != nil: the stream broke / upstream errored after a 200, the body may be
+//     truncated, and caching it would poison subsequent requests.
+//   - text/event-stream: a fallback for when analyzeBody misclassifies a request as
+//     non-streaming (SSE must never be cached).
+//
+// Shared by exact-cache and semantic-cache write-back — both inherit the H1 poisoning
+// safeguard and the M4 streaming fallback.
+func cacheableResponse(tw *teeWriter, rc *domain.RequestContext) (CachedResponse, bool) {
+	ct := tw.Header().Get("Content-Type")
+	if tw.Status() == 200 && tw.buf.Len() > 0 && rc.Error == nil && !isEventStream(ct) {
+		return CachedResponse{StatusCode: 200, ContentType: ct, Body: tw.buf.Bytes(), Usage: rc.Usage}, true
+	}
+	return CachedResponse{}, false
+}
+
+// ResponseCacheStore is the response-cache storage port (Redis implementation lives at the
+// cmd wiring point).
 type ResponseCacheStore interface {
 	Get(ctx context.Context, key string) (CachedResponse, bool)
 	Set(ctx context.Context, key string, resp CachedResponse, ttl time.Duration)
@@ -139,10 +157,19 @@ type CachedResponse struct {
 	Usage       *domain.Usage
 }
 
-// cacheKey is the hex of SHA256(protocol | model | body).
-func cacheKey(proto domain.Protocol, model string, body []byte) string {
+// cacheKey is the hex of SHA256(protocol | modality | model | body).
+//
+// **modality must be folded into the key**: chat and embeddings are both ProtoOpenAI, and
+// the exact cache shares one Redis store/prefix; if the key were only protocol|model|body,
+// a byte-identical body (e.g. {"model":"m","input":"x","temperature":0}) sent to
+// /v1/embeddings and /v1/chat/completions would collide on the same key → a cross-modality
+// request would get back the wrong response (and since the key is account-agnostic, this
+// would also cross tenants). Folding in modality keeps the two keyspaces cleanly separated.
+func cacheKey(proto domain.Protocol, modality domain.Modality, model string, body []byte) string {
 	h := sha256.New()
 	h.Write([]byte(proto.String()))
+	h.Write([]byte{0})
+	h.Write([]byte(modality.String()))
 	h.Write([]byte{0})
 	h.Write([]byte(model))
 	h.Write([]byte{0})
@@ -152,14 +179,14 @@ func cacheKey(proto domain.Protocol, model string, body []byte) string {
 
 // analyzeBody parses (stream, deterministic) from the request body.
 //
-// **Uses gjson with a lenient stream check**: schema-less extraction consistent
-// with Envelope, and gjson.Bool() coerces malformed values like "true" / 1 to
-// true too — this avoids a strict encoding/json parse failure mis-classifying an
-// actually-streaming request as non-streaming and then buffering the whole SSE
-// stream into the cache.
+// **Uses gjson with a lenient stream check**: consistent with Envelope's schema-less
+// extraction, and gjson.Bool() coerces malformed values like "true" / 1 to true too —
+// avoiding the case where encoding/json's strict parsing fails and a request that will
+// actually stream gets misclassified as non-streaming, causing the whole SSE stream to get
+// buffered into the cache.
 //
-// deterministic = temperature explicitly equals 0 (most vendors default an
-// unset temperature to 1, treated as non-deterministic).
+// deterministic = temperature is explicitly 0 (most vendors default temperature to 1 when
+// omitted, treated as non-deterministic).
 func analyzeBody(body []byte) (stream, deterministic bool) {
 	stream = gjson.GetBytes(body, "stream").Bool()
 	t := gjson.GetBytes(body, "temperature")
@@ -167,14 +194,13 @@ func analyzeBody(body []byte) (stream, deterministic bool) {
 	return stream, deterministic
 }
 
-// isEventStream reports whether Content-Type is SSE (a fallback safeguard for
-// writing back to the cache).
+// isEventStream reports whether Content-Type is SSE (a fallback safeguard for cache write-back).
 func isEventStream(ct string) bool {
 	return strings.Contains(strings.ToLower(ct), "text/event-stream")
 }
 
-// teeWriter wraps gin.ResponseWriter, copying the written body into buf as
-// well (used for writing back to the cache).
+// teeWriter wraps gin.ResponseWriter, also copying the written body into buf (used for
+// cache write-back).
 type teeWriter struct {
 	gin.ResponseWriter
 	buf *bytes.Buffer
