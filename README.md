@@ -1,5 +1,7 @@
 # llm-gateway
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 A Go-based gateway that routes LLM API requests to multiple upstream providers
 (OpenAI, Anthropic, Google, AWS Bedrock, vLLM / Ollama self-hosted, etc.) under
 one OpenAI-compatible interface.
@@ -15,45 +17,46 @@ in [`docs/architecture`](docs/architecture/).
 HTTP request
   │
   ▼
-pkg/middleware        ── 请求生命周期（M1-M10）：auth / envelope / budget /
+pkg/middleware        ── request lifecycle (M1-M10): auth / envelope / budget /
                          catalog / ratelimit / moderation / **M7 → dispatch** /
-                         tracing。每个 middleware 单一职责，配 OTel option。
+                         tracing. Each middleware has a single responsibility,
+                         wired via an OTel option.
   │
-  ▼  (M7 是 dispatch.Dispatcher 的 thin adapter)
-pkg/dispatch          ── 调度执行时序的**唯一**所有者：
+  ▼  (M7 is a thin adapter over dispatch.Dispatcher)
+pkg/dispatch          ── the **sole** owner of scheduling/execution sequencing:
                          CandidateSource → filterEligible → Selector.Pick →
                          EndpointQuota.Reserve → Handler lookup → Invoker →
                          Selector.Report → RetryPolicy → Stream / Charge
-                         （pkg/dispatch/adapters/ 桥接 selector / invoker /
-                         ratelimit / repo primitives → dispatch ports）
+                         (pkg/dispatch/adapters/ bridges selector / invoker /
+                         ratelimit / repo primitives into dispatch ports)
   │
-  ├── pkg/selector    ── primitives：filters / scorer / picker / cooldown。
-  │                      只做选择算法，不知道 protocol / handler / middleware
-  ├── pkg/invoker     ── primitives：一次 HTTP 调用 + 响应 forward，不做调度
-  ├── pkg/ratelimit   ── primitives：Store / Bucket / endpoint bucket helpers
-  └── pkg/protocol    ── facade：Handler = Factory + Translator + Quirks
-                         消费侧只看 Handler / Lookup；Factory / Session 是内部
+  ├── pkg/selector    ── primitives: filters / scorer / picker / cooldown.
+  │                      Pure selection algorithms, unaware of protocol / handler / middleware
+  ├── pkg/invoker     ── primitives: a single HTTP call + response forwarding, no scheduling
+  ├── pkg/ratelimit   ── primitives: Store / Bucket / endpoint bucket helpers
+  └── pkg/protocol    ── facade: Handler = Factory + Translator + Quirks
+                         Consumers only see Handler / Lookup; Factory / Session are internal
        ├── protocol/<vendor>/  OpenAI(+ark alias) / Anthropic / Gemini Factory + Session
-       ├── protocol/quirks/    endpoint 级 body+header 微调 DSL（rename/strip/set/set_default）
-       └── translator (pkg/)   body shape 转换：identity + 跨协议 pairs（init() 注册）
+       ├── protocol/quirks/    endpoint-level body+header tweak DSL (rename/strip/set/set_default)
+       └── translator (pkg/)   body shape conversion: identity + cross-protocol pairs (registered via init())
 
-pkg/moderation        ── Moderator + 响应流装饰器 + ctx helpers
-pkg/usage             ── usage 提取 + outbox（file | kafka）+ pricing
-pkg/trace / metric    ── Tracer 抽象（slog / OTel）+ Prom metric name 常量
+pkg/moderation        ── Moderator + response-stream decorator + ctx helpers
+pkg/usage             ── usage extraction + outbox (file | kafka) + pricing
+pkg/trace / metric    ── Tracer abstraction (slog / OTel) + Prometheus metric name constants
 
-pkg/repo              ── data access：sqlx Reader/Provider + TTL LRU cache wrapper
-                         （5 个 cached wrapper：APIKey / ModelService / Endpoint /
-                         QuotaPolicy / Subscription；llm_gateway_repo_cache_total
-                         metric 上报 hit/miss）
+pkg/repo              ── data access: sqlx Reader/Provider + TTL LRU cache wrapper
+                         (5 cached wrappers: APIKey / ModelService / Endpoint /
+                         QuotaPolicy / Subscription; llm_gateway_repo_cache_total
+                         metric reports hit/miss)
 pkg/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
-pkg/domain            ── 跨包共享 typed structs（RequestContext / Endpoint / ...）
+pkg/domain            ── typed structs shared across packages (RequestContext / Endpoint / ...)
 pkg/config            ── gateway.yaml loader
 
-cmd/gateway           ── composition root：buildEngine 装配所有 deps，无业务逻辑
-cmd/mockupstream      ── dev/test 假上游
-scripts/{e2e-smoke,seed-e2e}  端到端烟测
-docs/architecture/    设计文档（00-overview 至 08-observability）
-configs/              per-environment 配置（local / prod / docker）
+cmd/gateway           ── composition root: buildEngine wires up all deps, no business logic
+cmd/mockupstream      ── dev/test fake upstream
+scripts/{e2e-smoke,seed-e2e}  end-to-end smoke tests
+docs/architecture/    design docs (00-overview through 08-observability)
+configs/              per-environment config (local / prod / docker)
 ```
 
 ## Quick start
