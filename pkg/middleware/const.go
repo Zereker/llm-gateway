@@ -8,6 +8,8 @@ package middleware
 //	X-Gateway-Max-Attempts:      M7 跨 endpoint 重试上限（int）；只能比 cfg.scheduler.max_attempts 更小
 //	X-Gateway-Fallback-Models:   L3 跨模型降级序列（逗号分隔 model 名）；当前 model 全部 endpoints
 //	                             跑完都失败时按列表顺序换 model 重 try。空 = L3 关闭。
+//	X-Gateway-Session:           会话亲和 key；同 session 的请求粘到同一上游 endpoint
+//	                             （prefix/KV cache 命中）。需 scoring/affinity 开启才生效；空 = 不粘。
 //
 // 所有 header 解析失败时静默 fallback 到 cfg 默认；不让畸形 header 阻断请求。
 //
@@ -16,4 +18,5 @@ const (
 	HeaderGatewayTimeout        = "X-Gateway-Timeout"
 	HeaderGatewayMaxAttempts    = "X-Gateway-Max-Attempts"
 	HeaderGatewayFallbackModels = "X-Gateway-Fallback-Models"
+	HeaderGatewaySession        = "X-Gateway-Session"
 )

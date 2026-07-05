@@ -38,6 +38,7 @@ func (s *PickerAdapter) Pick(ctx context.Context, eligible []*domain.Endpoint, q
 	return s.sched.Pick(ctx, &selector.Request{
 		Model:      q.Model,
 		Group:      q.Group,
+		SessionKey: q.SessionKey,
 		Candidates: cands,
 		ExcludeIDs: q.Exclude,
 	})

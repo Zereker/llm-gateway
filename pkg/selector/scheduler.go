@@ -14,6 +14,7 @@ type Config struct {
 	Picker Picker             // 最终选择器；nil = 默认 WeightedRandomPicker
 	Cooldown CooldownManager    // Report 失败时调用；nil = 不冷却
 	Stats    EndpointStatsStore // 统计读模型；nil = 不更新（Report 不写）
+	Affinity AffinityStore      // 会话亲和；nil = 不粘会话
 }
 
 // New 构造默认 Scheduler。Selector 缺省 = WeightedRandomPicker。
@@ -84,6 +85,27 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 	}
 	if s.cfg.Scorer != nil {
 		survived = s.cfg.Scorer.Score(ctx, survived, req)
+	}
+
+	// 3.5 会话亲和（软）：pinned endpoint 仍在 survived（健康 + eligible + 未排除）
+	//     里就粘住它（prefix/KV cache 命中）；否则 fall through 正常选 + 重新 pin。
+	//     session key 按 group 命名空间化,避免跨租户池碰撞。
+	if s.cfg.Affinity != nil && req.SessionKey != "" {
+		ak := req.Group + "|" + req.SessionKey
+		if id, ok := s.cfg.Affinity.Get(ctx, ak); ok {
+			for _, c := range survived {
+				if c.Endpoint.ID == id {
+					return c.Endpoint, nil // sticky hit
+				}
+			}
+		}
+		// pinned 不可用（或首次）——正常选完再 pin。
+		chosen := s.cfg.Picker.Select(ctx, survived)
+		if chosen == nil {
+			return nil, nil
+		}
+		s.cfg.Affinity.Set(ctx, ak, chosen.Endpoint.ID)
+		return chosen.Endpoint, nil
 	}
 
 	// 4. 用 Selector 按 EffectiveWeight 选 1 个

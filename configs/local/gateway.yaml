@@ -69,6 +69,13 @@ selector:
   # 全局尝试上限；客户端 X-Gateway-Max-Attempts 可覆盖（只能更小）
   max_attempts: 3
 
+  # 会话亲和（sticky routing）：客户端 X-Gateway-Session 头带 session id，网关把该
+  # session 粘到同一上游 endpoint（prefix/KV cache 命中）。软亲和——pinned endpoint
+  # 被 cooldown/排除时自动重选。Redis-backed（多副本共享）。
+  session_affinity:
+    enabled: false
+    ttl: 10m
+
 scoring:
   # Runtime Scoring（按 endpoint 运行时质量 soft 调权）；默认关。见 docs/03 §8。
   enabled: false

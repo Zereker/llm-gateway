@@ -206,6 +206,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		Cooldown: cooldown,
 		Scorer:   scorer,
 		Stats:    stats,
+		Affinity: buildAffinity(cfg.Selector.SessionAffinity, rdb),
 	})
 
 	// Dispatcher 装配（M7 业务编排：Selector + Invoker + EndpointQuota + Policy）。
@@ -345,6 +346,17 @@ func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.Endpoin
 	}
 	scorer := selector.NewDefaultScorer(store, cfg.MinSamples, baselineMs)
 	return store, scorer
+}
+
+// buildAffinity 构造会话亲和 store（Redis-backed，多副本共享）。
+//
+// 未启用返回 nil —— scheduler 不粘会话。启用时客户端带 X-Gateway-Session 头即把
+// 该 session 粘到同一 endpoint（软亲和：pinned endpoint 被 cooldown/排除时自动重选）。
+func buildAffinity(cfg config.SessionAffinityConfig, rdb *redis.Client) selector.AffinityStore {
+	if !cfg.Enabled {
+		return nil
+	}
+	return selector.NewRedisAffinityStore(rdb, "llm-gateway:sched", cfg.TTL)
 }
 
 // healthListerAdapter 把 repo.EndpointReader → health.EndpointLister（List 返 domain.Endpoint）。

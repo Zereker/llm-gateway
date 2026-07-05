@@ -70,6 +70,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 			ModelChain:         rc.ModelChain,
 			Handlers:           HandlersFrom(rc),
 			AttemptCapOverride: c.GetHeader(HeaderGatewayMaxAttempts),
+			SessionKey:         c.GetHeader(HeaderGatewaySession),
 		}
 
 		// metric: scheduling_duration_seconds（docs/08 §3）
