@@ -15,6 +15,7 @@ type Config struct {
 	Cooldown CooldownManager    // called on Report failure; nil = no cooldown
 	Stats    EndpointStatsStore // stats read model; nil = not updated (Report doesn't write)
 	Affinity AffinityStore      // session affinity; nil = no sticky session
+	Inflight *Inflight          // pending-call tracker for the P2C picker; nil = not tracked
 }
 
 // New constructs the default Scheduler. Selector defaults to WeightedRandomPicker.
@@ -96,8 +97,8 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		if id, ok := s.cfg.Affinity.Get(ctx, ak); ok {
 			for _, c := range survived {
 				if c.Endpoint.ID == id {
-					s.cfg.Affinity.Set(ctx, ak, id) // refresh TTL — steady-state hits must also renew, otherwise an active session loses its pin after the TTL expires
-					return c.Endpoint, nil          // sticky hit
+					s.cfg.Affinity.Set(ctx, ak, id)  // refresh TTL — steady-state hits must also renew, otherwise an active session loses its pin after the TTL expires
+					return s.chosen(c.Endpoint), nil // sticky hit
 				}
 			}
 		}
@@ -107,7 +108,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 			return nil, nil
 		}
 		s.cfg.Affinity.Set(ctx, ak, chosen.Endpoint.ID)
-		return chosen.Endpoint, nil
+		return s.chosen(chosen.Endpoint), nil
 	}
 
 	// 4. Use the Selector to pick 1 by EffectiveWeight
@@ -115,7 +116,17 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 	if chosen == nil {
 		return nil, nil
 	}
-	return chosen.Endpoint, nil
+	return s.chosen(chosen.Endpoint), nil
+}
+
+// chosen marks the picked endpoint as having one more pending call (input
+// signal for the P2C picker). Every Pick that returns an endpoint is paired
+// with at least one Report from the dispatcher, which decrements the counter.
+func (s *defaultScheduler) chosen(ep *domain.Endpoint) *domain.Endpoint {
+	if s.cfg.Inflight != nil && ep != nil {
+		s.cfg.Inflight.Inc(ep.ID)
+	}
+	return ep
 }
 
 // Report feeds the Send result back to cooldown + stats store + metric.
@@ -134,6 +145,13 @@ func (s *defaultScheduler) Report(ctx context.Context, ep *domain.Endpoint, resu
 		return
 	}
 
+	// the pending call finished (success or failure) — release the P2C slot.
+	// Dec clamps at 0, so the occasional supplementary report (StageStream
+	// after a success report) can't drive the counter negative.
+	if s.cfg.Inflight != nil {
+		s.cfg.Inflight.Dec(ep.ID)
+	}
+
 	// write to stats store (input for runtime scoring; best-effort)
 	if s.cfg.Stats != nil {
 		s.cfg.Stats.Record(ctx, ep.ID, result)
@@ -141,6 +159,6 @@ func (s *defaultScheduler) Report(ctx context.Context, ep *domain.Endpoint, resu
 
 	// failure + retryable → cooldown
 	if result.Class.IsRetryable() && result.Class != ClassUnknown && s.cfg.Cooldown != nil {
-		_ = s.cfg.Cooldown.Mark(ctx, ep.ID, result.Class)
+		_ = s.cfg.Cooldown.Mark(ctx, ep.ID, result.Class, result.RetryAfter)
 	}
 }

@@ -184,8 +184,18 @@ and only runs its own filter chain → scorer → picker.
 
 `Pick` is stateless: it takes candidates + an exclusion set as input and outputs one endpoint. `Report` only feeds
 failures back to cooldown / stats, and does not decide the next control-flow step (control flow belongs to
-`dispatch.RetryPolicy.Decide` and `dispatch.FallbackPolicy.OnExhausted`). `WeightedRandomPicker` always selects
-based on `Candidate.EffectiveWeight`, never reading `Endpoint.Weight` directly.
+`dispatch.RetryPolicy.Decide` and `dispatch.FallbackPolicy.OnExhausted`).
+
+Two pickers are available, selected via `selector.picker` in `gateway.yaml`:
+
+- **`weighted_random`** (default) — picks 1 by an `EffectiveWeight` probability distribution. Always selects
+  based on `Candidate.EffectiveWeight`, never reading `Endpoint.Weight` directly.
+- **`p2c`** (power-of-two-choices) — samples two distinct candidates by `EffectiveWeight`, then takes the one
+  with fewer pending calls (tracked by `selector.Inflight`: the scheduler increments on Pick and decrements on
+  the matching Report, so the counter covers the window up to the upstream's response headers — exactly where
+  an overloaded upstream queues). Ties go to the higher `EffectiveWeight`. This composes with Runtime Scoring:
+  scoring shifts the sampling probability, P2C breaks the tie by live load. The counter is per-process; each
+  replica balances its own view (the standard P2C deployment shape).
 
 ## 5. Retry model
 
@@ -378,17 +388,40 @@ configuration:
 
 Eligibility filtering failures never enter cooldown.
 
-## 10. Health Probing (not implemented)
+**Reset-aware TTL**: when the failed upstream response carries its own recovery hint, the cooldown TTL follows
+the upstream instead of the static per-class duration. `pkg/invoker` parses, in priority order: `Retry-After`
+(delay-seconds or HTTP-date), OpenAI-style `x-ratelimit-reset-requests` / `x-ratelimit-reset-tokens` (Go
+durations; both buckets must clear, so the max of the pair wins), and Anthropic-style
+`anthropic-ratelimit-*-reset` (RFC 3339, same max rule). The hint travels through
+`invoker.Outcome.RetryAfter → dispatch.Verdict.RetryAfter → selector.Result.RetryAfter` into
+`CooldownManager.Mark`, where it is clamped to `[1s, 10m]` — the floor absorbs sub-second churn, the cap stops
+a pathological "retry in 24h" from poisoning the endpoint. A class whose configured duration is 0 stays opted
+out; the hint never re-enables it.
 
-The current scope relies on passive cooldown and runtime stats; the main request path does not perform active
-probing. Active probing of self-hosted endpoints, startup-time warmup, and recovery-period probing are outside
-the current scope:
+A cooldown can also end early — see probe-gated recovery in §10.
+
+## 10. Health Probing
+
+`pkg/health.Prober` actively probes **self-hosted** endpoints (`capabilities.self_hosted=true` with
+`capabilities.health_probe_endpoint` set) on a fixed interval (`health.enabled`, default off; see docs/07).
+Vendor API endpoints are never probed — a probe there would burn quota against a third party.
+
+Constraints (unchanged from the original design):
 
 - Probe results cannot substitute for eligibility filtering; endpoints that don't support the protocol/modality
   must still be dropped.
-- Probes would only affect endpoint health or a scoring factor, and would not directly change business
-  configuration.
-- Probe results could be written into `EndpointStatsStore`, as one input to `success_factor` / `latency_factor`.
+- Probes only affect endpoint health signals; they never directly change business configuration.
+- Probe results are written into `EndpointStatsStore` via the same path as `Scheduler.Report`, as one input to
+  `success_factor` / `latency_factor`.
+- The main request path never blocks on probing; passive cooldown remains the authoritative failure signal.
+
+**Probe-gated recovery** (`health.recover_cooldown`, default off): with it enabled, the prober snapshots which
+targets are in cooldown before each round; a **successful** probe of a cooling endpoint calls
+`CooldownManager.Clear`, releasing it back into rotation before the TTL expires. Recovery is thus confirmed by
+a probe instead of spending a user request to "test the waters" after the TTL runs out. This is strictly
+release-only: a failed probe never creates or extends a cooldown (a probe failure and a business-call failure
+are not the same signal — the probe URL may be down while inference still serves, and vice versa). Each early
+release emits `llm_gateway_health_recover_total{endpoint_id}`.
 
 ## 11. SchedulingDecision
 

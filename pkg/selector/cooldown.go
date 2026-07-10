@@ -13,13 +13,20 @@ import (
 
 // CooldownManager is the storage abstraction for endpoint failure cooldown.
 //
-// **Mark**: called when an endpoint fails; TTL is decided by ErrorClass. Subsequent InCooldown returns true within the TTL.
+// **Mark**: called when an endpoint fails; TTL is decided by ErrorClass. When the
+// upstream told us exactly when capacity comes back (Retry-After / rate-limit
+// reset headers), retryAfter carries that hint and overrides the static
+// per-class TTL (clamped — see RedisCooldownManager.Mark). Pass 0 when no hint
+// is available. Subsequent InCooldown returns true within the TTL.
 // **InCooldown**: used by filter, batch-checks whether multiple endpoints are cooling down.
+// **Clear**: removes an endpoint's cooldown early — used by the health prober
+// when a probe confirms the endpoint has recovered before the TTL expired.
 //
 // **Multi-instance consistency**: the Redis backend shares state, so all gateway instances see the same cooldown view.
 type CooldownManager interface {
-	Mark(ctx context.Context, endpointID int64, class ErrorClass) error
+	Mark(ctx context.Context, endpointID int64, class ErrorClass, retryAfter time.Duration) error
 	InCooldown(ctx context.Context, endpointIDs []int64) (map[int64]bool, error)
+	Clear(ctx context.Context, endpointID int64) error
 }
 
 // CooldownDurations holds the cooldown duration for each ErrorClass (from cfg.Selector.Cooldown).
@@ -74,14 +81,41 @@ func NewRedisCooldownManager(rdb *redis.Client, d CooldownDurations) *RedisCoold
 	return &RedisCooldownManager{rdb: rdb, durations: d}
 }
 
-// Mark marks an endpoint as entering cooldown; TTL is decided by class.
-func (m *RedisCooldownManager) Mark(ctx context.Context, endpointID int64, class ErrorClass) error {
+// Reset-aware TTL clamp bounds: an upstream Retry-After / reset header
+// overrides the static per-class TTL, but only within [floor, cap] —
+// the floor absorbs sub-second resets (a 200ms cooldown is pure churn),
+// the cap stops a pathological upstream ("retry in 24h") from poisoning
+// the endpoint far longer than any static class TTL would.
+const (
+	resetTTLFloor = 1 * time.Second
+	resetTTLCap   = 10 * time.Minute
+)
+
+// resolveCooldownTTL decides the effective cooldown TTL.
+//
+// retryAfter > 0 (an upstream Retry-After / rate-limit reset hint) wins,
+// clamped to [resetTTLFloor, resetTTLCap]; otherwise the static per-class
+// duration applies. A class configured to 0 disables cooldown entirely —
+// the hint is ignored too, since the deployer opted this class out.
+func resolveCooldownTTL(d CooldownDurations, class ErrorClass, retryAfter time.Duration) time.Duration {
+	ttl := d.Get(class)
+	if ttl <= 0 {
+		return 0
+	}
+	if retryAfter > 0 {
+		return min(max(retryAfter, resetTTLFloor), resetTTLCap)
+	}
+	return ttl
+}
+
+// Mark marks an endpoint as entering cooldown; the TTL follows
+// resolveCooldownTTL (reset-aware when the upstream provided a hint).
+func (m *RedisCooldownManager) Mark(ctx context.Context, endpointID int64, class ErrorClass, retryAfter time.Duration) error {
 	if endpointID == 0 {
 		return nil
 	}
-	ttl := m.durations.Get(class)
+	ttl := resolveCooldownTTL(m.durations, class, retryAfter)
 	if ttl <= 0 {
-		// this class is configured with 0 or negative = no cooldown
 		return nil
 	}
 	key := cooldownKey(endpointID)
@@ -113,6 +147,20 @@ func (m *RedisCooldownManager) InCooldown(ctx context.Context, endpointIDs []int
 		}
 	}
 	return out, nil
+}
+
+// Clear removes an endpoint's cooldown key so it re-enters rotation
+// immediately (probe-gated early recovery). Clearing a key that doesn't
+// exist is a no-op.
+func (m *RedisCooldownManager) Clear(ctx context.Context, endpointID int64) error {
+	if endpointID == 0 {
+		return nil
+	}
+	key := cooldownKey(endpointID)
+	if err := m.rdb.Del(ctx, key).Err(); err != nil {
+		return fmt.Errorf("cooldown: del %s: %w", key, err)
+	}
+	return nil
 }
 
 func cooldownKey(endpointID int64) string {

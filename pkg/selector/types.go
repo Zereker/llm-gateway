@@ -106,6 +106,12 @@ type Result struct {
 	HTTPCode int           // upstream status; 0 = no response received (network error / timeout)
 	Reason   string        // human-readable error description
 	Latency  time.Duration // duration of this call (including upstream + streaming)
+
+	// RetryAfter is the upstream's own recovery hint (parsed from Retry-After /
+	// rate-limit reset headers on a failed response). When > 0, the cooldown
+	// TTL uses this instead of the static per-class duration (clamped by the
+	// CooldownManager implementation). 0 = no hint.
+	RetryAfter time.Duration
 }
 
 // Scheduler is the entry point dispatch calls through SelectorAdapter. Stateless (docs/03 §4).

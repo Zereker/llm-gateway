@@ -1,6 +1,9 @@
 package selector
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestCooldownKey(t *testing.T) {
 	if got := cooldownKey(42); got != "cd:endpoint:42" {
@@ -16,4 +19,29 @@ func TestCooldownKey(t *testing.T) {
 
 func TestNewRedisCooldownManager_ImplementsInterface(t *testing.T) {
 	var _ CooldownManager = NewRedisCooldownManager(nil, CooldownDurations{})
+}
+
+func TestResolveCooldownTTL(t *testing.T) {
+	d := CooldownDurations{Capacity: 60 * time.Second, Transient: 30 * time.Second}
+
+	cases := []struct {
+		name       string
+		class      ErrorClass
+		retryAfter time.Duration
+		want       time.Duration
+	}{
+		{"no hint uses class duration", ClassCapacity, 0, 60 * time.Second},
+		{"hint overrides class duration", ClassCapacity, 5 * time.Second, 5 * time.Second},
+		{"hint below floor clamps up", ClassCapacity, 200 * time.Millisecond, resetTTLFloor},
+		{"hint above cap clamps down", ClassCapacity, 24 * time.Hour, resetTTLCap},
+		{"disabled class ignores hint", ClassInvalid, 5 * time.Second, 0},
+		{"hint applies to transient too", ClassTransient, 3 * time.Second, 3 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveCooldownTTL(d, tc.class, tc.retryAfter); got != tc.want {
+				t.Errorf("resolveCooldownTTL = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
