@@ -222,14 +222,25 @@ func TestResponseCache_EmbeddingsDeterministicByDefault(t *testing.T) {
 // modalities).
 func TestCacheKey_ModalityNamespaced(t *testing.T) {
 	body := []byte(`{"model":"m","input":"x","temperature":0}`)
-	kChat := cacheKey(domain.ProtoOpenAI, domain.ModalityChat, "m", body)
-	kEmb := cacheKey(domain.ProtoOpenAI, domain.ModalityEmbedding, "m", body)
+	kChat := cacheKey("acct1", domain.ProtoOpenAI, domain.ModalityChat, "m", body)
+	kEmb := cacheKey("acct1", domain.ProtoOpenAI, domain.ModalityEmbedding, "m", body)
 	if kChat == kEmb {
 		t.Errorf("chat and embedding with the same body should not collide on key: %s", kChat)
 	}
-	// Same modality, same input must be stable (so it can hit).
-	if cacheKey(domain.ProtoOpenAI, domain.ModalityEmbedding, "m", body) != kEmb {
-		t.Error("same modality + same input should produce a stable key")
+	// Same account + modality + input must be stable (so it can hit).
+	if cacheKey("acct1", domain.ProtoOpenAI, domain.ModalityEmbedding, "m", body) != kEmb {
+		t.Error("same account + modality + input should produce a stable key")
+	}
+}
+
+// cacheKey folds in the account: the same request from two tenants must not
+// share a cache entry (would leak one tenant's prompt/response to another).
+func TestCacheKey_TenantScoped(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"secret"}],"temperature":0}`)
+	kA := cacheKey("acctA", domain.ProtoOpenAI, domain.ModalityChat, "m", body)
+	kB := cacheKey("acctB", domain.ProtoOpenAI, domain.ModalityChat, "m", body)
+	if kA == kB {
+		t.Error("identical request from different accounts must not collide (cross-tenant leak)")
 	}
 }
 

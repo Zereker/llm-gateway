@@ -70,7 +70,9 @@ func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold 
 			c.Next()
 			return
 		}
-		ns := rc.Envelope.SourceProtocol.String() + "|" + rc.ModelService.Model
+		// Namespace is tenant-scoped: a semantic (paraphrase) hit returns the
+		// stored completion verbatim, so entries must never cross accounts.
+		ns := rc.Identity.AccountID + "|" + rc.Envelope.SourceProtocol.String() + "|" + rc.ModelService.Model
 
 		if cached, ok := store.Lookup(ctx, ns, vec, threshold); ok {
 			metric.Inc(metric.ResponseCacheTotal, "result", "semantic_hit")
