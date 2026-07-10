@@ -340,6 +340,9 @@ Redis carries two kinds of shared state:
 
 1. **Rate limit buckets**: the `ratelimit.RedisStore` implementation does pre-deduction for user-side RPM/RPS, post-deduction for TPM, and quota reserve / charge after an endpoint is selected.
 2. **Cooldown**: `selector.NewRedisCooldownManager` records the short-term isolation state of failed endpoints.
+   The `CooldownManager` interface is `Mark(ctx, endpointID, class, retryAfter)` / `InCooldown(ctx, ids)` /
+   `Clear(ctx, endpointID)` — `Mark`'s `retryAfter` carries the upstream's own recovery hint for reset-aware
+   TTLs (docs/03 §9), and `Clear` backs the health prober's probe-gated early release (docs/03 §10).
 
 There is no in-memory Store as a gateway production fallback. Across multiple replicas, both rate limiting and cooldown must share Redis.
 

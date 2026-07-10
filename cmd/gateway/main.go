@@ -182,9 +182,6 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	// scheduler falls back to pure static weight
 	stats, scorer := buildScoring(cfg.Scoring, rdb)
 
-	// Health Probing (docs/03 §10): the prober isn't started when disabled
-	startHealthProber(srv, cfg.Health, healthListerAdapter{p: repo.NewSQLEndpointReader(sqldb)}, stats)
-
 	// Sender assembly: the Content Logger hooks into the byte stream via hooks (optional)
 	senderOpts := []invoker.Option{}
 	if contentLogger != nil {
@@ -227,13 +224,21 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 		Invalid:   cfg.Selector.Cooldown.Invalid,
 		Unknown:   cfg.Selector.Cooldown.Unknown,
 	})
+
+	// Health Probing (docs/03 §10): the prober isn't started when disabled.
+	// With recover_cooldown, a successful probe of a cooling endpoint clears
+	// its cooldown early (probe-gated recovery).
+	startHealthProber(srv, cfg.Health, healthListerAdapter{p: repo.NewSQLEndpointReader(sqldb)}, stats, cooldown)
+
+	picker, inflight := buildPicker(cfg.Selector.Picker)
 	sched := selector.New(selector.Config{
 		Filters:  buildSchedulerFilters(cfg.Selector.Filters, rateStore, cooldown),
-		Picker:   selector.NewWeightedRandomPicker(),
+		Picker:   picker,
 		Cooldown: cooldown,
 		Scorer:   scorer,
 		Stats:    stats,
 		Affinity: buildAffinity(cfg.Selector.SessionAffinity, rdb),
+		Inflight: inflight,
 	})
 
 	// Dispatcher assembly (M7 business orchestration: Selector + Invoker +
@@ -294,6 +299,26 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *server.Server, er
 	})
 
 	return engine, srv, nil
+}
+
+// buildPicker maps cfg.Selector.Picker to a Picker instance (docs/03 §4).
+//
+//   - "" / "weighted_random": pure EffectiveWeight-weighted random (default)
+//   - "p2c": power-of-two-choices — sample two candidates by weight, take the
+//     one with fewer pending calls; returns the Inflight tracker the scheduler
+//     must maintain for it
+//
+// An unrecognized name panics directly (fail-fast; surfaces config errors at startup).
+func buildPicker(name string) (selector.Picker, *selector.Inflight) {
+	switch name {
+	case "", "weighted_random":
+		return selector.NewWeightedRandomPicker(), nil
+	case "p2c":
+		inflight := selector.NewInflight()
+		return selector.NewP2CPicker(inflight), inflight
+	default:
+		panic("unknown selector picker: " + name)
+	}
 }
 
 // buildSchedulerFilters maps names from cfg.Selector.Filters to Filter instances.
@@ -469,14 +494,21 @@ func (a healthListerAdapter) List(ctx context.Context) ([]*domain.Endpoint, erro
 // startHealthProber starts the Health Prober according to cfg (docs/03 §10).
 //
 // Does nothing when disabled. Also skipped when stats == nil (no point
-// probing if nothing consumes the results).
-func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister health.EndpointLister, stats selector.EndpointStatsStore) {
+// probing if nothing consumes the results). With cfg.RecoverCooldown, the
+// prober also gets the CooldownManager so a successful probe of a cooling
+// endpoint releases it early (probe-gated recovery).
+func startHealthProber(srv *server.Server, cfg config.HealthConfig, lister health.EndpointLister, stats selector.EndpointStatsStore, cooldown selector.CooldownManager) {
 	if !cfg.Enabled || stats == nil {
 		return
+	}
+	var recover selector.CooldownManager
+	if cfg.RecoverCooldown {
+		recover = cooldown
 	}
 	prober := health.New(health.Config{
 		Source:     health.FilteredSource{Lister: lister},
 		Stats:      stats,
+		Cooldown:   recover,
 		Interval:   cfg.Interval,
 		Timeout:    cfg.Timeout,
 		Concurrent: cfg.Concurrent,

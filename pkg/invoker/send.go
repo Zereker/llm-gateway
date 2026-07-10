@@ -114,6 +114,11 @@ func (s *Sender) Send(
 			HTTPCode: resp.StatusCode,
 			Reason:   fmt.Sprintf("upstream status %d", resp.StatusCode),
 			Latency:  time.Since(start),
+			// reset-aware cooldown input: the upstream's own recovery hint
+			// (Retry-After / rate-limit reset headers) overrides the static
+			// per-class TTL downstream. Parsed for every failure class — the
+			// scheduler decides whether the class cools down at all.
+			RetryAfter: parseRetryAfter(resp.Header, time.Now()),
 		}
 		return out, nil
 	}

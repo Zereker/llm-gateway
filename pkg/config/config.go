@@ -141,15 +141,18 @@ type ContentLogConfig struct {
 
 // HealthConfig configures active health probing (docs/architecture/03-endpoint-scheduling.md §10).
 //
-//	enabled:     default false; true starts the periodic prober
-//	interval:    probe period (default 30s)
-//	timeout:     per-probe timeout (default 5s)
-//	concurrent:  concurrency cap (default 8)
+//	enabled:          default false; true starts the periodic prober
+//	interval:         probe period (default 30s)
+//	timeout:          per-probe timeout (default 5s)
+//	concurrent:       concurrency cap (default 8)
+//	recover_cooldown: default false; true lets a successful probe of a cooling
+//	                  endpoint clear its cooldown early (probe-gated recovery)
 type HealthConfig struct {
-	Enabled    bool          `yaml:"enabled"`
-	Interval   time.Duration `yaml:"interval"`
-	Timeout    time.Duration `yaml:"timeout"`
-	Concurrent int           `yaml:"concurrent"`
+	Enabled         bool          `yaml:"enabled"`
+	Interval        time.Duration `yaml:"interval"`
+	Timeout         time.Duration `yaml:"timeout"`
+	Concurrent      int           `yaml:"concurrent"`
+	RecoverCooldown bool          `yaml:"recover_cooldown"`
 }
 
 // ScoringConfig configures Runtime Scoring (docs/architecture/03-endpoint-scheduling.md §8).
@@ -279,7 +282,11 @@ type KafkaOutboxSection struct {
 // first); default 1 = no L1 retry, switching endpoints immediately on
 // failure. Set 2-3 to absorb occasional upstream network jitter.
 type SelectorConfig struct {
-	Filters         []string              `yaml:"filters"`
+	Filters []string `yaml:"filters"`
+	// Picker selects the final pick strategy after filters + scoring:
+	// "weighted_random" (default) or "p2c" (power-of-two-choices — sample two
+	// candidates by weight, take the one with fewer pending calls).
+	Picker          string                `yaml:"picker"`
 	Cooldown        CooldownConfig        `yaml:"cooldown"`
 	MaxAttempts     int                   `yaml:"max_attempts"`
 	MaxPerEndpoint  int                   `yaml:"max_per_endpoint"`

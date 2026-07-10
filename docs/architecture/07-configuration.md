@@ -83,13 +83,33 @@ usage_events:
 
 selector:
   filters: [cooldown, limit_read, weighted_random]
+  # picker: final pick strategy after filters + scoring.
+  #   weighted_random (default) = pure EffectiveWeight-weighted random
+  #   p2c = power-of-two-choices: sample two candidates by weight, take the
+  #         one with fewer pending calls (live-load aware; see docs/03 §4)
+  picker: weighted_random # weighted_random | p2c
   max_attempts: 3
   cooldown:
+    # Static per-class TTLs. When a failed upstream response carries its own
+    # recovery hint (Retry-After / rate-limit reset headers), the hint
+    # overrides these, clamped to [1s, 10m] (docs/03 §9). A class set to 0s
+    # never cools down, hint or not.
     transient: 30s
     capacity: 60s
     permanent: 5m
     invalid: 0s
     unknown: 10s
+
+health:
+  # Active probing of self-hosted endpoints (docs/03 §10); default off.
+  enabled: false
+  interval: 30s
+  timeout: 5s
+  concurrent: 8
+  # recover_cooldown: a successful probe of an endpoint in cooldown clears
+  # the cooldown early (probe-gated recovery; release-only, a failed probe
+  # never creates or extends a cooldown).
+  recover_cooldown: false
 
 scoring:
   # Runtime Scoring (opt-in, disabled by default): soft-weights endpoints based on runtime quality.
@@ -159,8 +179,10 @@ Field descriptions:
 | `data_key` | Yes | KEK used to decrypt endpoint auth ciphertext; the deployer must use the same KEK when encrypting for SQL INSERT |
 | `usage_events.driver` | Yes | usage event output backend (`file` / `kafka` / `async_kafka` / `file_and_kafka`; `file_and_kafka` recommended for production) |
 | `scheduler.filters` | Yes | endpoint selection chain; `weighted_random` must run last |
+| `selector.picker` | No | final pick strategy: `weighted_random` (default) / `p2c` (power-of-two-choices by pending calls) |
 | `scheduler.max_attempts` | Yes | max endpoint attempts for the same model within a single request; can be lowered via header |
-| `scheduler.cooldown.*` | Yes | mapping from `ErrorClass` to cooldown TTL |
+| `scheduler.cooldown.*` | Yes | mapping from `ErrorClass` to cooldown TTL; an upstream `Retry-After` / rate-limit reset hint overrides the static TTL, clamped to `[1s, 10m]` |
+| `health.*` | No | active probing of self-hosted endpoints (default off); `health.recover_cooldown` enables probe-gated early cooldown release |
 | `ratelimit.policy_cache_ttl` | Yes | local cache TTL for quota policy |
 | `content_log.*` | No | request/response content logging channel; can be disabled |
 | `trace.*` | Yes | slog / OTel driver and trace base fields |

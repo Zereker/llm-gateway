@@ -57,11 +57,12 @@ func (i *invokerImpl) Invoke(ctx context.Context) (dispatch.Result, error) {
 	}
 	outcome, _ := i.sender.Send(ctx, i.ep, i.env, body, i.handler)
 	v := dispatch.Verdict{
-		Stage:    invokerStageToDispatch(outcome.Stage),
-		Class:    selectorClassToDispatch(outcome.Class),
-		HTTPCode: outcome.HTTPCode,
-		Reason:   outcome.Reason,
-		Latency:  outcome.Latency,
+		Stage:      invokerStageToDispatch(outcome.Stage),
+		Class:      selectorClassToDispatch(outcome.Class),
+		HTTPCode:   outcome.HTTPCode,
+		Reason:     outcome.Reason,
+		Latency:    outcome.Latency,
+		RetryAfter: outcome.RetryAfter,
 	}
 	return &invokerResult{
 		ep:       i.ep,

@@ -8,9 +8,15 @@
 // **Constraints**:
 //   - probe results do **not** replace eligibility filtering; endpoints whose
 //     protocol/modality is unsupported must still be excluded by eligibility
-//   - probe only affects stats / scoring, it never mutates business config directly
+//   - probe only affects stats / scoring / cooldown release, it never mutates
+//     business config directly
 //   - a failed probe does not immediately mark the endpoint as cooldown (passive
 //     cooldown remains the real failure signal on the main path)
+//   - probe-gated recovery (optional, Config.Cooldown != nil): a **successful**
+//     probe of an endpoint that is currently cooling down clears its cooldown
+//     early, so recovery is confirmed by a probe instead of spending a user
+//     request on it after the TTL expires. This is release-only — the prober
+//     never extends or creates cooldowns.
 //
 // **Design**:
 //
@@ -54,6 +60,7 @@ type HTTPDoer interface {
 type Config struct {
 	Source     EndpointSource
 	Stats      selector.EndpointStatsStore // receives probe results; written the same way as Scheduler.Report
+	Cooldown   selector.CooldownManager    // optional; non-nil enables probe-gated cooldown recovery
 	Client     HTTPDoer                    // nil = http.DefaultClient
 	Interval   time.Duration               // default 30s
 	Timeout    time.Duration               // per-probe timeout; default 5s
@@ -138,6 +145,10 @@ func (p *Prober) cycle(parentCtx context.Context) {
 		return
 	}
 
+	// probe-gated recovery: snapshot which targets are cooling down before
+	// the round, so a successful probe knows whether it should release one.
+	cooling := p.coolingSet(parentCtx, targets)
+
 	sem := make(chan struct{}, p.cfg.Concurrent)
 	var wg sync.WaitGroup
 	for _, ep := range targets {
@@ -146,15 +157,37 @@ func (p *Prober) cycle(parentCtx context.Context) {
 		go func(ep *domain.Endpoint) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			p.probeOne(parentCtx, ep)
+			p.probeOne(parentCtx, ep, cooling[ep.ID])
 		}(ep)
 	}
 	wg.Wait()
 }
 
+// coolingSet returns which of the targets are currently in cooldown.
+// Best-effort: on lookup failure (or no Cooldown configured) it returns an
+// empty map, and this round simply performs no early releases.
+func (p *Prober) coolingSet(ctx context.Context, targets []*domain.Endpoint) map[int64]bool {
+	if p.cfg.Cooldown == nil {
+		return nil
+	}
+	ids := make([]int64, 0, len(targets))
+	for _, ep := range targets {
+		if ep != nil {
+			ids = append(ids, ep.ID)
+		}
+	}
+	cooling, err := p.cfg.Cooldown.InCooldown(ctx, ids)
+	if err != nil {
+		p.logger.WarnContext(ctx, "health.Prober: InCooldown failed", "err", err.Error())
+		return nil
+	}
+	return cooling
+}
+
 // probeOne handles a single endpoint: GET the health endpoint → fill in a
-// selector.Result based on the response → write stats.
-func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
+// selector.Result based on the response → write stats; when the endpoint was
+// cooling down and the probe succeeds, release the cooldown early.
+func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint, wasCooling bool) {
 	if ep == nil {
 		return
 	}
@@ -182,6 +215,19 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 
 	cls := classify(resp.StatusCode)
 	p.recordResult(ep, selector.Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
+
+	// probe-gated recovery: a healthy probe of a cooling endpoint releases it
+	// back into rotation before the TTL expires.
+	if wasCooling && cls == selector.ClassSuccess && p.cfg.Cooldown != nil {
+		if cerr := p.cfg.Cooldown.Clear(parentCtx, ep.ID); cerr != nil {
+			p.logger.WarnContext(parentCtx, "health.Prober: cooldown clear failed",
+				"endpoint_id", ep.ID, "err", cerr.Error())
+			return
+		}
+		metric.Inc("llm_gateway_health_recover_total",
+			"endpoint_id", strconv.FormatInt(ep.ID, 10),
+		)
+	}
 }
 
 // recordResult writes stats + emits a metric.

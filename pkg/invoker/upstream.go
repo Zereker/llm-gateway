@@ -77,6 +77,12 @@ type Outcome struct {
 	Reason   string
 	Latency  time.Duration
 
+	// RetryAfter is the upstream's own recovery hint parsed from a failed
+	// response's Retry-After / rate-limit reset headers; 0 = no hint. Feeds
+	// reset-aware cooldown (the TTL follows the upstream's stated reset time
+	// instead of the static per-class duration).
+	RetryAfter time.Duration
+
 	// Handler is the protocol.Handler to use during Forward on the success
 	// path; meaningless on failure. The caller calls
 	// outcome.Handler.NewResponseStream() to get the response-stream
@@ -93,10 +99,11 @@ func (o Outcome) Success() bool {
 // ToScheduleResult converts to the selector.Result that sel.Report expects.
 func (o Outcome) ToScheduleResult() selector.Result {
 	return selector.Result{
-		Class:    o.Class,
-		HTTPCode: o.HTTPCode,
-		Reason:   o.Reason,
-		Latency:  o.Latency,
+		Class:      o.Class,
+		HTTPCode:   o.HTTPCode,
+		Reason:     o.Reason,
+		Latency:    o.Latency,
+		RetryAfter: o.RetryAfter,
 	}
 }
 

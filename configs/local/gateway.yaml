@@ -66,7 +66,16 @@ selector:
   # M7 endpoint routing Filter chain (order is execution order; weighted_random must be last)
   filters: [cooldown, limit_read, weighted_random]
 
-  # Cooldown duration after an endpoint failure (keyed by ErrorClass; 0 = no cooldown)
+  # Final pick strategy after filters + scoring:
+  #   weighted_random (default) = pure EffectiveWeight-weighted random
+  #   p2c = power-of-two-choices: sample two candidates by weight, take the
+  #         one with fewer pending calls (live-load aware; see docs/03 §4)
+  picker: weighted_random
+
+  # Cooldown duration after an endpoint failure (keyed by ErrorClass; 0 = no cooldown).
+  # When the failed response carries an upstream recovery hint (Retry-After /
+  # rate-limit reset headers), the hint overrides these static TTLs, clamped
+  # to [1s, 10m] (docs/03 §9). A class set to 0s never cools down, hint or not.
   cooldown:
     transient: 30s     # upstream 5xx / network error / timeout
     capacity:  60s     # upstream 429 / overloaded
@@ -112,6 +121,18 @@ scoring:
   latency_baseline: 200ms
   ema_decay: 0.2
   stats_ttl: 1h           # redis driver only
+
+health:
+  # Active probing of self-hosted endpoints (capabilities.self_hosted=true with
+  # health_probe_endpoint set); off by default. See docs/03 §10.
+  enabled: false
+  interval: 30s
+  timeout: 5s
+  concurrent: 8
+  # recover_cooldown: a successful probe of an endpoint in cooldown releases it
+  # back into rotation before the TTL expires (probe-gated recovery;
+  # release-only — a failed probe never creates or extends a cooldown).
+  recover_cooldown: false
 
 usage_events:
   # Transactional Outbox Pattern: file is the source of truth (sync commit),

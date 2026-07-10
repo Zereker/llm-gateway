@@ -20,6 +20,11 @@ type Verdict struct {
 	HTTPCode int           // upstream status; 0 = no response obtained (network error / timeout)
 	Reason   string        // human-readable error description
 	Latency  time.Duration // this call's duration (including upstream + streaming)
+
+	// RetryAfter is the upstream's own recovery hint (Retry-After / rate-limit
+	// reset headers on the failed response); 0 = no hint. Selector.Report uses
+	// it for reset-aware cooldown TTLs.
+	RetryAfter time.Duration
 }
 
 // Stage marks the stage of the dispatcher pipeline — Policy uses this to

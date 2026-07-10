@@ -51,10 +51,11 @@ func (s *PickerAdapter) Pick(ctx context.Context, eligible []*domain.Endpoint, q
 // Report implements dispatch.Selector.Report — translates dispatch.Verdict into selector.Result.
 func (s *PickerAdapter) Report(ctx context.Context, ep *domain.Endpoint, v dispatch.Verdict) {
 	s.sched.Report(ctx, ep, selector.Result{
-		Class:    dispatchClassToSelector(v.Class),
-		HTTPCode: v.HTTPCode,
-		Reason:   v.Reason,
-		Latency:  v.Latency,
+		Class:      dispatchClassToSelector(v.Class),
+		HTTPCode:   v.HTTPCode,
+		Reason:     v.Reason,
+		Latency:    v.Latency,
+		RetryAfter: v.RetryAfter,
 	})
 }
 

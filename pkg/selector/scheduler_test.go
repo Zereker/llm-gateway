@@ -56,15 +56,25 @@ type stubCooldown struct {
 }
 
 type markCall struct {
-	ID    int64
-	Class ErrorClass
+	ID         int64
+	Class      ErrorClass
+	RetryAfter time.Duration
 }
 
-func (s *stubCooldown) Mark(_ context.Context, endpointID int64, class ErrorClass) error {
+func (s *stubCooldown) Mark(_ context.Context, endpointID int64, class ErrorClass, retryAfter time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.marks = append(s.marks, markCall{ID: endpointID, Class: class})
+	s.marks = append(s.marks, markCall{ID: endpointID, Class: class, RetryAfter: retryAfter})
 	return s.markErr
+}
+
+func (s *stubCooldown) Clear(_ context.Context, endpointID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cooled != nil {
+		delete(s.cooled, endpointID)
+	}
+	return nil
 }
 func (s *stubCooldown) InCooldown(_ context.Context, ids []int64) (map[int64]bool, error) {
 	if s.inCooldown != nil {
