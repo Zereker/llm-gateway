@@ -52,6 +52,8 @@ func (s *excludeAwareSelector) Report(_ context.Context, _ *domain.Endpoint, v V
 	s.reports = append(s.reports, v)
 }
 
+func (s *excludeAwareSelector) Release(_ context.Context, _ *domain.Endpoint) {}
+
 // singleEPCandidates always returns the same endpoint (a scenario shared across models).
 type singleEPCandidates struct{ ep *domain.Endpoint }
 

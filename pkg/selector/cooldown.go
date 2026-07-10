@@ -22,11 +22,20 @@ import (
 // **Clear**: removes an endpoint's cooldown early — used by the health prober
 // when a probe confirms the endpoint has recovered before the TTL expired.
 //
+// **ClearIfRecoverable**: used by the health prober for probe-gated recovery —
+// releases an endpoint's cooldown early, but ONLY when the cooled class is one
+// a successful health probe can actually attest to (Transient / Capacity). A
+// Permanent cooldown (401/403 bad credentials, config error) is left in place:
+// a health endpoint returning 200 does not prove the API key is valid, so
+// clearing it would flap the endpoint back into rotation to fail auth again.
+// The compare-and-delete is atomic, so a stale probe cannot wipe a differently
+// classed cooldown that was Marked after the probe started.
+//
 // **Multi-instance consistency**: the Redis backend shares state, so all gateway instances see the same cooldown view.
 type CooldownManager interface {
 	Mark(ctx context.Context, endpointID int64, class ErrorClass, retryAfter time.Duration) error
 	InCooldown(ctx context.Context, endpointIDs []int64) (map[int64]bool, error)
-	Clear(ctx context.Context, endpointID int64) error
+	ClearIfRecoverable(ctx context.Context, endpointID int64) (cleared bool, err error)
 }
 
 // CooldownDurations holds the cooldown duration for each ErrorClass (from cfg.Selector.Cooldown).
@@ -149,18 +158,34 @@ func (m *RedisCooldownManager) InCooldown(ctx context.Context, endpointIDs []int
 	return out, nil
 }
 
-// Clear removes an endpoint's cooldown key so it re-enters rotation
-// immediately (probe-gated early recovery). Clearing a key that doesn't
-// exist is a no-op.
-func (m *RedisCooldownManager) Clear(ctx context.Context, endpointID int64) error {
+// clearRecoverableScript atomically deletes the cooldown key only when its
+// stored class is probe-recoverable (transient / capacity). Returns 1 if it
+// deleted, 0 otherwise (key absent, or a non-recoverable class like permanent).
+// Atomicity closes the Mark/Clear race: a stale probe can't delete a cooldown
+// that was re-Marked with a different class after the probe observed health.
+var clearRecoverableScript = redis.NewScript(`
+local v = redis.call('GET', KEYS[1])
+if v == 'transient' or v == 'capacity' then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+`)
+
+// ClearIfRecoverable releases an endpoint's cooldown early, but only when the
+// cooled class is one a health probe can attest to (see recoverableCooldownClasses).
+// Returns whether a key was actually cleared. A key that doesn't exist, or one
+// holding a non-recoverable class, is a no-op returning (false, nil).
+func (m *RedisCooldownManager) ClearIfRecoverable(ctx context.Context, endpointID int64) (bool, error) {
 	if endpointID == 0 {
-		return nil
+		return false, nil
 	}
 	key := cooldownKey(endpointID)
-	if err := m.rdb.Del(ctx, key).Err(); err != nil {
-		return fmt.Errorf("cooldown: del %s: %w", key, err)
+	n, err := clearRecoverableScript.Run(ctx, m.rdb, []string{key}).Int()
+	if err != nil {
+		return false, fmt.Errorf("cooldown: clear %s: %w", key, err)
 	}
-	return nil
+	return n == 1, nil
 }
 
 func cooldownKey(endpointID int64) string {

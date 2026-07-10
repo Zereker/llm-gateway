@@ -26,11 +26,19 @@ import (
 //	                  the driver aborts with 503 directly
 //
 // **Report**: after each invoke/reserve produces a verdict, Dispatcher calls
-// this once to feed it back to the Selector's internal cooldown state
-// machine.
+// this to feed it back to the Selector's internal cooldown state machine. It
+// may fire more than once per attempt (e.g. a supplementary StageStream
+// verdict after a success), so it must be idempotent w.r.t. any per-attempt
+// accounting.
+//
+// **Release**: Dispatcher calls this exactly once per Pick that returned a
+// non-nil endpoint (via defer), signalling the attempt is done. It backs the
+// P2C picker's pending-call counter — decoupled from Report precisely because
+// Report can fire twice.
 type Selector interface {
 	Pick(ctx context.Context, eligible []*domain.Endpoint, q PickQuery) (*domain.Endpoint, error)
 	Report(ctx context.Context, ep *domain.Endpoint, v Verdict)
+	Release(ctx context.Context, ep *domain.Endpoint)
 }
 
 // PickQuery is Selector.Pick's input — only the information the picker

@@ -123,5 +123,14 @@ type Scheduler interface {
 
 	// Report feeds this call's result back to cooldown / metric / stats store.
 	// It does not decide subsequent control flow — dispatch.RetryPolicy.Decide looks at result.Class to decide whether to continue or stop.
+	//
+	// Report may be called more than once for a single Pick (e.g. a
+	// supplementary StageStream verdict after a success), so it does **not**
+	// touch the P2C pending-call counter — that is Release's job.
 	Report(ctx context.Context, ep *domain.Endpoint, result Result)
+
+	// Release marks the attempt for ep as finished, decrementing the P2C
+	// pending-call counter exactly once. Pairs 1:1 with a Pick that returned a
+	// non-nil ep. No-op when P2C tracking is not configured.
+	Release(ctx context.Context, ep *domain.Endpoint)
 }

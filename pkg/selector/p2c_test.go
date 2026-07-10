@@ -84,7 +84,7 @@ func TestP2CPicker_TieBreaksByWeight(t *testing.T) {
 	}
 }
 
-func TestScheduler_InflightIncOnPickDecOnReport(t *testing.T) {
+func TestScheduler_InflightIncOnPickDecOnRelease(t *testing.T) {
 	inflight := NewInflight()
 	sched := New(Config{
 		Picker:   NewP2CPicker(inflight),
@@ -101,8 +101,17 @@ func TestScheduler_InflightIncOnPickDecOnReport(t *testing.T) {
 	if got := inflight.Get(ep.ID); got != 1 {
 		t.Fatalf("after Pick: inflight = %d, want 1", got)
 	}
+
+	// A single attempt may Report twice (success + supplementary StageStream);
+	// neither Report touches the counter — only Release does.
 	sched.Report(context.Background(), ep, Result{Class: ClassSuccess})
+	sched.Report(context.Background(), ep, Result{Class: ClassTransient})
+	if got := inflight.Get(ep.ID); got != 1 {
+		t.Fatalf("Report must not touch the counter: inflight = %d, want 1", got)
+	}
+
+	sched.Release(context.Background(), ep)
 	if got := inflight.Get(ep.ID); got != 0 {
-		t.Fatalf("after Report: inflight = %d, want 0", got)
+		t.Fatalf("after Release: inflight = %d, want 0", got)
 	}
 }

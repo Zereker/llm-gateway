@@ -29,6 +29,7 @@ type fakeSelector struct {
 	responses []selResp
 	calls     int
 	reports   []Verdict // all feedback received via Report
+	releases  int       // count of Release calls (P2C pairing)
 }
 
 type selResp struct {
@@ -52,6 +53,11 @@ func (f *fakeSelector) Pick(_ context.Context, _ []*domain.Endpoint, _ PickQuery
 // Report records all feedback (used for cooldown semantics assertions).
 func (f *fakeSelector) Report(_ context.Context, _ *domain.Endpoint, v Verdict) {
 	f.reports = append(f.reports, v)
+}
+
+// Release counts attempt completions (P2C pairing assertions).
+func (f *fakeSelector) Release(_ context.Context, _ *domain.Endpoint) {
+	f.releases++
 }
 
 // fakeInvokerFactory consumes results in order.

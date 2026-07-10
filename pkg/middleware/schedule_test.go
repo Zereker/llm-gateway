@@ -32,6 +32,7 @@ type stubSelectorReturns struct {
 }
 
 func (s stubSelectorReturns) Report(_ context.Context, _ *domain.Endpoint, _ dispatch.Verdict) {}
+func (s stubSelectorReturns) Release(_ context.Context, _ *domain.Endpoint)                    {}
 
 func (s stubSelectorReturns) Pick(_ context.Context, _ []*domain.Endpoint, _ dispatch.PickQuery) (*domain.Endpoint, error) {
 	return s.ep, s.err
