@@ -31,9 +31,10 @@ import (
 // (Modality==ModalityEmbedding) → cacheable by default, no temperature=0 required. This
 // pays off big in high-hit-rate scenarios (RAG repeatedly embedding the same batch of text).
 //
-// **key** = SHA256(sourceProtocol | canonical model | request body). Same protocol + same
-// model + same body → same response bytes. Shared across accounts (the response is the
-// model's output, unrelated to the account), which improves the hit rate.
+// **key** = SHA256(accountID | sourceProtocol | modality | canonical model | request body).
+// The account is folded in so the cache is **tenant-scoped**: a prompt typically contains
+// tenant data, and the cached response echoes it (system_fingerprint / ids / the completion
+// itself), so sharing entries across accounts would leak one tenant's content to another.
 //
 // **usage**: on a hit, the usage stored in the cache is passed through (Source=cache), M10
 // still emits the usage event as normal, and M6 still deducts TPM afterward — downstream can
@@ -47,9 +48,6 @@ import (
 //     yet to fold into the key. This assumes a model_service maps to **stable** upstream
 //     output; don't enable caching for a model_service backed by multiple upstream versions
 //     under the same name (gpt-4o-2024-05 vs -11).
-//   - Shared across accounts (the response is the model's output, unrelated to the
-//     account): improves the hit rate, but system_fingerprint/id in the cached response
-//     will leak across tenants. Enable only if that's acceptable.
 //   - A hit still emits a usage event (source=cache) + counts TPM (a soft counter): a cache
 //     hit still counts as having "delivered N tokens," and downstream decides whether to
 //     bill it as zero cost based on source=cache.
@@ -85,7 +83,7 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 		}
 
 		ctx := c.Request.Context()
-		key := cacheKey(rc.Envelope.SourceProtocol, rc.Envelope.Modality, rc.ModelService.Model, rc.Envelope.RawBytes)
+		key := cacheKey(rc.Identity.AccountID, rc.Envelope.SourceProtocol, rc.Envelope.Modality, rc.ModelService.Model, rc.Envelope.RawBytes)
 
 		// Hit: write the cached response + pass through usage, abort to skip M7 (M6-post/M10
 		// still run on the onion's return leg).
@@ -157,16 +155,21 @@ type CachedResponse struct {
 	Usage       *domain.Usage
 }
 
-// cacheKey is the hex of SHA256(protocol | modality | model | body).
+// cacheKey is the hex of SHA256(accountID | protocol | modality | model | body).
 //
-// **modality must be folded into the key**: chat and embeddings are both ProtoOpenAI, and
-// the exact cache shares one Redis store/prefix; if the key were only protocol|model|body,
-// a byte-identical body (e.g. {"model":"m","input":"x","temperature":0}) sent to
-// /v1/embeddings and /v1/chat/completions would collide on the same key → a cross-modality
-// request would get back the wrong response (and since the key is account-agnostic, this
-// would also cross tenants). Folding in modality keeps the two keyspaces cleanly separated.
-func cacheKey(proto domain.Protocol, modality domain.Modality, model string, body []byte) string {
+// **accountID must be folded in**: the cache is tenant-scoped so one account's cached
+// prompt/response can't be served to another (the request body and completion routinely
+// carry tenant data).
+//
+// **modality must be folded in**: chat and embeddings are both ProtoOpenAI, and the exact
+// cache shares one Redis store/prefix; without modality a byte-identical body (e.g.
+// {"model":"m","input":"x","temperature":0}) sent to /v1/embeddings and
+// /v1/chat/completions would collide → a cross-modality request would get the wrong
+// response. Folding in modality keeps the two keyspaces cleanly separated.
+func cacheKey(accountID string, proto domain.Protocol, modality domain.Modality, model string, body []byte) string {
 	h := sha256.New()
+	h.Write([]byte(accountID))
+	h.Write([]byte{0})
 	h.Write([]byte(proto.String()))
 	h.Write([]byte{0})
 	h.Write([]byte(modality.String()))

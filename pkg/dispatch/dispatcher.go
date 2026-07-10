@@ -247,7 +247,12 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		rep := res.StreamTo(ctx, w)
 		s.ApplyStream(rep)
 		// === EndpointQuota.ChargeUsage (post-deduction, fire-and-forget) ===
-		d.quota.ChargeUsage(ctx, ep, rep.Usage)
+		// Only charge TPM for a cleanly completed stream. On a mid-stream break
+		// rep.Usage may be partial or an upstream-reported total that was never
+		// fully delivered — charging it over-counts the endpoint's TPM bucket.
+		if rep.Err == nil {
+			d.quota.ChargeUsage(ctx, ep, rep.Usage)
+		}
 		if rep.Err != nil {
 			// stream interrupted after a 200: the status code is already
 			// written, so no retry is possible. Whether we penalize the
