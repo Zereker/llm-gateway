@@ -17,7 +17,7 @@ The target architecture focuses on solving:
 
 - Does not implement the model inference service itself.
 - Does not implement RAG, prompt orchestration, agent, or business BFF logic.
-- No admin UI; no standalone control-plane binary — business tables are maintained directly via SQL by the deployer.
+- Business tables are maintained directly via SQL by the deployer; a separate `cmd/console` control-plane binary (Admin API) is also available to manage them, but the data plane never depends on it.
 - Does not do billing aggregation inside the gateway process; the gateway only emits usage events, and pricing aggregation is done by a downstream job.
 
 ## 3. Running Processes
@@ -25,10 +25,12 @@ The target architecture focuses on solving:
 | Process | Entry point | Responsibility |
 |------|------|------|
 | gateway | `cmd/gateway` | Data plane: auth, parsing, rate limiting, scheduling, upstream forwarding, usage outbox; automatically runs `infra.Migrate` to create tables at startup |
+| console | `cmd/console` | Control plane: an Admin API (backed by `pkg/console`) for managing business data; optional, and the data plane runs without it |
 
 Business data (accounts / api_keys / model_services / endpoints / quota_policies /
-subscriptions / pricing_versions) is maintained directly via SQL INSERT/UPDATE/DELETE by the deployer —
-this project ships no control-plane binary.
+subscriptions / pricing_versions) is maintained directly via SQL INSERT/UPDATE/DELETE by the deployer;
+the separate `cmd/console` control-plane binary is an additional way to manage it (it can also publish
+cachebus invalidation that the gateway subscribes to for fast revocation).
 
 Gateway startup sequence:
 

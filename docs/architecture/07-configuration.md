@@ -8,8 +8,10 @@ via SQL by the deployer, **not stored in `gateway.yaml`**.
 
 ## 1. Process configuration boundary
 
-The repo has a single binary: `cmd/gateway`, with config file `gateway.yaml`, responsible for the HTTP
-server, per-request defaults, DB/Redis/Kafka/OTel connections, scheduling, and plugin drivers.
+The repo has two binaries, each with its own config: `cmd/gateway` (the data plane), with config file
+`gateway.yaml`, responsible for the HTTP server, per-request defaults, DB/Redis/Kafka/OTel connections,
+scheduling, and plugin drivers; and `cmd/console` (the control plane), a separate Admin API for managing
+business data. This document describes `gateway.yaml`; the console carries its own config.
 
 The gateway requires a SQL DB and Redis to start. Kafka is only required when the outbox driver is set
 to `kafka` / `async_kafka` / `file_and_kafka`. At startup the gateway runs `infra.Migrate` to create
@@ -99,6 +101,12 @@ selector:
     permanent: 5m
     invalid: 0s
     unknown: 10s
+  session_affinity:
+    # Sticky routing: the client's X-Gateway-Session header pins a session to
+    # the same upstream endpoint (for prefix / KV cache hits). Redis-backed
+    # (shared across replicas); no effect when enabled=false.
+    enabled: false
+    ttl: 10m # TTL for the session -> endpoint mapping; default 10m
 
 health:
   # Active probing of self-hosted endpoints (docs/03 §10); default off.
@@ -126,22 +134,40 @@ scoring:
   ema_decay: 0.2          # EMA decay (weight of new samples)
   stats_ttl: 1h           # per-endpoint stats TTL under the redis driver
 
-ratelimit:
-  policy_cache_ttl: 30s
-  redis_prefix: llm-gateway:ratelimit
+cache:
+  # Response cache (chat + embedding modalities): a hit returns directly,
+  # skipping the upstream. Redis-backed (shared across replicas). Runs between
+  # M6 Limit and M7 Schedule; a no-op when enabled=false. By default only
+  # non-streaming + temperature=0 deterministic requests are cached; the
+  # client's X-Gateway-Cache header can override this.
+  enabled: false
+  ttl: 5m # default 5m
+  semantic:
+    # When enabled=true, use the semantic cache instead of exact match: embed
+    # the prompt and hit by cosine similarity (paraphrases hit too). Replaces
+    # the exact cache for chat; embedding routes always use exact match.
+    enabled: false
+    threshold: 0.9    # cosine hit threshold (default 0.9)
+    max_entries: 500  # entry cap per namespace (default 500)
+    embedder:
+      driver: openai  # OpenAI-compatible /v1/embeddings
+      api_key: ""
+      base_url: ""
+      model: text-embedding-3-small # default text-embedding-3-small
 
-# Default parameters for the repo layer's TTL LRU cache are hardcoded (see pkg/repo/cached.go)
-# and not exposed in yaml; change the code constants directly if tuning is needed.
+# Note: the ratelimit quota-policy cache TTL is not a yaml field -- main.go
+# constructs ratelimit.NewPolicyCache(reader, 0). The repo layer's TTL LRU cache
+# parameters are likewise hardcoded (see pkg/repo/cached.go) and not exposed in
+# yaml; change the code constants directly if tuning is needed.
 
 budget:
-  driver: alwayspass # alwayspass | inmemory | external
+  driver: alwayspass # alwayspass | inmemory
   default_balance: 0
 
 moderation:
-  driver: none # none | openai | external
+  driver: none # none | openai
   api_key: ""
   base_url: ""
-  timeout: 5s
 
 content_log:
   # Content Log only supports none / file. The gateway deliberately does not embed a Kafka producer --
@@ -161,10 +187,7 @@ content_log:
 trace:
   driver: slog # slog | otel
   service_name: llm-gateway
-  endpoint: ""
-  sample_ratio: 1.0
-  headers:
-    request_id: X-Request-ID
+  endpoint: "" # required when driver=otel (OTLP gRPC collector address)
 ```
 
 Field descriptions:
@@ -183,7 +206,8 @@ Field descriptions:
 | `scheduler.max_attempts` | Yes | max endpoint attempts for the same model within a single request; can be lowered via header |
 | `scheduler.cooldown.*` | Yes | mapping from `ErrorClass` to cooldown TTL; an upstream `Retry-After` / rate-limit reset hint overrides the static TTL, clamped to `[1s, 10m]` |
 | `health.*` | No | active probing of self-hosted endpoints (default off); `health.recover_cooldown` enables probe-gated early cooldown release |
-| `ratelimit.policy_cache_ttl` | Yes | local cache TTL for quota policy |
+| `selector.session_affinity.*` | No | sticky routing via `X-Gateway-Session` (default off); `ttl` is the session→endpoint mapping lifetime |
+| `cache.*` | No | response cache for chat + embedding modalities (default off); `cache.semantic.*` switches chat to similarity-based caching |
 | `content_log.*` | No | request/response content logging channel; can be disabled |
 | `trace.*` | Yes | slog / OTel driver and trace base fields |
 

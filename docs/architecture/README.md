@@ -19,7 +19,7 @@ This directory is the single source of truth for `llm-gateway`'s architecture an
 
 ## Architecture Highlights
 
-- The single entry point is `cmd/gateway` (the data plane); this repo carries no control plane, and business data is managed via direct SQL.
+- The data plane is `cmd/gateway`; a separate `cmd/console` control-plane binary (Admin API, backed by `pkg/console`) is also available. Business data is managed via direct SQL, and the console is an optional additional way to manage it — the data plane never depends on it.
 - Catalog, endpoint, API key, subscription, and quota policy data all live in SQL schema tables; on startup the gateway runs `infra.Migrate` to create tables and `repo.CheckSchema` as a defensive check.
 - The gateway depends on Redis for M6 rate limiting and scheduler cooldowns.
 - SQL writes propagate to the gateway through the [repo in-process TTL LRU cache](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) (default 30s) rather than querying the same tables per request; the data plane is 100% read-only, so the TTL window is sufficient.
