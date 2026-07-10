@@ -207,7 +207,23 @@ func defaultHTTPClient() *http.Client {
 		// Client.Timeout is intentionally not set — it covers body reading
 		// and would cut off long streams. All phased timeouts live on the
 		// Transport instead.
+
+		// Refuse to follow redirects. Go's default redirect handling strips
+		// Authorization on cross-host hops but NOT vendor API-key headers
+		// (x-api-key / x-goog-api-key / api-key), so following a redirect from
+		// a compromised/MITM'd/misconfigured upstream would re-send the real
+		// stored provider credential to the redirect target. A legitimate LLM
+		// API endpoint never redirects; treat any redirect as a hard failure.
+		CheckRedirect: refuseRedirect,
 	}
+}
+
+// errRedirectRefused is returned by CheckRedirect; the message is intentionally
+// generic (no hosts) since it can surface in a client-facing failure reason.
+var errRedirectRefused = errors.New("upstream redirect refused (would leak upstream credentials)")
+
+func refuseRedirect(_ *http.Request, _ []*http.Request) error {
+	return errRedirectRefused
 }
 
 // New constructs a Sender; with zero configuration it uses

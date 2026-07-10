@@ -75,8 +75,13 @@ func TestBudget_GateError_502_Unknown(t *testing.T) {
 	if w.Code != 502 {
 		t.Fatalf("status=%d, want=502", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "billing down") {
-		t.Errorf("error should wrap upstream error: body=%s", w.Body.String())
+	// The internal gate error ("billing down") must NOT leak into the client
+	// body — only a generic message (details go to logs).
+	if strings.Contains(w.Body.String(), "billing down") {
+		t.Errorf("internal error detail leaked to client body: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "budget check unavailable") {
+		t.Errorf("expected generic message, body=%s", w.Body.String())
 	}
 }
 

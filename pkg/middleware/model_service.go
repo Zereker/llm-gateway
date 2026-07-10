@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -88,8 +89,11 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 
 		ms, err := cfg.catalog.GetByModel(ctx, rc.Envelope.Model)
 		if err != nil {
+			// Fail-closed 503; the driver error (DB/Redis internals) goes to
+			// logs only, never the client body (docs/01 §7).
+			slog.ErrorContext(ctx, "m5: model catalog lookup failed", "err", err)
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
-				"model catalog: "+err.Error())
+				"model catalog unavailable")
 			return
 		}
 		if ms == nil {
@@ -100,8 +104,9 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 
 		subscribed, err := cfg.subscriptions.HasModel(ctx, rc.Identity.AccountID, ms.ID)
 		if err != nil {
+			slog.ErrorContext(ctx, "m5: subscription lookup failed", "err", err)
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
-				"subscription lookup: "+err.Error())
+				"subscription lookup unavailable")
 			return
 		}
 		if !subscribed {
