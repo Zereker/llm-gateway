@@ -68,13 +68,14 @@ func (s *stubCooldown) Mark(_ context.Context, endpointID int64, class ErrorClas
 	return s.markErr
 }
 
-func (s *stubCooldown) Clear(_ context.Context, endpointID int64) error {
+func (s *stubCooldown) ClearIfRecoverable(_ context.Context, endpointID int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cooled != nil {
+	if s.cooled != nil && s.cooled[endpointID] {
 		delete(s.cooled, endpointID)
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 func (s *stubCooldown) InCooldown(_ context.Context, ids []int64) (map[int64]bool, error) {
 	if s.inCooldown != nil {

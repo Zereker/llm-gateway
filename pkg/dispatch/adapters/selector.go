@@ -59,6 +59,12 @@ func (s *PickerAdapter) Report(ctx context.Context, ep *domain.Endpoint, v dispa
 	})
 }
 
+// Release implements dispatch.Selector.Release — decrements the P2C
+// pending-call counter for ep exactly once per attempt.
+func (s *PickerAdapter) Release(ctx context.Context, ep *domain.Endpoint) {
+	s.sched.Release(ctx, ep)
+}
+
 // dispatchClassToSelector maps dispatch.Class → selector.ErrorClass (1:1).
 func dispatchClassToSelector(c dispatch.Class) selector.ErrorClass {
 	switch c {

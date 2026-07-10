@@ -36,19 +36,21 @@ func (r *recordingStats) Snapshot(_ context.Context, _ int64) selector.EndpointS
 	return selector.EndpointStats{}
 }
 
+// fakeCooldown models a cooldown store keyed by class. ClearIfRecoverable only
+// releases Transient/Capacity, mirroring the Redis Lua behavior.
 type fakeCooldown struct {
 	mu      sync.Mutex
-	cooled  map[int64]bool
+	cooled  map[int64]selector.ErrorClass
 	cleared []int64
 }
 
-func (f *fakeCooldown) Mark(_ context.Context, id int64, _ selector.ErrorClass, _ time.Duration) error {
+func (f *fakeCooldown) Mark(_ context.Context, id int64, class selector.ErrorClass, _ time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.cooled == nil {
-		f.cooled = make(map[int64]bool)
+		f.cooled = make(map[int64]selector.ErrorClass)
 	}
-	f.cooled[id] = true
+	f.cooled[id] = class
 	return nil
 }
 
@@ -57,19 +59,26 @@ func (f *fakeCooldown) InCooldown(_ context.Context, ids []int64) (map[int64]boo
 	defer f.mu.Unlock()
 	out := make(map[int64]bool, len(ids))
 	for _, id := range ids {
-		if f.cooled[id] {
+		if _, ok := f.cooled[id]; ok {
 			out[id] = true
 		}
 	}
 	return out, nil
 }
 
-func (f *fakeCooldown) Clear(_ context.Context, id int64) error {
+func (f *fakeCooldown) ClearIfRecoverable(_ context.Context, id int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	class, ok := f.cooled[id]
+	if !ok {
+		return false, nil
+	}
+	if class != selector.ClassTransient && class != selector.ClassCapacity {
+		return false, nil // permanent/invalid/unknown: not probe-recoverable
+	}
 	delete(f.cooled, id)
 	f.cleared = append(f.cleared, id)
-	return nil
+	return true, nil
 }
 
 func probeEndpoint(id int64, url string) *domain.Endpoint {
@@ -82,14 +91,14 @@ func probeEndpoint(id int64, url string) *domain.Endpoint {
 	}
 }
 
-// A successful probe of a cooling endpoint must clear its cooldown early.
-func TestProber_RecoverCooldownOnSuccessfulProbe(t *testing.T) {
+// A successful probe of a Transient-cooling endpoint releases it early.
+func TestProber_RecoverTransientCooldownOnSuccessfulProbe(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	cd := &fakeCooldown{cooled: map[int64]bool{7: true}}
+	cd := &fakeCooldown{cooled: map[int64]selector.ErrorClass{7: selector.ClassTransient}}
 	p := New(Config{
 		Source:   staticSource{eps: []*domain.Endpoint{probeEndpoint(7, srv.URL)}},
 		Stats:    &recordingStats{},
@@ -103,8 +112,35 @@ func TestProber_RecoverCooldownOnSuccessfulProbe(t *testing.T) {
 	if len(cd.cleared) != 1 || cd.cleared[0] != 7 {
 		t.Fatalf("expected cooldown cleared for endpoint 7, got %v", cd.cleared)
 	}
-	if cd.cooled[7] {
+	if _, ok := cd.cooled[7]; ok {
 		t.Error("endpoint 7 should no longer be cooling")
+	}
+}
+
+// A successful probe must NOT release a Permanent (bad-credential) cooldown —
+// a health-200 does not attest the API key is valid.
+func TestProber_PermanentCooldownNotRecovered(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cd := &fakeCooldown{cooled: map[int64]selector.ErrorClass{7: selector.ClassPermanent}}
+	p := New(Config{
+		Source:   staticSource{eps: []*domain.Endpoint{probeEndpoint(7, srv.URL)}},
+		Stats:    &recordingStats{},
+		Cooldown: cd,
+	})
+
+	p.cycle(context.Background())
+
+	cd.mu.Lock()
+	defer cd.mu.Unlock()
+	if len(cd.cleared) != 0 {
+		t.Fatalf("permanent cooldown must not be recovered, cleared=%v", cd.cleared)
+	}
+	if cd.cooled[7] != selector.ClassPermanent {
+		t.Error("endpoint 7 should still hold its permanent cooldown")
 	}
 }
 
@@ -115,7 +151,7 @@ func TestProber_FailedProbeKeepsCooldown(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cd := &fakeCooldown{cooled: map[int64]bool{7: true}}
+	cd := &fakeCooldown{cooled: map[int64]selector.ErrorClass{7: selector.ClassTransient}}
 	p := New(Config{
 		Source:   staticSource{eps: []*domain.Endpoint{probeEndpoint(7, srv.URL)}},
 		Stats:    &recordingStats{},
@@ -129,12 +165,12 @@ func TestProber_FailedProbeKeepsCooldown(t *testing.T) {
 	if len(cd.cleared) != 0 {
 		t.Fatalf("failed probe must not clear cooldown, cleared=%v", cd.cleared)
 	}
-	if !cd.cooled[7] {
+	if cd.cooled[7] != selector.ClassTransient {
 		t.Error("endpoint 7 should still be cooling")
 	}
 }
 
-// A healthy endpoint that was never cooling must not trigger Clear calls.
+// A healthy endpoint that was never cooling records stats and triggers no clear.
 func TestProber_HealthyEndpointNotCleared(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -153,7 +189,7 @@ func TestProber_HealthyEndpointNotCleared(t *testing.T) {
 
 	cd.mu.Lock()
 	if len(cd.cleared) != 0 {
-		t.Errorf("no cooldown existed; Clear should not be called, got %v", cd.cleared)
+		t.Errorf("no cooldown existed; nothing should be cleared, got %v", cd.cleared)
 	}
 	cd.mu.Unlock()
 

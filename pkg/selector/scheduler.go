@@ -121,12 +121,23 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 
 // chosen marks the picked endpoint as having one more pending call (input
 // signal for the P2C picker). Every Pick that returns an endpoint is paired
-// with at least one Report from the dispatcher, which decrements the counter.
+// with exactly one Release from the dispatcher (via defer), which decrements
+// the counter — regardless of how many Reports the attempt produces.
 func (s *defaultScheduler) chosen(ep *domain.Endpoint) *domain.Endpoint {
 	if s.cfg.Inflight != nil && ep != nil {
 		s.cfg.Inflight.Inc(ep.ID)
 	}
 	return ep
+}
+
+// Release decrements the P2C pending-call counter for ep. Called exactly once
+// per Pick that returned a non-nil endpoint (the dispatcher defers it), so the
+// counter stays correct even when an attempt Reports twice (e.g. a
+// supplementary StageStream verdict after a success).
+func (s *defaultScheduler) Release(_ context.Context, ep *domain.Endpoint) {
+	if s.cfg.Inflight != nil && ep != nil {
+		s.cfg.Inflight.Dec(ep.ID)
+	}
 }
 
 // Report feeds the Send result back to cooldown + stats store + metric.
@@ -145,12 +156,10 @@ func (s *defaultScheduler) Report(ctx context.Context, ep *domain.Endpoint, resu
 		return
 	}
 
-	// the pending call finished (success or failure) — release the P2C slot.
-	// Dec clamps at 0, so the occasional supplementary report (StageStream
-	// after a success report) can't drive the counter negative.
-	if s.cfg.Inflight != nil {
-		s.cfg.Inflight.Dec(ep.ID)
-	}
+	// NB: the P2C pending-call counter is NOT decremented here — Report can
+	// fire more than once per attempt (a supplementary StageStream verdict
+	// after a success), which would double-count. The dispatcher decrements it
+	// exactly once via a deferred Release. See Scheduler.Release.
 
 	// write to stats store (input for runtime scoring; best-effort)
 	if s.cfg.Stats != nil {

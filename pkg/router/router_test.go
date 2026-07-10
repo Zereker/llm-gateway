@@ -51,6 +51,7 @@ func (stubSubscriptions) HasModel(_ context.Context, _ string, _ int64) (bool, e
 type panicSelector struct{}
 
 func (panicSelector) Report(_ context.Context, _ *domain.Endpoint, _ dispatch.Verdict) {}
+func (panicSelector) Release(_ context.Context, _ *domain.Endpoint)                    {}
 
 func (panicSelector) Pick(_ context.Context, _ []*domain.Endpoint, _ dispatch.PickQuery) (*domain.Endpoint, error) {
 	panic("router test: Selector.Pick should not be reached (M2 Auth must reject first)")

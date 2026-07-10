@@ -180,6 +180,11 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		span.SetAttribute("attempt.exit", "picker_skipped_all")
 		return d.fallback.OnExhausted(s)
 	}
+	// Pick incremented ep's P2C pending-call counter; release it exactly once
+	// when this attempt returns, no matter which path (reserve deny / handler
+	// miss / invoke error / success / stream break / panic unwind). Decoupled
+	// from Report because the success+stream-break path Reports twice.
+	defer d.selector.Release(ctx, ep)
 	annotateEndpoint(span, ep)
 
 	// === EndpointQuota.Reserve (pre-deduction) ===
