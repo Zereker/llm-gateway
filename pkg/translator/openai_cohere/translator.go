@@ -239,7 +239,9 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 	case "message-end":
 		in := ev.Get("delta.usage.tokens.input_tokens").Int()
 		outTok := ev.Get("delta.usage.tokens.output_tokens").Int()
-		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Source: domain.UsageSourceExtracted}
+		// message-end carries Cohere's exact token counts — mark it Exact so
+		// billing doesn't treat these as an estimate (zero-value confidence).
+		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Source: domain.UsageSourceExtracted, Confidence: domain.UsageConfidenceExact}
 		return h.chunk(map[string]any{}, mapFinishReason(ev.Get("delta.finish_reason").String()))
 	default: // content-start / content-end etc.: skip
 		return nil
@@ -276,10 +278,11 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	in := root.Get("usage.tokens.input_tokens").Int()
 	outTok := root.Get("usage.tokens.output_tokens").Int()
 	usage := &domain.Usage{
-		Input:  in,
-		Output: outTok,
-		Total:  in + outTok,
-		Source: domain.UsageSourceExtracted,
+		Input:      in,
+		Output:     outTok,
+		Total:      in + outTok,
+		Source:     domain.UsageSourceExtracted,
+		Confidence: domain.UsageConfidenceExact,
 	}
 
 	id := root.Get("id").String()

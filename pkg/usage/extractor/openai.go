@@ -63,16 +63,15 @@ func (s *openaiSession) detectStreaming(chunk []byte) {
 	s.isStreaming = bytes.HasPrefix(trimmed, []byte("data:")) || bytes.HasPrefix(trimmed, []byte(":"))
 }
 
-// parseSSEBuffer splits out complete events (separated by "\n\n") and tries to
-// extract usage from each data: line's payload.
+// parseSSEBuffer splits out complete events (blank-line separated, LF or CRLF)
+// and tries to extract usage from each data: line's payload.
 func (s *openaiSession) parseSSEBuffer() {
 	for {
-		idx := bytes.Index(s.sseBuffer, []byte("\n\n"))
-		if idx < 0 {
+		event, rest, ok := nextSSEFrame(s.sseBuffer)
+		if !ok {
 			return
 		}
-		event := s.sseBuffer[:idx]
-		s.sseBuffer = s.sseBuffer[idx+2:]
+		s.sseBuffer = rest
 
 		for _, line := range bytes.Split(event, []byte("\n")) {
 			payload := extractDataPayload(line)

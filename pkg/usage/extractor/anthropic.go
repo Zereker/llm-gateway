@@ -37,8 +37,10 @@ type anthropicSession struct {
 	sseBuffer        []byte
 	bodyBuffer       []byte
 
-	inputTokens  int64
-	outputTokens int64
+	inputTokens         int64
+	outputTokens        int64
+	cacheCreationTokens int64 // cache_creation_input_tokens (billed separately)
+	cacheReadTokens     int64 // cache_read_input_tokens (billed separately)
 }
 
 func (s *anthropicSession) Feed(chunk []byte) {
@@ -63,10 +65,20 @@ func (s *anthropicSession) Final() *domain.Usage {
 	if s.inputTokens == 0 && s.outputTokens == 0 {
 		return nil
 	}
-	raw, _ := json.Marshal(map[string]any{
+	// Preserve the cache-token dimensions in Raw so downstream billing can
+	// price them (Anthropic bills cache writes/reads separately from input).
+	// Total stays Input+Output — the TPM soft counter, not the cost model.
+	rawMap := map[string]any{
 		"input_tokens":  s.inputTokens,
 		"output_tokens": s.outputTokens,
-	})
+	}
+	if s.cacheCreationTokens > 0 {
+		rawMap["cache_creation_input_tokens"] = s.cacheCreationTokens
+	}
+	if s.cacheReadTokens > 0 {
+		rawMap["cache_read_input_tokens"] = s.cacheReadTokens
+	}
+	raw, _ := json.Marshal(rawMap)
 	return &domain.Usage{
 		Input:      s.inputTokens,
 		Output:     s.outputTokens,
@@ -87,12 +99,11 @@ func (s *anthropicSession) detectStreaming(chunk []byte) {
 
 func (s *anthropicSession) parseSSEBuffer() {
 	for {
-		idx := bytes.Index(s.sseBuffer, []byte("\n\n"))
-		if idx < 0 {
+		event, rest, ok := nextSSEFrame(s.sseBuffer)
+		if !ok {
 			return
 		}
-		event := s.sseBuffer[:idx]
-		s.sseBuffer = s.sseBuffer[idx+2:]
+		s.sseBuffer = rest
 
 		for _, line := range bytes.Split(event, []byte("\n")) {
 			payload := extractDataPayload(line)
@@ -107,8 +118,10 @@ func (s *anthropicSession) parseSSEBuffer() {
 func (s *anthropicSession) parseFullBody() {
 	var resp struct {
 		Usage *struct {
-			InputTokens  int64 `json:"input_tokens"`
-			OutputTokens int64 `json:"output_tokens"`
+			InputTokens         int64 `json:"input_tokens"`
+			OutputTokens        int64 `json:"output_tokens"`
+			CacheCreationTokens int64 `json:"cache_creation_input_tokens"`
+			CacheReadTokens     int64 `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(s.bodyBuffer, &resp); err != nil {
@@ -117,6 +130,8 @@ func (s *anthropicSession) parseFullBody() {
 	if resp.Usage != nil {
 		s.inputTokens = resp.Usage.InputTokens
 		s.outputTokens = resp.Usage.OutputTokens
+		s.cacheCreationTokens = resp.Usage.CacheCreationTokens
+		s.cacheReadTokens = resp.Usage.CacheReadTokens
 	}
 }
 
@@ -133,8 +148,10 @@ func (s *anthropicSession) tryExtract(payload []byte) {
 		Type    string `json:"type"`
 		Message *struct {
 			Usage *struct {
-				InputTokens  int64 `json:"input_tokens"`
-				OutputTokens int64 `json:"output_tokens"`
+				InputTokens         int64 `json:"input_tokens"`
+				OutputTokens        int64 `json:"output_tokens"`
+				CacheCreationTokens int64 `json:"cache_creation_input_tokens"`
+				CacheReadTokens     int64 `json:"cache_read_input_tokens"`
 			} `json:"usage"`
 		} `json:"message"`
 		Usage *struct {
@@ -148,6 +165,9 @@ func (s *anthropicSession) tryExtract(payload []byte) {
 	case "message_start":
 		if ev.Message != nil && ev.Message.Usage != nil {
 			s.inputTokens = ev.Message.Usage.InputTokens
+			// Cache tokens are reported once, in message_start.
+			s.cacheCreationTokens = ev.Message.Usage.CacheCreationTokens
+			s.cacheReadTokens = ev.Message.Usage.CacheReadTokens
 		}
 	case "message_delta":
 		if ev.Usage != nil && ev.Usage.OutputTokens > 0 {
