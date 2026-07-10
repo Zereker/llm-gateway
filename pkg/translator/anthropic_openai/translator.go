@@ -8,9 +8,10 @@
 //   - Non-streaming (stream=false): buffer-then-translate; Flush translates the whole body at once.
 //   - Streaming (stream=true): OpenAI SSE chunks are translated into an Anthropic SSE event sequence in real time.
 //
-// **v0.5 limitations**:
-//   - Only chat is supported (system + user/assistant + text content).
-//   - tool_use / vision / multi-block content are not supported.
+// **Limitations**:
+//   - Only chat is supported (system + user/assistant messages).
+//   - Multi-block content arrays are accepted, but only their text blocks are
+//     carried across; non-text blocks (images / tool_use) are dropped.
 //   - **In streaming mode, message_start.usage.input_tokens is always 0** — OpenAI only sends the
 //     usage chunk at the end, but the Anthropic protocol requires message_start to report
 //     input_tokens immediately. The workaround is to send 0 first; the real input_tokens is
@@ -317,7 +318,7 @@ func writeEvent(out *bytes.Buffer, eventType string, payload map[string]any) {
 type anthropicRequest struct {
 	Model         string             `json:"model"`
 	Messages      []anthropicMessage `json:"messages"`
-	System        string             `json:"system,omitempty"`
+	System        json.RawMessage    `json:"system,omitempty"` // string or []content-block
 	MaxTokens     uint32             `json:"max_tokens"`
 	Temperature   *float64           `json:"temperature,omitempty"`
 	TopP          *float64           `json:"top_p,omitempty"`
@@ -326,8 +327,37 @@ type anthropicRequest struct {
 }
 
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"` // string or []content-block
+}
+
+// contentToString normalizes a message content / system field that may be a
+// JSON string OR an array of content blocks ([{"type":"text","text":"..."}]).
+// Anthropic SDKs and OpenAI vision clients routinely send the array form;
+// typing the field as a Go string would fail to parse and reject the request.
+// Non-text blocks (images/tools) are skipped — this pair only carries text.
+func contentToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var sb strings.Builder
+		for _, b := range blocks {
+			if b.Type == "text" || b.Type == "" {
+				sb.WriteString(b.Text)
+			}
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 type openAIRequest struct {
@@ -411,10 +441,10 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 		Model:  in.Model,
 		Stream: in.Stream,
 	}
-	if in.System != "" {
+	if sys := contentToString(in.System); sys != "" {
 		out.Messages = append(out.Messages, openAIMessage{
 			Role:    "system",
-			Content: in.System,
+			Content: sys,
 		})
 	}
 	for _, m := range in.Messages {
@@ -422,7 +452,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 		case "user", "assistant":
 			out.Messages = append(out.Messages, openAIMessage{
 				Role:    m.Role,
-				Content: m.Content,
+				Content: contentToString(m.Content),
 			})
 		default:
 			return nil, fmt.Errorf("unsupported message role %q (handles user/assistant only; system goes through the top-level system field)", m.Role)
