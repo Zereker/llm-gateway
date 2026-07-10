@@ -77,6 +77,7 @@ Important constraints:
 | M5 | ModelService | `rc.Envelope.Model`, primary account pin, `X-Gateway-Fallback-Models` | `rc.ModelService` (primary), `rc.ModelChain` (primary + validated fallbacks) |
 | M8 | Moderation | raw request/response stream | optional moderation, defaults to none |
 | M6 | Limit | identity, model, quota policy | user-side RPM/RPS pre-deduction, `rc.RateLimit`; post-side TPM post-deduction |
+| — | Cache | request body / prompt | response cache (chat + embedding modalities only); on a hit returns directly and skips M7; a no-op when `cache.enabled=false` |
 | M7 | Schedule | model, group, endpoint candidates | `rc.RoutedModelService`, endpoint, upstream forward, usage, decision |
 | M10 | Tracing | final RC state | metric, usage outbox, schedule trace |
 
@@ -171,7 +172,7 @@ Constraints:
 
 - `Code` is a stable, machine-readable error code, e.g. `rate_limit_exceeded`, `invalid_request`, `no_endpoint_available`.
 - `Message` is a human-readable description and must not be used as a basis for program logic.
-- `Class` aligns with the scheduling/upstream error classification, e.g. `invalid`, `capacity`, `transient`.
+- `Class` aligns with the scheduling/upstream error classification, e.g. `invalid`, `rate_limit`, `transient`.
 - `Details` should only contain fields necessary for troubleshooting, e.g. the rate-limit dimension, bucket key, endpoint id; it must not contain the request / response body.
 - `RequestID` / `TraceID` are populated by M9 Recover from `rc`; clients can use these to correlate with logs / traces without needing a separate header.
 

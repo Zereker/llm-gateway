@@ -277,10 +277,6 @@ type KafkaOutboxSection struct {
 //
 // **max_attempts**: M7's global attempt cap (including L1 same-endpoint
 // internal retries); the client's X-Gateway-Max-Attempts header can override it.
-//
-// **max_per_endpoint**: max attempts against the same endpoint (including the
-// first); default 1 = no L1 retry, switching endpoints immediately on
-// failure. Set 2-3 to absorb occasional upstream network jitter.
 type SelectorConfig struct {
 	Filters []string `yaml:"filters"`
 	// Picker selects the final pick strategy after filters + scoring:
@@ -289,7 +285,6 @@ type SelectorConfig struct {
 	Picker          string                `yaml:"picker"`
 	Cooldown        CooldownConfig        `yaml:"cooldown"`
 	MaxAttempts     int                   `yaml:"max_attempts"`
-	MaxPerEndpoint  int                   `yaml:"max_per_endpoint"`
 	SessionAffinity SessionAffinityConfig `yaml:"session_affinity"`
 }
 
@@ -483,9 +478,6 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Selector.MaxAttempts == 0 {
 		c.Selector.MaxAttempts = 3
-	}
-	if c.Selector.MaxPerEndpoint == 0 {
-		c.Selector.MaxPerEndpoint = 1 // no L1 retry by default; enabling it requires explicit config
 	}
 	if c.Selector.Cooldown.Transient == 0 {
 		c.Selector.Cooldown.Transient = 30 * time.Second

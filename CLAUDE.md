@@ -6,14 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 llm-gateway is a Go-implemented LLM inference gateway: it exposes OpenAI / Anthropic compatible protocols externally, and routes downstream to multiple upstreams (OpenAI, Anthropic, Gemini, vLLM, etc.). The single source of truth for architecture and contracts is `docs/architecture/00-overview.md` ~ `08-observability.md` — **read the corresponding chapter before changing main-path code**.
 
-## Single Process
+## Processes
 
-The repo only has `cmd/gateway` (the data plane, :8080):
+The repo has two binaries: `cmd/gateway` (the data plane, :8080) and `cmd/console` (a separate
+control-plane binary — an Admin API for managing business data, backed by `pkg/console`):
 
-- At startup it runs `infra.Migrate` to create tables, plus `repo.CheckSchema` as a defensive check
-- It handles `/v1/*` traffic; the middleware chain is M1-M10
+- `cmd/gateway` at startup runs `infra.Migrate` to create tables, plus `repo.CheckSchema` as a defensive check
+- `cmd/gateway` handles `/v1/*` traffic; the middleware chain is M1-M10
 - Business data (model_services / endpoints / api_keys / pricing / quota_policies /
-  subscriptions / accounts) is **maintained via direct SQL inserts** — this repo ships no control plane.
+  subscriptions / accounts) is still **maintained via direct SQL inserts**; the optional `cmd/console`
+  Admin API is an additional way to manage it (and can publish cachebus invalidation, which
+  `cmd/gateway` subscribes to for fast revocation).
   The repo layer uses an in-process TTL LRU cache (default 30s), so SQL changes become visible within ≤ TTL.
 
 Startup order: **docker stack → gateway**. `data_key` (the KEK used to encrypt the endpoints.auth column)
@@ -48,8 +51,12 @@ The request pipeline consists of 10 middlewares, **the order is explicitly liste
 ```
 M1 TraceContext → M10 Tracing → M9 Recover → M2 Auth   (pre-Envelope, attached on the group)
 → WithSourceProtocol (path tagging) → M3 Envelope
-→ M4 Budget → M5 ModelService → M6 Limit → M8 Moderation → M7 Schedule
+→ M4 Budget → M5 ModelService → M8 Moderation → M6 Limit → Cache → M7 Schedule
 ```
+
+The `Cache` stage (response cache; chat + embedding modalities only, a no-op when `cache.enabled=false`)
+sits between M6 Limit and M7 Schedule: a hit returns directly, skipping the upstream. Embedding routes
+mount a dedicated exact-match `EmbeddingCache` stage in the same slot.
 
 M10 is registered **outside** Recover, but its finishing logic runs post-`c.Next()` (the onion's return leg) —
 so in execution order it still "finishes last," but no abort (401/429/503) or recovered panic can escape
