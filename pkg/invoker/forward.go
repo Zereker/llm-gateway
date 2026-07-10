@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,11 +200,41 @@ func flush(w http.ResponseWriter) {
 	}
 }
 
-// copyHeaders copies upstream response headers to the client response
-// headers (except Content-Length, which the downstream server recomputes).
+// blockedUpstreamHeaders are response headers that must not be relayed from the
+// upstream provider to the client. Keys are in http.Header canonical form.
+//
+//   - Content-Length: the downstream server recomputes it.
+//   - Set-Cookie / Set-Cookie2: never hand an upstream provider's cookies to
+//     our client (session fixation / cross-tenant cookie bleed).
+//   - hop-by-hop headers (RFC 9110 §7.6.1): meaningless to forward end-to-end.
+//   - upstream identity / quota disclosure: which vendor+org backs a model and
+//     the gateway's shared upstream rate-limit state are internal details.
+var blockedUpstreamHeaders = map[string]struct{}{
+	"Content-Length":      {},
+	"Set-Cookie":          {},
+	"Set-Cookie2":         {},
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+	"Openai-Organization": {},
+	"Openai-Project":      {},
+	"Openai-Version":      {},
+}
+
+// copyHeaders relays upstream response headers to the client, minus the
+// blocklist and the x-ratelimit-* family (upstream quota disclosure). The
+// gateway surfaces its own state via X-Gateway-* / X-RateLimit-* headers.
 func copyHeaders(dst, src http.Header) {
 	for k, vs := range src {
-		if k == "Content-Length" {
+		if _, blocked := blockedUpstreamHeaders[k]; blocked {
+			continue
+		}
+		if len(k) >= 12 && strings.EqualFold(k[:12], "X-Ratelimit-") {
 			continue
 		}
 		for _, v := range vs {

@@ -92,8 +92,9 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 		reserveBuckets, tpmBuckets, err := buildUserBuckets(ctx, cfg.policies, &rc.Identity, rc.ModelService.Model)
 		if err != nil {
 			metric.Inc(metric.PolicyCacheTotal, "layer", "any", "result", "error")
+			slog.ErrorContext(ctx, "m6: rate-limit policy build failed", "err", err)
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
-				"ratelimit: build: "+err.Error())
+				"rate limit policy unavailable")
 			return
 		}
 

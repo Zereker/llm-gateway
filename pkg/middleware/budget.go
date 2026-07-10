@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
@@ -67,8 +68,9 @@ func Budget(opts ...BudgetOption) gin.HandlerFunc {
 		status, err := cfg.gate.Check(ctx, rc.Identity.SubAccountID)
 		if err != nil {
 			metric.Inc(metric.BudgetCheckTotal, "result", "error")
+			slog.ErrorContext(ctx, "m4: budget check failed", "err", err)
 			abortWithCode(c, 502, domain.ErrUnknown, domain.ErrCodeUpstreamError,
-				"budget check error: "+err.Error())
+				"budget check unavailable")
 			return
 		}
 
