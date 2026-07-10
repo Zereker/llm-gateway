@@ -14,16 +14,18 @@
 //	  OpenAI Chat: {id, choices:[{message:{role,content}}], usage}
 //	    → Responses: {id, object:"response", model, output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"..."}]}], usage:{input_tokens,output_tokens,total_tokens}}
 //
-// **v1.0 limitations**:
-//   - Does not support input arrays (message form); string input only
+// **Limitations**:
 //   - Does not support tools / structured outputs
 //   - Does not support previous_response_id (stateful continuation)
-//   - Streaming: buffer-then-translate (v1.0 minimum)
+//   - Streaming: the upstream stream is buffered and returned as a single
+//     Responses body (with include_usage-based billing); true incremental
+//     Responses events are not emitted.
 package responses_openai
 
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/translator"
@@ -66,12 +68,17 @@ type chatMessage struct {
 
 // chatRequest is the OpenAI ChatCompletion output shape (written by the translator).
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Stream      bool          `json:"stream,omitempty"`
-	MaxTokens   *int          `json:"max_tokens,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	TopP        *float64      `json:"top_p,omitempty"`
+	Model         string          `json:"model"`
+	Messages      []chatMessage   `json:"messages"`
+	Stream        bool            `json:"stream,omitempty"`
+	StreamOptions *chatStreamOpts `json:"stream_options,omitempty"`
+	MaxTokens     *int            `json:"max_tokens,omitempty"`
+	Temperature   *float64        `json:"temperature,omitempty"`
+	TopP          *float64        `json:"top_p,omitempty"`
+}
+
+type chatStreamOpts struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 func translateRequest(srcBody []byte) ([]byte, error) {
@@ -89,6 +96,11 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
+	}
+	if req.Stream {
+		// The upstream only emits a final usage chunk when asked; without this
+		// the extractor's side channel sees no usage and the request bills zero.
+		out.StreamOptions = &chatStreamOpts{IncludeUsage: true}
 	}
 	if req.Instructions != "" {
 		out.Messages = append(out.Messages, chatMessage{Role: "system", Content: req.Instructions})
@@ -210,46 +222,96 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		return nil, h.ex.Final(), nil
 	}
 
-	// upstream may be SSE streaming; v1.0 minimum only supports a non-streaming JSON body
-	// (translating fully-aggregated SSE is left for v1.1)
 	var src openaiChatResponse
 	if err := json.Unmarshal(h.buf, &src); err != nil {
-		// upstream SSE can't be parsed as non-streaming → pass through the raw chunk as-is (the client may be able to handle it)
-		return h.buf, h.ex.Final(), nil
+		// The upstream body is SSE (the client requested streaming). Rather
+		// than hand the client raw OpenAI chat chunks — which a Responses
+		// client can't parse — aggregate the SSE into a single valid Responses
+		// object. Usage comes from the extractor side channel (which now sees
+		// the include_usage final chunk). This is a buffered (non-streamed)
+		// Responses reply; true incremental Responses events are not emitted.
+		content, model, id := aggregateChatSSE(h.buf)
+		return h.buildResponse(id, model, "assistant", content), h.ex.Final(), nil
 	}
 
-	out := responsesOutput{
-		ID:     "resp_" + stripPrefix(src.ID, "chatcmpl-"),
-		Object: "response",
-		Model:  src.Model,
-	}
+	role, content := "assistant", ""
 	if len(src.Choices) > 0 {
-		c := src.Choices[0]
-		out.Output = append(out.Output, struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		}{
-			Type: "message",
-			Role: c.Message.Role,
-			Content: []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}{{Type: "output_text", Text: c.Message.Content}},
-		})
+		role = src.Choices[0].Message.Role
+		content = src.Choices[0].Message.Content
 	}
-	out.Usage.InputTokens = src.Usage.PromptTokens
-	out.Usage.OutputTokens = src.Usage.CompletionTokens
-	out.Usage.TotalTokens = src.Usage.TotalTokens
+	return h.buildResponse(src.ID, src.Model, role, content), h.ex.Final(), nil
+}
 
-	body, err := json.Marshal(out)
-	if err != nil {
-		return nil, h.ex.Final(), err
+// buildResponse marshals a Responses-format body. The Responses `usage` object
+// is populated from the extractor's Final().
+func (h *responseHandler) buildResponse(id, model, role, content string) []byte {
+	u := h.ex.Final()
+	out := responsesOutput{
+		ID:     "resp_" + stripPrefix(id, "chatcmpl-"),
+		Object: "response",
+		Model:  model,
 	}
-	return body, h.ex.Final(), nil
+	out.Output = append(out.Output, struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}{
+		Type: "message",
+		Role: role,
+		Content: []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{{Type: "output_text", Text: content}},
+	})
+	if u != nil {
+		out.Usage.InputTokens = u.Input
+		out.Usage.OutputTokens = u.Output
+		out.Usage.TotalTokens = u.Total
+	}
+	body, _ := json.Marshal(out)
+	return body
+}
+
+// aggregateChatSSE walks an OpenAI chat SSE stream and concatenates the
+// choices[0].delta.content deltas into the full message text, also returning
+// the model from the first chunk that carries it.
+func aggregateChatSSE(buf []byte) (content, model, id string) {
+	var sb strings.Builder
+	for _, line := range strings.Split(string(buf), "\n") {
+		line = strings.TrimRight(strings.TrimSpace(line), "\r")
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(line[len("data:"):])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			ID      string `json:"id"`
+			Model   string `json:"model"`
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+		if model == "" && chunk.Model != "" {
+			model = chunk.Model
+		}
+		if id == "" && chunk.ID != "" {
+			id = chunk.ID
+		}
+		if len(chunk.Choices) > 0 {
+			sb.WriteString(chunk.Choices[0].Delta.Content)
+		}
+	}
+	return sb.String(), model, id
 }
 
 func stripPrefix(s, prefix string) string {
