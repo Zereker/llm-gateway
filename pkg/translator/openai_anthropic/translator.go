@@ -10,9 +10,10 @@
 //   - Streaming (stream=true): SSE event-by-event real-time translation, so the
 //     client gets the OpenAI SSE experience
 //
-// **v0.5 limitations**:
-//   - Only chat is supported (system/user/assistant + text content)
-//   - tool_use / vision / multi-block content are not supported
+// **Limitations**:
+//   - Only chat is supported (system/user/assistant messages)
+//   - Multi-part content arrays are accepted, but only their text parts are
+//     carried across; non-text parts (images / tool calls) are dropped
 //
 // See translateRequest / translateResponse / parseAndEmitStreamEvent for field mapping details.
 package openai_anthropic
@@ -248,18 +249,56 @@ func (h *responseHandler) writeChunk(out *bytes.Buffer, delta map[string]any, fi
 // =============================================================================
 
 type openAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	MaxTokens   *uint32         `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stop        json.RawMessage `json:"stop,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model       string                 `json:"model"`
+	Messages    []openAIInboundMessage `json:"messages"`
+	MaxTokens   *uint32                `json:"max_tokens,omitempty"`
+	Temperature *float64               `json:"temperature,omitempty"`
+	TopP        *float64               `json:"top_p,omitempty"`
+	Stop        json.RawMessage        `json:"stop,omitempty"`
+	Stream      bool                   `json:"stream,omitempty"`
 }
 
+// openAIMessage is the OpenAI-shaped message used when BUILDING a response back
+// to the client (content is always a plain string).
 type openAIMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// openAIInboundMessage parses an incoming OpenAI request message, whose content
+// may be a JSON string OR an array of content parts.
+type openAIInboundMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+// contentToString normalizes an OpenAI message content field that may be a JSON
+// string OR an array of content parts ([{"type":"text","text":"..."}]) — the
+// latter is what OpenAI vision / multi-part requests send. Typing it as a Go
+// string would fail to parse and reject the request. Non-text parts are skipped
+// (this pair only carries text upstream).
+func contentToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var sb strings.Builder
+		for _, p := range parts {
+			if p.Type == "text" || p.Type == "" {
+				sb.WriteString(p.Text)
+			}
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 type anthropicRequest struct {
@@ -336,13 +375,13 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	for _, m := range in.Messages {
 		switch m.Role {
 		case "system":
-			if m.Content != "" {
-				systemParts = append(systemParts, m.Content)
+			if s := contentToString(m.Content); s != "" {
+				systemParts = append(systemParts, s)
 			}
 		case "user", "assistant":
 			out.Messages = append(out.Messages, anthropicMessage{
 				Role:    m.Role,
-				Content: m.Content,
+				Content: contentToString(m.Content),
 			})
 		default:
 			return nil, fmt.Errorf("unsupported message role %q (handles system/user/assistant only)", m.Role)
