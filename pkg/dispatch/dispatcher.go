@@ -210,6 +210,10 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		}
 		annotateVerdict(span, v)
 		s.Record(ep, v)
+		// The endpoint was reserved but never contacted (no handler to build
+		// the call) — refund its RPM/RPS reserve so a config gap doesn't
+		// silently throttle the endpoint.
+		d.quota.Release(ctx, ep)
 		d.selector.Report(ctx, ep, v)
 		return d.retry.Decide(s, v)
 	}
@@ -230,6 +234,9 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		}
 		annotateVerdict(span, v)
 		s.Record(ep, v)
+		// The call could not even be constructed — the endpoint was never
+		// contacted, so refund its reserve.
+		d.quota.Release(ctx, ep)
 		d.selector.Report(ctx, ep, v)
 		return d.retry.Decide(s, v)
 	}

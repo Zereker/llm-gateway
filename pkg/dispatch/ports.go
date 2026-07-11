@@ -154,6 +154,14 @@ type EndpointQuota interface {
 	// charge failures only get logged as a metric and never block the
 	// response.
 	ChargeUsage(ctx context.Context, ep *domain.Endpoint, usage *domain.Usage)
+
+	// Release rolls back a prior successful Reserve for ep. The dispatcher
+	// calls it only when an attempt failed *before the endpoint was ever
+	// contacted* (handler-lookup / call-construction failure) — a genuine
+	// upstream response (even 429/5xx) keeps the reservation, since we did
+	// send the endpoint a request and self-throttling on its rejection is
+	// intended. No-op when no quota is configured.
+	Release(ctx context.Context, ep *domain.Endpoint)
 }
 
 // NoopQuota never rejects and never charges — for deployments with no
@@ -164,6 +172,7 @@ func (NoopQuota) Reserve(_ context.Context, _ *domain.Endpoint) (*QuotaVerdict, 
 	return nil, nil
 }
 func (NoopQuota) ChargeUsage(_ context.Context, _ *domain.Endpoint, _ *domain.Usage) {}
+func (NoopQuota) Release(_ context.Context, _ *domain.Endpoint)                      {}
 
 // Result is the handle produced by Invoke.
 //

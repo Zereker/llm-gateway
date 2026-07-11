@@ -94,6 +94,17 @@ type Store interface {
 	// The returned []BucketChargeResult is index-aligned with the input buckets.
 	ChargeBatch(ctx context.Context, buckets []Bucket) ([]BucketChargeResult, error)
 
+	// ReleaseBatch rolls back a prior ReserveBatch by decrementing each bucket's
+	// current window by Cost (clamped at 0). Used to refund a reservation that
+	// never resulted in real work — e.g. an endpoint reserve for an attempt that
+	// failed before the endpoint was ever contacted.
+	//
+	// Best-effort: it targets the current window, so if a window boundary was
+	// crossed between reserve and release the refund lands in the newer window;
+	// the effect is bounded (±Cost) and always in the caller's favor. Release
+	// should only be used for fast-failing paths where this is negligible.
+	ReleaseBatch(ctx context.Context, buckets []Bucket) error
+
 	// SnapshotBatch batch-reads the current state of multiple buckets; does not modify any bucket.
 	SnapshotBatch(ctx context.Context, buckets []Bucket) ([]BucketState, error)
 }

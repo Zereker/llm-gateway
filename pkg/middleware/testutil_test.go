@@ -134,6 +134,10 @@ func (s *stubStore) SnapshotBatch(_ context.Context, buckets []ratelimit.Bucket)
 	return out, s.snapshotErr
 }
 
+func (s *stubStore) ReleaseBatch(_ context.Context, _ []ratelimit.Bucket) error {
+	return nil
+}
+
 // =============================================================================
 // Stub: QuotaPolicyProvider (PolicyCache's upstream)
 // =============================================================================

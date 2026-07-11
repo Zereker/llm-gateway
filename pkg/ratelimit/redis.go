@@ -20,6 +20,7 @@ type RedisStore struct {
 	rdb            *redis.Client
 	scriptReserve  *redis.Script
 	scriptCharge   *redis.Script
+	scriptRelease  *redis.Script
 	scriptSnapshot *redis.Script
 }
 
@@ -28,6 +29,7 @@ func NewRedisStore(rdb *redis.Client) *RedisStore {
 		rdb:            rdb,
 		scriptReserve:  redis.NewScript(reserveBatchLua),
 		scriptCharge:   redis.NewScript(chargeBatchLua),
+		scriptRelease:  redis.NewScript(releaseBatchLua),
 		scriptSnapshot: redis.NewScript(snapshotBatchLua),
 	}
 }
@@ -133,6 +135,33 @@ for i = 1, n do
     out[(i - 1) * 3 + 3] = overflow
 end
 return out
+`
+
+// releaseBatchLua rolls back a reserve by decrementing each bucket's current
+// window by cost, clamped at 0 (deletes the key when it reaches 0). Targets the
+// current window only (fast-failing paths, so no window-boundary concern).
+//
+// ARGV: now, then per-bucket {window, cost}
+const releaseBatchLua = `
+local now = tonumber(ARGV[1])
+local n = #KEYS
+for i = 1, n do
+    local base = 1 + (i - 1) * 2 + 1
+    local window = tonumber(ARGV[base])
+    local cost = tonumber(ARGV[base + 1])
+
+    local curStart = math.floor(now / window) * window
+    local key = KEYS[i] .. ':' .. curStart
+    local v = tonumber(redis.call('GET', key) or '0')
+    local nv = v - cost
+    if nv <= 0 then
+        redis.call('DEL', key)
+    else
+        redis.call('SET', key, nv)
+        redis.call('EXPIRE', key, window * 2)
+    end
+end
+return 1
 `
 
 // SnapshotBatch Lua: batch-reads bucket effective + reset_at; read-only, no writes.
@@ -252,6 +281,28 @@ func (s *RedisStore) ChargeBatch(ctx context.Context, buckets []Bucket) ([]Bucke
 		}
 	}
 	return out, nil
+}
+
+// ReleaseBatch implements Store.ReleaseBatch — rolls back a reserve.
+func (s *RedisStore) ReleaseBatch(ctx context.Context, buckets []Bucket) error {
+	if len(buckets) == 0 {
+		return nil
+	}
+	keys := make([]string, len(buckets))
+	args := make([]any, 0, 1+len(buckets)*2)
+	args = append(args, time.Now().Unix())
+	for i, b := range buckets {
+		keys[i] = b.Key
+		windowSec := int64(b.Window.Seconds())
+		if windowSec <= 0 {
+			windowSec = 60
+		}
+		args = append(args, windowSec, b.Cost)
+	}
+	if err := s.scriptRelease.Run(ctx, s.rdb, keys, args...).Err(); err != nil {
+		return fmt.Errorf("ratelimit: release batch: %w", err)
+	}
+	return nil
 }
 
 // SnapshotBatch implements Store.SnapshotBatch.

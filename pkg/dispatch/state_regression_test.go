@@ -75,6 +75,7 @@ func (q *unknownThenOKQuota) Reserve(_ context.Context, _ *domain.Endpoint) (*Qu
 }
 
 func (q *unknownThenOKQuota) ChargeUsage(_ context.Context, _ *domain.Endpoint, _ *domain.Usage) {}
+func (q *unknownThenOKQuota) Release(_ context.Context, _ *domain.Endpoint)                      {}
 
 // TestDispatcher_ClassUnknownEndpointStaysEligible is an end-to-end
 // regression: the only endpoint hits a single store blip (ClassUnknown) and

@@ -43,6 +43,9 @@ func (s *localStubStore) ReserveBatch(_ context.Context, _ []ratelimit.Bucket) (
 func (s *localStubStore) ChargeBatch(_ context.Context, _ []ratelimit.Bucket) ([]ratelimit.BucketChargeResult, error) {
 	return nil, nil
 }
+func (s *localStubStore) ReleaseBatch(_ context.Context, _ []ratelimit.Bucket) error {
+	return nil
+}
 
 func scanID(key string, out *int64) (int, error) {
 	parts := strings.Split(key, ":")

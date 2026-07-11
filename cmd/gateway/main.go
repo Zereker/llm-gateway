@@ -659,6 +659,15 @@ func buildOutbox(srv *server.Server, cfg config.UsageEventsConfig) (usage.Outbox
 			return nil, err
 		}
 		if cfg.Kafka.Async {
+			// A pure async-kafka outbox has NO durable backstop: billing events
+			// are lost on buffer-full past the deadline, on Close-drain timeout,
+			// and on any process crash before the channel flushes. Only
+			// file_and_kafka (file = source of truth) is safe for billing in
+			// production. Warn loudly so this footgun is visible at startup.
+			if cfg.Kafka.DLQTopic == "" {
+				slog.Warn("usage_events: pure async kafka outbox has no durable backstop; " +
+					"billing events can be lost on crash/backpressure. Use file_and_kafka in production.")
+			}
 			ob := usage.NewAsyncKafkaOutbox(producer, cfg.Kafka.Topic, usage.AsyncOptions{
 				BufferSize:  cfg.Kafka.BufferSize,
 				MaxRetries:  cfg.Kafka.MaxRetries,
