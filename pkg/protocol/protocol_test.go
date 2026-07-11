@@ -355,17 +355,18 @@ func TestCombine_NewResponseStream_ForwardsFeedAndFlush(t *testing.T) {
 // DefaultLookup
 // =============================================================================
 //
-// DefaultLookup uses the global adapter + translator registries — tests need to reset + register.
+// DefaultLookup composes a Handler from an application-scoped factory map +
+// translator registry, both built via newTestLookup.
 
 func TestDefaultLookup_Get_Composes_AdapterPlusTranslator(t *testing.T) {
-	resetGlobalRegistries(t)
-
 	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}}
-	protocol.RegisterFactory("myv", ad)
-	translator.Register(&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoAnthropic})
+	lookup := newTestLookup(
+		map[string]protocol.Factory{"myv": ad},
+		&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoAnthropic},
+	)
 
 	ep := &domain.Endpoint{Vendor: "myv", Protocol: domain.ProtoAnthropic}
-	h := protocol.DefaultLookup{}.Get(ep, domain.ProtoOpenAI)
+	h := lookup.Get(ep, domain.ProtoOpenAI)
 	if h == nil {
 		t.Fatal("DefaultLookup.Get returned nil")
 	}
@@ -376,39 +377,41 @@ func TestDefaultLookup_Get_Composes_AdapterPlusTranslator(t *testing.T) {
 }
 
 func TestDefaultLookup_Get_NilEndpoint_ReturnsNil(t *testing.T) {
-	if h := (protocol.DefaultLookup{}).Get(nil, domain.ProtoOpenAI); h != nil {
+	lookup := newTestLookup(nil)
+	if h := lookup.Get(nil, domain.ProtoOpenAI); h != nil {
 		t.Errorf("nil endpoint should yield nil handler; got %v", h)
 	}
 }
 
 func TestDefaultLookup_Get_ProtoUnknown_ReturnsNil(t *testing.T) {
-	resetGlobalRegistries(t)
-	protocol.RegisterFactory("myv", &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}})
+	lookup := newTestLookup(map[string]protocol.Factory{
+		"myv": &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}},
+	})
 
 	ep := &domain.Endpoint{Vendor: "myv"} // Protocol zero value = ProtoUnknown
-	if h := (protocol.DefaultLookup{}).Get(ep, domain.ProtoOpenAI); h != nil {
+	if h := lookup.Get(ep, domain.ProtoOpenAI); h != nil {
 		t.Errorf("ProtoUnknown ep should yield nil handler; got %v", h)
 	}
 }
 
 func TestDefaultLookup_Get_NoAdapter_ReturnsNil(t *testing.T) {
-	resetGlobalRegistries(t)
-	translator.Register(&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
+	lookup := newTestLookup(nil, &fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
 
 	ep := &domain.Endpoint{Vendor: "missing", Protocol: domain.ProtoOpenAI}
-	if h := (protocol.DefaultLookup{}).Get(ep, domain.ProtoOpenAI); h != nil {
+	if h := lookup.Get(ep, domain.ProtoOpenAI); h != nil {
 		t.Errorf("missing adapter should yield nil handler; got %v", h)
 	}
 }
 
 func TestDefaultLookup_Get_NoTranslator_ReturnsNil(t *testing.T) {
-	resetGlobalRegistries(t)
-	protocol.RegisterFactory("myv", &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}})
 	// register an (Anthropic → Anthropic) translator, but the caller looks for (OpenAI → Anthropic)
-	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoAnthropic})
+	lookup := newTestLookup(
+		map[string]protocol.Factory{"myv": &fakeAdapter{meta: protocol.Metadata{Vendor: "myv"}}},
+		&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoAnthropic},
+	)
 
 	ep := &domain.Endpoint{Vendor: "myv", Protocol: domain.ProtoAnthropic}
-	if h := (protocol.DefaultLookup{}).Get(ep, domain.ProtoOpenAI); h != nil {
+	if h := lookup.Get(ep, domain.ProtoOpenAI); h != nil {
 		t.Errorf("missing translator should yield nil handler; got %v", h)
 	}
 }
@@ -467,19 +470,11 @@ func TestIsPrepareError(t *testing.T) {
 // helpers
 // =============================================================================
 
-// resetGlobalRegistries clears the vendor + translator registries + Handler cache;
-// used for test setup + cleanup. All three must be cleared together, otherwise
-// handlerCache keeps stale references to a deleted Factory.
-func resetGlobalRegistries(t *testing.T) {
-	t.Helper()
-	protocol.ResetFactories()
-	protocol.ResetHandlerCache()
-	translator.Reset()
-	t.Cleanup(func() {
-		protocol.ResetFactories()
-		protocol.ResetHandlerCache()
-		translator.Reset()
-	})
+// newTestLookup builds an isolated DefaultLookup from the given vendor factories
+// and translators. Each test gets its own capability set, so there is no shared
+// global state to reset between tests.
+func newTestLookup(factories map[string]protocol.Factory, translators ...translator.Translator) *protocol.DefaultLookup {
+	return protocol.NewLookup(factories, translator.NewRegistry(translators...))
 }
 
 // =============================================================================
@@ -592,18 +587,17 @@ func TestCombine_QuirksCompileCached(t *testing.T) {
 // this is what lets combined's internal quirksCache be reused across requests;
 // otherwise the deployer's quirks JSON would be recompiled on every single request.
 //
-// Previous bug: DefaultLookup.Get news up a combined{} every time, so the
-// sync.Map cache was lost along with the instance. Fixed: handlerCache is now
-// package-level, keyed by "vendor|src|tgt".
+// The cache is per-lookup, keyed by "vendor|src|tgt"; copies of the same
+// DefaultLookup share the underlying *sync.Map, so the memoized Handler is
+// reused across value copies too.
 func TestDefaultLookup_CachesHandlerAcrossRequests(t *testing.T) {
-	resetGlobalRegistries(t)
-
 	ad := &fakeAdapter{meta: protocol.Metadata{Vendor: "cachev"}}
-	protocol.RegisterFactory("cachev", ad)
-	translator.Register(&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI})
+	lookup := newTestLookup(
+		map[string]protocol.Factory{"cachev": ad},
+		&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoOpenAI},
+	)
 
 	ep := &domain.Endpoint{Vendor: "cachev", Protocol: domain.ProtoOpenAI}
-	lookup := protocol.DefaultLookup{}
 
 	h1 := lookup.Get(ep, domain.ProtoOpenAI)
 	h2 := lookup.Get(ep, domain.ProtoOpenAI)
@@ -615,11 +609,11 @@ func TestDefaultLookup_CachesHandlerAcrossRequests(t *testing.T) {
 		t.Errorf("DefaultLookup.Get returned different Handler instances across calls (cache miss)")
 	}
 
-	// another DefaultLookup instance should also hit the same Handler (package-level cache)
-	otherLookup := protocol.DefaultLookup{}
+	// a value copy of the same lookup shares the underlying cache
+	otherLookup := *lookup
 	h3 := otherLookup.Get(ep, domain.ProtoOpenAI)
 	if h3 != h1 {
-		t.Errorf("a different DefaultLookup instance did not hit the package-level cache")
+		t.Errorf("a copy of the same DefaultLookup did not hit the shared cache")
 	}
 }
 
@@ -631,15 +625,15 @@ func TestDefaultLookup_CachesHandlerAcrossRequests(t *testing.T) {
 // (anthropic→openai) + (openai→gemini) are → DefaultLookup should compose a
 // usable Handler instead of nil (old behavior: eligibility would exclude it).
 func TestDefaultLookup_PivotCompositionFallback(t *testing.T) {
-	resetGlobalRegistries(t)
-
-	protocol.RegisterFactory("gvendor", &fakeAdapter{meta: protocol.Metadata{Vendor: "gvendor"}})
-	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
-	translator.Register(&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoGemini})
 	// Note: no direct (anthropic → gemini) pair registered
+	lookup := newTestLookup(
+		map[string]protocol.Factory{"gvendor": &fakeAdapter{meta: protocol.Metadata{Vendor: "gvendor"}}},
+		&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI},
+		&fakeTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoGemini},
+	)
 
 	ep := &domain.Endpoint{Vendor: "gvendor", Protocol: domain.ProtoGemini}
-	h := protocol.DefaultLookup{}.Get(ep, domain.ProtoAnthropic)
+	h := lookup.Get(ep, domain.ProtoAnthropic)
 	if h == nil {
 		t.Fatal("direct pair is missing but both legs are present, should compose a Handler")
 	}
@@ -652,14 +646,14 @@ func TestDefaultLookup_PivotCompositionFallback(t *testing.T) {
 
 // Still returns nil when both legs are missing → eligibility excludes it as usual.
 func TestDefaultLookup_PivotCompositionMissingLegStillNil(t *testing.T) {
-	resetGlobalRegistries(t)
-
-	protocol.RegisterFactory("gvendor", &fakeAdapter{meta: protocol.Metadata{Vendor: "gvendor"}})
-	translator.Register(&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
 	// Missing the (openai → gemini) leg
+	lookup := newTestLookup(
+		map[string]protocol.Factory{"gvendor": &fakeAdapter{meta: protocol.Metadata{Vendor: "gvendor"}}},
+		&fakeTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI},
+	)
 
 	ep := &domain.Endpoint{Vendor: "gvendor", Protocol: domain.ProtoGemini}
-	if h := (protocol.DefaultLookup{}).Get(ep, domain.ProtoAnthropic); h != nil {
+	if h := lookup.Get(ep, domain.ProtoAnthropic); h != nil {
 		t.Errorf("should return nil when a leg is missing, got %v", h)
 	}
 }

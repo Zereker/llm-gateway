@@ -86,10 +86,18 @@ func (panicResult) StreamTo(context.Context, http.ResponseWriter) dispatch.Strea
 }
 func (panicResult) Close() error { return nil }
 
+// stubLookup is a no-op protocol.Lookup; these router tests short-circuit at M2
+// Auth (401) and never dispatch, so Get is never actually called.
+type stubLookup struct{}
+
+func (stubLookup) Get(*domain.Endpoint, domain.Protocol) protocol.Handler { return nil }
+
 func minDeps() Deps {
 	return Deps{
 		// M2
 		IdentityProvider: stubIdentity{},
+		// M3 Envelope requires a non-nil lookup
+		Handlers: stubLookup{},
 		// M5
 		ModelCatalog:        stubMSProvider{},
 		SubscriptionChecker: stubSubscriptions{},

@@ -12,8 +12,8 @@ Core principles:
 - Protocol ownership is an **endpoint-level** property (`Endpoint.Protocol`), not a
   vendor-level one.
 - Handler is an end-to-end processor for the (endpoint, sourceProtocol) tuple; it is
-  **dynamically composed** per request, not statically registered into a matrix in
-  init().
+  **dynamically composed** per request, not statically registered into a matrix at
+  startup.
 - We do not aim to fill out an arbitrary `source × target` protocol matrix — an
   unregistered combination is simply treated as unsupported; eligibility filtering
   removes that endpoint, and the request either falls back or returns 503.
@@ -45,7 +45,7 @@ Core principles:
 Client request
   ↓
 M3 Envelope: writes rc.Envelope (RawBytes / SourceProtocol / Modality)
-            + rc.Handlers = protocol.DefaultLookup{}
+            + rc.Handlers = the built-in protocol.Lookup (internal/builtin.NewLookup)
   ↓
 M5 ModelService: resolves model + fallback chain
   ↓
@@ -131,7 +131,7 @@ touches the specific endpoint once passed as the `PrepareCall` argument.
 protocol"; within the same upstream protocol, different vendors / models can still have
 subtle differences. **All quirks are deployment knowledge, stored in the
 `endpoints.quirks` JSON column, configured directly via SQL by the deployer** — no
-vendor rule is registered in code via init().
+vendor rule is hard-coded in the composition layer.
 
 Two typical categories of differences:
 
@@ -295,7 +295,7 @@ The governance strategy has two layers:
 that has real traffic, hand-write a `pkg/translator/<src>_<tgt>/` that fully maps the
 protocol-specific fields (thinking blocks / cache_control / tool schema, etc.).
 
-**Layer 2: pivot composition (fallback, potentially lossy)** — `translator.FindVia(src,
+**Layer 2: pivot composition (fallback, potentially lossy)** — `Registry.FindVia(src,
 tgt, pivot)` attempts `Compose(Find(src, pivot), Find(pivot, tgt))` when the direct
 route misses:
 
@@ -372,10 +372,10 @@ Vendor sub-packages:
 - `pkg/protocol/anthropic/`
 - `pkg/protocol/gemini/`
 
-Each vendor sub-package's `init()` only calls
-`protocol.RegisterFactory("<vendor>", Factory{})`; the Handler is dynamically
-synthesized by `DefaultLookup` at request time, not registered into a matrix in
-init().
+Each vendor sub-package only defines its `Factory` type; `internal/builtin.NewLookup`
+assembles the factory map (keyed by vendor name) at startup, and the Handler is
+dynamically synthesized by `DefaultLookup` at request time, not registered into a
+matrix.
 
 ## 8. `pkg/translator` — body shape layer (internal detail of the facade)
 
@@ -394,9 +394,9 @@ type ResponseHandler interface {
 }
 ```
 
-**Registration**: each translator sub-package's `init()` calls
-`translator.Register(...)`; the global table is fully populated at startup;
-`translator.Find(src, tgt)` queries it at runtime. `DefaultLookup.Get` uses this to
+**Registration**: `internal/builtin.NewLookup` builds one `translator.Registry`
+(via `translator.NewRegistry(...)`) from every translator sub-package at startup;
+`Registry.Find(src, tgt)` queries it at runtime. `DefaultLookup.Get` uses this to
 dynamically obtain the translator.
 
 Built-in translators:
@@ -515,7 +515,7 @@ retrying the same endpoint, so it can Switch directly to the next model or Abort
 
 - Protocol ownership is always endpoint-level; do not restore NativeProtocol on the
   vendor adapter.
-- Do not statically register a (vendor, srcProto) Handler matrix in init() — keep
+- Do not statically register a (vendor, srcProto) Handler matrix at startup — keep
   runtime dynamic composition, so that overriding rc.Handlers can affect all paths.
 - Multiple protocol capabilities on the same vendor → multiple endpoint rows, each
   with its own Protocol set.

@@ -60,12 +60,11 @@ func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerF
 //   - Route forgot to attach WithSourceProtocol → 500 / ErrUnknown
 //   - Reading the body failed → 400 / ErrInvalid / "envelope: read body: <err>"
 //   - Missing model field → 400 / ErrInvalid / "envelope: ..."
-func Envelope(lookups ...protocol.Lookup) gin.HandlerFunc {
-	tracer := otel.GetTracerProvider().Tracer(ScopeName)
-	var defaultLookup protocol.Lookup = protocol.DefaultLookup{}
-	if len(lookups) > 0 && lookups[0] != nil {
-		defaultLookup = lookups[0]
+func Envelope(lookup protocol.Lookup) gin.HandlerFunc {
+	if lookup == nil {
+		panic("middleware: Envelope requires a non-nil protocol.Lookup")
 	}
+	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		ctx, span := tracer.Start(c.Request.Context(), "envelope.parse")
@@ -94,12 +93,12 @@ func Envelope(lookups ...protocol.Lookup) gin.HandlerFunc {
 		rc.Envelope.RawBytes = raw
 		rc.Envelope.Model = model
 
-		// Request-level lookup default: wraps the global adapter + translator
-		// registry, dynamically composing a Handler by (endpoint, srcProto).
-		// Later middleware (e.g. multi-tenant / canary policies) can override
-		// rc.Handlers with a custom Handler set.
+		// Request-level lookup default: the application's built-in catalog,
+		// dynamically composing a Handler by (endpoint, srcProto). Later
+		// middleware (e.g. multi-tenant / canary policies) may have already
+		// installed a custom Handler set, which we must not overwrite.
 		if rc.Handlers == nil {
-			rc.Handlers = defaultLookup
+			rc.Handlers = lookup
 		}
 
 		c.Next()

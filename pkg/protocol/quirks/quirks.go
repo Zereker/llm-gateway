@@ -35,7 +35,7 @@
 //	  name it expects
 //	- vendor-private headers (e.g. X-API-Version) need to be hardcoded on the endpoint
 //
-// **Why not register this at vendor init() time**: quirks is deployment
+// **Why not bake this into the vendor Factory**: quirks is deployment
 // knowledge, not code knowledge. The same vendor can easily have multiple
 // endpoints deployed with different quirks (one for o1, one for gpt-4o), and
 // vendor code shouldn't hardcode which model gets which rules. **The deployer

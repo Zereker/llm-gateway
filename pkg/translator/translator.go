@@ -19,9 +19,9 @@
 // buffer-then-translate (translates the whole body at once on Flush); true
 // streaming translation is left for a future iteration.
 //
-// **Registration**: each translator subpackage calls Register in its init();
-// cmd wires up all the blank imports. protocol.DefaultLookup looks translators
-// up per request via translator.Find(src, tgt).
+// **Registration**: internal/builtin.NewLookup assembles every translator into
+// one *Registry at application startup; protocol.DefaultLookup looks them up per
+// request via Registry.FindVia(src, tgt, pivot).
 //
 // See docs/architecture/02-protocol-translation.md for details.
 package translator
@@ -83,8 +83,9 @@ type ResponseHandler interface {
 	Flush() (clientBytes []byte, usage *domain.Usage, err error)
 }
 
-// Registry is the global translator registry (init() Register pattern,
-// similar to adapter).
+// Registry holds an application's translator set, keyed by (source, target).
+// It is assembled once at startup (see NewRegistry) and read concurrently on
+// the request path.
 type Registry struct {
 	mu sync.RWMutex
 	m  map[key]Translator
@@ -93,8 +94,6 @@ type Registry struct {
 type key struct {
 	src, tgt domain.Protocol
 }
-
-var defaultRegistry = &Registry{m: make(map[key]Translator)}
 
 // NewRegistry builds an isolated translator registry. Registration is
 // expected during application assembly; the returned registry is then safe
@@ -129,23 +128,4 @@ func (r *Registry) Find(source, target domain.Protocol) Translator {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.m[key{src: source, tgt: target}]
-}
-
-// Register performs global registration (called within a package's init()).
-// Registering the same (source, target) twice panics, surfacing the conflict
-// at startup.
-func Register(t Translator) {
-	defaultRegistry.Register(t)
-}
-
-// Find looks up the translator for (source, target); returns nil if unregistered.
-func Find(source, target domain.Protocol) Translator {
-	return defaultRegistry.Find(source, target)
-}
-
-// Reset clears the registry; for tests only.
-func Reset() {
-	defaultRegistry.mu.Lock()
-	defer defaultRegistry.mu.Unlock()
-	defaultRegistry.m = make(map[key]Translator)
 }
