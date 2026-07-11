@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/protocol"
 	"github.com/zereker/llm-gateway/internal/trace"
 )
 
@@ -493,8 +495,12 @@ func TestDispatcher_ClientAbortDoesNotPenalizeEndpoint(t *testing.T) {
 	res := successResult(&domain.Usage{Total: 10}, 5)
 	res.streamRep.Err = context.Canceled // stream interrupted, but caused by client disconnect
 
+	// client disconnects mid-stream: headers already written, ctx cancels
+	// while StreamTo is running (an entry-canceled ctx now aborts pre-select
+	// with 499 instead — see TestDispatcher_ClientGoneBeforeSelectAbortsImmediately)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // simulate client disconnect: request ctx already canceled
+	defer cancel()
+	res.onStream = cancel
 
 	d := New(
 		WithCandidates(fakeCandidates{}),
@@ -582,5 +588,119 @@ func TestQuotaVerdictToAttempt_ClassSemantics(t *testing.T) {
 	v = quotaVerdictToAttempt(nil, errors.New("redis timeout"))
 	if v.Class != ClassUnknown {
 		t.Errorf("qerr class = %s, want unknown", v.Class)
+	}
+}
+
+// cancelingInvokerFactory simulates a client that disconnects while the
+// upstream call is in flight: Invoke cancels the request ctx, then returns
+// the configured result (the way a canceled Do surfaces as a verdict).
+type cancelingInvokerFactory struct {
+	cancel context.CancelFunc
+	res    *fakeResult
+}
+
+func (f *cancelingInvokerFactory) For(ep *domain.Endpoint, _ protocol.Handler, _ *domain.RequestEnvelope) Invoker {
+	f.res.ep = ep
+	return &cancelingInvoker{cancel: f.cancel, res: f.res}
+}
+
+type cancelingInvoker struct {
+	cancel context.CancelFunc
+	res    *fakeResult
+}
+
+func (i *cancelingInvoker) Invoke(_ context.Context) (Result, error) {
+	i.cancel()
+	return i.res, nil
+}
+
+// TestDispatcher_ClientGoneBeforeSelectAbortsImmediately: a ctx that is
+// already canceled at Dispatch entry must not touch selector or invoker
+// (both fakes panic when called) and must map to 499.
+func TestDispatcher_ClientGoneBeforeSelectAbortsImmediately(t *testing.T) {
+	sel := newFakeSelector() // Pick panics if reached
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(sel),
+		WithInvokerFactory(newFakeInvokerFactory()), // For panics if reached
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	out := d.Dispatch(ctx, httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if out.Result != OutcomeClientAbort {
+		t.Fatalf("Result = %s, want client_abort", out.Result)
+	}
+	if out.HTTPCode != 499 {
+		t.Fatalf("HTTPCode = %d, want 499", out.HTTPCode)
+	}
+	if len(sel.reports) != 0 {
+		t.Fatalf("reports = %d, want 0 (client abort must not feed cooldown/stats)", len(sel.reports))
+	}
+}
+
+// TestDispatcher_ClientGoneDuringInvokeNotReported: the ctx dies while the
+// invoke is in flight. The resulting transient verdict is caused by the
+// client, not the endpoint — it must not be Reported (no cooldown/stats
+// pollution), must not be retried, and the P2C Release pairing must hold.
+func TestDispatcher_ClientGoneDuringInvokeNotReported(t *testing.T) {
+	ep := newTestEP(1)
+	sel := newFakeSelector(selResp{ep: ep})
+	res := transientResult()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(sel),
+		WithInvokerFactory(&cancelingInvokerFactory{cancel: cancel, res: res}),
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+
+	out := d.Dispatch(ctx, httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if out.Result != OutcomeClientAbort {
+		t.Fatalf("Result = %s, want client_abort", out.Result)
+	}
+	if len(sel.reports) != 0 {
+		t.Fatalf("reports = %d, want 0 (canceled ctx must not poison a healthy endpoint)", len(sel.reports))
+	}
+	if !res.closed {
+		t.Fatalf("result not closed on client abort")
+	}
+	if sel.releases != 1 {
+		t.Fatalf("releases = %d, want 1 (P2C pairing must survive the abort path)", sel.releases)
+	}
+}
+
+// TestDispatcher_DeadlineExceededMapsTo504: a gateway-enforced timeout is not
+// a client disconnect — it maps to 504 instead of 499.
+func TestDispatcher_DeadlineExceededMapsTo504(t *testing.T) {
+	d := New(
+		WithCandidates(fakeCandidates{}),
+		WithSelector(newFakeSelector()),
+		WithInvokerFactory(newFakeInvokerFactory()),
+		WithCap(HeaderAttemptCap{Default: 3}),
+		WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	out := d.Dispatch(ctx, httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if out.Result != OutcomeClientAbort {
+		t.Fatalf("Result = %s, want client_abort", out.Result)
+	}
+	if out.HTTPCode != 504 {
+		t.Fatalf("HTTPCode = %d, want 504", out.HTTPCode)
 	}
 }

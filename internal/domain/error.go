@@ -35,6 +35,7 @@ const (
 	ErrCodeUpstreamError         = "upstream_error"
 	ErrCodeInternalError         = "internal_error"
 	ErrCodeDependencyUnavailable = "dependency_unavailable"
+	ErrCodeClientClosedRequest   = "client_closed_request"
 )
 
 // AdapterError is the gateway's unified internal error structure.

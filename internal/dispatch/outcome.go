@@ -38,12 +38,13 @@ type Outcome struct {
 type OutcomeResult int
 
 const (
-	OutcomeUnknown    OutcomeResult = iota
-	OutcomeStreamed                 // success, response already streamed to the client
-	OutcomeInvalid                  // client error (400)
-	OutcomeTerminal                 // non-retryable upstream error (502)
-	OutcomeNoEndpoint               // all models / attempts exhausted (503)
-	OutcomeDepFail                  // Selector dependency failure (503, Reason contains the SQL/Redis error)
+	OutcomeUnknown     OutcomeResult = iota
+	OutcomeStreamed                  // success, response already streamed to the client
+	OutcomeInvalid                   // client error (400)
+	OutcomeTerminal                  // non-retryable upstream error (502)
+	OutcomeNoEndpoint                // all models / attempts exhausted (503)
+	OutcomeDepFail                   // Selector dependency failure (503, Reason contains the SQL/Redis error)
+	OutcomeClientAbort               // request ctx canceled before response headers (client gone / deadline); 499 or 504
 )
 
 func (r OutcomeResult) String() string {
@@ -58,6 +59,8 @@ func (r OutcomeResult) String() string {
 		return "no_endpoint"
 	case OutcomeDepFail:
 		return "dep_fail"
+	case OutcomeClientAbort:
+		return "client_abort"
 	default:
 		return "unknown"
 	}

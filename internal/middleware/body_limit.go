@@ -6,8 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// BodyLimit limits the request body size; once the limit is exceeded, reading
-// to EOF triggers a 413 via http.MaxBytesReader.
+// BodyLimit limits the request body size via http.MaxBytesReader. The reader
+// only errors the Read — it never writes a status itself; Envelope (M3, the
+// single body consumer) recognizes *http.MaxBytesError and maps it to 413.
 //
 // Returns a no-op when maxBytes <= 0, so each modality file can call this
 // unconditionally without checking for zero.

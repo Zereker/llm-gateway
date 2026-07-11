@@ -1,10 +1,10 @@
 package middleware
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"net/http"
 	"slices"
 	"strings"

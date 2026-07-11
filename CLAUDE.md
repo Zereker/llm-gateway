@@ -51,11 +51,11 @@ The request pipeline consists of 10 middlewares. **The shared security / quota /
 ```
 M1 TraceContext → M10 Tracing → M9 Recover → M2 Auth   (pre-Envelope, attached on the group)
 → WithSourceProtocol (path tagging) → M3 Envelope
-→ M4 Budget → M5 ModelService → M8 Moderation → M6 Limit → Cache → M7 Schedule
+→ M4 Budget → M5 ModelService → M6 Limit → M8 Moderation → Cache → M7 Schedule
 ```
 
 The `Cache` stage (response cache; chat + embedding modalities only, a no-op when `cache.enabled=false`)
-sits between M6 Limit and M7 Schedule: a hit returns directly, skipping the upstream. Embedding routes
+sits between M8 Moderation and M7 Schedule: a hit returns directly, skipping the upstream. Embedding routes
 mount a dedicated exact-match `EmbeddingCache` stage in the same slot.
 
 M10 is registered **outside** Recover, but its finishing logic runs post-`c.Next()` (the onion's return leg) —
