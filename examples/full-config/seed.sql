@@ -4,7 +4,7 @@
 -- versions. endpoints + api_keys are left empty (they need encryption / hashing; see the helper notes at the end).
 --
 -- Start the gateway first (it runs infra.Migrate to create tables at startup), then run this file to seed business data.
--- Then use the helper tool (or write a small Go script calling pkg/repo.EncodePayload / HashAPIKey)
+-- Then use the helper tool (or write a small Go script calling internal/repo.EncodePayload / HashAPIKey)
 -- to compute endpoints.auth ciphertext + api_keys.api_key_hash before INSERTing them.
 
 -- ============================================================================
@@ -57,7 +57,7 @@ SELECT 'demo-acme', id FROM model_services;
 -- **The auth column is AES-256-GCM encrypted** — inserting plaintext JSON directly will not work.
 -- There are two ways to generate the ciphertext:
 --
--- (a) Go tooling script (recommended): use pkg/repo's own helper
+-- (a) Go tooling script (recommended): use internal/repo's own helper
 --     repo.SetDataKey(cfg.DataKey)   // must match the data_key in gateway.yaml
 --     auth, _ := repo.EncodePayload(repo.AuthTypeBearer, repo.BearerAuth{APIKey: "sk-..."})
 --     // auth.Type = "bearer", auth.Payload = "v1:base64ofciphertext"
@@ -94,7 +94,7 @@ SELECT 'demo-acme', id FROM model_services;
 -- ============================================================================
 -- 7) pricing_versions: each (account, model_service, rule_class) needs at least one current price row with effective_to=NULL
 --
--- rule_json is the JSON representation of PricingSpec (pkg/usage/pricing.go).
+-- rule_json is the JSON representation of PricingSpec (internal/usage/pricing.go).
 -- Here all three models are configured with the standard tier; BaseUnit=1K_tokens; only input/output unit prices are set.
 -- ============================================================================
 

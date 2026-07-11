@@ -31,7 +31,7 @@ Content recording is an optional capability; it should not be assumed by default
 - The response stream may be very large.
 - Streaming scenarios need to read and write concurrently, and must not block the main chain for the sake of recording.
 
-Content recording should be based on `pkg/invoker` hooks:
+Content recording should be based on `internal/invoker` hooks:
 
 | Hook | Content recorded | Purpose |
 |------|----------|------|

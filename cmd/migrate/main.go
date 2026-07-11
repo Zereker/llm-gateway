@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/zereker/llm-gateway/pkg/config"
-	"github.com/zereker/llm-gateway/pkg/infra"
+	"github.com/zereker/llm-gateway/internal/config"
+	"github.com/zereker/llm-gateway/internal/infra"
 )
 
 func main() {

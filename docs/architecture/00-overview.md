@@ -26,7 +26,7 @@ The target architecture focuses on solving:
 |------|------|------|
 | migrate | `cmd/migrate` | Applies versioned schema migrations before a production rollout |
 | gateway | `cmd/gateway` | Thin data-plane entry; assembly lives in `internal/app/gateway`; validates schema version at startup |
-| console | `cmd/console` | Control plane: an Admin API (backed by `pkg/console`) for managing business data; optional, and the data plane runs without it |
+| console | `cmd/console` | Control plane: an Admin API (backed by `internal/console`) for managing business data; optional, and the data plane runs without it |
 
 Business data (accounts / api_keys / model_services / endpoints / quota_policies /
 subscriptions / pricing_versions) is maintained directly via SQL INSERT/UPDATE/DELETE by the deployer;
@@ -62,7 +62,7 @@ query against the same DB**. Most records rely on TTL expiry. API-key revocation
 exception: when console cachebus is enabled, it publishes a best-effort targeted invalidation; TTL remains the fallback. See
 [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details.
 
-Schema changes go through the versioned migrations in `pkg/infra`, applied by `cmd/migrate`.
+Schema changes go through the versioned migrations in `internal/infra`, applied by `cmd/migrate`.
 Changes must remain backward compatible: first deploy a new gateway with the new schema, letting it create the new tables/columns (keeping old fields);
 only after all gateways have finished upgrading should you drop fields or make breaking changes.
 
@@ -99,33 +99,33 @@ cmd/gateway
   -> repo SQL readers/providers
   -> router.NewEngine
 
-pkg/router
+internal/router
   -> Registers the full /v1/... routes per modality
   -> Composes the middleware chain
 
-pkg/middleware
+internal/middleware
   -> Request lifecycle, RequestContext read/write, error abort
   -> Each middleware has its own custom Option (interface) + WithXxxTracerProvider, aligned with otelgin v0.68.0
 
-pkg/repo (cached)
+internal/repo (cached)
   -> SQL Reader/Provider wrapped in a TTL LRU layer (repo.TTLCache[K,V] + CachedXxx wrapper)
   -> ModelCatalog / EndpointReader / APIKeyProvider and other middleware-owned readers use the cached version directly
 
-pkg/selector
+internal/selector
   -> Performs filter / pick / report over a batch of candidate endpoints; holds no repo, does not switch fallback model
 
-pkg/invoker
+internal/invoker
   -> Handler lookup, HTTP Do, response forward
 
-pkg/protocol
+internal/protocol
   -> Handler facade (PrepareCall → NewResponseStream)
   -> Factory / Session: vendor HTTP layer (URL, auth header, request construction)
   -> protocol/quirks: endpoint-level body/header tweak DSL (rename / strip / set / set_default)
 
-pkg/translator
+internal/translator
   -> Request/response conversion between the client protocol and the upstream protocol, usage extraction
 
-pkg/repo + pkg/infra
+internal/repo + internal/infra
   -> SQL schema, CRUD/readers, Redis, Kafka
 ```
 
@@ -145,7 +145,7 @@ pkg/repo + pkg/infra
 | `Scheduler` | M7's within-batch endpoint selector, exposing Pick/Report, not responsible for cross-model fallback |
 | `RateLimitState` | Rate-limit state written by M6/M7, used for TPM post-deduction and troubleshooting; not a client header contract |
 | `Usage` | Resource consumption and metadata for a single request, published by M10 to the outbox |
-| `TTLCache` | The gateway's in-process LRU + TTL cache (`pkg/repo/cache.go`), the repo's sole caching strategy |
+| `TTLCache` | The gateway's in-process LRU + TTL cache (`internal/repo/cache.go`), the repo's sole caching strategy |
 | `CachedXxxReader` | The repo layer's cached wrapper, wrapping a SQL Reader with a TTL LRU layer; default 30s |
 
 ## 7. Document Version
@@ -155,4 +155,4 @@ pkg/repo + pkg/infra
 | v0.3-target | 2026-05-16 | Aligned target boundaries: protocol capabilities pushed down to endpoint, simplified scheduler, RPM/RPS pre-deduction, TPM post-deduction, downstream billing |
 | v0.4-target | 2026-05-17 | middleware Option aligned with otelgin v0.68.0; domain/repo fully decoupled |
 | v0.6-target | 2026-05-21 | Removed `cmd/admin` + Flink + Debezium CDC: the data plane is 100% read-only MySQL, repo uses TTL LRU cache instead of real-time invalidation |
-| v0.7-target | 2026-05-22 | Merged `pkg/adapter` into `pkg/protocol` (vendor Factory / Session / Classifier all live in the protocol package); endpoint.quirks JSON column + DSL; dispatch / repo cache wired into OTel & Prom |
+| v0.7-target | 2026-05-22 | Merged the former `pkg/adapter` into the protocol package (vendor Factory / Session / Classifier all live in the protocol package); endpoint.quirks JSON column + DSL; dispatch / repo cache wired into OTel & Prom |

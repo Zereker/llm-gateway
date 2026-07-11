@@ -19,12 +19,12 @@ This directory is the single source of truth for `llm-gateway`'s architecture an
 
 ## Architecture Highlights
 
-- The data plane is `cmd/gateway`; a separate `cmd/console` control-plane binary (Admin API, backed by `pkg/console`) is also available. Business data is managed via direct SQL, and the console is an optional additional way to manage it — the data plane never depends on it.
+- The data plane is `cmd/gateway`; a separate `cmd/console` control-plane binary (Admin API, backed by `internal/console`) is also available. Business data is managed via direct SQL, and the console is an optional additional way to manage it — the data plane never depends on it.
 - Catalog, endpoint, API key, subscription, and quota policy data live in SQL; `cmd/migrate` applies versioned schema changes and gateway startup performs read-only version/schema checks.
 - The gateway depends on Redis for M6 rate limiting and scheduler cooldowns.
 - SQL writes propagate to the gateway through the [repo in-process TTL LRU cache](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) (default 30s) rather than querying the same tables per request; the data plane is 100% read-only, so the TTL window is sufficient.
 - Client-facing entry points cover OpenAI Chat, Anthropic Messages, OpenAI Responses, Images, Audio, and Embeddings routes; Gemini is supported as an upstream protocol only and is not exposed as a client entry point.
-- The `pkg/protocol` package is both the Handler facade and the home of vendor Factory / Session implementations (the HTTP-layer factories) plus the endpoint-level quirks DSL; protocol shape translation lives in `pkg/translator`, and usage extraction lives in `pkg/usage`. Consumers only see `protocol.Handler` / `protocol.Lookup` and never type-assert Factory.
+- The `internal/protocol` package is both the Handler facade and the home of vendor Factory / Session implementations (the HTTP-layer factories) plus the endpoint-level quirks DSL; protocol shape translation lives in `internal/translator`, and usage extraction lives in `internal/usage`. Consumers only see `protocol.Handler` / `protocol.Lookup` and never type-assert Factory.
 - All middleware wiring uses the interface-Option pattern (aligned with otelgin v0.68.0); see [06 §6](./06-pluggable-infra.md#6-middleware-options) and [01 §10](./01-request-pipeline.md#10-middleware-assembly-contract-aligned-with-otelgin-v0680).
 
 ## Maintenance Conventions
