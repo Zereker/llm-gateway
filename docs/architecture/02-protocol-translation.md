@@ -334,23 +334,40 @@ Layer 1 once real demand appears.
   double hop is fully lossy + adds streaming complexity, which is worse than the
   two-layer structure of "direct high fidelity + composition fallback"
 
-### 6b. Lossy-feature observability (cross-protocol pairs carry text only)
+### 6b. Content-feature coverage and lossy observability
 
-The cross-protocol pairs currently translate **text content only** — tool
-definitions / tool calls and non-text multimodal parts are dropped. To keep that
-loss from being silent (the same discipline as the pivot-composition warning
-above), each text-only pair calls `translator.ReportLossyRequest(src, tgt, body)`
-at the top of `TranslateRequest`:
+Cross-protocol pairs do not all carry every request feature. Current coverage:
 
-- it increments `llm_gateway_translator_feature_dropped_total{src,tgt,feature}`
+| pair | text | tool calling | multimodal (images) |
+|---|---|---|---|
+| `openai_anthropic` | ✅ | ✅ | ❌ |
+| `anthropic_openai` | ✅ | ✅ | ❌ |
+| `openai_gemini` | ✅ | ❌ | ❌ |
+| `openai_cohere` | ✅ | ❌ | ❌ |
+
+**Tool calling** (`openai↔anthropic`): request-side maps `tools` /
+`tool_choice`, assistant tool calls, and tool results between OpenAI's flat
+`tool_calls` + `role:"tool"` model and Anthropic's `tool_use` / `tool_result`
+content blocks; response-side maps both non-streaming and streaming (Anthropic
+`content_block_start` + `input_json_delta` ↔ OpenAI indexed `tool_calls`
+argument deltas), including parallel tool calls.
+
+**Lossy observability**: whatever a pair still drops must not drop silently (the
+same discipline as the pivot-composition warning above). Each pair calls
+`translator.ReportLossyRequest(src, tgt, body, only...)` at the top of
+`TranslateRequest`; `only` restricts the report to the features that pair still
+drops (`openai↔anthropic` pass `"multimodal"` now that tools are carried; the
+text-only pairs pass nothing and report everything). It:
+
+- increments `llm_gateway_translator_feature_dropped_total{src,tgt,feature}`
   (`feature` = `tools | tool_calls | multimodal`) on every dropping request, and
-- logs a one-time `slog.Warn` per (src, tgt, feature) — a client sending tools on
+- logs a one-time `slog.Warn` per (src, tgt, feature) — a client sending images on
   every request produces one warning, not one per request.
 
 Detection is best-effort via gjson and never mutates the body. Identity (same
 protocol) translators carry everything through and do not call it. A rising
-`feature_dropped_total` for a pair is the signal to implement real tool /
-multimodal translation there.
+`feature_dropped_total` for a pair is the signal to implement real translation
+for that feature there.
 
 ## 7. `pkg/protocol` — vendor HTTP layer (internal detail of the facade)
 
