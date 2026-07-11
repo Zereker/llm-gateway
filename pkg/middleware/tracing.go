@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"go.opentelemetry.io/otel"
 
-	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/usage"
 )
@@ -165,7 +165,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 // Follows the field source table in docs/05 §4. RoutedModelService takes
 // priority; on fallback, usage.meta.Model = the model that actually
 // succeeded (not the requested model).
-func fillUsageMeta(rc *domain.RequestContext, ctx context.Context, endTime time.Time, totalLatencyMs int64) {
+func fillUsageMeta(rc *requeststate.State, ctx context.Context, endTime time.Time, totalLatencyMs int64) {
 	m := &rc.Usage.Meta
 
 	m.StartTime = rc.StartTime
@@ -203,7 +203,7 @@ func fillUsageMeta(rc *domain.RequestContext, ctx context.Context, endTime time.
 //
 // request_id / trace_id are not at the envelope top level — the authoritative
 // values live in rc.Usage.Meta (written by fillUsageMeta).
-func buildUsageEvent(rc *domain.RequestContext) usage.UsageEvent {
+func buildUsageEvent(rc *requeststate.State) usage.UsageEvent {
 	return usage.UsageEvent{
 		SchemaVersion: usage.SchemaVersionV1,
 		EventID:       newEventID(),

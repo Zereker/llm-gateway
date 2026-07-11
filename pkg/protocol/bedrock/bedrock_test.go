@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 func sigv4Auth(access, secret, region string) domain.AuthConfig {
@@ -106,10 +105,7 @@ func TestBedrock_WrongAuthAndRegion(t *testing.T) {
 	}
 }
 
-func TestBedrock_FactoryRegistered(t *testing.T) {
-	if protocol.LookupFactory("bedrock") == nil {
-		t.Fatal("bedrock vendor not registered")
-	}
+func TestBedrock_FactoryMetadata(t *testing.T) {
 	f := Factory{}
 	if f.Metadata().Vendor != "bedrock" {
 		t.Error("wrong vendor name")

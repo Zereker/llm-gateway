@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // **After the v0.5 slim-down**: the openai adapter only has BuildRequest +
@@ -35,18 +34,6 @@ func TestFactory_Metadata(t *testing.T) {
 	m := Factory{}.Metadata()
 	if m.Vendor != "openai" {
 		t.Errorf("Vendor = %q, want openai", m.Vendor)
-	}
-}
-
-func TestAdapter_Registered(t *testing.T) {
-	// vendor adapter registration (the Handler is composed dynamically at
-	// request time by protocol.DefaultLookup)
-	if f := protocol.LookupFactory("openai"); f == nil {
-		t.Fatal("openai adapter not registered")
-	}
-	// the alias is registered too
-	if f := protocol.LookupFactory("ark"); f == nil {
-		t.Fatal("ark alias adapter not registered")
 	}
 }
 

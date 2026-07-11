@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
@@ -11,9 +10,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
+	cacheport "github.com/zereker/llm-gateway/internal/cache"
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/respcache"
 )
 
 // ResponseCache is the response-cache middleware — on a hit it returns the cached response
@@ -109,7 +109,7 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 
 // writeCacheHit writes the cached response to the client + passes through usage
 // (Source=cache) + aborts to skip M7. Shared by exact-cache and semantic-cache hits.
-func writeCacheHit(c *gin.Context, rc *domain.RequestContext, cached CachedResponse) {
+func writeCacheHit(c *gin.Context, rc *requeststate.State, cached CachedResponse) {
 	ct := cached.ContentType
 	if ct == "" {
 		ct = "application/json; charset=utf-8"
@@ -133,7 +133,7 @@ func writeCacheHit(c *gin.Context, rc *domain.RequestContext, cached CachedRespo
 //
 // Shared by exact-cache and semantic-cache write-back — both inherit the H1 poisoning
 // safeguard and the M4 streaming fallback.
-func cacheableResponse(tw *teeWriter, rc *domain.RequestContext) (CachedResponse, bool) {
+func cacheableResponse(tw *teeWriter, rc *requeststate.State) (CachedResponse, bool) {
 	ct := tw.Header().Get("Content-Type")
 	if tw.Status() == 200 && tw.buf.Len() > 0 && rc.Error == nil && !isEventStream(ct) {
 		return CachedResponse{StatusCode: 200, ContentType: ct, Body: tw.buf.Bytes(), Usage: rc.Usage}, true
@@ -141,16 +141,12 @@ func cacheableResponse(tw *teeWriter, rc *domain.RequestContext) (CachedResponse
 	return CachedResponse{}, false
 }
 
-// ResponseCacheStore is the response-cache storage port (Redis implementation lives at the
-// cmd wiring point).
-type ResponseCacheStore interface {
-	Get(ctx context.Context, key string) (CachedResponse, bool)
-	Set(ctx context.Context, key string, resp CachedResponse, ttl time.Duration)
-}
+// ResponseCacheStore is the response-cache storage port.
+type ResponseCacheStore = cacheport.Store
 
 // CachedResponse is retained as an alias for source compatibility. The cache
 // capability owns the value; middleware only consumes it.
-type CachedResponse = respcache.CachedResponse
+type CachedResponse = cacheport.CachedResponse
 
 // cacheKey is the hex of SHA256(accountID | protocol | modality | model | body).
 //

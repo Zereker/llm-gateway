@@ -45,7 +45,7 @@ Gateway startup sequence:
    Redis rate limit store, scheduler, outbox, tracer.
 6. Scan enabled endpoints, validate that the vendor adapter exists, `endpoint.Protocol` is valid, and the required translator is registered; if missing, only log a warning and emit a metric, without blocking startup.
 7. Call `router.NewEngine` to register routes and middleware.
-8. Hand off to `pkg/server` for listen, signal handling, graceful shutdown, and reverse-order resource teardown.
+8. Hand off to `internal/app/runtime` for listen, signal handling, graceful shutdown, and reverse-order resource teardown.
 
 Deployment order:
 
@@ -73,7 +73,7 @@ HTTP request
   |
   | pre: BodyLimit / Timeout
   v
-M1 TraceContext      Generates RequestID, injects OTel SpanContext/Baggage, creates RequestContext
+M1 TraceContext      Generates RequestID, injects OTel SpanContext/Baggage, creates requeststate.State
 M9 Recover           defer-based fallback for panics and unified error responses
 M2 Auth              Parses API key/JWT into domain.UserIdentity
 M3 Envelope          Reads the raw body, extracts model, records source protocol + modality
@@ -135,7 +135,7 @@ pkg/repo + pkg/infra
 |------|----------|
 | pin | The account's stable external identifier, used as the billing subject ID; distinct from the database auto-increment primary key, assigned by the deployer when the account is created, and immutable thereafter |
 | Group | A request grouping dimension under the primary account, affecting endpoint candidate filtering; defaults to `default`, can be used for isolation scenarios such as `reserved` / `experimental` |
-| `RequestContext` | The state object for a single request, attached to `c.Request.Context()`, retrieved via a middleware helper |
+| `requeststate.State` | HTTP pipeline state attached to `c.Request.Context()`; intentionally not a domain entity |
 | `RequestEnvelope` | M3's output: raw body, model, source protocol, modality; no longer contains the canonical request |
 | `UserIdentity` | M2's output, containing the primary account's pin, sub-account/operator, API key, group, and quota policy IDs |
 | `ModelService` | Global model catalog record; whether the primary account can use it is determined by the subscription table |

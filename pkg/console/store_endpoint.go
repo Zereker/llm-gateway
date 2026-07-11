@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/zereker/llm-gateway/pkg/endpointcheck"
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
@@ -60,7 +59,11 @@ func (s *Store) CreateEndpoint(ctx context.Context, in EndpointInput) (int64, er
 			return 0, &InvalidEndpointError{Reasons: []string{"invalid_quota: " + err.Error()}}
 		}
 	}
-	if reasons := endpointcheck.Validate(repo.ToDomainEndpoint(ep)); len(reasons) > 0 {
+	validator := s.endpointValidator
+	if validator.Catalog == nil {
+		return 0, &InvalidEndpointError{Reasons: []string{"protocol_catalog_not_configured"}}
+	}
+	if reasons := validator.Validate(repo.ToDomainEndpoint(ep)); len(reasons) > 0 {
 		return 0, &InvalidEndpointError{Reasons: reasons}
 	}
 	res, err := s.db.NamedExecContext(ctx,

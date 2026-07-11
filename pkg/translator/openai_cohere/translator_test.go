@@ -7,7 +7,6 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/translator"
 
 	// makes the anthropic->cohere pivot reachable (composition requires anthropic->openai to already be registered).
 	_ "github.com/zereker/llm-gateway/pkg/translator/anthropic_openai"
@@ -105,13 +104,10 @@ func TestFinishReasonMap(t *testing.T) {
 	}
 }
 
-// The translator is registered and reachable from each client protocol (direct openai / anthropic via pivot composition).
-func TestCohereTranslatorReachable(t *testing.T) {
-	if translator.Find(domain.ProtoOpenAI, domain.ProtoCohere) == nil {
-		t.Fatal("openai->cohere translator not registered")
-	}
-	if translator.FindVia(domain.ProtoAnthropic, domain.ProtoCohere, domain.ProtoOpenAI) == nil {
-		t.Error("anthropic->cohere should be reachable via pivot")
+func TestCohereTranslatorMetadata(t *testing.T) {
+	tr := New()
+	if tr.Source() != domain.ProtoOpenAI || tr.Target() != domain.ProtoCohere {
+		t.Fatalf("unexpected pair %s -> %s", tr.Source(), tr.Target())
 	}
 }
 

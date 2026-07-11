@@ -8,7 +8,7 @@ import (
 // Input is Dispatch's read-only input — all the request-level information
 // the dispatch driver loop needs.
 //
-// **Design motivation**: decouples dispatch from *domain.RequestContext. RC
+// **Design motivation**: decouples dispatch from HTTP request state. That
 // is the state carrier for the middleware chain; dispatch is an
 // orchestrator that only needs a pure data view of "what this request needs
 // to do".

@@ -60,8 +60,12 @@ func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerF
 //   - Route forgot to attach WithSourceProtocol → 500 / ErrUnknown
 //   - Reading the body failed → 400 / ErrInvalid / "envelope: read body: <err>"
 //   - Missing model field → 400 / ErrInvalid / "envelope: ..."
-func Envelope() gin.HandlerFunc {
+func Envelope(lookups ...protocol.Lookup) gin.HandlerFunc {
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
+	var defaultLookup protocol.Lookup = protocol.DefaultLookup{}
+	if len(lookups) > 0 && lookups[0] != nil {
+		defaultLookup = lookups[0]
+	}
 
 	return func(c *gin.Context) {
 		ctx, span := tracer.Start(c.Request.Context(), "envelope.parse")
@@ -95,7 +99,7 @@ func Envelope() gin.HandlerFunc {
 		// Later middleware (e.g. multi-tenant / canary policies) can override
 		// rc.Handlers with a custom Handler set.
 		if rc.Handlers == nil {
-			rc.Handlers = protocol.DefaultLookup{}
+			rc.Handlers = defaultLookup
 		}
 
 		c.Next()

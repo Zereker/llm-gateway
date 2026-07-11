@@ -6,7 +6,6 @@ import (
 	"io"
 	"testing"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -26,14 +25,6 @@ func TestFactory_Metadata(t *testing.T) {
 	m := Factory{}.Metadata()
 	if m.Vendor != "anthropic" {
 		t.Errorf("Vendor=%q", m.Vendor)
-	}
-}
-
-func TestAdapter_Registered(t *testing.T) {
-	// vendor adapter registration (Handler is dynamically composed by protocol.DefaultLookup
-	// at request time; here we only verify the adapter side)
-	if f := protocol.LookupFactory("anthropic"); f == nil {
-		t.Fatal("anthropic adapter not registered")
 	}
 }
 

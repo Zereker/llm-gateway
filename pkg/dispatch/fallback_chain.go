@@ -5,8 +5,8 @@ package dispatch
 //
 // Behavior:
 //
-//	state.RemainingModels() non-empty → Switch{Next: rem[0]}
-//	state.RemainingModels() empty     → Abort{NoEndpoint, 503}
+//	state.NextFallback() found → Switch{Next: next}
+//	state.NextFallback() empty → Abort{NoEndpoint, 503}
 //
 // **Replaceable**: implement the FallbackPolicy interface to write a new
 // strategy — race fallback (try multiple models concurrently) / weighted
@@ -16,8 +16,8 @@ type ModelChainFallback struct{}
 // OnExhausted decides what to do when the current model's candidates are
 // exhausted.
 func (ModelChainFallback) OnExhausted(s State) Action {
-	rem := s.RemainingModels()
-	if len(rem) == 0 {
+	next, ok := s.NextFallback()
+	if !ok {
 		return Abort{
 			Result:   OutcomeNoEndpoint,
 			Class:    ClassUnknown,
@@ -25,5 +25,5 @@ func (ModelChainFallback) OnExhausted(s State) Action {
 			Reason:   "no endpoint available across all models",
 		}
 	}
-	return Switch{Next: rem[0]}
+	return Switch{Next: next}
 }

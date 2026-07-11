@@ -18,6 +18,8 @@ import (
 // usage on the side via the extractor (factored out in v0.5 G6).
 type anthropicTranslator struct{}
 
+func newAnthropic() translator.Translator { return anthropicTranslator{} }
+
 func (anthropicTranslator) Source() domain.Protocol { return domain.ProtoAnthropic }
 func (anthropicTranslator) Target() domain.Protocol { return domain.ProtoAnthropic }
 
@@ -44,8 +46,4 @@ func (h *anthropicResponseHandler) Feed(chunk []byte) ([]byte, error) {
 
 func (h *anthropicResponseHandler) Flush() ([]byte, *domain.Usage, error) {
 	return nil, h.ex.Final(), nil
-}
-
-func init() {
-	translator.Register(anthropicTranslator{})
 }

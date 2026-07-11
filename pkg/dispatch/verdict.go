@@ -1,5 +1,7 @@
 package dispatch
 
+import "github.com/zereker/llm-gateway/internal/failure"
+
 import "time"
 
 // Verdict classifies the result of one Invoker.Invoke call.
@@ -81,34 +83,16 @@ func (s Stage) String() string {
 // renaming the "scheduling abstraction" to the "verdict abstraction" — Class
 // is what the driver sees as "what kind of thing this call was", not "the
 // scheduler's internal error type".
-type Class int
+type Class = failure.Class
 
 const (
-	ClassUnknown   Class = iota // couldn't be classified (IsRetryable = true, but Selector.Report doesn't write a cooldown)
-	ClassSuccess                // 2xx + protocol-layer success
-	ClassTransient              // 5xx / network error / timeout / DNS
-	ClassCapacity               // upstream 429 / overloaded / local reserve limit exceeded
-	ClassPermanent              // upstream 401 / 403 / config error
-	ClassInvalid                // client 4xx (other than 401/403/429) / translator failure; should not be retried
+	ClassUnknown   = failure.Unknown // couldn't be classified (IsRetryable = true, but Selector.Report doesn't write a cooldown)
+	ClassSuccess   = failure.Success // 2xx + protocol-layer success
+	ClassTransient = failure.Transient
+	ClassCapacity  = failure.Capacity
+	ClassPermanent = failure.Permanent
+	ClassInvalid   = failure.Invalid
 )
-
-// String is used for metric labels / the Attempt.ErrorClass field.
-func (c Class) String() string {
-	switch c {
-	case ClassSuccess:
-		return "success"
-	case ClassTransient:
-		return "transient"
-	case ClassCapacity:
-		return "capacity"
-	case ClassPermanent:
-		return "permanent"
-	case ClassInvalid:
-		return "invalid"
-	default:
-		return "unknown"
-	}
-}
 
 // IsRetryable reports whether this Class is worth retrying with a different
 // endpoint.
@@ -121,11 +105,3 @@ func (c Class) String() string {
 // classification blind spots polluting cooldown state). That special
 // handling happens inside Selector; Class.IsRetryable still follows the
 // "should we switch endpoints" semantics.
-func (c Class) IsRetryable() bool {
-	switch c {
-	case ClassSuccess, ClassInvalid:
-		return false
-	default:
-		return true
-	}
-}

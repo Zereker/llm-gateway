@@ -29,6 +29,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/zereker/llm-gateway/internal/failure"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -59,46 +60,21 @@ type Request struct {
 // ErrorClass buckets upstream / network / protocol errors into a few coarse-grained classes.
 //
 // CooldownManager uses this to decide whether an endpoint should cool down and for how long.
-type ErrorClass int
+type ErrorClass = failure.Class
 
 const (
-	ClassUnknown   ErrorClass = iota // couldn't be classified
-	ClassSuccess                     // 2xx
-	ClassTransient                   // 5xx / network error / timeout / DNS
-	ClassCapacity                    // upstream 429 / overloaded
-	ClassPermanent                   // upstream 401 / 403 / config error
-	ClassInvalid                     // client 4xx (other than 401/403/429); should not be retried
+	ClassUnknown   = failure.Unknown // couldn't be classified
+	ClassSuccess   = failure.Success // 2xx
+	ClassTransient = failure.Transient
+	ClassCapacity  = failure.Capacity
+	ClassPermanent = failure.Permanent
+	ClassInvalid   = failure.Invalid
 )
-
-func (c ErrorClass) String() string {
-	switch c {
-	case ClassSuccess:
-		return "success"
-	case ClassTransient:
-		return "transient"
-	case ClassCapacity:
-		return "capacity"
-	case ClassPermanent:
-		return "permanent"
-	case ClassInvalid:
-		return "invalid"
-	default:
-		return "unknown"
-	}
-}
 
 // IsRetryable decides whether dispatch.RetryPolicy should keep Picking the next candidate.
 //
 //	Transient / Capacity / Permanent / Unknown → retry
 //	Success / Invalid                          → stop
-func (c ErrorClass) IsRetryable() bool {
-	switch c {
-	case ClassSuccess, ClassInvalid:
-		return false
-	default:
-		return true
-	}
-}
 
 // Result is the outcome of a single call, passed by the dispatcher (via SelectorAdapter) to Scheduler.Report.
 type Result struct {

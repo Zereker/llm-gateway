@@ -48,7 +48,3 @@ func (Factory) Metadata() protocol.Metadata {
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
 	return newSession(c, ep, env), nil
 }
-
-func init() {
-	protocol.RegisterFactory("azure-openai", Factory{})
-}

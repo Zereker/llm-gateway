@@ -34,6 +34,9 @@ import (
 
 type openaiGemini struct{}
 
+// New returns the OpenAI-to-Gemini translator.
+func New() translator.Translator { return openaiGemini{} }
+
 func (openaiGemini) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiGemini) Target() domain.Protocol { return domain.ProtoGemini }
 
@@ -513,8 +516,4 @@ func randID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-func init() {
-	translator.Register(openaiGemini{})
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/protocol/quirks"
-	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
 // clientProtocols are the client-facing entry protocols the gateway exposes (docs/02 §2);
@@ -29,11 +28,20 @@ var clientProtocols = []domain.Protocol{
 	domain.ProtoResponses,
 }
 
+// Catalog is the protocol capability view needed for endpoint validation.
+type Catalog interface {
+	HasVendor(vendor string) bool
+	CanTranslate(source, target domain.Protocol) bool
+}
+
+// Validator checks endpoint configuration against an explicit capability catalog.
+type Validator struct{ Catalog Catalog }
+
 // Validate returns all misconfiguration reasons for one endpoint (empty slice = healthy).
 //
 // reason is a stable snake_case identifier, used both as a metric label and as the
 // machine-readable error code in the control plane's 400 response.
-func Validate(ep *domain.Endpoint) []string {
+func (v Validator) Validate(ep *domain.Endpoint) []string {
 	var reasons []string
 
 	// 1) protocol validity: ProtoUnknown means ParseProtocol didn't recognize it (typo / trailing space).
@@ -42,7 +50,7 @@ func Validate(ep *domain.Endpoint) []string {
 	}
 
 	// 2) vendor Factory registration check.
-	if protocol.LookupFactory(ep.Vendor) == nil {
+	if v.Catalog == nil || !v.Catalog.HasVendor(ep.Vendor) {
 		reasons = append(reasons, "vendor_not_registered")
 	}
 
@@ -51,7 +59,7 @@ func Validate(ep *domain.Endpoint) []string {
 	if ep.Protocol != domain.ProtoUnknown {
 		reachable := false
 		for _, src := range clientProtocols {
-			if translator.FindVia(src, ep.Protocol, domain.ProtoOpenAI) != nil {
+			if v.Catalog != nil && v.Catalog.CanTranslate(src, ep.Protocol) {
 				reachable = true
 				break
 			}
@@ -75,6 +83,12 @@ func Validate(ep *domain.Endpoint) []string {
 	}
 
 	return reasons
+}
+
+// Validate is retained for source compatibility with callers using the
+// legacy process-global registries. Applications should inject Validator.
+func Validate(ep *domain.Endpoint) []string {
+	return Validator{Catalog: protocol.DefaultLookup{}}.Validate(ep)
 }
 
 // validateRoutingURL validates the upstream URL; returns a misconfiguration reason (empty = pass).

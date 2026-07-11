@@ -47,8 +47,6 @@ func TestTraceContext_FillsAllRCFields(t *testing.T) {
 			t.Error("StartTime zero")
 		case c.Request.Context() == nil:
 			t.Error("c.Request.Context() nil")
-		case rc.Extras == nil:
-			t.Error("Extras nil")
 		}
 		c.Status(200)
 	})

@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/zereker/llm-gateway/internal/failure"
 	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
@@ -64,33 +65,16 @@ const (
 
 // Class is invoker's transport/protocol outcome classification. Higher-level
 // scheduling packages translate it at their adapter boundary.
-type Class int
+type Class = failure.Class
 
 const (
-	ClassUnknown Class = iota
-	ClassSuccess
-	ClassTransient
-	ClassCapacity
-	ClassPermanent
-	ClassInvalid
+	ClassUnknown   = failure.Unknown
+	ClassSuccess   = failure.Success
+	ClassTransient = failure.Transient
+	ClassCapacity  = failure.Capacity
+	ClassPermanent = failure.Permanent
+	ClassInvalid   = failure.Invalid
 )
-
-func (c Class) String() string {
-	switch c {
-	case ClassSuccess:
-		return "success"
-	case ClassTransient:
-		return "transient"
-	case ClassCapacity:
-		return "capacity"
-	case ClassPermanent:
-		return "permanent"
-	case ClassInvalid:
-		return "invalid"
-	default:
-		return "unknown"
-	}
-}
 
 // Outcome is the result of Send.
 //

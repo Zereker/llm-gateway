@@ -21,19 +21,19 @@ import (
 //	                    models, starting at 1)
 //	AttemptsCap     ── the max attempts allowed for this request (from
 //	                    AttemptCap.Resolve)
-//	Excluded        ── the set of endpoint IDs already tried in this request
+//	IsExcluded      ── tests whether an endpoint was already tried
 //	                    (accumulated across models)
 //	CurrentModel    ── the model used by the current attempt loop (updated
 //	                    on fallback switches)
-//	RemainingModels ── models in ModelChain not yet used after CurrentModel
+//	NextFallback    ── returns a copy of the next unused model
 //	LastVerdict     ── the Verdict from the last Invoker.Invoke (zero value
 //	                    before the first attempt)
 type State interface {
 	Attempts() int
 	AttemptsCap() int
-	Excluded() map[int64]struct{}
 	CurrentModel() *domain.ModelService
-	RemainingModels() []*domain.ModelService
+	IsExcluded(endpointID int64) bool
+	NextFallback() (*domain.ModelService, bool)
 	LastVerdict() Verdict
 }
 
@@ -80,23 +80,37 @@ func newState(in Input, cap int) *state {
 // State interface (read-only, used by Policy)
 // =============================================================================
 
-func (s *state) Attempts() int                { return s.attempts }
-func (s *state) AttemptsCap() int             { return s.attemptsCap }
-func (s *state) Excluded() map[int64]struct{} { return s.excluded }
+func (s *state) Attempts() int    { return s.attempts }
+func (s *state) AttemptsCap() int { return s.attemptsCap }
 
-func (s *state) CurrentModel() *domain.ModelService {
+func (s *state) IsExcluded(endpointID int64) bool {
+	_, ok := s.excluded[endpointID]
+	return ok
+}
+
+func (s *state) currentModel() *domain.ModelService {
 	if s.curIdx >= len(s.modelChain) {
 		return nil
 	}
 	return s.modelChain[s.curIdx]
 }
 
-func (s *state) RemainingModels() []*domain.ModelService {
-	next := s.curIdx + 1
-	if next >= len(s.modelChain) {
+func (s *state) CurrentModel() *domain.ModelService {
+	model := s.currentModel()
+	if model == nil {
 		return nil
 	}
-	return s.modelChain[next:]
+	copy := *model
+	return &copy
+}
+
+func (s *state) NextFallback() (*domain.ModelService, bool) {
+	next := s.curIdx + 1
+	if next >= len(s.modelChain) {
+		return nil, false
+	}
+	copy := *s.modelChain[next]
+	return &copy, true
 }
 
 func (s *state) LastVerdict() Verdict { return s.lastVerdict }
@@ -110,7 +124,7 @@ func (s *state) Exhausted() bool { return s.attempts >= s.attemptsCap }
 
 // PickQuery builds the input for Selector.Pick (model / group / exclude).
 func (s *state) PickQuery() PickQuery {
-	cur := s.CurrentModel()
+	cur := s.currentModel()
 	model := ""
 	if cur != nil {
 		model = cur.Model
@@ -126,7 +140,7 @@ func (s *state) PickQuery() PickQuery {
 // CurrentModelName returns the current round's model string (input for
 // CandidateSource.ListForModel); returns "" once the chain is exhausted.
 func (s *state) CurrentModelName() string {
-	cur := s.CurrentModel()
+	cur := s.currentModel()
 	if cur == nil {
 		return ""
 	}
@@ -174,7 +188,7 @@ func (s *state) Record(ep *domain.Endpoint, v Verdict) {
 	}
 
 	model := ""
-	if cur := s.CurrentModel(); cur != nil {
+	if cur := s.currentModel(); cur != nil {
 		model = cur.Model
 	}
 
@@ -195,7 +209,7 @@ func (s *state) Record(ep *domain.Endpoint, v Verdict) {
 // outside the chain), it's appended to the end of the chain.
 func (s *state) SetModel(ms *domain.ModelService) {
 	for i := s.curIdx + 1; i < len(s.modelChain); i++ {
-		if s.modelChain[i] == ms {
+		if sameModelService(s.modelChain[i], ms) {
 			s.curIdx = i
 			return
 		}
@@ -208,7 +222,7 @@ func (s *state) SetModel(ms *domain.ModelService) {
 // successful Stream; everything goes into s.outcome, never touching RC
 // directly (dispatch is decoupled from RC).
 func (s *state) ApplyStream(rep StreamReport) {
-	routed := s.CurrentModel()
+	routed := s.currentModel()
 	usage := rep.Usage
 	if usage != nil && rep.TTFTMs > 0 {
 		usage.Meta.TTFTMs = rep.TTFTMs
@@ -230,6 +244,16 @@ func (s *state) ApplyStream(rep StreamReport) {
 		Error:       streamErr,
 	}
 	s.finalize()
+}
+
+func sameModelService(a, b *domain.ModelService) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.ID != 0 || b.ID != 0 {
+		return a.ID == b.ID
+	}
+	return a.ServiceID == b.ServiceID && a.Model == b.Model
 }
 
 // SetAbort terminates the request; finalize writes the SchedulingDecision.

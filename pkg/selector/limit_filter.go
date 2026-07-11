@@ -5,8 +5,14 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
+
+// CapacityReader provides a read-only view of endpoint quota availability.
+// Selector owns this minimal port and has no knowledge of rate-limit buckets
+// or their storage representation.
+type CapacityReader interface {
+	Available(ctx context.Context, endpoints []*domain.Endpoint) (map[int64]bool, error)
+}
 
 // LimitReadFilter uses SnapshotBatch to do **read-only** filtering (docs/04 §5 §10):
 // check whether each candidate endpoint's quota still has headroom; endpoints over the limit are excluded.
@@ -18,53 +24,41 @@ import (
 // **Fail-open on Redis error** (docs/04 §8): the endpoint quota read-only filter must not become a
 // hard dependency due to a Redis outage; on failure it keeps all candidates, letting the request keep trying.
 type LimitReadFilter struct {
-	store ratelimit.Store
+	reader CapacityReader
 }
 
-func NewLimitReadFilter(store ratelimit.Store) *LimitReadFilter {
-	return &LimitReadFilter{store: store}
+func NewLimitReadFilter(reader CapacityReader) *LimitReadFilter {
+	return &LimitReadFilter{reader: reader}
 }
 
 func (f *LimitReadFilter) Name() string { return "limit_read" }
 
 func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoint, req *Request) []*domain.Endpoint {
-	if len(candidates) == 0 || f.store == nil {
+	if len(candidates) == 0 || f.reader == nil {
 		return candidates
 	}
-
-	// Flatten all candidates' RPM/RPS buckets and query them all in one SnapshotBatch
-	type slot struct{ epIdx int }
-	var slots []slot
-	var allBuckets []ratelimit.Bucket
-	for i, ep := range candidates {
-		bs := ratelimit.EndpointReserveBuckets(ep)
-		for _, b := range bs {
-			allBuckets = append(allBuckets, b)
-			slots = append(slots, slot{epIdx: i})
+	hasQuota := false
+	for _, candidate := range candidates {
+		if candidate != nil && ((candidate.Quota.RPM != nil && *candidate.Quota.RPM > 0) ||
+			(candidate.Quota.RPS != nil && *candidate.Quota.RPS > 0)) {
+			hasQuota = true
+			break
 		}
 	}
-	if len(allBuckets) == 0 {
-		// none of the candidate endpoints have quota configured → keep all
+	if !hasQuota {
 		return candidates
 	}
 
-	states, err := f.store.SnapshotBatch(ctx, allBuckets)
+	available, err := f.reader.Available(ctx, candidates)
 	if err != nil {
 		// fail-open: keep all candidates when Redis errors (docs/04 §8)
 		metric.Inc(metric.RateLimitFailOpenTotal, "scope", "endpoint", "dimension", "any")
 		return candidates
 	}
 
-	// mark endpoints over the limit
-	exhausted := make(map[int]bool, len(candidates))
-	for i, st := range states {
-		if st.Used+1 > st.Limit { // already fully used
-			exhausted[slots[i].epIdx] = true
-		}
-	}
 	out := make([]*domain.Endpoint, 0, len(candidates))
-	for i, ep := range candidates {
-		if !exhausted[i] {
+	for _, ep := range candidates {
+		if ok, known := available[ep.ID]; !known || ok {
 			out = append(out, ep)
 		}
 	}

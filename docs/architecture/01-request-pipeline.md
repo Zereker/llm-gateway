@@ -1,6 +1,6 @@
 # 01 — Request Pipeline
 
-This document records the target request chain for `pkg/router` + `pkg/middleware`, along with the target fields of `domain.RequestContext`.
+This document records the request chain for `pkg/router` + `pkg/middleware`, along with `internal/requeststate.State`.
 
 ## 1. Route Assembly
 
@@ -23,19 +23,20 @@ Entry helpers:
 - `middleware.AttachRequestContext(c, rc)`: called only by M1.
 - `middleware.GetRequestContext(c)`: panics if not found, backstopped by M9 Recover.
 
-This way RequestContext, the OTel SpanContext, and Baggage are all carried in the same stdlib context container.
+This way request state, the OTel SpanContext, and Baggage are all carried in the same stdlib context container.
 
-## 3. `domain.RequestContext`
+## 3. `internal/requeststate.State`
 
 Target definition:
 
 ```go
-type RequestContext struct {
+type State struct {
     RequestID string
     StartTime time.Time
 
     Identity UserIdentity
     Envelope *RequestEnvelope
+    Handlers protocol.Lookup
 
     ModelService *ModelService // model from the original request
     ModelChain   []*ModelService // sequence of attempts pre-resolved by M5: primary + validated fallbacks
@@ -48,8 +49,6 @@ type RequestContext struct {
     Usage              *Usage
     Error              *AdapterError
     SchedulingDecision *SchedulingDecision
-
-    Extras map[string]any
 }
 ```
 
@@ -58,6 +57,7 @@ Important constraints:
 - `trace_id` / `span_id` are not stored as fields; they are extracted from the OTel context inside `c.Request.Context()` (`middleware.TraceIDFromCtx`).
 - **`context.Context` is not attached to RC** — the single source of truth is `c.Request.Context()`. Middleware reads ctx via `c.Request.Context()` and writes it back via `c.Request = c.Request.WithContext(ctx)`. Attaching a ctx field to a mutable struct violates Go's "context is values, not state" principle, and would drift from gin's native `c.Request.Context()`.
 - `*gin.Context` is not stored; response writing is done by middleware using the current handler's `c.Writer`.
+- Untyped extension maps are forbidden; new state must have an explicit type and owner.
 - `*slog.Logger` is not stored; logging uses `slog.*Context` methods, and `trace.CtxHandler` automatically fills in the trace/baggage fields.
 - Business code must use context-carrying methods such as `slog.InfoContext` / `ErrorContext` / `WarnContext`; calling `slog.Info` / `Error` directly in the request path is forbidden, otherwise trace fields cannot be injected.
 - M4 Budget does not write `BudgetStatus` to RC; it either passes through and continues, or fails and aborts.
@@ -230,4 +230,4 @@ M1 TraceContext is the reference implementation, additionally exposing `WithTrac
 - When adding a new RC field, the writing middleware and the readers must be documented. Fields related to cross-model fallback must distinguish between the original request model and the actually routed model.
 - When adding a new middleware, update the ordering table in this document, and check whether all modality routes need to adopt it.
 - Request-path logging should have lint/test constraints added, scanning for non-Context calls such as `slog.Info(`, `slog.Error(`, `slog.Warn(`.
-- Do not add temporary experimental fields directly to RC; put them in `Extras` first, and promote them to formal fields once they are stable.
+- Do not add temporary untyped fields to request state; promote only stable, typed state with clear ownership.

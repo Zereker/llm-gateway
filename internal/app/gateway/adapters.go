@@ -12,27 +12,10 @@ package gateway
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/dispatch"
-	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/middleware"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 	"github.com/zereker/llm-gateway/pkg/repo"
 )
-
-// adaptCatalog adapts the SQL row-based ModelServiceReader to middleware.ModelCatalog.
-func adaptCatalog(p repo.ModelServiceReader) middleware.ModelCatalog {
-	return repoCatalogAdapter{p: p}
-}
-
-type repoCatalogAdapter struct{ p repo.ModelServiceReader }
-
-func (a repoCatalogAdapter) GetByModel(ctx context.Context, model string) (*domain.ModelService, error) {
-	ms, err := a.p.GetByModel(ctx, model)
-	if err != nil {
-		return nil, err
-	}
-	return repo.ToDomainModelService(ms), nil
-}
 
 // adaptSubscriptions adapts SubscriptionProvider to middleware.SubscriptionChecker.
 func adaptSubscriptions(p repo.SubscriptionProvider) middleware.SubscriptionChecker {
@@ -58,21 +41,6 @@ func (a repoQuotaPolicyAdapter) RuleJSONByID(ctx context.Context, id int64) ([]b
 		return nil, err
 	}
 	return policy.RuleJSON, nil
-}
-
-// adaptEndpoints adapts the SQL row-based EndpointReader to dispatch.CandidateSource.
-func adaptEndpoints(p repo.EndpointReader) dispatch.CandidateSource {
-	return repoEndpointAdapter{p: p}
-}
-
-type repoEndpointAdapter struct{ p repo.EndpointReader }
-
-func (a repoEndpointAdapter) ListForModel(ctx context.Context, model, group string) ([]*domain.Endpoint, error) {
-	rows, err := a.p.ListForModel(ctx, model, group)
-	if err != nil {
-		return nil, err
-	}
-	return repo.ToDomainEndpoints(rows), nil
 }
 
 // Compile-time port satisfaction assertions—verifies that the concrete types

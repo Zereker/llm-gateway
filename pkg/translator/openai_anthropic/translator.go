@@ -39,6 +39,9 @@ const defaultAnthropicMaxTokens uint32 = 4096
 
 type openaiAnthropic struct{}
 
+// New returns the OpenAI-to-Anthropic translator.
+func New() translator.Translator { return openaiAnthropic{} }
+
 func (openaiAnthropic) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiAnthropic) Target() domain.Protocol { return domain.ProtoAnthropic }
 
@@ -518,8 +521,4 @@ func randID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-func init() {
-	translator.Register(openaiAnthropic{})
 }

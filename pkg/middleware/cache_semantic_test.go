@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/embed"
 )
@@ -75,7 +76,7 @@ func semanticHarness(store SemanticCacheStore, emb embed.Embedder) (*gin.Engine,
 	calls := 0
 	e.POST("/v1/chat/completions",
 		func(c *gin.Context) {
-			rc := &domain.RequestContext{
+			rc := &requeststate.State{
 				Envelope:     &domain.RequestEnvelope{RawBytes: readBody(c), Model: "m", SourceProtocol: domain.ProtoOpenAI},
 				ModelService: &domain.ModelService{Model: "m"},
 			}

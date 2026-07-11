@@ -2,13 +2,13 @@ package middleware
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
+	cacheport "github.com/zereker/llm-gateway/internal/cache"
 	"github.com/zereker/llm-gateway/pkg/embed"
 	"github.com/zereker/llm-gateway/pkg/metric"
 )
@@ -92,15 +92,8 @@ func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold 
 	}
 }
 
-// SemanticCacheStore is the semantic-cache storage port (Redis implementation in pkg/respcache).
-type SemanticCacheStore interface {
-	// Lookup finds an entry in namespace with similarity ≥ threshold to vec; returns
-	// (_, false) if none is found.
-	Lookup(ctx context.Context, namespace string, vec []float32, threshold float64) (CachedResponse, bool)
-	// Store saves vec + the response into namespace (with a TTL; the implementation is
-	// responsible for enforcing its own entry cap).
-	Store(ctx context.Context, namespace string, vec []float32, resp CachedResponse, ttl time.Duration)
-}
+// SemanticCacheStore is the semantic-cache storage port.
+type SemanticCacheStore = cacheport.SemanticStore
 
 // extractPrompt extracts the text to embed from the request body, covering three client
 // entry points:

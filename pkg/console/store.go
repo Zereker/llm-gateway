@@ -12,6 +12,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/zereker/llm-gateway/pkg/cachebus"
+	"github.com/zereker/llm-gateway/pkg/endpointcheck"
 )
 
 // Store is the control plane's write/read layer, holding a *sqlx.DB directly.
@@ -21,12 +22,20 @@ import (
 // control plane writes and the semantics the data plane reads are naturally
 // aligned and cannot drift apart.
 type Store struct {
-	db  *sqlx.DB
-	pub *cachebus.Publisher // optional; nil = rely solely on the data plane's TTL fallback
+	db                *sqlx.DB
+	pub               *cachebus.Publisher // optional; nil = rely solely on the data plane's TTL fallback
+	endpointValidator endpointcheck.Validator
 }
 
 // NewStore constructs a Store.
 func NewStore(db *sqlx.DB) *Store { return &Store{db: db} }
+
+// WithEndpointValidator supplies the protocol capability catalog used before
+// endpoint writes.
+func (s *Store) WithEndpointValidator(v endpointcheck.Validator) *Store {
+	s.endpointValidator = v
+	return s
+}
 
 // WithPublisher attaches a cachebus Publisher so that revoking a key notifies
 // the data plane precisely (bringing the <=TTL window down to sub-second).

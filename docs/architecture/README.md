@@ -7,7 +7,7 @@ This directory is the single source of truth for `llm-gateway`'s architecture an
 | # | Document | Topic |
 |---|------|------|
 | 00 | [overview](00-overview.md) | System boundaries, component layering, request lifecycle |
-| 01 | [request-pipeline](01-request-pipeline.md) | `domain.RequestContext` and the middleware chain |
+| 01 | [request-pipeline](01-request-pipeline.md) | `internal/requeststate.State` and the middleware chain |
 | 02 | [protocol-translation](02-protocol-translation.md) | Handler facade, Factory / Translator / Quirks, upstream forwarding boundary |
 | 03 | [endpoint-scheduling](03-endpoint-scheduling.md) | Endpoint candidates, in-batch selection, explicit fallback, runtime scoring |
 | 03a | [schedule-overview](03a-schedule-overview.md) | Quick reference / onboarding guide for the schedule module (data flow, package responsibilities, wiring points) |
@@ -29,6 +29,6 @@ This directory is the single source of truth for `llm-gateway`'s architecture an
 
 ## Maintenance Conventions
 
-- When changing `pkg/domain.RequestContext`, the middleware order, adapter/translator interfaces, schema, or config fields, update this directory in the same change.
+- When changing `internal/requeststate.State`, the middleware order, adapter/translator interfaces, schema, or config fields, update this directory in the same change.
 - Example code illustrates the key contracts only; it need not match the implementation verbatim, but field names, component boundaries, and error semantics must be accurate.
 - When adding a new cached repo wrapper, middleware Option, or metric, register it in the corresponding section of 06 / 07 / 08.

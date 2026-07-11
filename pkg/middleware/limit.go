@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"go.opentelemetry.io/otel"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
@@ -160,7 +161,7 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 //   - rc.Usage == nil → not deducted (usage extractor didn't get one)
 //   - Charge fails → does not change the response; records a metric
 //   - Exceeds limit after write → records tpm_overflow_total; does not affect this request
-func chargeTPM(rc *domain.RequestContext, store ratelimit.Store, tpmBuckets []ratelimit.Bucket) {
+func chargeTPM(rc *requeststate.State, store ratelimit.Store, tpmBuckets []ratelimit.Bucket) {
 	if rc.Usage == nil || rc.Usage.Total <= 0 || len(tpmBuckets) == 0 {
 		return
 	}

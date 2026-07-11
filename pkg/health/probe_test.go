@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zereker/llm-gateway/internal/failure"
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
 type staticSource struct{ eps []*domain.Endpoint }
@@ -20,35 +20,31 @@ func (s staticSource) ListProbeTargets(context.Context) ([]*domain.Endpoint, err
 
 type recordingStats struct {
 	mu      sync.Mutex
-	results map[int64][]selector.Result
+	results map[int64][]Result
 }
 
-func (r *recordingStats) Record(_ context.Context, id int64, res selector.Result) {
+func (r *recordingStats) RecordHealth(_ context.Context, id int64, res Result) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.results == nil {
-		r.results = make(map[int64][]selector.Result)
+		r.results = make(map[int64][]Result)
 	}
 	r.results[id] = append(r.results[id], res)
-}
-
-func (r *recordingStats) Snapshot(_ context.Context, _ int64) selector.EndpointStats {
-	return selector.EndpointStats{}
 }
 
 // fakeCooldown models a cooldown store keyed by class. ClearIfRecoverable only
 // releases Transient/Capacity, mirroring the Redis Lua behavior.
 type fakeCooldown struct {
 	mu      sync.Mutex
-	cooled  map[int64]selector.ErrorClass
+	cooled  map[int64]failure.Class
 	cleared []int64
 }
 
-func (f *fakeCooldown) Mark(_ context.Context, id int64, class selector.ErrorClass, _ time.Duration) error {
+func (f *fakeCooldown) Mark(_ context.Context, id int64, class failure.Class, _ time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.cooled == nil {
-		f.cooled = make(map[int64]selector.ErrorClass)
+		f.cooled = make(map[int64]failure.Class)
 	}
 	f.cooled[id] = class
 	return nil
@@ -73,7 +69,7 @@ func (f *fakeCooldown) ClearIfRecoverable(_ context.Context, id int64) (bool, er
 	if !ok {
 		return false, nil
 	}
-	if class != selector.ClassTransient && class != selector.ClassCapacity {
+	if class != failure.Transient && class != failure.Capacity {
 		return false, nil // permanent/invalid/unknown: not probe-recoverable
 	}
 	delete(f.cooled, id)
@@ -98,11 +94,11 @@ func TestProber_RecoverTransientCooldownOnSuccessfulProbe(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cd := &fakeCooldown{cooled: map[int64]selector.ErrorClass{7: selector.ClassTransient}}
+	cd := &fakeCooldown{cooled: map[int64]failure.Class{7: failure.Transient}}
 	p := New(Config{
 		Source:   staticSource{eps: []*domain.Endpoint{probeEndpoint(7, srv.URL)}},
-		Stats:    &recordingStats{},
-		Cooldown: cd,
+		Feedback: &recordingStats{},
+		Recovery: cd,
 	})
 
 	p.cycle(context.Background())
@@ -125,11 +121,11 @@ func TestProber_PermanentCooldownNotRecovered(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cd := &fakeCooldown{cooled: map[int64]selector.ErrorClass{7: selector.ClassPermanent}}
+	cd := &fakeCooldown{cooled: map[int64]failure.Class{7: failure.Permanent}}
 	p := New(Config{
 		Source:   staticSource{eps: []*domain.Endpoint{probeEndpoint(7, srv.URL)}},
-		Stats:    &recordingStats{},
-		Cooldown: cd,
+		Feedback: &recordingStats{},
+		Recovery: cd,
 	})
 
 	p.cycle(context.Background())
@@ -139,7 +135,7 @@ func TestProber_PermanentCooldownNotRecovered(t *testing.T) {
 	if len(cd.cleared) != 0 {
 		t.Fatalf("permanent cooldown must not be recovered, cleared=%v", cd.cleared)
 	}
-	if cd.cooled[7] != selector.ClassPermanent {
+	if cd.cooled[7] != failure.Permanent {
 		t.Error("endpoint 7 should still hold its permanent cooldown")
 	}
 }
@@ -151,11 +147,11 @@ func TestProber_FailedProbeKeepsCooldown(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cd := &fakeCooldown{cooled: map[int64]selector.ErrorClass{7: selector.ClassTransient}}
+	cd := &fakeCooldown{cooled: map[int64]failure.Class{7: failure.Transient}}
 	p := New(Config{
 		Source:   staticSource{eps: []*domain.Endpoint{probeEndpoint(7, srv.URL)}},
-		Stats:    &recordingStats{},
-		Cooldown: cd,
+		Feedback: &recordingStats{},
+		Recovery: cd,
 	})
 
 	p.cycle(context.Background())
@@ -165,7 +161,7 @@ func TestProber_FailedProbeKeepsCooldown(t *testing.T) {
 	if len(cd.cleared) != 0 {
 		t.Fatalf("failed probe must not clear cooldown, cleared=%v", cd.cleared)
 	}
-	if cd.cooled[7] != selector.ClassTransient {
+	if cd.cooled[7] != failure.Transient {
 		t.Error("endpoint 7 should still be cooling")
 	}
 }
@@ -181,8 +177,8 @@ func TestProber_HealthyEndpointNotCleared(t *testing.T) {
 	stats := &recordingStats{}
 	p := New(Config{
 		Source:   staticSource{eps: []*domain.Endpoint{probeEndpoint(9, srv.URL)}},
-		Stats:    stats,
-		Cooldown: cd,
+		Feedback: stats,
+		Recovery: cd,
 	})
 
 	p.cycle(context.Background())
@@ -195,7 +191,7 @@ func TestProber_HealthyEndpointNotCleared(t *testing.T) {
 
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
-	if len(stats.results[9]) != 1 || stats.results[9][0].Class != selector.ClassSuccess {
+	if len(stats.results[9]) != 1 || stats.results[9][0].Class != failure.Success {
 		t.Errorf("probe should still record stats, got %+v", stats.results[9])
 	}
 }

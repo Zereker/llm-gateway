@@ -40,10 +40,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zereker/llm-gateway/internal/failure"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/selector"
 )
+
+// Result is the health subsystem's observation of one probe.
+type Result struct {
+	Class    failure.Class
+	HTTPCode int
+	Reason   string
+	Latency  time.Duration
+}
+
+// Feedback records probe observations for whichever scheduling read model is
+// configured by the application.
+type Feedback interface {
+	RecordHealth(ctx context.Context, endpointID int64, result Result)
+}
+
+// Recovery releases a recoverable endpoint cooldown after a successful probe.
+type Recovery interface {
+	ClearIfRecoverable(ctx context.Context, endpointID int64) (bool, error)
+}
 
 // EndpointSource provides "the current set of endpoints to probe".
 //
@@ -61,13 +80,13 @@ type HTTPDoer interface {
 // Config holds the Prober assembly parameters.
 type Config struct {
 	Source     EndpointSource
-	Stats      selector.EndpointStatsStore // receives probe results; written the same way as Scheduler.Report
-	Cooldown   selector.CooldownManager    // optional; non-nil enables probe-gated cooldown recovery
-	Client     HTTPDoer                    // nil = http.DefaultClient
-	Interval   time.Duration               // default 30s
-	Timeout    time.Duration               // per-probe timeout; default 5s
-	Concurrent int                         // max concurrent probes; default 8
-	Logger     *slog.Logger                // nil = slog.Default
+	Feedback   Feedback      // receives probe results
+	Recovery   Recovery      // optional; enables probe-gated cooldown recovery
+	Client     HTTPDoer      // nil = http.DefaultClient
+	Interval   time.Duration // default 30s
+	Timeout    time.Duration // per-probe timeout; default 5s
+	Concurrent int           // max concurrent probes; default 8
+	Logger     *slog.Logger  // nil = slog.Default
 }
 
 // Prober is the periodic probing subsystem.
@@ -107,8 +126,8 @@ func New(cfg Config) *Prober {
 //
 // Runs one probe immediately, then repeats every Interval.
 func (p *Prober) Run(ctx context.Context) {
-	if p.cfg.Source == nil || p.cfg.Stats == nil {
-		p.logger.Warn("health.Prober: missing Source or Stats; not running")
+	if p.cfg.Source == nil || p.cfg.Feedback == nil {
+		p.logger.Warn("health.Prober: missing Source or Feedback; not running")
 		return
 	}
 	p.wg.Add(1)
@@ -179,26 +198,26 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		p.recordResult(ep, selector.Result{Class: selector.ClassPermanent, Reason: "build_request: " + err.Error(), Latency: time.Since(start)})
+		p.recordResult(ep, Result{Class: failure.Permanent, Reason: "build_request: " + err.Error(), Latency: time.Since(start)})
 		return
 	}
 	resp, err := p.cfg.Client.Do(req)
 	latency := time.Since(start)
 	if err != nil {
-		p.recordResult(ep, selector.Result{Class: selector.ClassTransient, Reason: err.Error(), Latency: latency})
+		p.recordResult(ep, Result{Class: failure.Transient, Reason: err.Error(), Latency: latency})
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	cls := classify(resp.StatusCode)
-	p.recordResult(ep, selector.Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
+	p.recordResult(ep, Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
 
 	// probe-gated recovery: a healthy probe releases an endpoint's cooldown
 	// early — but ClearIfRecoverable only touches Transient/Capacity cooldowns
 	// (a 200 can't attest a bad API key), and is an atomic no-op otherwise, so
 	// this is safe to call on every successful probe without a pre-snapshot.
-	if cls == selector.ClassSuccess && p.cfg.Cooldown != nil {
-		cleared, cerr := p.cfg.Cooldown.ClearIfRecoverable(parentCtx, ep.ID)
+	if cls == failure.Success && p.cfg.Recovery != nil {
+		cleared, cerr := p.cfg.Recovery.ClearIfRecoverable(parentCtx, ep.ID)
 		if cerr != nil {
 			p.logger.WarnContext(parentCtx, "health.Prober: cooldown clear failed",
 				"endpoint_id", ep.ID, "err", cerr.Error())
@@ -213,8 +232,8 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 }
 
 // recordResult writes stats + emits a metric.
-func (p *Prober) recordResult(ep *domain.Endpoint, r selector.Result) {
-	p.cfg.Stats.Record(context.Background(), ep.ID, r)
+func (p *Prober) recordResult(ep *domain.Endpoint, r Result) {
+	p.cfg.Feedback.RecordHealth(context.Background(), ep.ID, r)
 	metric.Inc("llm_gateway_health_probe_total",
 		"endpoint_id", strconv.FormatInt(ep.ID, 10),
 		"result", r.Class.String(),
@@ -222,20 +241,20 @@ func (p *Prober) recordResult(ep *domain.Endpoint, r selector.Result) {
 }
 
 // classify maps an HTTP status → ErrorClass (consistent with upstream classifyHTTPStatus).
-func classify(code int) selector.ErrorClass {
+func classify(code int) failure.Class {
 	switch {
 	case code >= 200 && code < 300:
-		return selector.ClassSuccess
+		return failure.Success
 	case code == 401 || code == 403:
-		return selector.ClassPermanent
+		return failure.Permanent
 	case code == 429:
-		return selector.ClassCapacity
+		return failure.Capacity
 	case code >= 500:
-		return selector.ClassTransient
+		return failure.Transient
 	case code >= 400:
-		return selector.ClassInvalid
+		return failure.Invalid
 	default:
-		return selector.ClassUnknown
+		return failure.Unknown
 	}
 }
 

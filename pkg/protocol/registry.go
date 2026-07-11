@@ -56,14 +56,35 @@ type Lookup interface {
 // **Eviction**: the upper bound on vendor × srcProto × upstreamProto
 // combinations is small (<100), so no eviction is done; entries live for the
 // lifetime of the process.
-var handlerCache sync.Map // key = "vendor|src|target" → Handler
+var handlerCache sync.Map // legacy zero-value lookup cache
 
 // DefaultLookup composes a Handler using the global vendor + translator
 // registries. M3 Envelope fills this in when rc.Handlers is nil.
 //
 // **Stateless**: all caching lives in the package-level handlerCache. The zero
 // value is usable; per-request creation is zero-cost.
-type DefaultLookup struct{}
+type DefaultLookup struct {
+	factories   map[string]Factory
+	translators *translator.Registry
+	cache       *sync.Map
+}
+
+// NewLookup constructs an isolated handler registry for one application.
+// The supplied maps are copied so callers cannot mutate the capability set
+// after startup.
+func NewLookup(factories map[string]Factory, translators *translator.Registry) *DefaultLookup {
+	copyFactories := make(map[string]Factory, len(factories))
+	for vendor, factory := range factories {
+		if vendor == "" || factory == nil {
+			panic("protocol: invalid factory registration")
+		}
+		if _, exists := copyFactories[vendor]; exists {
+			panic("protocol: duplicate factory " + vendor)
+		}
+		copyFactories[vendor] = factory
+	}
+	return &DefaultLookup{factories: copyFactories, translators: translators, cache: &sync.Map{}}
+}
 
 // pivotProtocol is the intermediate protocol used for the missing-direct-pair
 // composition fallback (docs/02 §6a).
@@ -75,15 +96,24 @@ type DefaultLookup struct{}
 // composition's coverage.
 const pivotProtocol = domain.ProtoOpenAI
 
-func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler {
+func (l DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler {
 	if ep == nil || ep.Protocol == domain.ProtoUnknown {
 		return nil
 	}
 	key := ep.Vendor + "|" + srcProto.String() + "|" + ep.Protocol.String()
-	if h, ok := handlerCache.Load(key); ok {
+	cache := l.cache
+	if cache == nil {
+		cache = &handlerCache
+	}
+	if h, ok := cache.Load(key); ok {
 		return h.(Handler)
 	}
-	ad := LookupFactory(ep.Vendor)
+	var ad Factory
+	if l.factories != nil {
+		ad = l.factories[ep.Vendor]
+	} else {
+		ad = LookupFactory(ep.Vendor)
+	}
 	if ad == nil {
 		return nil
 	}
@@ -92,7 +122,12 @@ func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler 
 	// pivot can't express). Popular combinations should get a direct
 	// implementation as soon as possible — once registered, FindVia
 	// automatically prefers it and the composition steps aside, transparent to the caller.
-	tr := translator.FindVia(srcProto, ep.Protocol, pivotProtocol)
+	var tr translator.Translator
+	if l.translators != nil {
+		tr = l.translators.FindVia(srcProto, ep.Protocol, pivotProtocol)
+	} else {
+		tr = translator.FindVia(srcProto, ep.Protocol, pivotProtocol)
+	}
 	if tr == nil {
 		return nil
 	}
@@ -103,8 +138,25 @@ func (DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler 
 			"pivot", pivotProtocol.String(), "vendor", ep.Vendor)
 	}
 	h := Combine(ad, tr)
-	actual, _ := handlerCache.LoadOrStore(key, h)
+	actual, _ := cache.LoadOrStore(key, h)
 	return actual.(Handler)
+}
+
+// HasVendor reports whether this lookup has a vendor factory.
+func (l DefaultLookup) HasVendor(vendor string) bool {
+	if l.factories != nil {
+		return l.factories[vendor] != nil
+	}
+	return LookupFactory(vendor) != nil
+}
+
+// CanTranslate reports whether a client protocol can reach target directly
+// or through the standard OpenAI pivot.
+func (l DefaultLookup) CanTranslate(source, target domain.Protocol) bool {
+	if l.translators != nil {
+		return l.translators.FindVia(source, target, pivotProtocol) != nil
+	}
+	return translator.FindVia(source, target, pivotProtocol) != nil
 }
 
 // ResetHandlerCache clears DefaultLookup's Handler cache — **for tests only**.

@@ -50,11 +50,17 @@ func Compose(front, back Translator) Translator {
 // leg equal to the missing direct pair likewise fails composition and
 // returns nil.
 func FindVia(src, tgt, pivot domain.Protocol) Translator {
-	if t := Find(src, tgt); t != nil {
+	return defaultRegistry.FindVia(src, tgt, pivot)
+}
+
+// FindVia resolves a direct translator or composes one through pivot within
+// this registry.
+func (r *Registry) FindVia(src, tgt, pivot domain.Protocol) Translator {
+	if t := r.Find(src, tgt); t != nil {
 		return t
 	}
-	front := Find(src, pivot)
-	back := Find(pivot, tgt)
+	front := r.Find(src, pivot)
+	back := r.Find(pivot, tgt)
 	if front == nil || back == nil {
 		return nil
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/protocol"
@@ -21,7 +22,7 @@ import (
 // pkg/dispatch; here we only verify the middleware.Schedule wrapper layer:
 //   - Dispatcher nil -> panic
 //   - M3/M5 not run -> 500
-//   - X-Gateway-Max-Attempts header -> written into rc.Extras[dispatch.HeaderKey]
+//   - X-Gateway-Max-Attempts header -> passed into dispatch.Input
 //   - Outcome -> HTTP code translation
 // =============================================================================
 
@@ -140,7 +141,7 @@ func runSchedule(t *testing.T, mw gin.HandlerFunc) *httptest.ResponseRecorder {
 // attachRCM7 attaches a RequestContext, simulating post-M1 state.
 func attachRCM7() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Set("rc", &domain.RequestContext{})
+		c.Set("rc", &requeststate.State{})
 		c.Next()
 	}
 }
