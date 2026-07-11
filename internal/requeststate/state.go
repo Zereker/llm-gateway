@@ -22,7 +22,6 @@ type State struct {
 	ModelService       *domain.ModelService
 	ModelChain         []*domain.ModelService
 	RoutedModelService *domain.ModelService
-	RateLimit          *domain.RateLimitState
 	Endpoint           *domain.Endpoint
 
 	Usage              *domain.Usage

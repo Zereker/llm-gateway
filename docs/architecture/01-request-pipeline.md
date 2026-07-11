@@ -42,8 +42,6 @@ type State struct {
     ModelChain   []*ModelService // sequence of attempts pre-resolved by M5: primary + validated fallbacks
     RoutedModelService *ModelService // the model that actually succeeded; equals ModelService when no fallback occurred
 
-    RateLimit *RateLimitState
-
     Endpoint *Endpoint
 
     Usage              *Usage
@@ -75,8 +73,8 @@ Important constraints:
 | M3 | Envelope | request body + route protocol tag | `rc.Envelope`, body can be re-read |
 | M4 | Budget | `rc.Identity` | abort on gate failure |
 | M5 | ModelService | `rc.Envelope.Model`, primary account pin, `X-Gateway-Fallback-Models` | `rc.ModelService` (primary), `rc.ModelChain` (primary + validated fallbacks) |
-| M8 | Moderation | raw request/response stream | optional moderation, defaults to none |
-| M6 | Limit | identity, model, quota policy | user-side RPM/RPS pre-deduction, `rc.RateLimit`; post-side TPM post-deduction |
+| M6 | Limit | identity, model, quota policy | user-side RPM/RPS pre-deduction; post-side TPM post-deduction |
+| M8 | Moderation | raw request/response stream | optional moderation, defaults to none (after M6: a 429-bound request must not spend an external moderation call) |
 | — | Cache | request body / prompt | response cache (chat + embedding modalities only); on a hit returns directly and skips M7; a no-op when `cache.enabled=false` |
 | M7 | Schedule | model, group, endpoint candidates | `rc.RoutedModelService`, endpoint, upstream forward, usage, decision |
 | M10 | Tracing | final RC state | metric, usage outbox, schedule trace |

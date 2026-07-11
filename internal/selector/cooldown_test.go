@@ -45,3 +45,17 @@ func TestResolveCooldownTTL(t *testing.T) {
 		})
 	}
 }
+
+// jitterTTL: 抖动必须落在 ±10% 区间内，0/负值原样返回。
+func TestJitterTTL_Bounds(t *testing.T) {
+	base := 30 * time.Second
+	for i := 0; i < 1000; i++ {
+		got := jitterTTL(base)
+		if got < 27*time.Second || got > 33*time.Second {
+			t.Fatalf("jitterTTL(%v) = %v, out of ±10%% bounds", base, got)
+		}
+	}
+	if got := jitterTTL(0); got != 0 {
+		t.Fatalf("jitterTTL(0) = %v, want 0", got)
+	}
+}

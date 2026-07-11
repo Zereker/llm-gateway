@@ -3,6 +3,7 @@ package selector
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"strconv"
 	"time"
 
@@ -117,13 +118,27 @@ func resolveCooldownTTL(d CooldownDurations, class ErrorClass, retryAfter time.D
 	return ttl
 }
 
+// jitterTTL spreads a TTL by ±10%. When a vendor-wide incident cools a whole
+// batch of endpoints at once (all with the same static class TTL, or the
+// same upstream Retry-After), identical TTLs would make them all recover at
+// the same instant and re-form a synchronized retry storm; the jitter
+// staggers the thundering herd.
+func jitterTTL(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return ttl
+	}
+
+	return time.Duration(float64(ttl) * (0.9 + 0.2*rand.Float64()))
+}
+
 // Mark marks an endpoint as entering cooldown; the TTL follows
-// resolveCooldownTTL (reset-aware when the upstream provided a hint).
+// resolveCooldownTTL (reset-aware when the upstream provided a hint), with
+// ±10% jitter applied on top (see jitterTTL).
 func (m *RedisCooldownManager) Mark(ctx context.Context, endpointID int64, class ErrorClass, retryAfter time.Duration) error {
 	if endpointID == 0 {
 		return nil
 	}
-	ttl := resolveCooldownTTL(m.durations, class, retryAfter)
+	ttl := jitterTTL(resolveCooldownTTL(m.durations, class, retryAfter))
 	if ttl <= 0 {
 		return nil
 	}
