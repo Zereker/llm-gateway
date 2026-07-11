@@ -47,24 +47,31 @@ func (s *geminiSession) Final() *domain.Usage {
 		return nil
 	}
 	var resp struct {
-		UsageMetadata *struct {
-			PromptTokenCount     int64 `json:"promptTokenCount"`
-			CandidatesTokenCount int64 `json:"candidatesTokenCount"`
-			TotalTokenCount      int64 `json:"totalTokenCount"`
-		} `json:"usageMetadata"`
+		UsageMetadata json.RawMessage `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(s.buf, &resp); err != nil {
 		return nil
 	}
-	if resp.UsageMetadata == nil {
+	if len(resp.UsageMetadata) == 0 {
 		return nil
 	}
-	raw, _ := json.Marshal(resp.UsageMetadata)
+	var counts struct {
+		PromptTokenCount     int64 `json:"promptTokenCount"`
+		CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+		TotalTokenCount      int64 `json:"totalTokenCount"`
+	}
+	if err := json.Unmarshal(resp.UsageMetadata, &counts); err != nil {
+		return nil
+	}
+	// Raw preserves the verbatim usageMetadata object — including fields the
+	// gateway doesn't model itself, e.g. thoughtsTokenCount (thinking-model
+	// reasoning tokens) and cachedContentTokenCount (context-cache discount) —
+	// so downstream billing can price them (docs/architecture/05-metering-billing.md §3).
 	s.usage = &domain.Usage{
-		Input:      resp.UsageMetadata.PromptTokenCount,
-		Output:     resp.UsageMetadata.CandidatesTokenCount,
-		Total:      resp.UsageMetadata.TotalTokenCount,
-		Raw:        raw,
+		Input:      counts.PromptTokenCount,
+		Output:     counts.CandidatesTokenCount,
+		Total:      counts.TotalTokenCount,
+		Raw:        append([]byte(nil), resp.UsageMetadata...),
 		Source:     domain.UsageSourceUpstream,
 		Confidence: domain.UsageConfidenceExact,
 	}

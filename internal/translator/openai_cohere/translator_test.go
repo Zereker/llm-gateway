@@ -45,7 +45,7 @@ func TestTranslateRequest_MultimodalContentToText(t *testing.T) {
 func TestTranslateResponse(t *testing.T) {
 	cohere := `{"id":"c-123","finish_reason":"COMPLETE",
 	           "message":{"role":"assistant","content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]},
-	           "usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}`
+	           "usage":{"billed_units":{"input_tokens":9,"output_tokens":5},"tokens":{"input_tokens":10,"output_tokens":5}}}`
 	body, usage := translateResponse([]byte(cohere))
 	r := gjson.ParseBytes(body)
 	if r.Get("object").String() != "chat.completion" {
@@ -60,8 +60,15 @@ func TestTranslateResponse(t *testing.T) {
 	if r.Get("usage.prompt_tokens").Int() != 10 || r.Get("usage.completion_tokens").Int() != 5 || r.Get("usage.total_tokens").Int() != 15 {
 		t.Errorf("usage mapping wrong: %s", body)
 	}
-	if usage == nil || usage.Total != 15 || usage.Source != domain.UsageSourceExtracted {
+	// Cohere reports usage natively (we don't derive it), so Source must be
+	// upstream, not extracted; Raw must preserve billed_units verbatim — it's
+	// Cohere's actually-charged count, which downstream billing needs and can
+	// differ from the raw tokens count.
+	if usage == nil || usage.Total != 15 || usage.Source != domain.UsageSourceUpstream {
 		t.Errorf("usage struct = %+v", usage)
+	}
+	if !gjson.GetBytes(usage.Raw, "billed_units").Exists() {
+		t.Errorf("billed_units dropped from Raw: %s", usage.Raw)
 	}
 }
 
