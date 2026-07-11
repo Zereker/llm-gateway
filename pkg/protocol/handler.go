@@ -24,10 +24,10 @@
 //	      endpoint carries a Protocol field — the same vendor can back
 //	      multiple endpoints on different protocols.
 //
-// **When composition happens**: at request time, not in init().
+// **When composition happens**: at request time, not at startup.
 // DefaultLookup.Get(ep, srcProto) calls:
-//  1. protocol.LookupFactory(ep.Vendor) → protocol.Factory (vendor HTTP implementation)
-//  2. translator.Find(srcProto, ep.Protocol) → translator.Translator (body conversion)
+//  1. factories[ep.Vendor] → protocol.Factory (vendor HTTP implementation)
+//  2. translators.FindVia(srcProto, ep.Protocol, pivot) → translator.Translator (body conversion)
 //  3. Combine(ad, tr) → Handler
 //
 // If either is missing → return nil → the eligibility filter excludes that endpoint.

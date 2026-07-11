@@ -36,7 +36,7 @@ type Endpoint struct {
 	// **Protocol-conversion decision**: the dispatcher compares
 	// (env.SourceProtocol, ep.Protocol):
 	//   - equal → identity translator passes through (no actual conversion)
-	//   - unequal → translator.Find(src, ep.Protocol) looks up a cross-protocol translator; missing one drops eligibility
+	//   - unequal → the translator registry looks up a cross-protocol translator for (src, ep.Protocol); missing one drops eligibility
 	Protocol Protocol
 
 	Auth         AuthConfig

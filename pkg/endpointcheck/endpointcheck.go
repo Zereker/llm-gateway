@@ -2,11 +2,10 @@
 // by **the control plane, before writes** and **the data plane, during startup scans**,
 // so that "what counts as misconfigured" is defined in exactly one place.
 //
-// Validation depends on the vendor Factory registry (protocol.LookupFactory) and the
-// translator registry (translator.FindVia) — the caller's main must already blank-import
-// the corresponding vendor / translator subpackages to complete registration, otherwise a
-// valid endpoint will be misjudged as vendor_not_registered / no_translator_path.
-// Both cmd/gateway and cmd/console carry this set of blank imports.
+// Validation reads a protocol capability Catalog (vendor registration + translator
+// reachability), which the caller injects — both cmd/gateway and cmd/console build it from
+// internal/builtin.NewLookup. Without a Catalog covering the endpoint's vendor / protocol,
+// an otherwise valid endpoint is reported as vendor_not_registered / no_translator_path.
 package endpointcheck
 
 import (
@@ -16,7 +15,6 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/invoker"
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/protocol/quirks"
 )
 
@@ -83,12 +81,6 @@ func (v Validator) Validate(ep *domain.Endpoint) []string {
 	}
 
 	return reasons
-}
-
-// Validate is retained for source compatibility with callers using the
-// legacy process-global registries. Applications should inject Validator.
-func Validate(ep *domain.Endpoint) []string {
-	return Validator{Catalog: protocol.DefaultLookup{}}.Validate(ep)
 }
 
 // validateRoutingURL validates the upstream URL; returns a misconfiguration reason (empty = pass).

@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
@@ -23,27 +22,25 @@ import (
 // **Facade boundary** (important — the discipline after v0.7 merged pkg/adapter
 // into pkg/protocol):
 //
-//   Allowed to consume Factory / Session / RegisterFactory / LookupFactory directly:
+//   Allowed to consume Factory / Session directly:
 //     - inside this package (combine.go / registry.go)
-//     - pkg/protocol/<vendor>/ subpackages (register themselves in init())
-//     - cmd/gateway (composition root; currently unused, left as a hook for a
-//       future CLI self-check)
+//     - pkg/protocol/<vendor>/ subpackages (define their Factory type)
+//     - internal/builtin (composition root; assembles the factory map)
 //
-//   **Forbidden**: type-asserting or directly calling Factory / LookupFactory in
-//   data-plane packages like pkg/dispatch / pkg/middleware / pkg/invoker /
-//   pkg/selector / pkg/router. They interact with the protocol layer only through
-//   the two facade types protocol.Handler / protocol.Lookup.
+//   **Forbidden**: type-asserting or directly calling Factory in data-plane
+//   packages like pkg/dispatch / pkg/middleware / pkg/invoker / pkg/selector /
+//   pkg/router. They interact with the protocol layer only through the two
+//   facade types protocol.Handler / protocol.Lookup.
 //
-//   Counter-example: dispatch calling LookupFactory(ep.Vendor) and type-asserting
+//   Counter-example: dispatch fetching a per-vendor Factory and type-asserting
 //   to branch logic per vendor — this leaks vendor knowledge into the scheduling
 //   layer and defeats the point of the facade.
 //
 // **Steps to add a new vendor**:
 //  1. Write a struct implementing Factory + Session in pkg/protocol/<vendor>/
-//  2. Call protocol.RegisterFactory("<vendor>", yourFactory) in init()
+//  2. Add it to the factory map in internal/builtin.NewLookup, keyed by vendor name
 //  3. If there's no coverage between the client protocol and endpoint.Protocol:
-//     add a Translator in pkg/translator/<src>_<tgt>/
-//  4. Add one blank import in internal/builtin/builtin.go to trigger init()
+//     add a Translator in pkg/translator/<src>_<tgt>/ and list it in NewLookup
 //
 // Examples:
 //   - DeepSeek / ARK: vendor=ark, endpoint.Protocol=OpenAI (identity translator)
@@ -106,47 +103,4 @@ type Session interface {
 
 	// Close releases resources held by the Session; must be deferred by dispatch; idempotent.
 	Close() error
-}
-
-// =============================================================================
-// vendor Factory registry
-// =============================================================================
-
-var factoryRegistry = map[string]Factory{}
-
-// RegisterFactory registers a vendor Factory; the vendor name is the registry key.
-//
-// **When vendor != Metadata().Vendor**: OpenAI-compatible aliases (ark / deepseek /
-// qwen, etc.) reuse the same Factory but need to be registered under multiple
-// names. So vendor is an explicit parameter, not derived from Metadata.
-//
-// Contract:
-//   - **MUST** be called during init(); calling at runtime is unsafe (the
-//     registry is unlocked, and LookupFactory does lock-free reads on the hot
-//     request path, relying on memory visibility guaranteed by init() completion)
-//   - registering the same name twice panics (failing fast at startup beats
-//     silently overwriting)
-func RegisterFactory(vendor string, f Factory) {
-	if vendor == "" {
-		panic("protocol: RegisterFactory vendor name empty")
-	}
-	if _, ok := factoryRegistry[vendor]; ok {
-		panic(fmt.Sprintf("protocol: vendor %q already registered", vendor))
-	}
-	factoryRegistry[vendor] = f
-}
-
-// LookupFactory retrieves a Factory by vendor; returns nil if unregistered.
-// Assumes all RegisterFactory calls have completed during init(); read-only at runtime.
-func LookupFactory(vendor string) Factory {
-	return factoryRegistry[vendor]
-}
-
-// ResetFactories clears the vendor registry — **for tests only**.
-//
-// Must not be called in production (factories are registered once during
-// init(); after Reset, LookupFactory always returns nil → DefaultLookup always
-// returns nil → every request gets a 503).
-func ResetFactories() {
-	factoryRegistry = map[string]Factory{}
 }

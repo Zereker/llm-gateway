@@ -38,8 +38,8 @@ func Compose(front, back Translator) Translator {
 }
 
 // FindVia first looks for a direct (src, tgt) translator; on a miss it tries
-// composing via the pivot: Find(src, pivot) + Find(pivot, tgt). Returns nil if
-// either leg is missing.
+// composing one through the pivot: Find(src, pivot) + Find(pivot, tgt). It
+// returns nil if either leg is missing.
 //
 // **Direct wins**: a hand-written high-fidelity pair always takes precedence
 // over composition — adding a direct implementation for a popular combination
@@ -49,12 +49,6 @@ func Compose(front, back Translator) Translator {
 // when src/tgt is itself the pivot: direct Find already covers identity; a
 // leg equal to the missing direct pair likewise fails composition and
 // returns nil.
-func FindVia(src, tgt, pivot domain.Protocol) Translator {
-	return defaultRegistry.FindVia(src, tgt, pivot)
-}
-
-// FindVia resolves a direct translator or composes one through pivot within
-// this registry.
 func (r *Registry) FindVia(src, tgt, pivot domain.Protocol) Translator {
 	if t := r.Find(src, tgt); t != nil {
 		return t

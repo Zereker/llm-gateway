@@ -58,7 +58,7 @@ func TestE2E_LogsCarryTraceID(t *testing.T) {
 		Recover(),
 		Auth(WithIdentityProvider(stubE2EIdentity{})),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
 		// inside the handler: c.Request.Context() must carry span info
@@ -147,7 +147,7 @@ func TestE2E_SpansFormHierarchy(t *testing.T) {
 		Recover(),
 		Auth(WithIdentityProvider(stubE2EIdentity{})),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
 		c.Status(200)

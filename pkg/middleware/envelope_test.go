@@ -50,7 +50,7 @@ func TestEnvelope_HappyPath_ParsesModel(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	var gotModel string
 	var gotRaw []byte
@@ -76,15 +76,16 @@ func TestEnvelope_HappyPath_ParsesModel(t *testing.T) {
 	}
 }
 
-// TestEnvelope_PopulatesDefaultHandlers proves that M3 writes a default value into
-// rc.Handlers (protocol.DefaultLookup wrapping the global adapter + translator
-// registry), so that downstream middleware / dispatch / invoker can obtain a
-// nil-safe, request-scoped lookup port via HandlersFrom(rc).
+// TestEnvelope_PopulatesDefaultHandlers proves that M3 writes the application's
+// lookup (the one passed to Envelope) into rc.Handlers, so that downstream
+// middleware / dispatch / invoker can obtain a request-scoped lookup port via
+// HandlersFrom(rc).
 func TestEnvelope_PopulatesDefaultHandlers(t *testing.T) {
+	lookup := &fakeHandlerLookup{}
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(lookup),
 	)
 	var gotHandlers protocol.Lookup
 	r.POST("/x", func(c *gin.Context) {
@@ -99,8 +100,8 @@ func TestEnvelope_PopulatesDefaultHandlers(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	if _, ok := gotHandlers.(protocol.DefaultLookup); !ok {
-		t.Errorf("rc.Handlers not defaulted to protocol.DefaultLookup; got %T", gotHandlers)
+	if gotHandlers != lookup {
+		t.Errorf("rc.Handlers not set to the lookup passed to Envelope; got %T", gotHandlers)
 	}
 }
 
@@ -119,7 +120,7 @@ func TestEnvelope_PreservesPreSetHandlers(t *testing.T) {
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
 		preSet,
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	var gotHandlers protocol.Lookup
 	r.POST("/x", func(c *gin.Context) {
@@ -146,7 +147,7 @@ type fakeHandlerLookup struct{}
 func (*fakeHandlerLookup) Get(_ *domain.Endpoint, _ domain.Protocol) protocol.Handler { return nil }
 
 func TestEnvelope_500_WithSourceProtocolMissing(t *testing.T) {
-	r := newGinTest(TraceContext(), Recover(), Envelope())
+	r := newGinTest(TraceContext(), Recover(), Envelope(&fakeHandlerLookup{}))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
 	w := httptest.NewRecorder()
@@ -163,7 +164,7 @@ func TestEnvelope_400_EmptyBody(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -181,7 +182,7 @@ func TestEnvelope_400_MissingModelField(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -199,7 +200,7 @@ func TestEnvelope_400_EmptyModelString(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -217,7 +218,7 @@ func TestEnvelope_400_ReadBodyError(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 
@@ -246,7 +247,7 @@ func TestEnvelope_ResponseStartedAlready_StatusCode(t *testing.T) {
 	r := newGinTest(
 		TraceContext(), Recover(),
 		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
-		Envelope(),
+		Envelope(&fakeHandlerLookup{}),
 	)
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 	w := httptest.NewRecorder()

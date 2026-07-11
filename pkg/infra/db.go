@@ -172,8 +172,14 @@ func CheckMigrationVersion(ctx context.Context, db *sqlx.DB) error {
 	if err := db.GetContext(ctx, &version, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`); err != nil {
 		return fmt.Errorf("infra: schema migration state unavailable; run the migrate binary (cmd/migrate): %w", err)
 	}
-	if version != latestSchemaVersion {
-		return fmt.Errorf("infra: schema version %d, require %d; run the migrate binary (cmd/migrate)", version, latestSchemaVersion)
+	// Require the DB to be at least this binary's version; a NEWER DB is fine.
+	// Migrations are additive (expand-contract: new tables/columns via
+	// IF NOT EXISTS / ensureColumn, old fields kept), so an old gateway replica
+	// runs correctly against a schema migrated ahead of it. This is what makes
+	// zero-downtime rolling upgrades possible: migrate to vN+1 first, old vN
+	// pods keep serving, new vN+1 pods roll in — neither crashes.
+	if version < latestSchemaVersion {
+		return fmt.Errorf("infra: schema version %d is older than required %d; run the migrate binary (cmd/migrate)", version, latestSchemaVersion)
 	}
 	return nil
 }

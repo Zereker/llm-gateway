@@ -70,12 +70,13 @@ Request-level state shared across middlewares goes through the `*requeststate.St
 
 ### Protocol facade (P3 / P4)
 
-- End-to-end protocol handling goes through the `pkg/protocol.Handler` facade; consumers (dispatch / middleware / invoker) only see the `Handler` / `Lookup` interfaces, and **never touch** `Factory` / `Session` / `LookupFactory` directly.
+- End-to-end protocol handling goes through the `pkg/protocol.Handler` facade; consumers (dispatch / middleware / invoker) only see the `Handler` / `Lookup` interfaces, and **never touch** `Factory` / `Session` directly.
 - Internally, Handler = `Combine(Factory, translator.Translator)` + an endpoint-level `quirks.Rewriter`:
-    - `pkg/protocol/<vendor>/`: the vendor HTTP layer (URL / auth header / Content-Type) — Factory + Session implementation; `init()` calls `protocol.RegisterFactory("<vendor>", Factory{})`.
-    - `pkg/translator/<src>_<dst>/`: protocol shape conversion (OpenAI ↔ Anthropic / OpenAI ↔ Gemini / identity, etc.), `init()` calls `translator.Register(...)`.
+    - `pkg/protocol/<vendor>/`: the vendor HTTP layer (URL / auth header / Content-Type) — Factory + Session implementation.
+    - `pkg/translator/<src>_<dst>/`: protocol shape conversion (OpenAI ↔ Anthropic / OpenAI ↔ Gemini / identity, etc.).
     - `pkg/protocol/quirks`: an endpoint-level body + header tweak DSL (stored in the `endpoints.quirks` JSON column); driven by deployer config, not registered in code.
-- Adding a new vendor / translator: register inside the sub-package's `init()` and add its single blank import to `internal/builtin/builtin.go`. Gateway and console both consume that built-in set.
+- Vendor factories and translators are assembled **explicitly** in `internal/builtin.NewLookup` (`protocol.NewLookup(factories, translator.NewRegistry(...))`) — no process-global registries / `init()` side effects. `DefaultLookup` composes the per-request Handler from that application-scoped set. Gateway and console both consume the same built-in lookup.
+- Adding a new vendor / translator: implement the Factory / Translator in its sub-package, then add it to the factory map / translator list in `internal/builtin.NewLookup`.
 - As of v0.7, `pkg/adapter` has been merged into `pkg/protocol`; references to `pkg/adapter/<vendor>/` in older docs are historical paths — the code now lives under `pkg/protocol/<vendor>/`.
 
 ### Client Protocol Scope

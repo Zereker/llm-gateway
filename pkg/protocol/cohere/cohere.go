@@ -5,7 +5,8 @@
 // routing.url (the Cohere /v2/chat endpoint).
 //
 // Wiring: endpoint `vendor: cohere` + `protocol: cohere` + `auth.type: bearer`
-// (payload.api_key = Cohere key). cmd/gateway blank-imports this package plus openai_cohere.
+// (payload.api_key = Cohere key). internal/builtin.NewLookup wires this package
+// plus the openai_cohere translator into the built-in lookup.
 package cohere
 
 import (
