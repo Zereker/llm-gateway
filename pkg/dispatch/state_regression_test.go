@@ -19,7 +19,7 @@ func TestState_RecordSkipsExcludeOnClassUnknown(t *testing.T) {
 	ep := newTestEP(7)
 
 	s.Record(ep, Verdict{Stage: StageReserve, Class: ClassUnknown, Reason: "redis blip"})
-	if _, ok := s.Excluded()[ep.ID]; ok {
+	if s.IsExcluded(ep.ID) {
 		t.Fatal("ClassUnknown should not exclude the endpoint (a dependency failure is not the endpoint's fault)")
 	}
 	if s.Attempts() != 1 {
@@ -28,7 +28,7 @@ func TestState_RecordSkipsExcludeOnClassUnknown(t *testing.T) {
 
 	// counterpart: a genuine failure (transient) must exclude.
 	s.Record(ep, Verdict{Stage: StageInvoke, Class: ClassTransient})
-	if _, ok := s.Excluded()[ep.ID]; !ok {
+	if !s.IsExcluded(ep.ID) {
 		t.Fatal("ClassTransient must exclude the endpoint")
 	}
 }

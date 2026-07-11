@@ -1,7 +1,5 @@
 package openai
 
-import "github.com/zereker/llm-gateway/pkg/protocol"
-
 // init registers a set of OpenAI-compatible vendor aliases.
 //
 // These vendors all run the OpenAI protocol (the same /v1/chat/completions,
@@ -16,13 +14,14 @@ import "github.com/zereker/llm-gateway/pkg/protocol"
 // When a vendor needs vendor-specific handling (e.g. the reasoning_content
 // field in DeepSeek-R1 responses, or a completely different protocol like
 // Anthropic's), pull it out of this list into its own sub-package.
-func init() {
+// Aliases returns the vendor names served by the OpenAI-compatible factory.
+func Aliases() []string {
 	// All OpenAI-compatible (/v1/chat/completions + Bearer). When a deployer
 	// writes an endpoint, they set vendor to one of these names, protocol to
 	// openai, routing.url to the respective vendor's endpoint, and auth to
 	// bearer. Pull one out into its own sub-package only if it later needs
 	// vendor-specific handling (e.g. DeepSeek-R1's reasoning_content).
-	aliases := []string{
+	return []string{
 		// Chinese vendors
 		"ark",         // Volcano Engine Ark (ByteDance) — hosts DeepSeek / GLM / Qwen
 		"deepseek",    // DeepSeek official
@@ -46,8 +45,5 @@ func init() {
 		"vllm",     // vLLM OpenAI server
 		"ollama",   // Ollama /v1
 		"lmstudio", // LM Studio local server
-	}
-	for _, v := range aliases {
-		protocol.RegisterFactory(v, Factory{})
 	}
 }

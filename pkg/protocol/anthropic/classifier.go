@@ -3,8 +3,8 @@ package anthropic
 import (
 	"encoding/json"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // Classify implements protocol.Classifier, overriding DefaultClassifier to refine

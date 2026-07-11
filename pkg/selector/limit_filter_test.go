@@ -3,61 +3,33 @@ package selector
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
 // localStubStore is a SnapshotBatch-only stub; reserve / charge are all unimplemented (never called).
 type localStubStore struct {
 	// decides the Used value SnapshotBatch returns, keyed by ep ID; exceeding Limit triggers exclusion
-	usedFor map[int64]uint32
-	err     error
-	calls   atomic.Int32
+	available map[int64]bool
+	err       error
+	calls     atomic.Int32
 }
 
-func (s *localStubStore) SnapshotBatch(_ context.Context, buckets []ratelimit.Bucket) ([]ratelimit.BucketState, error) {
+func (s *localStubStore) Available(_ context.Context, endpoints []*domain.Endpoint) (map[int64]bool, error) {
 	s.calls.Add(1)
 	if s.err != nil {
 		return nil, s.err
 	}
-	out := make([]ratelimit.BucketState, len(buckets))
-	for i, b := range buckets {
-		var id int64
-		_, _ = scanID(b.Key, &id)
-		used := uint32(0)
-		if s.usedFor != nil {
-			used = s.usedFor[id]
+	out := make(map[int64]bool, len(endpoints))
+	for _, endpoint := range endpoints {
+		out[endpoint.ID] = true
+		if value, ok := s.available[endpoint.ID]; ok {
+			out[endpoint.ID] = value
 		}
-		out[i] = ratelimit.BucketState{Key: b.Key, Used: used, Limit: b.Limit}
 	}
 	return out, nil
-}
-
-func (s *localStubStore) ReserveBatch(_ context.Context, _ []ratelimit.Bucket) (bool, *ratelimit.BucketViolation, error) {
-	return true, nil, nil
-}
-func (s *localStubStore) ChargeBatch(_ context.Context, _ []ratelimit.Bucket) ([]ratelimit.BucketChargeResult, error) {
-	return nil, nil
-}
-
-func scanID(key string, out *int64) (int, error) {
-	parts := strings.Split(key, ":")
-	if len(parts) < 3 {
-		return 0, errors.New("bad key")
-	}
-	var n int64
-	for _, c := range parts[2] {
-		if c < '0' || c > '9' {
-			return 0, errors.New("not digit")
-		}
-		n = n*10 + int64(c-'0')
-	}
-	*out = n
-	return 1, nil
 }
 
 func epWithQuota(id int64, rpm, tpm uint32) *domain.Endpoint {
@@ -103,7 +75,7 @@ func TestLimitReadFilter_NoQuotaConfig_Passthrough(t *testing.T) {
 
 func TestLimitReadFilter_OverLimit_Excluded(t *testing.T) {
 	// ep2 already used up 60/60 → should be excluded
-	store := &localStubStore{usedFor: map[int64]uint32{1: 0, 2: 60}}
+	store := &localStubStore{available: map[int64]bool{1: true, 2: false}}
 	f := NewLimitReadFilter(store)
 	cands := []*domain.Endpoint{epWithQuota(1, 60, 0), epWithQuota(2, 60, 0)}
 	got := f.Apply(context.Background(), cands, &Request{})
@@ -119,60 +91,5 @@ func TestLimitReadFilter_FailOpen_OnStoreErr(t *testing.T) {
 	got := f.Apply(context.Background(), cands, &Request{})
 	if len(got) != 2 {
 		t.Errorf("fail-open expected, got %d", len(got))
-	}
-}
-
-func TestEndpointReserveBuckets_RPMOnly(t *testing.T) {
-	e := epWithQuota(7, 60, 0)
-	bs := ratelimit.EndpointReserveBuckets(e)
-	if len(bs) != 1 || !strings.HasSuffix(bs[0].Key, ":rpm") {
-		t.Errorf("buckets=%+v", bs)
-	}
-	if bs[0].Cost != 1 {
-		t.Errorf("rpm cost=%d, want 1", bs[0].Cost)
-	}
-}
-
-func TestEndpointReserveBuckets_NoTPMInReserve(t *testing.T) {
-	// docs/04 §10: endpoint TPM is not part of reserve; it only appears in ChargeBatch
-	e := epWithQuota(7, 0, 100000)
-	bs := ratelimit.EndpointReserveBuckets(e)
-	if len(bs) != 0 {
-		t.Errorf("TPM should not appear in reserve buckets, got=%+v", bs)
-	}
-}
-
-func TestEndpointReserveBuckets_RPS(t *testing.T) {
-	e := ep(7, 100)
-	rps := uint32(10)
-	e.Quota = domain.QuotaConfig{RPS: &rps}
-	bs := ratelimit.EndpointReserveBuckets(e)
-	if len(bs) != 1 || !strings.HasSuffix(bs[0].Key, ":rps") {
-		t.Errorf("buckets=%+v", bs)
-	}
-}
-
-func TestEndpointTPMChargeBucket_NoTPM_Nil(t *testing.T) {
-	e := ep(1, 100)
-	if got := ratelimit.EndpointTPMChargeBucket(e, 100); got != nil {
-		t.Errorf("got=%+v, want nil", got)
-	}
-}
-
-func TestEndpointTPMChargeBucket_HasTPM(t *testing.T) {
-	e := epWithQuota(42, 0, 100000)
-	got := ratelimit.EndpointTPMChargeBucket(e, 555)
-	if got == nil || got.Key != "rl:endpoint:42:tpm" {
-		t.Errorf("got=%+v", got)
-	}
-	if got.Cost != 555 {
-		t.Errorf("cost=%d, want 555", got.Cost)
-	}
-}
-
-func TestEndpointTPMChargeBucket_ZeroCost_Nil(t *testing.T) {
-	e := epWithQuota(42, 0, 100000)
-	if got := ratelimit.EndpointTPMChargeBucket(e, 0); got != nil {
-		t.Errorf("cost=0 should return nil, got %+v", got)
 	}
 }

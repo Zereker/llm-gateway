@@ -30,6 +30,9 @@ import (
 
 type openaiCohere struct{}
 
+// New returns the OpenAI-to-Cohere translator.
+func New() translator.Translator { return openaiCohere{} }
+
 func (openaiCohere) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiCohere) Target() domain.Protocol { return domain.ProtoCohere }
 
@@ -40,8 +43,6 @@ func (openaiCohere) TranslateRequest(srcBody []byte) ([]byte, error) {
 func (openaiCohere) NewResponseHandler() translator.ResponseHandler {
 	return &responseHandler{}
 }
-
-func init() { translator.Register(openaiCohere{}) }
 
 // =============================================================================
 // Request: OpenAI ChatCompletion -> Cohere v2 /v2/chat

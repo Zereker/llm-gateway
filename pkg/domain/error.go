@@ -1,33 +1,22 @@
 package domain
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/zereker/llm-gateway/internal/failure"
+)
 
 // ErrorClass classifies error behavior. Determines whether the scheduling
 // layer retries + the default HTTP status code.
-type ErrorClass int
+type ErrorClass = failure.Class
 
 const (
-	ErrUnknown   ErrorClass = iota // unknown / fallback (default 500)
-	ErrInvalid                     // client input error (400); not retried
-	ErrPermanent                   // permanent failure (auth / quota / config error, 403); not retried, long cooldown
-	ErrTransient                   // transient failure (network / upstream 5xx / timeout, 502); retryable
-	ErrRateLimit                   // rate limited (own or upstream, 429); retried per cooldown
+	ErrUnknown   = failure.Unknown
+	ErrInvalid   = failure.Invalid
+	ErrPermanent = failure.Permanent
+	ErrTransient = failure.Transient
+	ErrRateLimit = failure.Capacity
 )
-
-func (c ErrorClass) String() string {
-	switch c {
-	case ErrInvalid:
-		return "invalid"
-	case ErrPermanent:
-		return "permanent"
-	case ErrTransient:
-		return "transient"
-	case ErrRateLimit:
-		return "rate_limit"
-	default:
-		return "unknown"
-	}
-}
 
 // Stable machine codes (docs/architecture/01 §8 + 08 §7).
 //

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // fakeTokenProvider for testing the session BuildRequest with arbitrary header.
@@ -26,12 +25,6 @@ func TestFactory_Metadata(t *testing.T) {
 	m := Factory{}.Metadata()
 	if m.Vendor != "gemini" {
 		t.Errorf("Vendor=%q", m.Vendor)
-	}
-}
-
-func TestAdapter_Registered(t *testing.T) {
-	if f := protocol.LookupFactory("gemini"); f == nil {
-		t.Fatal("gemini adapter not registered")
 	}
 }
 

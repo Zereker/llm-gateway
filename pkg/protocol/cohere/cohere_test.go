@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 func TestCohere_BearerAuth(t *testing.T) {
@@ -46,10 +45,7 @@ func TestCohere_WrongAuthType(t *testing.T) {
 	}
 }
 
-func TestCohere_FactoryRegistered(t *testing.T) {
-	if protocol.LookupFactory("cohere") == nil {
-		t.Fatal("cohere vendor not registered")
-	}
+func TestCohere_FactoryMetadata(t *testing.T) {
 	f := Factory{}
 	if f.Metadata().Vendor != "cohere" {
 		t.Error("wrong vendor name")

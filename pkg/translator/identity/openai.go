@@ -32,6 +32,8 @@ import (
 // extracts usage on the side via the extractor.
 type openaiTranslator struct{}
 
+func newOpenAI() translator.Translator { return openaiTranslator{} }
+
 func (openaiTranslator) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiTranslator) Target() domain.Protocol { return domain.ProtoOpenAI }
 
@@ -101,8 +103,4 @@ func ensureStreamUsage(body []byte) []byte {
 		return body
 	}
 	return out
-}
-
-func init() {
-	translator.Register(openaiTranslator{})
 }

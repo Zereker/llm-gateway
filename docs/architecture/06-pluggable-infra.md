@@ -475,7 +475,7 @@ repeated here; metric naming and dimensions are in [08-observability §3 Metrics
 
 ## 13. Server Lifecycle
 
-`pkg/server.Server` is responsible for:
+`internal/app/runtime.Runtime` is responsible for:
 
 - Opening the DB / Redis / Kafka producer.
 - Registering closers.

@@ -252,27 +252,30 @@ type Lookup interface {
     Get(ep *domain.Endpoint, srcProto domain.Protocol) Handler
 }
 
-type DefaultLookup struct{}
+type DefaultLookup struct {
+    factories map[string]Factory
+    translators *translator.Registry
+}
 
-func (DefaultLookup) Get(ep *Endpoint, src Protocol) Handler {
+func (l DefaultLookup) Get(ep *Endpoint, src Protocol) Handler {
     if ep == nil || ep.Protocol == ProtoUnknown {
         return nil
     }
-    ad := protocol.LookupFactory(ep.Vendor)
+    ad := l.factories[ep.Vendor]
     if ad == nil {
         return nil
     }
     // direct route preferred; on miss, fall back via pivot (OpenAI) composition, see §6a
-    tr := translator.FindVia(src, ep.Protocol, ProtoOpenAI)
+    tr := l.translators.FindVia(src, ep.Protocol, ProtoOpenAI)
     if tr == nil {
         return nil
     }
-    return Combine(ad, tr)   // result goes into the package-level handlerCache (vendor|src|tgt)
+    return Combine(ad, tr)   // cached inside this lookup instance
 }
 ```
 
-**Request-level injection**: M3 Envelope fills `rc.Handlers` with the default
-`DefaultLookup{}`; in multi-tenant / canary scenarios, subsequent middleware (e.g. M2
+**Request-level injection**: the app explicitly constructs `builtin.NewLookup()` and
+router injects it through Envelope; in multi-tenant / canary scenarios, middleware
 Auth) can override `rc.Handlers` per tenant with a custom Lookup implementation
 (restricting available vendors / a custom translator chain).
 
@@ -498,14 +501,11 @@ retrying the same endpoint, so it can Switch directly to the next model or Abort
 ## 12. Steps for adding a new vendor / endpoint
 
 1. Implement `protocol.Factory` and `protocol.Session` in `pkg/protocol/<vendor>/`.
-2. Call `protocol.RegisterFactory("<vendor>", Factory{})` in `init()`.
+2. Export the factory and add it to `internal/builtin.NewLookup`.
 3. If the protocol the client will use doesn't match the vendor's upstream protocol,
    and `pkg/translator/<src>_<dst>/` isn't registered yet — add a new translator
-   implementation and register it in `init()`.
-4. Add the implementation's blank import once in `internal/builtin/builtin.go`:
-   - `_ "github.com/zereker/llm-gateway/pkg/protocol/<vendor>"`
-   - `_ "github.com/zereker/llm-gateway/pkg/translator/<pair>"` (identity is already
-     imported by default)
+   implementation with an exported `New()` constructor.
+4. Add that translator instance to the explicit list in `internal/builtin.NewLookup`.
 5. Rebuild and restart the gateway process.
 6. Deployer creates the endpoint via SQL INSERT: `vendor` must match the registered
    name; `protocol` is required and declares which protocol the upstream of that

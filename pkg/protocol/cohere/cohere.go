@@ -36,10 +36,6 @@ func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.Re
 	return &session{ctx: c, ep: ep}, nil
 }
 
-func init() {
-	protocol.RegisterFactory("cohere", Factory{})
-}
-
 type session struct {
 	ctx context.Context
 	ep  *domain.Endpoint

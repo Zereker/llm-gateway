@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"go.opentelemetry.io/otel"
 
 	"github.com/zereker/llm-gateway/pkg/contentlog"
@@ -103,7 +104,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 
 // applyOutcomeToRC maps fields produced by dispatch back onto RC (dispatch is
 // decoupled from RC; all side effects are centralized here).
-func applyOutcomeToRC(rc *domain.RequestContext, out dispatch.Outcome) {
+func applyOutcomeToRC(rc *requeststate.State, out dispatch.Outcome) {
 	if out.RoutedModel != nil {
 		rc.RoutedModelService = out.RoutedModel
 	}

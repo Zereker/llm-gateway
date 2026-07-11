@@ -32,7 +32,7 @@ type RetryPolicy interface {
 // FallbackPolicy decides the next step when the current model's candidates
 // are exhausted (Selector.Select returned nil).
 //
-// Input: state (including RemainingModels)
+// Input: state (including the next fallback model, when present)
 // Output: Action (Switch / Abort — never Continue / Stream)
 //
 // **Default implementation** ModelChainFallback: switches in rc.ModelChain

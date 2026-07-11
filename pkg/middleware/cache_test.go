@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -47,7 +48,7 @@ func cacheHarnessDown(store ResponseCacheStore, down gin.HandlerFunc) (*gin.Engi
 	calls := 0
 	e.POST("/v1/chat/completions",
 		func(c *gin.Context) {
-			rc := &domain.RequestContext{
+			rc := &requeststate.State{
 				Envelope:     &domain.RequestEnvelope{RawBytes: readBody(c), Model: "m", SourceProtocol: domain.ProtoOpenAI},
 				ModelService: &domain.ModelService{Model: "m"},
 			}
@@ -176,7 +177,7 @@ func TestResponseCache_EmbeddingsDeterministicByDefault(t *testing.T) {
 	calls := 0
 	e.POST("/v1/embeddings",
 		func(c *gin.Context) {
-			rc := &domain.RequestContext{
+			rc := &requeststate.State{
 				Envelope: &domain.RequestEnvelope{
 					RawBytes: readBody(c), Model: "text-embedding-3-small",
 					SourceProtocol: domain.ProtoOpenAI, Modality: domain.ModalityEmbedding,

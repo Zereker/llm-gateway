@@ -62,7 +62,3 @@ func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.Re
 	streaming := env != nil && gjson.GetBytes(env.RawBytes, "stream").Bool()
 	return newSession(c, ep, tp, streaming), nil
 }
-
-func init() {
-	protocol.RegisterFactory("gemini", Factory{})
-}

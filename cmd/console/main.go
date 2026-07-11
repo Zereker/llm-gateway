@@ -22,11 +22,12 @@ import (
 	"log/slog"
 	"os"
 
-	_ "github.com/zereker/llm-gateway/internal/builtin"
+	appRuntime "github.com/zereker/llm-gateway/internal/app/runtime"
+	"github.com/zereker/llm-gateway/internal/builtin"
 	"github.com/zereker/llm-gateway/pkg/cachebus"
 	"github.com/zereker/llm-gateway/pkg/console"
+	"github.com/zereker/llm-gateway/pkg/endpointcheck"
 	"github.com/zereker/llm-gateway/pkg/repo"
-	"github.com/zereker/llm-gateway/pkg/server"
 	"github.com/zereker/llm-gateway/pkg/trace"
 )
 
@@ -54,14 +55,14 @@ func run(configPath string) error {
 		return fmt.Errorf("load data_key: %w", err)
 	}
 
-	srv := server.New(slog.Default())
+	srv := appRuntime.New(slog.Default())
 	sqldb, err := srv.OpenDB(cfg.Database)
 	if err != nil {
 		srv.Close()
 		return fmt.Errorf("open db: %w", err)
 	}
 
-	store := console.NewStore(sqldb)
+	store := console.NewStore(sqldb).WithEndpointValidator(endpointcheck.Validator{Catalog: builtin.NewLookup()})
 
 	// Optional cachebus: if redis.addr is configured, attach a Publisher so
 	// key revocations notify the data plane precisely.

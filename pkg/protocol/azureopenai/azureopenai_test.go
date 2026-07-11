@@ -75,10 +75,7 @@ func TestAzure_WrongAuthType(t *testing.T) {
 }
 
 // Factory registration + inherited openai Classify (Azure error JSON is OpenAI-shaped).
-func TestAzure_FactoryRegisteredWithClassify(t *testing.T) {
-	if protocol.LookupFactory("azure-openai") == nil {
-		t.Fatal("azure-openai vendor is not registered")
-	}
+func TestAzure_FactoryMetadataWithClassify(t *testing.T) {
 	f := Factory{}
 	if f.Metadata().Vendor != "azure-openai" {
 		t.Errorf("vendor = %q", f.Metadata().Vendor)

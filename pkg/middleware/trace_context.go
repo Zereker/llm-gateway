@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/internal/requeststate"
 )
 
 // ScopeName is the instrumentation scope name for M1's root span (the OTel
@@ -58,7 +58,7 @@ func defaultSpanNameFormatter(c *gin.Context) string {
 //  2. No traceparent → constructs its own parent SpanContext, generating a fallback trace_id
 //  3. Injects request_id into OTel baggage (trace.CtxHandler automatically adds it to every log record, propagated across services)
 //  4. tracer.Start("{METHOD} {route}", SpanKindServer, initial attrs) → root span
-//  5. Constructs *domain.RequestContext, attaches it to c.Request.Context() and *gin.Context
+//  5. Constructs requeststate.State and attaches it to c.Request.Context()
 //  6. c.Next() runs the business chain
 //  7. On End: writes http.status_code / gen_ai.* / llm_gateway.* attrs; SetStatus; logs request.end
 //
@@ -128,10 +128,9 @@ func TraceContext() gin.HandlerFunc {
 		defer span.End()
 
 		// 5. Construct and attach RequestContext
-		rc := &domain.RequestContext{
+		rc := &requeststate.State{
 			RequestID: requestID,
 			StartTime: time.Now(),
-			Extras:    make(map[string]any),
 		}
 		// AttachRequestContext writes the current ctx + rc value back onto
 		// c.Request.Context() together. Downstream middleware should always

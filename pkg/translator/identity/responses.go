@@ -40,6 +40,8 @@ import (
 // connect directly to an OpenAI upstream.
 type responsesTranslator struct{}
 
+func newResponses() translator.Translator { return responsesTranslator{} }
+
 func (responsesTranslator) Source() domain.Protocol { return domain.ProtoResponses }
 func (responsesTranslator) Target() domain.Protocol { return domain.ProtoResponses }
 
@@ -65,8 +67,4 @@ func (h *responsesResponseHandler) Feed(chunk []byte) ([]byte, error) {
 
 func (h *responsesResponseHandler) Flush() ([]byte, *domain.Usage, error) {
 	return nil, h.ex.Final(), nil
-}
-
-func init() {
-	translator.Register(responsesTranslator{})
 }

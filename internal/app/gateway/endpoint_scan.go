@@ -26,7 +26,7 @@ import (
 // error here only warns (startup-time DB availability is already gated by
 // Migrate + CheckSchema; a failure here is most likely a race and not worth
 // failing over).
-func scanEndpoints(ctx context.Context, reader repo.EndpointReader, log *slog.Logger) {
+func scanEndpoints(ctx context.Context, reader repo.DomainEndpointReader, validator endpointcheck.Validator, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -37,13 +37,12 @@ func scanEndpoints(ctx context.Context, reader repo.EndpointReader, log *slog.Lo
 	}
 
 	bad := 0
-	for _, row := range eps {
-		ep := repo.ToDomainEndpoint(row)
-		for _, reason := range endpointcheck.Validate(ep) {
+	for _, ep := range eps {
+		for _, reason := range validator.Validate(ep) {
 			bad++
 			log.Warn("endpoint misconfigured",
 				"endpoint_id", ep.ID, "name", ep.Name, "vendor", ep.Vendor,
-				"protocol_raw", row.Protocol, "reason", reason)
+				"protocol", ep.Protocol.String(), "reason", reason)
 			metric.Inc(metric.EndpointMisconfiguredTotal, "vendor", ep.Vendor, "reason", reason)
 		}
 	}

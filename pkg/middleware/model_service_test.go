@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -37,7 +38,7 @@ func newMSOpts(ms *domain.ModelService) []ModelServiceOption {
 func TestModelService_HappyPath_FillsRC(t *testing.T) {
 	ms := &domain.ModelService{ID: 7, ServiceID: "svc1", Model: "gpt-4o"}
 
-	var rc *domain.RequestContext
+	var rc *requeststate.State
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("gpt-4o", "acc1"),
@@ -175,7 +176,7 @@ func (m mapSubs) HasModel(_ context.Context, _ string, msID int64) (bool, error)
 }
 
 // extractChainModels extracts the model name slice from rc.ModelChain, for easier assertions.
-func extractChainModels(rc *domain.RequestContext) []string {
+func extractChainModels(rc *requeststate.State) []string {
 	out := make([]string, len(rc.ModelChain))
 	for i, ms := range rc.ModelChain {
 		out[i] = ms.Model
@@ -183,9 +184,9 @@ func extractChainModels(rc *domain.RequestContext) []string {
 	return out
 }
 
-func runModelChain(t *testing.T, hdr string, catalog ModelCatalog, subs SubscriptionChecker) *domain.RequestContext {
+func runModelChain(t *testing.T, hdr string, catalog ModelCatalog, subs SubscriptionChecker) *requeststate.State {
 	t.Helper()
-	var rc *domain.RequestContext
+	var rc *requeststate.State
 	r := newGinTest(
 		TraceContext(), Recover(),
 		attachM5Inputs("gpt-4o", "acc1"),

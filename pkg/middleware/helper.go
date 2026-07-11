@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
@@ -23,7 +24,7 @@ var requestContextKey = rcCtxKey{}
 //
 // Assumes M1 TraceContext has already been registered and run; panics if not
 // found (M9 Recover falls back to a 500).
-func GetRequestContext(c *gin.Context) *domain.RequestContext {
+func GetRequestContext(c *gin.Context) *requeststate.State {
 	rc := fromCtx(c.Request.Context())
 	if rc == nil {
 		panic("RequestContext not set: M1 TraceContext middleware missing")
@@ -37,14 +38,14 @@ func GetRequestContext(c *gin.Context) *domain.RequestContext {
 // Afterward, any downstream middleware that needs RC goes through
 // `GetRequestContext(c)`, and any that needs ctx goes through
 // `c.Request.Context()` — single source of truth.
-func AttachRequestContext(c *gin.Context, rc *domain.RequestContext) {
+func AttachRequestContext(c *gin.Context, rc *requeststate.State) {
 	ctx := context.WithValue(c.Request.Context(), requestContextKey, rc)
 	c.Request = c.Request.WithContext(ctx)
 }
 
 // fromCtx is the internal typed-key extraction. Returns nil if ctx is nil or
 // the key is absent.
-func fromCtx(ctx context.Context) *domain.RequestContext {
+func fromCtx(ctx context.Context) *requeststate.State {
 	if ctx == nil {
 		return nil
 	}
@@ -52,7 +53,7 @@ func fromCtx(ctx context.Context) *domain.RequestContext {
 	if v == nil {
 		return nil
 	}
-	rc, _ := v.(*domain.RequestContext)
+	rc, _ := v.(*requeststate.State)
 	return rc
 }
 

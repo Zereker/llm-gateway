@@ -96,24 +96,51 @@ type key struct {
 
 var defaultRegistry = &Registry{m: make(map[key]Translator)}
 
+// NewRegistry builds an isolated translator registry. Registration is
+// expected during application assembly; the returned registry is then safe
+// for concurrent reads.
+func NewRegistry(translators ...Translator) *Registry {
+	r := &Registry{m: make(map[key]Translator, len(translators))}
+	for _, t := range translators {
+		r.Register(t)
+	}
+	return r
+}
+
+// Register adds a translator to this registry and panics on duplicates.
+func (r *Registry) Register(t Translator) {
+	if t == nil {
+		panic("translator: nil registration")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := key{src: t.Source(), tgt: t.Target()}
+	if _, dup := r.m[k]; dup {
+		panic("translator: duplicate registration for " + t.Source().String() + " → " + t.Target().String())
+	}
+	r.m[k] = t
+}
+
+// Find looks up a translator in this registry.
+func (r *Registry) Find(source, target domain.Protocol) Translator {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.m[key{src: source, tgt: target}]
+}
+
 // Register performs global registration (called within a package's init()).
 // Registering the same (source, target) twice panics, surfacing the conflict
 // at startup.
 func Register(t Translator) {
-	defaultRegistry.mu.Lock()
-	defer defaultRegistry.mu.Unlock()
-	k := key{src: t.Source(), tgt: t.Target()}
-	if _, dup := defaultRegistry.m[k]; dup {
-		panic("translator: duplicate registration for " + t.Source().String() + " → " + t.Target().String())
-	}
-	defaultRegistry.m[k] = t
+	defaultRegistry.Register(t)
 }
 
 // Find looks up the translator for (source, target); returns nil if unregistered.
 func Find(source, target domain.Protocol) Translator {
-	defaultRegistry.mu.RLock()
-	defer defaultRegistry.mu.RUnlock()
-	return defaultRegistry.m[key{src: source, tgt: target}]
+	return defaultRegistry.Find(source, target)
 }
 
 // Reset clears the registry; for tests only.

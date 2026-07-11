@@ -23,7 +23,7 @@ This document records the M7 endpoint scheduling boundary. The scheduling layer'
 
 **Key boundary**: execution order (candidate fetch / eligibility / selection / pre-charge / invoke / report /
 retry / fallback / post-charge) belongs to `dispatch.Dispatcher`, **not** middleware. M7
-is always a thin adapter—it maps `*domain.RequestContext` into `dispatch.Input`,
+is always a thin adapter—it maps `*requeststate.State` into `dispatch.Input`,
 calls `dispatcher.Dispatch(ctx, w, input)`, then maps `dispatch.Outcome` back onto RC (writing
 `RoutedModelService` / `Usage` / `Error` / `SchedulingDecision`) + the HTTP response.
 

@@ -15,7 +15,7 @@ func TestErrorClass_String(t *testing.T) {
 		{ErrInvalid, "invalid"},
 		{ErrPermanent, "permanent"},
 		{ErrTransient, "transient"},
-		{ErrRateLimit, "rate_limit"},
+		{ErrRateLimit, "capacity"},
 		{ErrorClass(999), "unknown"},
 	}
 	for _, tc := range cases {

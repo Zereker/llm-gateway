@@ -1,21 +1,20 @@
 package openai
 
-import (
-	"testing"
+import "testing"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
-)
-
-// TestAliasesAllRegistered verifies all OpenAI-compatible vendor aliases are
-// registered into the registry (resolvable via LookupFactory).
-func TestAliasesAllRegistered(t *testing.T) {
-	for _, v := range []string{
+func TestAliasesComplete(t *testing.T) {
+	want := []string{
 		"ark", "deepseek", "moonshot", "zhipu", "qwen", "doubao", "minimax",
 		"siliconflow", "stepfun", "groq", "together", "fireworks", "openrouter",
 		"perplexity", "deepinfra", "xai", "mistral", "vllm", "ollama", "lmstudio",
-	} {
-		if protocol.LookupFactory(v) == nil {
-			t.Errorf("vendor %q not registered", v)
+	}
+	got := Aliases()
+	if len(got) != len(want) {
+		t.Fatalf("aliases len=%d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("alias[%d]=%q, want %q", i, got[i], want[i])
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/dispatch"
 	"github.com/zereker/llm-gateway/pkg/middleware"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/ratelimit"
 )
 
@@ -30,6 +31,7 @@ type Deps struct {
 	// HTTP defaults).
 	BodyLimit int64
 	Timeout   time.Duration
+	Handlers  protocol.Lookup
 
 	// M2 Auth
 	IdentityProvider middleware.IdentityProvider

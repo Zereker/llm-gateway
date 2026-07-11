@@ -47,7 +47,3 @@ func (Factory) Metadata() protocol.Metadata {
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, _ *domain.RequestEnvelope) (protocol.Session, error) {
 	return newSession(c, ep), nil
 }
-
-func init() {
-	protocol.RegisterFactory("anthropic", Factory{})
-}

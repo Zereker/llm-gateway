@@ -34,6 +34,9 @@ import (
 
 type responsesOpenAI struct{}
 
+// New returns the Responses-to-OpenAI translator.
+func New() translator.Translator { return responsesOpenAI{} }
+
 func (responsesOpenAI) Source() domain.Protocol { return domain.ProtoResponses }
 func (responsesOpenAI) Target() domain.Protocol { return domain.ProtoOpenAI }
 
@@ -319,8 +322,4 @@ func stripPrefix(s, prefix string) string {
 		return s[len(prefix):]
 	}
 	return s
-}
-
-func init() {
-	translator.Register(responsesOpenAI{})
 }
