@@ -356,6 +356,9 @@ type openAIRequest struct {
 	Stream      bool                   `json:"stream,omitempty"`
 	Tools       []openAITool           `json:"tools,omitempty"`
 	ToolChoice  json.RawMessage        `json:"tool_choice,omitempty"`
+	// ParallelToolCalls, when explicitly false, maps to Anthropic's
+	// tool_choice.disable_parallel_tool_use (see applyDisableParallelToolUse).
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 }
 
 // openAITool is one entry of the OpenAI request "tools" array. Only function
@@ -538,6 +541,9 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	if len(in.ToolChoice) > 0 {
 		out.ToolChoice = mapToolChoice(in.ToolChoice)
 	}
+	if in.ParallelToolCalls != nil && !*in.ParallelToolCalls {
+		out.ToolChoice = applyDisableParallelToolUse(out.ToolChoice)
+	}
 
 	var systemParts []string
 	for i := 0; i < len(in.Messages); i++ {
@@ -632,8 +638,9 @@ func normalizeToolSchema(raw json.RawMessage) json.RawMessage {
 //
 //	"auto"                                       → {"type":"auto"}
 //	"required"                                   → {"type":"any"}
+//	"none"                                        → {"type":"none"}
 //	{"type":"function","function":{"name":"X"}}  → {"type":"tool","name":"X"}
-//	"none" (and anything unrecognized)           → nil (omit; let the model decide)
+//	anything unrecognized                        → nil (omit; let the model decide)
 func mapToolChoice(raw json.RawMessage) json.RawMessage {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -642,7 +649,9 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 			return json.RawMessage(`{"type":"auto"}`)
 		case "required":
 			return json.RawMessage(`{"type":"any"}`)
-		default: // "none" or unknown → omit
+		case "none":
+			return json.RawMessage(`{"type":"none"}`)
+		default: // unknown → omit
 			return nil
 		}
 	}
@@ -659,6 +668,25 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 		}
 	}
 	return nil
+}
+
+// applyDisableParallelToolUse sets disable_parallel_tool_use:true on the
+// Anthropic tool_choice object, defaulting Type to "auto" (Anthropic's
+// implicit default) when the client didn't send a tool_choice at all —
+// Anthropic requires the flag to live on a tool_choice object, so
+// parallel_tool_calls:false with no other tool_choice still needs one
+// synthesized.
+func applyDisableParallelToolUse(toolChoice json.RawMessage) json.RawMessage {
+	m := map[string]any{"type": "auto"}
+	if len(toolChoice) > 0 {
+		_ = json.Unmarshal(toolChoice, &m)
+	}
+	m["disable_parallel_tool_use"] = true
+	b, err := json.Marshal(m)
+	if err != nil {
+		return toolChoice
+	}
+	return b
 }
 
 // buildAssistantMessage builds an Anthropic assistant message. When the OpenAI

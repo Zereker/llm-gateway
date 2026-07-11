@@ -352,9 +352,13 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	for _, m := range in.Messages {
 		switch m.Role {
 		case "system":
-			out.SystemInstruction = &geminiContent{
-				Parts: []geminiPart{{Text: m.Content}},
+			// Merge every system message into one systemInstruction — a client
+			// (or an injected middleware reminder) may send more than one, and
+			// replacing wholesale each time silently dropped all but the last.
+			if out.SystemInstruction == nil {
+				out.SystemInstruction = &geminiContent{}
 			}
+			out.SystemInstruction.Parts = append(out.SystemInstruction.Parts, geminiPart{Text: m.Content})
 		case "assistant":
 			out.Contents = append(out.Contents, geminiContent{
 				Role:  "model",

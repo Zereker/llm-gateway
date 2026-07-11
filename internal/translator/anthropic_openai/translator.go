@@ -476,7 +476,10 @@ type openAIRequest struct {
 	Stream        bool            `json:"stream,omitempty"`
 	StreamOptions *openAIStreamOp `json:"stream_options,omitempty"`
 	Tools         []openAITool    `json:"tools,omitempty"`
-	ToolChoice    any             `json:"tool_choice,omitempty"` // "auto"|"required"|{type:function,...}
+	ToolChoice    any             `json:"tool_choice,omitempty"` // "auto"|"required"|"none"|{type:function,...}
+	// ParallelToolCalls mirrors Anthropic's tool_choice.disable_parallel_tool_use
+	// (inverted: disable_parallel_tool_use:true -> parallel_tool_calls:false).
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 }
 
 // openAIMessage is shared by request building and response parsing. Content is a
@@ -601,6 +604,10 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	if tc := translateToolChoice(in.ToolChoice); tc != nil {
 		out.ToolChoice = tc
 	}
+	if anthropicDisablesParallelToolUse(in.ToolChoice) {
+		f := false
+		out.ParallelToolCalls = &f
+	}
 	if in.MaxTokens > 0 {
 		mt := in.MaxTokens
 		out.MaxTokens = &mt
@@ -646,6 +653,7 @@ func translateTools(tools []anthropicTool) []openAITool {
 //
 //	{type:auto}        -> "auto"
 //	{type:any}         -> "required"
+//	{type:none}        -> "none"
 //	{type:tool,name:X} -> {type:"function",function:{name:"X"}}
 //
 // Returns nil when tool_choice is absent or unrecognized (OpenAI then defaults).
@@ -665,6 +673,8 @@ func translateToolChoice(raw json.RawMessage) any {
 		return "auto"
 	case "any":
 		return "required"
+	case "none":
+		return "none"
 	case "tool":
 		return map[string]any{
 			"type":     "function",
@@ -673,6 +683,22 @@ func translateToolChoice(raw json.RawMessage) any {
 	default:
 		return nil
 	}
+}
+
+// anthropicDisablesParallelToolUse reports whether the client's tool_choice
+// carries disable_parallel_tool_use:true, independent of the tool_choice
+// type — the flag can co-occur with auto/any/tool.
+func anthropicDisablesParallelToolUse(raw json.RawMessage) bool {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return false
+	}
+	var tc struct {
+		DisableParallelToolUse bool `json:"disable_parallel_tool_use"`
+	}
+	if err := json.Unmarshal(raw, &tc); err != nil {
+		return false
+	}
+	return tc.DisableParallelToolUse
 }
 
 // translateAssistantMessage converts an Anthropic assistant message into a single

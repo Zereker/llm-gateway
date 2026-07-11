@@ -242,6 +242,7 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 	}{
 		{`{"type":"auto"}`, `"auto"`},
 		{`{"type":"any"}`, `"required"`},
+		{`{"type":"none"}`, `"none"`},
 		{`{"type":"tool","name":"foo"}`, `{"type":"function","function":{"name":"foo"}}`},
 	}
 	for _, c := range cases {
@@ -265,6 +266,47 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 		if string(wb) != string(hb) {
 			t.Errorf("tool_choice %s -> %s, want %s", c.in, hb, wb)
 		}
+	}
+}
+
+// disable_parallel_tool_use:true must invert into OpenAI's parallel_tool_calls:false,
+// regardless of what tool_choice.type it's attached to.
+func TestTranslateRequest_DisableParallelToolUse(t *testing.T) {
+	body := []byte(`{"model":"m","max_tokens":10,` +
+		`"tool_choice":{"type":"auto","disable_parallel_tool_use":true},` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	var got struct {
+		ParallelToolCalls *bool `json:"parallel_tool_calls"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ParallelToolCalls == nil || *got.ParallelToolCalls {
+		t.Errorf("parallel_tool_calls = %v, want false", got.ParallelToolCalls)
+	}
+}
+
+// Without disable_parallel_tool_use, parallel_tool_calls must stay omitted
+// (nil), not be forced to true — OpenAI's own default should apply.
+func TestTranslateRequest_ParallelToolCallsOmittedByDefault(t *testing.T) {
+	body := []byte(`{"model":"m","max_tokens":10,"tool_choice":{"type":"auto"},` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	var got struct {
+		ParallelToolCalls *bool `json:"parallel_tool_calls"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ParallelToolCalls != nil {
+		t.Errorf("parallel_tool_calls = %v, want omitted", *got.ParallelToolCalls)
 	}
 }
 

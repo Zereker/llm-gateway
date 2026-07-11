@@ -34,6 +34,50 @@ func TestTranslateRequest(t *testing.T) {
 	}
 }
 
+// TestTranslateRequest_SamplingParamsForwarded regresses a bug where stop /
+// frequency_penalty / presence_penalty / seed / n were parsed from the client
+// body but never copied into the Cohere request — json.Unmarshal into
+// openaiReq silently dropped them since cohereReq had no matching fields, so
+// a client tuning repetition penalties or relying on stop got a silent no-op.
+func TestTranslateRequest_SamplingParamsForwarded(t *testing.T) {
+	in := `{"model":"m","stop":["\n\n","STOP"],"frequency_penalty":0.5,"presence_penalty":0.2,"seed":42,"n":3,
+	        "messages":[{"role":"user","content":"hi"}]}`
+	out, err := translateRequest([]byte(in))
+	if err != nil {
+		t.Fatalf("translateRequest: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	stops := r.Get("stop_sequences").Array()
+	if len(stops) != 2 || stops[0].String() != "\n\n" || stops[1].String() != "STOP" {
+		t.Errorf("stop_sequences = %s, want [\"\\n\\n\",\"STOP\"]", r.Get("stop_sequences").Raw)
+	}
+	if r.Get("frequency_penalty").Float() != 0.5 {
+		t.Errorf("frequency_penalty = %v", r.Get("frequency_penalty"))
+	}
+	if r.Get("presence_penalty").Float() != 0.2 {
+		t.Errorf("presence_penalty = %v", r.Get("presence_penalty"))
+	}
+	if r.Get("seed").Int() != 42 {
+		t.Errorf("seed = %v", r.Get("seed"))
+	}
+	if r.Get("num_generations").Int() != 3 {
+		t.Errorf("num_generations = %v, want 3 (from n)", r.Get("num_generations"))
+	}
+}
+
+// A single string stop value must also translate to a one-element array.
+func TestTranslateRequest_StopStringForwarded(t *testing.T) {
+	in := `{"model":"m","stop":"STOP","messages":[{"role":"user","content":"hi"}]}`
+	out, err := translateRequest([]byte(in))
+	if err != nil {
+		t.Fatalf("translateRequest: %v", err)
+	}
+	stops := gjson.GetBytes(out, "stop_sequences").Array()
+	if len(stops) != 1 || stops[0].String() != "STOP" {
+		t.Errorf("stop_sequences = %v, want [\"STOP\"]", stops)
+	}
+}
+
 func TestTranslateRequest_MultimodalContentToText(t *testing.T) {
 	in := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"part1 "},{"type":"text","text":"part2"}]}]}`
 	out, _ := translateRequest([]byte(in))
