@@ -5,6 +5,15 @@ metadata:
   name: {{ printf "%s-migrate-%d" (include "llm-gateway.fullname" .) .Release.Revision | trunc 63 | trimSuffix "-" }}
   labels:
     {{- include "llm-gateway.labels" . | nindent 4 }}
+  annotations:
+    # Run schema migration BEFORE the gateway Deployment is applied. Without
+    # this the Job and the Deployment apply concurrently, so gateway pods can
+    # start against an unmigrated DB, fail CheckMigrationVersion, and
+    # CrashLoopBackOff until the Job happens to finish. The hook makes Helm
+    # wait for this Job to complete before rolling out the gateway.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 3
   ttlSecondsAfterFinished: 300

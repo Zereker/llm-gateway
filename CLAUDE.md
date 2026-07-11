@@ -46,7 +46,7 @@ MYSQL_DSN='root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4'
 
 ### Middleware Chain (M1-M10)
 
-The request pipeline consists of 10 middlewares, **the order is explicitly listed in per-modality files such as `pkg/router/chat.go`** — do not extract a shared helper. Current order:
+The request pipeline consists of 10 middlewares. **The shared security / quota / observability order lives in one place, `pkg/router/pipeline.go`** (`llmRouteGroup` + `registerLLMRoute`); each modality file supplies only how it differs (path, source protocol, modality, and its Cache stage) via `routeSpec`. Current order:
 
 ```
 M1 TraceContext → M10 Tracing → M9 Recover → M2 Auth   (pre-Envelope, attached on the group)
@@ -62,11 +62,11 @@ M10 is registered **outside** Recover, but its finishing logic runs post-`c.Next
 so in execution order it still "finishes last," but no abort (401/429/503) or recovered panic can escape
 its metric / usage / audit logging (older versions attached at the end of the chain would get skipped on abort).
 
-Each modality file (`chat.go` / `image.go` / `audio.go` / `embedding.go`) **lists its own** complete chain. Divergence is expected to grow (e.g. chat adds a Moderator, image adds a multipart Parser), so DRY is deliberately rejected here.
+The per-modality files (`chat.go` / `image.go` / `audio.go` / `embedding.go`) only declare their `routeSpec`s and delegate the chain to `registerLLMRoute`. The chain is identical across modalities except for the Cache slot: chat uses the exact-match `deps.Cache`, embedding uses `deps.EmbeddingCache`, image/audio pass none. When a genuinely modality-specific stage is needed later (e.g. an image multipart parser), add it as a `routeSpec` field rather than re-inlining a whole chain.
 
 ### RequestContext (P2)
 
-Request-level state shared across middlewares goes through the `*domain.RequestContext` typed struct, passed via `gin.Context.Set/Get`. Fetch it with `middleware.GetRequestContext(c)`; scattered `c.Set("foo", ...)` calls are **forbidden**.
+Request-level state shared across middlewares goes through the `*requeststate.State` typed struct (`internal/requeststate`), attached to `c.Request.Context()` via `context.WithValue` (not `gin.Context.Set/Get`). Fetch it with `middleware.GetRequestContext(c)`; scattered `c.Set("foo", ...)` calls and untyped extension maps are **forbidden**.
 
 ### Protocol facade (P3 / P4)
 
