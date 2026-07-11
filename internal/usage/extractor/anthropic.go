@@ -139,7 +139,10 @@ func (s *anthropicSession) parseFullBody() {
 //
 //	message_start  -> message.usage.input_tokens (output_tokens at start is
 //	                  usually 1, so it's skipped)
-//	message_delta  -> usage.output_tokens (keeps getting overwritten)
+//	message_delta  -> usage.output_tokens (keeps getting overwritten); some
+//	                  anthropic-compatible vendors report input_tokens 0 in
+//	                  message_start and ship the full usage in message_delta
+//	                  instead — so a non-zero input_tokens here overwrites too
 //
 // Other events (content_block_*, ping, message_stop) carry no usage, so they're
 // skipped.
@@ -155,6 +158,7 @@ func (s *anthropicSession) tryExtract(payload []byte) {
 			} `json:"usage"`
 		} `json:"message"`
 		Usage *struct {
+			InputTokens  int64 `json:"input_tokens"`
 			OutputTokens int64 `json:"output_tokens"`
 		} `json:"usage"`
 	}
@@ -172,6 +176,10 @@ func (s *anthropicSession) tryExtract(payload []byte) {
 	case "message_delta":
 		if ev.Usage != nil && ev.Usage.OutputTokens > 0 {
 			s.outputTokens = ev.Usage.OutputTokens
+		}
+
+		if ev.Usage != nil && ev.Usage.InputTokens > 0 {
+			s.inputTokens = ev.Usage.InputTokens
 		}
 	}
 }

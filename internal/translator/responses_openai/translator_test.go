@@ -65,6 +65,39 @@ func TestTranslateRequest_MissingModel_Error(t *testing.T) {
 	}
 }
 
+// Tool definitions have no chat-side mapping here — the request must be
+// rejected (fail-fast), not forwarded with the tools silently dropped.
+func TestTranslateRequest_ToolsRejected(t *testing.T) {
+	src := []byte(`{"model":"gpt-4o","input":"hi",` +
+		`"tools":[{"type":"function","name":"get_weather","parameters":{"type":"object"}}]}`)
+	if _, err := translateRequest(src); err == nil {
+		t.Fatal("expected error for tools on a chat upstream")
+	}
+
+	// an explicitly empty tools array carries no information and stays accepted
+	src = []byte(`{"model":"gpt-4o","input":"hi","tools":[]}`)
+	if _, err := translateRequest(src); err != nil {
+		t.Fatalf("empty tools should pass, err=%v", err)
+	}
+}
+
+// Non-text input parts (input_image / input_file) would be silently invisible
+// to the model after translation — the request must be rejected instead.
+func TestTranslateRequest_ImagePartRejected(t *testing.T) {
+	src := []byte(`{"model":"gpt-4o","input":[{"role":"user","content":[` +
+		`{"type":"input_image","image_url":"https://example.com/a.png"},` +
+		`{"type":"input_text","text":"describe"}]}]}`)
+
+	_, err := translateRequest(src)
+	if err == nil {
+		t.Fatal("expected error for input_image on a chat upstream")
+	}
+
+	if !strings.Contains(err.Error(), "input_image") {
+		t.Errorf("error should name the offending part type: %v", err)
+	}
+}
+
 func TestResponseHandler_TranslatesChatToResponses(t *testing.T) {
 	chat := `{"id":"chatcmpl-abc","object":"chat.completion","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}`
 	h := &responseHandler{ex: extractor.NewOpenAI()}

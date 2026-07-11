@@ -15,7 +15,12 @@
 //	    → Responses: {id, object:"response", model, output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"..."}]}], usage:{input_tokens,output_tokens,total_tokens}}
 //
 // **Limitations**:
-//   - Does not support tools / structured outputs
+//   - tools and non-text input parts (input_image / input_file / ...) cannot
+//     survive the translation, so they are rejected with an invalid error
+//     (fail-fast) instead of being silently dropped — a dropped image would
+//     still bill the request while the model answers "I see no image".
+//     Full support requires a native Responses upstream (endpoint
+//     protocol=responses), which routes through identity instead.
 //   - Does not support previous_response_id (stateful continuation)
 //   - Streaming: the upstream stream is buffered and returned as a single
 //     Responses body (with include_usage-based billing); true incremental
@@ -26,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/translator"
@@ -61,6 +67,7 @@ type responsesRequest struct {
 	MaxTokens    *int            `json:"max_output_tokens,omitempty"`
 	Temperature  *float64        `json:"temperature,omitempty"`
 	TopP         *float64        `json:"top_p,omitempty"`
+	Tools        json.RawMessage `json:"tools,omitempty"` // parsed only to fail-fast; never forwarded
 }
 
 // chatMessage is a single OpenAI ChatCompletion message.
@@ -93,6 +100,15 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		return nil, fmt.Errorf("responses_openai: model required")
 	}
 
+	// Fail-fast: tool definitions cannot survive the translation to a chat
+	// upstream; dropping them silently would break the caller's tool loop.
+	if len(req.Tools) > 0 {
+		var tools []json.RawMessage
+		if err := json.Unmarshal(req.Tools, &tools); err != nil || len(tools) > 0 {
+			return nil, fmt.Errorf("responses_openai: tools are not supported when routed to a chat upstream; use a native responses endpoint")
+		}
+	}
+
 	out := chatRequest{
 		Model:       req.Model,
 		Stream:      req.Stream,
@@ -122,7 +138,12 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 			return nil, fmt.Errorf("responses_openai: input must be string or message array: %w", err)
 		}
 		for _, m := range inputMsgs {
-			out.Messages = append(out.Messages, chatMessage{Role: m.Role, Content: m.contentString()})
+			content, err := m.contentText()
+			if err != nil {
+				return nil, err
+			}
+
+			out.Messages = append(out.Messages, chatMessage{Role: m.Role, Content: content})
 		}
 	}
 
@@ -135,24 +156,34 @@ type responsesInputMessage struct {
 	Content json.RawMessage `json:"content"`
 }
 
-func (m responsesInputMessage) contentString() string {
+func (m responsesInputMessage) contentText() (string, error) {
 	var s string
 	if err := json.Unmarshal(m.Content, &s); err == nil {
-		return s
+		return s, nil
 	}
+
 	// array shape: [{"type":"input_text","text":"..."}]
 	var parts []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(m.Content, &parts); err == nil {
-		var sb string
+		var sb strings.Builder
 		for _, p := range parts {
-			sb += p.Text
+			// Fail-fast: a non-text part (input_image / input_file / ...) has
+			// no chat equivalent here; dropping it would silently change what
+			// the model sees while still billing the request.
+			if p.Type != "input_text" && p.Type != "" {
+				return "", fmt.Errorf("responses_openai: content part %q is not supported when routed to a chat upstream; use a native responses endpoint", p.Type)
+			}
+
+			sb.WriteString(p.Text)
 		}
-		return sb
+
+		return sb.String(), nil
 	}
-	return string(m.Content) // fallback
+
+	return string(m.Content), nil // fallback
 }
 
 // =============================================================================
@@ -202,9 +233,11 @@ type openaiChatResponse struct {
 
 // responsesOutput is the Responses protocol output shape.
 type responsesOutput struct {
-	ID     string `json:"id"`
-	Object string `json:"object"` // "response"
-	Model  string `json:"model"`
+	ID        string `json:"id"`
+	Object    string `json:"object"` // "response"
+	Status    string `json:"status"` // always "completed" (buffer-then-translate never returns partials)
+	CreatedAt int64  `json:"created_at"`
+	Model     string `json:"model"`
 	Output []struct {
 		Type    string `json:"type"` // "message"
 		Role    string `json:"role"`
@@ -233,8 +266,8 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		// object. Usage comes from the extractor side channel (which now sees
 		// the include_usage final chunk). This is a buffered (non-streamed)
 		// Responses reply; true incremental Responses events are not emitted.
-		content, model, id := aggregateChatSSE(h.buf)
-		return h.buildResponse(id, model, "assistant", content), h.ex.Final(), nil
+		content, model, id, created := aggregateChatSSE(h.buf)
+		return h.buildResponse(id, model, "assistant", content, created), h.ex.Final(), nil
 	}
 
 	role, content := "assistant", ""
@@ -242,17 +275,22 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		role = src.Choices[0].Message.Role
 		content = src.Choices[0].Message.Content
 	}
-	return h.buildResponse(src.ID, src.Model, role, content), h.ex.Final(), nil
+	return h.buildResponse(src.ID, src.Model, role, content, src.Created), h.ex.Final(), nil
 }
 
 // buildResponse marshals a Responses-format body. The Responses `usage` object
 // is populated from the extractor's Final().
-func (h *responseHandler) buildResponse(id, model, role, content string) []byte {
+func (h *responseHandler) buildResponse(id, model, role, content string, created int64) []byte {
 	u := h.ex.Final()
+	if created == 0 {
+		created = time.Now().Unix()
+	}
 	out := responsesOutput{
-		ID:     "resp_" + stripPrefix(id, "chatcmpl-"),
-		Object: "response",
-		Model:  model,
+		ID:        "resp_" + stripPrefix(id, "chatcmpl-"),
+		Object:    "response",
+		Status:    "completed",
+		CreatedAt: created,
+		Model:     model,
 	}
 	out.Output = append(out.Output, struct {
 		Type    string `json:"type"`
@@ -280,8 +318,8 @@ func (h *responseHandler) buildResponse(id, model, role, content string) []byte 
 
 // aggregateChatSSE walks an OpenAI chat SSE stream and concatenates the
 // choices[0].delta.content deltas into the full message text, also returning
-// the model from the first chunk that carries it.
-func aggregateChatSSE(buf []byte) (content, model, id string) {
+// the model / id / created from the first chunk that carries them.
+func aggregateChatSSE(buf []byte) (content, model, id string, created int64) {
 	var sb strings.Builder
 	for _, line := range strings.Split(string(buf), "\n") {
 		line = strings.TrimRight(strings.TrimSpace(line), "\r")
@@ -295,6 +333,7 @@ func aggregateChatSSE(buf []byte) (content, model, id string) {
 		var chunk struct {
 			ID      string `json:"id"`
 			Model   string `json:"model"`
+			Created int64  `json:"created"`
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
@@ -310,11 +349,14 @@ func aggregateChatSSE(buf []byte) (content, model, id string) {
 		if id == "" && chunk.ID != "" {
 			id = chunk.ID
 		}
+		if created == 0 && chunk.Created != 0 {
+			created = chunk.Created
+		}
 		if len(chunk.Choices) > 0 {
 			sb.WriteString(chunk.Choices[0].Delta.Content)
 		}
 	}
-	return sb.String(), model, id
+	return sb.String(), model, id, created
 }
 
 func stripPrefix(s, prefix string) string {
