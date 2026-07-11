@@ -15,7 +15,7 @@
 //
 // Onboarding: when the deployer writes the endpoint, set `vendor: azure-openai`
 // + `protocol: openai` + `auth.type: bearer` (payload.api_key = Azure key).
-// cmd/gateway blank-imports this package.
+// internal/builtin.NewLookup wires this package into the built-in lookup.
 package azureopenai
 
 import (

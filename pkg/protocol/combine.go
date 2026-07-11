@@ -16,12 +16,12 @@ import (
 //
 // **Usage pattern**: DefaultLookup.Get(ep, srcProto) calls Combine at request
 // time to combine the current endpoint's Factory with the selected translator
-// into a Handler; it is not statically registered in init(). This reflects
-// v0.6's move of "protocol ownership" from vendor-level to endpoint-level.
+// into a Handler; it is not statically registered into a matrix at startup. This
+// reflects v0.6's move of "protocol ownership" from vendor-level to endpoint-level.
 //
 // **Constraint**: translator.Target() must == ep.Protocol; Combine does not
 // validate this (it's a hot runtime path) — DefaultLookup guarantees it when
-// selecting via translator.Find(src, ep.Protocol).
+// selecting via translators.FindVia(src, ep.Protocol, pivot).
 func Combine(ad Factory, tr translator.Translator) Handler {
 	if ad == nil {
 		panic("protocol.Combine: nil Factory")

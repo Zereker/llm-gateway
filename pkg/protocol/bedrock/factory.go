@@ -29,8 +29,8 @@
 // Anthropic streaming translation.
 //
 // Integration: the deployer configures the endpoint with `vendor: bedrock` +
-// `protocol: anthropic` + `auth.type: aws-sigv4`. cmd/gateway blank-imports this
-// package.
+// `protocol: anthropic` + `auth.type: aws-sigv4`. internal/builtin.NewLookup
+// wires this package into the built-in lookup.
 package bedrock
 
 import (

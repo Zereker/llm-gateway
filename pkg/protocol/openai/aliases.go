@@ -1,6 +1,7 @@
 package openai
 
-// init registers a set of OpenAI-compatible vendor aliases.
+// Aliases returns the OpenAI-compatible vendor names served by this Factory;
+// internal/builtin.NewLookup registers Factory{} under each of them.
 //
 // These vendors all run the OpenAI protocol (the same /v1/chat/completions,
 // the same request/response format, and Bearer token auth) — the only
@@ -14,7 +15,6 @@ package openai
 // When a vendor needs vendor-specific handling (e.g. the reasoning_content
 // field in DeepSeek-R1 responses, or a completely different protocol like
 // Anthropic's), pull it out of this list into its own sub-package.
-// Aliases returns the vendor names served by the OpenAI-compatible factory.
 func Aliases() []string {
 	// All OpenAI-compatible (/v1/chat/completions + Bearer). When a deployer
 	// writes an endpoint, they set vendor to one of these names, protocol to

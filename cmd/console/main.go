@@ -11,9 +11,9 @@
 // Shared KEK (data_key): the control plane encrypts with it when writing
 // endpoints.auth, and it must match the data plane's.
 //
-// Blank-imports a batch of vendor Factory + translator packages: this lets
-// endpointcheck.Validate's vendor-registration / translator-reachability checks
-// run before a write is committed (the same logic the data plane uses).
+// Builds the endpoint validator from internal/builtin.NewLookup, so the
+// vendor-registration / translator-reachability checks run before a write is
+// committed (the same capability catalog the data plane uses).
 package main
 
 import (

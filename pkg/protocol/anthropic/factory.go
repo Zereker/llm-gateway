@@ -1,6 +1,6 @@
 // Package anthropic is the vendor Factory implementation for the Anthropic Messages protocol.
 //
-// init() registers it with the protocol vendor registry under the vendor name "anthropic".
+// internal/builtin.NewLookup wires it into the built-in lookup under the vendor name "anthropic".
 //
 // **Auth**: anthropic uses the `x-api-key` header (not Authorization Bearer). The schema
 // uses AuthTypeXAPIKey. Various setups (company accounts, Bedrock relaying, etc.) all rely
@@ -18,9 +18,8 @@
 //   - Function calling / tool_use
 //   - Vision / multi-block content (only the text is taken from the content array)
 //
-// To onboard, add a blank import in internal/builtin/builtin.go:
-//
-//	import _ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
+// To onboard, add it to the factory map in internal/builtin.NewLookup under the
+// vendor name "anthropic".
 package anthropic
 
 import (

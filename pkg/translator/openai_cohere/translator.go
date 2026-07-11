@@ -37,6 +37,7 @@ func (openaiCohere) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiCohere) Target() domain.Protocol { return domain.ProtoCohere }
 
 func (openaiCohere) TranslateRequest(srcBody []byte) ([]byte, error) {
+	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoCohere, srcBody)
 	return translateRequest(srcBody)
 }
 
