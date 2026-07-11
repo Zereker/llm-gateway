@@ -11,7 +11,7 @@
 //	Policies                 ← built-in defaults from pkg/dispatch (HeaderAttemptCap / DefaultRetry / ModelChainFallback)
 //
 // cmd only "news up the types per the dependency graph and feeds them into dispatch.New".
-package main
+package gateway
 
 import (
 	"github.com/zereker/llm-gateway/pkg/dispatch"

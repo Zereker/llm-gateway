@@ -95,9 +95,9 @@ pkg/invoker/                   HTTP invocation + forward stream, does not do pro
 pkg/ratelimit/                 Store / Bucket / endpoint bucket helpers
 pkg/protocol/                  Handler facade + Factory/Session + quirks
 
-cmd/gateway/                   composition root
-    main.go                    wires primitives together into dispatch.Dispatcher
-    dispatch_wiring.go         buildDispatcher: dispatch.New(WithCandidates / WithSelector /
+internal/app/gateway/          composition root
+    app.go                     wires primitives together into dispatch.Dispatcher
+    dispatch.go                buildDispatcher: dispatch.New(WithCandidates / WithSelector /
                                WithInvokerFactory / WithQuota / WithCap / WithRetry /
                                WithFallback / WithTracer)
 ```
@@ -311,7 +311,7 @@ model / endpoint.id / vendor / verdict.{stage,class,http_code,reason} / dispatch
 
 The complete metric contract is in [08-observability.md §3](./08-observability.md#3-metrics).
 
-## 12. Wiring points (cmd/gateway/main.go + cmd/gateway/dispatch_wiring.go)
+## 12. Wiring points (`internal/app/gateway/app.go` + `dispatch.go`)
 
 The actual wiring happens in two layers: first assemble the primitives for selector / invoker / ratelimit
 individually, then feed them into `buildDispatcher` to compose the `dispatch.Dispatcher`, and finally

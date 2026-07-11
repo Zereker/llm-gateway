@@ -7,7 +7,7 @@
 #   - A typical multi-model + multi-endpoint setup (data is written via SQL by the deployer; this file only configures runtime behavior)
 #
 # Paired seed file: seed.sql (multiple accounts / model_services / pricing_versions / quota_policies)
-# Startup order: docker compose up -d -> start gateway (runs infra.Migrate automatically) -> mysql < seed.sql
+# Startup order: docker compose up -d -> cmd/migrate -> start gateway -> mysql < seed.sql
 
 server:
   addr: ":8080"
@@ -23,6 +23,7 @@ database:
   driver: mysql
   # Production DSN: enable multiStatements + connection pool (pkg/infra defaults to maxOpenConns=20)
   dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/llm_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
+  auto_migrate: false
 
 redis:
   # In production, configure primary/replica or sentinel; this file only illustrates a single instance. Hard dependency for M6 rate limiting.

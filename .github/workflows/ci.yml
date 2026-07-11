@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Build commands
+        run: go build ./cmd/...
+
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Build gateway image
+        run: docker build --target gateway -t llm-gateway:ci .
+      - name: Helm lint
+        run: helm lint examples/k8s/llm-gateway
+      - name: Render Helm chart
+        run: helm template test examples/k8s/llm-gateway > /tmp/llm-gateway.yaml
+      - name: Image command smoke test
+        run: docker run --rm --entrypoint /app/gateway llm-gateway:ci -h

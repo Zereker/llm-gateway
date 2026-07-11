@@ -56,8 +56,9 @@ const (
 // which lands directly on the *Config.Database field. The DSN must carry
 // `parseTime=true`, otherwise reading time.Time fields will error.
 type DBConfig struct {
-	Driver Driver `yaml:"driver"`
-	DSN    string `yaml:"dsn"`
+	Driver      Driver `yaml:"driver"`
+	DSN         string `yaml:"dsn"`
+	AutoMigrate bool   `yaml:"auto_migrate"`
 }
 
 // Open opens a *sqlx.DB per cfg and verifies it with a ping.
@@ -88,7 +89,11 @@ func Open(cfg DBConfig) (*sqlx.DB, error) {
 //go:embed schema.sql
 var schemaFS embed.FS
 
-// Migrate applies the embedded schema.sql to db.
+const latestSchemaVersion = 2
+
+// Migrate applies pending, versioned schema migrations. Production should run
+// this through cmd/migrate (or a deployment Job); gateway auto-migration is a
+// local-development compatibility option only.
 //
 // schema.sql is written entirely with IF NOT EXISTS / DEFAULT so it can
 // be run repeatedly; a single call at boot is enough.
@@ -102,6 +107,44 @@ var schemaFS embed.FS
 // schema evolution needs real versioning (multi-version rollout, rollback
 // support, schema shared across services).
 func Migrate(ctx context.Context, db *sqlx.DB) error {
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version BIGINT NOT NULL PRIMARY KEY,
+		applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		return fmt.Errorf("infra: create schema_migrations: %w", err)
+	}
+
+	applied := make(map[int]bool)
+	var versions []int
+	if err := db.SelectContext(ctx, &versions, `SELECT version FROM schema_migrations`); err != nil {
+		return fmt.Errorf("infra: read schema migrations: %w", err)
+	}
+	for _, version := range versions {
+		applied[version] = true
+	}
+
+	if !applied[1] {
+		if err := applyBaseSchema(ctx, db); err != nil {
+			return err
+		}
+		if err := recordMigration(ctx, db, 1); err != nil {
+			return err
+		}
+	}
+	if !applied[2] {
+		if err := ensureColumn(ctx, db, columnMigration{
+			"endpoints", "quirks", "ALTER TABLE endpoints ADD COLUMN quirks JSON DEFAULT NULL",
+		}); err != nil {
+			return err
+		}
+		if err := recordMigration(ctx, db, 2); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyBaseSchema(ctx context.Context, db *sqlx.DB) error {
 	raw, err := schemaFS.ReadFile("schema.sql")
 	if err != nil {
 		return fmt.Errorf("infra: read schema: %w", err)
@@ -112,20 +155,25 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 		}
 	}
 
-	// Column-level evolution: CREATE TABLE IF NOT EXISTS is a no-op on a
-	// table that already exists, so a new column added in schema.sql won't
-	// land on an old database. MySQL also doesn't support ADD COLUMN IF NOT
-	// EXISTS (only MariaDB does), so here we check information_schema first
-	// and then ALTER.
-	//
-	// Register each new column as one entry here; clean up old ones once
-	// they've stabilized.
-	for _, m := range []columnMigration{
-		{"endpoints", "quirks", "ALTER TABLE endpoints ADD COLUMN quirks JSON DEFAULT NULL"},
-	} {
-		if err := ensureColumn(ctx, db, m); err != nil {
-			return err
-		}
+	return nil
+}
+
+func recordMigration(ctx context.Context, db *sqlx.DB, version int) error {
+	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+		return fmt.Errorf("infra: record schema migration %d: %w", version, err)
+	}
+	return nil
+}
+
+// CheckMigrationVersion ensures the database was migrated before the service
+// starts. It deliberately performs no DDL.
+func CheckMigrationVersion(ctx context.Context, db *sqlx.DB) error {
+	var version int
+	if err := db.GetContext(ctx, &version, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`); err != nil {
+		return fmt.Errorf("infra: schema migration state unavailable; run llm-gateway-migrate: %w", err)
+	}
+	if version != latestSchemaVersion {
+		return fmt.Errorf("infra: schema version %d, require %d; run llm-gateway-migrate", version, latestSchemaVersion)
 	}
 	return nil
 }

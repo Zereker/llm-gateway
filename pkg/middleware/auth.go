@@ -18,7 +18,7 @@ import (
 //
 // The interface is middleware-owned; implementers (pkg/repo.SQLAPIKeyProvider, etc.)
 // write code for their own domain and happen to satisfy this port. The small SQL
-// wiring adapter lives in cmd/gateway/middleware_adapters.go (to avoid a
+// wiring adapter lives in internal/app/gateway/adapters.go (to avoid a
 // middleware → ratelimit → repo → middleware import cycle).
 //
 // Implementations MUST be safe for concurrent use (called concurrently from

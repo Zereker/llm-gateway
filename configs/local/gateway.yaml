@@ -13,12 +13,12 @@ server:
   shutdown_timeout: 30s
 
 database:
-  # Storage for ModelService / Endpoint / APIKey; gateway startup runs infra.Migrate
-  # to create tables + CheckSchema as a defensive check; business data is maintained
-  # directly via SQL.
+  # Storage for ModelService / Endpoint / APIKey. Local auto_migrate is a
+  # convenience; production runs cmd/migrate before gateway startup.
   # MySQL started via docker-compose: root with no password, database name llm_gateway
   driver: mysql
   dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+  auto_migrate: true # local convenience; production runs cmd/migrate separately
 
 redis:
   # Shared Redis for M6 RateLimit counters + a future hot-path cache.

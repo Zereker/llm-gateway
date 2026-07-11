@@ -8,7 +8,7 @@
 //	(openai, Anthropic)  ── anthropic_openai translator
 //	(openai, Responses)  ── responses_openai translator
 //
-// To wire up OpenAI, add a blank import in cmd/gateway/main.go:
+// To wire up OpenAI, add a blank import in internal/builtin/builtin.go:
 //
 //	import _ "github.com/zereker/llm-gateway/pkg/protocol/openai"
 //

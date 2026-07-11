@@ -133,6 +133,78 @@ func TestLoad_RejectsBadYAML(t *testing.T) {
 	}
 }
 
+func TestLoad_RejectsUnknownField(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "unknown.yaml")
+	_ = os.WriteFile(p, []byte("selector:\n  max_atempts: 3\n"), 0o644)
+
+	if _, err := Load(p); err == nil {
+		t.Fatal("want unknown-field parse error")
+	}
+}
+
+func TestLoad_AppliesEnvironmentOverrides(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "gateway.yaml")
+	_ = os.WriteFile(p, nil, 0o644)
+	t.Setenv("LLM_GATEWAY_DATABASE_DSN", "env-dsn")
+	t.Setenv("LLM_GATEWAY_REDIS_ADDR", "redis.internal:6379")
+	t.Setenv("LLM_GATEWAY_DATA_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("LLM_GATEWAY_KAFKA_BROKERS", "k1:9092, k2:9092")
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.DSN != "env-dsn" || cfg.Redis.Addr != "redis.internal:6379" {
+		t.Fatalf("env overrides not applied: %+v", cfg)
+	}
+	if len(cfg.UsageEvents.Kafka.Brokers) != 2 {
+		t.Fatalf("brokers = %#v", cfg.UsageEvents.Kafka.Brokers)
+	}
+}
+
+func TestValidate_RejectsUnknownDrivers(t *testing.T) {
+	tests := []struct {
+		name string
+		set  func(*Config)
+	}{
+		{"budget", func(c *Config) { c.Budget.Driver = "bogus" }},
+		{"moderation", func(c *Config) { c.Moderation.Driver = "bogus" }},
+		{"trace", func(c *Config) { c.Trace.Driver = "bogus" }},
+		{"scoring", func(c *Config) { c.Scoring.Driver = "bogus" }},
+		{"picker", func(c *Config) { c.Selector.Picker = "bogus" }},
+		{"filter", func(c *Config) { c.Selector.Filters = []string{"bogus"} }},
+		{"usage", func(c *Config) { c.UsageEvents.Driver = "bogus" }},
+		{"contentlog", func(c *Config) { c.ContentLog.Driver = "bogus" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var c Config
+			c.ApplyDefaults()
+			tt.set(&c)
+			if err := c.Validate(); err == nil {
+				t.Fatal("want validation error")
+			}
+		})
+	}
+}
+
+func TestBundledGatewayConfigsParseStrictly(t *testing.T) {
+	for _, path := range []string{
+		"../../configs/local/gateway.yaml",
+		"../../configs/docker/gateway.yaml",
+		"../../configs/prod/gateway.yaml",
+		"../../examples/full-config/gateway.yaml",
+	} {
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			if _, err := Load(path); err != nil {
+				t.Fatalf("Load(%s): %v", path, err)
+			}
+		})
+	}
+}
+
 func TestApplyDefaults_OnZeroConfig(t *testing.T) {
 	var c Config
 	c.ApplyDefaults()

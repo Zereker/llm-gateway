@@ -10,7 +10,6 @@ import (
 	"github.com/zereker/llm-gateway/pkg/invoker"
 	"github.com/zereker/llm-gateway/pkg/moderation"
 	"github.com/zereker/llm-gateway/pkg/protocol"
-	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
 // InvokerFactoryAdapter implements dispatch.InvokerFactory — wraps
@@ -58,7 +57,7 @@ func (i *invokerImpl) Invoke(ctx context.Context) (dispatch.Result, error) {
 	outcome, _ := i.sender.Send(ctx, i.ep, i.env, body, i.handler)
 	v := dispatch.Verdict{
 		Stage:      invokerStageToDispatch(outcome.Stage),
-		Class:      selectorClassToDispatch(outcome.Class),
+		Class:      invokerClassToDispatch(outcome.Class),
 		HTTPCode:   outcome.HTTPCode,
 		Reason:     outcome.Reason,
 		Latency:    outcome.Latency,
@@ -145,17 +144,17 @@ func invokerStageToDispatch(s invoker.Stage) dispatch.Stage {
 	return dispatch.StageInvoke
 }
 
-func selectorClassToDispatch(c selector.ErrorClass) dispatch.Class {
+func invokerClassToDispatch(c invoker.Class) dispatch.Class {
 	switch c {
-	case selector.ClassSuccess:
+	case invoker.ClassSuccess:
 		return dispatch.ClassSuccess
-	case selector.ClassTransient:
+	case invoker.ClassTransient:
 		return dispatch.ClassTransient
-	case selector.ClassCapacity:
+	case invoker.ClassCapacity:
 		return dispatch.ClassCapacity
-	case selector.ClassPermanent:
+	case invoker.ClassPermanent:
 		return dispatch.ClassPermanent
-	case selector.ClassInvalid:
+	case invoker.ClassInvalid:
 		return dispatch.ClassInvalid
 	default:
 		return dispatch.ClassUnknown

@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
 // RedisStore is a Redis-backed response cache, shared across multiple replicas.
@@ -35,20 +33,20 @@ func (s *RedisStore) key(k string) string { return s.prefix + ":" + k }
 
 // Get reads from the cache; a missing key, a Redis error, or a deserialization
 // failure are all treated as a miss.
-func (s *RedisStore) Get(ctx context.Context, key string) (middleware.CachedResponse, bool) {
+func (s *RedisStore) Get(ctx context.Context, key string) (CachedResponse, bool) {
 	b, err := s.rdb.Get(ctx, s.key(key)).Bytes()
 	if err != nil {
-		return middleware.CachedResponse{}, false
+		return CachedResponse{}, false
 	}
-	var cr middleware.CachedResponse
+	var cr CachedResponse
 	if json.Unmarshal(b, &cr) != nil {
-		return middleware.CachedResponse{}, false
+		return CachedResponse{}, false
 	}
 	return cr, true
 }
 
 // Set writes to the cache with a TTL (best-effort).
-func (s *RedisStore) Set(ctx context.Context, key string, resp middleware.CachedResponse, ttl time.Duration) {
+func (s *RedisStore) Set(ctx context.Context, key string, resp CachedResponse, ttl time.Duration) {
 	b, err := json.Marshal(resp)
 	if err != nil {
 		return
@@ -60,4 +58,3 @@ func (s *RedisStore) Set(ctx context.Context, key string, resp middleware.Cached
 }
 
 // Compile-time assertion.
-var _ middleware.ResponseCacheStore = (*RedisStore)(nil)

@@ -43,7 +43,7 @@ import (
 //  2. Call protocol.RegisterFactory("<vendor>", yourFactory) in init()
 //  3. If there's no coverage between the client protocol and endpoint.Protocol:
 //     add a Translator in pkg/translator/<src>_<tgt>/
-//  4. Add a blank import in cmd/gateway to trigger init()
+//  4. Add one blank import in internal/builtin/builtin.go to trigger init()
 //
 // Examples:
 //   - DeepSeek / ARK: vendor=ark, endpoint.Protocol=OpenAI (identity translator)

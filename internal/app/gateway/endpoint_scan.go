@@ -10,7 +10,7 @@
 // The scan only warns + emits a metric (llm_gateway_endpoint_misconfigured_total),
 // **it never blocks startup**—one bad config row shouldn't take down service for
 // other healthy endpoints.
-package main
+package gateway
 
 import (
 	"context"

@@ -21,7 +21,7 @@
 //   - Function calling / tool_use
 //   - Vision / multimodal (parts only support text)
 //
-// To wire it in, add a blank import in cmd/gateway/main.go:
+// To wire it in, add a blank import in internal/builtin/builtin.go:
 //
 //	import _ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
 package gemini
