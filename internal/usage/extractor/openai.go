@@ -91,32 +91,43 @@ func (s *openaiSession) parseSSEBuffer() {
 //
 // Handles all three shapes:
 //   - chat:  {"usage":{"prompt_tokens":N,"completion_tokens":M,"total_tokens":K, ...}}
-//   - image: {"created":N, "data":[{"url":"..."}, ...]}  -> fills ImageOutputCount
-//     from the length of the data array
+//   - image: {"created":N, "data":[{"url":"..."}, ...]}  -> stores the whole
+//     payload as Raw for downstream billing
 //   - neither matches -> skip
+//
+// `data` stays a RawMessage: some OpenAI-compat vendors return it as an
+// object rather than an array (e.g. a multimodal embeddings API) — typing it
+// as a slice would fail the whole unmarshal and silently drop the usage
+// sitting right next to it.
 func (s *openaiSession) tryExtract(payload []byte) {
 	var ev struct {
-		Usage *openaiUsage      `json:"usage"`
-		Data  []json.RawMessage `json:"data"`
+		Usage json.RawMessage `json:"usage"`
+		Data  json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &ev); err != nil {
 		return
 	}
 
-	if ev.Usage != nil {
+	if len(ev.Usage) > 0 && !bytes.Equal(ev.Usage, []byte("null")) {
+		var u openaiUsage
+		if err := json.Unmarshal(ev.Usage, &u); err != nil {
+			return
+		}
+
 		// Upstream returned usage exactly: source=upstream, confidence=exact.
-		// The full Raw (including extension fields like prompt_tokens_details /
-		// cached_tokens) is stored verbatim into Raw, left for downstream billing
-		// to parse per vendor / model rules (docs/05 §3).
-		raw, _ := json.Marshal(ev.Usage)
+		// Raw keeps the upstream usage object **verbatim** — re-marshaling a
+		// typed struct would drop vendor extension fields (e.g. Ark's
+		// prompt_tokens_details.image_tokens split) that downstream billing
+		// parses per vendor / model rules (docs/05 §3).
 		s.usage = &domain.Usage{
-			Input:      ev.Usage.PromptTokens,
-			Output:     ev.Usage.CompletionTokens,
-			Total:      ev.Usage.TotalTokens,
-			Raw:        raw,
+			Input:      u.input(),
+			Output:     u.output(),
+			Total:      u.TotalTokens,
+			Raw:        append([]byte(nil), ev.Usage...),
 			Source:     domain.UsageSourceUpstream,
 			Confidence: domain.UsageConfidenceExact,
 		}
+
 		return
 	}
 
@@ -131,13 +142,34 @@ func (s *openaiSession) tryExtract(payload []byte) {
 	}
 }
 
+// openaiUsage types only the counters the gateway itself needs, covering both
+// official OpenAI field families — Chat Completions reports
+// prompt_tokens/completion_tokens, while Images (gpt-image-1) and Responses
+// report input_tokens/output_tokens. Vendors are expected to be subsets of
+// these official fields; anything else (generated_images, *_tokens_details)
+// travels untouched inside Raw.
 type openaiUsage struct {
-	PromptTokens        int64                  `json:"prompt_tokens"`
-	CompletionTokens    int64                  `json:"completion_tokens"`
-	TotalTokens         int64                  `json:"total_tokens"`
-	PromptTokensDetails *openaiPromptTokDetail `json:"prompt_tokens_details"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	InputTokens      int64 `json:"input_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
 }
 
-type openaiPromptTokDetail struct {
-	CachedTokens int64 `json:"cached_tokens"`
+// input returns the normalized input count: the chat family name wins, the
+// images/responses family is the fallback.
+func (u openaiUsage) input() int64 {
+	if u.PromptTokens > 0 {
+		return u.PromptTokens
+	}
+
+	return u.InputTokens
+}
+
+func (u openaiUsage) output() int64 {
+	if u.CompletionTokens > 0 {
+		return u.CompletionTokens
+	}
+
+	return u.OutputTokens
 }

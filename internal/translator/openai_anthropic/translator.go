@@ -267,6 +267,13 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		}
 
 	case "message_stop":
+		// OpenAI streams end with a usage chunk (choices:[]) before [DONE].
+		// The client's stream_options.include_usage isn't visible here (the
+		// handler has no request context), so it is emitted unconditionally —
+		// same as the major aggregator gateways; SDKs must already tolerate
+		// the empty-choices usage chunk. The extractor has the final numbers
+		// by now: anthropic delivers usage in message_delta, before this event.
+		h.writeUsageChunk(out)
 		out.WriteString("data: [DONE]\n\n")
 
 	case "ping", "content_block_stop":
@@ -298,6 +305,37 @@ func (h *responseHandler) writeChunk(out *bytes.Buffer, delta map[string]any, fi
 	if err != nil {
 		return
 	}
+	out.WriteString("data: ")
+	out.Write(b)
+	out.WriteString("\n\n")
+}
+
+// writeUsageChunk emits the final OpenAI usage chunk (empty choices + usage);
+// a no-op when the upstream never reported usage.
+func (h *responseHandler) writeUsageChunk(out *bytes.Buffer) {
+	u := h.ex.Final()
+	if u == nil {
+		return
+	}
+
+	chunk := map[string]any{
+		"id":      h.chatcmplID,
+		"object":  "chat.completion.chunk",
+		"created": h.createdSec,
+		"model":   h.upstreamModel,
+		"choices": []map[string]any{},
+		"usage": map[string]any{
+			"prompt_tokens":     u.Input,
+			"completion_tokens": u.Output,
+			"total_tokens":      u.Total,
+		},
+	}
+
+	b, err := json.Marshal(chunk)
+	if err != nil {
+		return
+	}
+
 	out.WriteString("data: ")
 	out.Write(b)
 	out.WriteString("\n\n")

@@ -31,9 +31,10 @@ import (
 // injected, since Responses streaming naturally sends a usage event at the end).
 //
 // **Response side**: the handler passes chunks through and extracts usage via
-// the OpenAI extractor. The Responses SSE event structure differs from Chat
-// Completions, but the usage field names are OpenAI-style (prompt_tokens /
-// completion_tokens / total_tokens), so the OpenAI extractor works the same.
+// the Responses extractor. Note the Responses usage field names differ from
+// Chat Completions (input_tokens / output_tokens, not prompt_tokens /
+// completion_tokens), and in streaming the usage arrives nested inside the
+// final response.completed event — hence the dedicated extractor.
 //
 // **Cross-protocol** (responses_chat / responses_anthropic etc.): out of
 // scope for the v1.0 minimum; most clients using the Responses protocol
@@ -50,7 +51,7 @@ func (responsesTranslator) TranslateRequest(srcBody []byte) ([]byte, error) {
 }
 
 func (responsesTranslator) NewResponseHandler() translator.ResponseHandler {
-	return &responsesResponseHandler{ex: extractor.NewOpenAI()}
+	return &responsesResponseHandler{ex: extractor.NewResponses()}
 }
 
 type responsesResponseHandler struct {

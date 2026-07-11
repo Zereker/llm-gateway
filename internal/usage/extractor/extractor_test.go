@@ -27,6 +27,60 @@ func TestOpenAI_CRLFFramedStreamUsage(t *testing.T) {
 	}
 }
 
+// Some OpenAI-compat vendors return `data` as an object rather than an array
+// (a multimodal embeddings API) — the usage next to it must still be extracted.
+// Regression: typing data as a slice failed the whole unmarshal and billed zero.
+func TestOpenAI_ObjectShapedDataKeepsUsage(t *testing.T) {
+	s := NewOpenAI()
+	s.Feed([]byte(`{"created":1,"data":{"embedding":[0.1,0.2]},` +
+		`"usage":{"prompt_tokens":527,"total_tokens":527,` +
+		`"prompt_tokens_details":{"image_tokens":497,"text_tokens":30}}}`))
+
+	u := s.Final()
+	if u == nil {
+		t.Fatal("expected usage despite object-shaped data, got nil")
+	}
+
+	if u.Input != 527 || u.Total != 527 {
+		t.Errorf("usage = in=%d total=%d, want 527/527", u.Input, u.Total)
+	}
+
+	// Raw must be the upstream usage verbatim — vendor extension fields
+	// (image/text token split) survive for downstream billing.
+	var raw map[string]any
+	_ = json.Unmarshal(u.Raw, &raw)
+
+	details, _ := raw["prompt_tokens_details"].(map[string]any)
+	if details["image_tokens"] != float64(497) || details["text_tokens"] != float64(30) {
+		t.Errorf("vendor extension fields lost from Raw: %s", u.Raw)
+	}
+}
+
+// The official Images API (gpt-image-1) and its compat vendors report the
+// input_tokens/output_tokens family instead of prompt/completion — both
+// official field families must normalize into Input/Output.
+func TestOpenAI_ImagesFieldFamily(t *testing.T) {
+	s := NewOpenAI()
+	s.Feed([]byte(`{"created":1,"data":[{"url":"https://x/1.png"}],` +
+		`"usage":{"generated_images":1,"output_tokens":16072,"total_tokens":16072}}`))
+
+	u := s.Final()
+	if u == nil {
+		t.Fatal("expected usage from images body, got nil")
+	}
+
+	if u.Output != 16072 || u.Total != 16072 {
+		t.Errorf("usage = out=%d total=%d, want 16072/16072", u.Output, u.Total)
+	}
+
+	var raw map[string]any
+	_ = json.Unmarshal(u.Raw, &raw)
+
+	if raw["generated_images"] != float64(1) {
+		t.Errorf("vendor extension generated_images lost from Raw: %s", u.Raw)
+	}
+}
+
 // The same content with LF framing must of course still work (regression guard).
 func TestOpenAI_LFFramedStreamUsage(t *testing.T) {
 	s := NewOpenAI()
@@ -83,5 +137,25 @@ func TestAnthropic_CacheTokensStreaming(t *testing.T) {
 	}
 	if u.Output != 12 {
 		t.Errorf("output = %d, want 12", u.Output)
+	}
+}
+
+// Some anthropic-compatible vendors report input_tokens 0 in message_start and
+// ship the full usage in message_delta — the delta's non-zero input_tokens
+// must win over the empty start value.
+func TestAnthropic_FullUsageInMessageDelta(t *testing.T) {
+	s := NewAnthropic()
+	s.Feed([]byte("event: message_start\n" +
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":1}}}` + "\n\n"))
+	s.Feed([]byte("event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":21,"output_tokens":199}}` + "\n\n"))
+
+	u := s.Final()
+	if u == nil {
+		t.Fatal("expected usage, got nil")
+	}
+
+	if u.Input != 21 || u.Output != 199 || u.Total != 220 {
+		t.Errorf("usage = in=%d out=%d total=%d, want 21/199/220", u.Input, u.Output, u.Total)
 	}
 }

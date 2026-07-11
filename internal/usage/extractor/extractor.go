@@ -3,7 +3,8 @@
 //
 // **Background**: usage parsing used to be scattered across the ResponseHandler of
 // all 5 translators — but normalized by **upstream protocol** there are really only
-// 3 variants (OpenAI / Anthropic / Gemini), each duplicated across 2 translators.
+// 4 variants (OpenAI / Anthropic / Gemini / Responses), each shared across the
+// translators that target that upstream.
 // Once extracted, translator only cares about "translate chunk -> client format",
 // and usage extraction runs as a side-channel.
 //
