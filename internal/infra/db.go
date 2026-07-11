@@ -99,9 +99,9 @@ const latestSchemaVersion = 2
 // be run repeatedly; a single call at boot is enough.
 //
 // The MySQL go-sql-driver does not allow multiple statements in a single
-// Exec by default (multiStatements=false), so we split on `;` and execute
-// each statement one at a time; schema.sql must not use constructs like
-// "a string literal containing ;".
+// Exec by default (multiStatements=false), so we strip line comments first,
+// then split on `;` and execute each statement one at a time; schema.sql
+// must not use constructs like "a string literal containing ;".
 //
 // v0.1 does not introduce golang-migrate / goose; upgrade to those once
 // schema evolution needs real versioning (multi-version rollout, rollback
@@ -219,27 +219,51 @@ func ensureColumn(ctx context.Context, db *sqlx.DB, m columnMigration) error {
 // splitSQL splits statements on ; and filters out whitespace-only / comment-only
 // lines. Simple implementation: it does not parse string literals, so
 // schema.sql must not contain a string literal that includes ;.
+// splitSQL strips line comments first and only then splits on `;`, so a
+// semicolon inside a comment is never mistaken for a statement separator.
 func splitSQL(raw string) []string {
 	var out []string
-	for _, chunk := range strings.Split(raw, ";") {
-		stmt := stripCommentsAndTrim(chunk)
+
+	for _, chunk := range strings.Split(stripLineComments(raw), ";") {
+		stmt := strings.TrimSpace(chunk)
 		if stmt != "" {
 			out = append(out, stmt)
 		}
 	}
+
 	return out
 }
 
-// stripCommentsAndTrim strips line comments and trims surrounding whitespace;
-// if what's left is an empty string, that statement is skipped.
-func stripCommentsAndTrim(s string) string {
+// stripLineComments drops `--` comments (whole-line and trailing) and blank
+// lines, keeping everything else verbatim.
+func stripLineComments(s string) string {
 	var keep []string
+
 	for _, line := range strings.Split(s, "\n") {
-		t := strings.TrimSpace(line)
-		if t == "" || strings.HasPrefix(t, "--") {
+		line = cutLineComment(line)
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
+
 		keep = append(keep, line)
 	}
-	return strings.TrimSpace(strings.Join(keep, "\n"))
+
+	return strings.Join(keep, "\n")
+}
+
+// cutLineComment removes a trailing `--` comment from one line, ignoring `--`
+// that appears inside a single-quoted string literal.
+func cutLineComment(line string) string {
+	inQuote := false
+
+	for i := 0; i < len(line); i++ {
+		switch {
+		case line[i] == '\'':
+			inQuote = !inQuote
+		case !inQuote && line[i] == '-' && i+1 < len(line) && line[i+1] == '-':
+			return line[:i]
+		}
+	}
+
+	return line
 }
