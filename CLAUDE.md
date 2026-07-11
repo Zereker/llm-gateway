@@ -37,7 +37,9 @@ make run-mockupstream   # run the mock upstream (for debugging)
 
 # single test case (by package / by name)
 go test -run TestAuth ./internal/middleware
-MYSQL_DSN='root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4' go test ./internal/repo
+# SQL tests run against llm_gateway_test (separate from the llm_gateway DB used
+# for manual/e2e data, so the suite's TRUNCATEs don't wipe seeded rows)
+MYSQL_DSN='root:@tcp(localhost:3306)/llm_gateway_test?parseTime=true&charset=utf8mb4' go test ./internal/repo
 ```
 
 `go test ./...` is the source of truth for CI; Make is just local convenience.

@@ -1,0 +1,21 @@
+{
+  "model": "gpt-4o",
+  "input": [{"role": "user", "content": [
+    {"type": "input_image", "image_url": "https://example.com/view.jpeg", "detail": "high"},
+    {"type": "input_text", "text": "图片主要讲了什么？一句话。"}
+  ]}],
+  "instructions": "You are a helpful assistant.",
+  "max_output_tokens": 2048,
+  "temperature": 0.6,
+  "top_p": 0.9,
+  "tools": [{"type": "function", "name": "get_weather", "description": "查询城市天气",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {"effort": "low"},
+  "text": {"format": {"type": "text"}},
+  "store": false,
+  "stream": false,
+  "service_tier": "default",
+  "include": []
+}
