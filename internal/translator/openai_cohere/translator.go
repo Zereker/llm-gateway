@@ -50,13 +50,17 @@ func (openaiCohere) NewResponseHandler() translator.ResponseHandler {
 // =============================================================================
 
 type openaiReq struct {
-	Model       string          `json:"model"`
-	Messages    []openaiMsg     `json:"messages"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stop        json.RawMessage `json:"stop,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model            string          `json:"model"`
+	Messages         []openaiMsg     `json:"messages"`
+	MaxTokens        *int            `json:"max_tokens,omitempty"`
+	Temperature      *float64        `json:"temperature,omitempty"`
+	TopP             *float64        `json:"top_p,omitempty"`
+	Stop             json.RawMessage `json:"stop,omitempty"`
+	Stream           bool            `json:"stream,omitempty"`
+	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
+	Seed             *int            `json:"seed,omitempty"`
+	N                *int            `json:"n,omitempty"`
 }
 
 type openaiMsg struct {
@@ -65,12 +69,17 @@ type openaiMsg struct {
 }
 
 type cohereReq struct {
-	Model       string      `json:"model"`
-	Messages    []cohereMsg `json:"messages"`
-	MaxTokens   *int        `json:"max_tokens,omitempty"`
-	Temperature *float64    `json:"temperature,omitempty"`
-	P           *float64    `json:"p,omitempty"`
-	Stream      bool        `json:"stream"`
+	Model            string      `json:"model"`
+	Messages         []cohereMsg `json:"messages"`
+	MaxTokens        *int        `json:"max_tokens,omitempty"`
+	Temperature      *float64    `json:"temperature,omitempty"`
+	P                *float64    `json:"p,omitempty"`
+	Stream           bool        `json:"stream"`
+	StopSequences    []string    `json:"stop_sequences,omitempty"`
+	FrequencyPenalty *float64    `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64    `json:"presence_penalty,omitempty"`
+	Seed             *int        `json:"seed,omitempty"`
+	NumGenerations   *int        `json:"num_generations,omitempty"`
 }
 
 type cohereMsg struct {
@@ -84,17 +93,38 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		return nil, err
 	}
 	out := cohereReq{
-		Model:       in.Model,
-		MaxTokens:   in.MaxTokens,
-		Temperature: in.Temperature,
-		P:           in.TopP,
-		Stream:      in.Stream, // pass through the client's stream flag
+		Model:            in.Model,
+		MaxTokens:        in.MaxTokens,
+		Temperature:      in.Temperature,
+		P:                in.TopP,
+		Stream:           in.Stream, // pass through the client's stream flag
+		FrequencyPenalty: in.FrequencyPenalty,
+		PresencePenalty:  in.PresencePenalty,
+		Seed:             in.Seed,
+		NumGenerations:   in.N,
+	}
+	if len(in.Stop) > 0 {
+		out.StopSequences = parseStopField(in.Stop)
 	}
 	out.Messages = make([]cohereMsg, 0, len(in.Messages))
 	for _, m := range in.Messages {
 		out.Messages = append(out.Messages, cohereMsg{Role: m.Role, Content: contentToString(m.Content)})
 	}
 	return json.Marshal(out)
+}
+
+// parseStopField normalizes the OpenAI stop field (which may be a string or
+// []string) into Cohere's stop_sequences []string.
+func parseStopField(raw json.RawMessage) []string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return []string{s}
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr
+	}
+	return nil
 }
 
 // contentToString flattens OpenAI content (a string or a multimodal array) into plain text.

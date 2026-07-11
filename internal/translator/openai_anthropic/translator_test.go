@@ -229,7 +229,10 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 		{"auto", `"auto"`, `{"type":"auto"}`},
 		{"required", `"required"`, `{"type":"any"}`},
 		{"object", `{"type":"function","function":{"name":"foo"}}`, `{"type":"tool","name":"foo"}`},
-		{"none", `"none"`, ``},
+		// Anthropic has an explicit "none" tool_choice type; omitting it (the
+		// old behavior) meant a client's "force no more tool calls this turn"
+		// instruction silently became "auto" upstream.
+		{"none", `"none"`, `{"type":"none"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,6 +266,54 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 				t.Errorf("tool_choice = %s, want %s", got.ToolChoice, tc.want)
 			}
 		})
+	}
+}
+
+// TestTranslateRequest_ParallelToolCallsFalse: OpenAI's parallel_tool_calls:false
+// must invert into Anthropic's tool_choice.disable_parallel_tool_use:true, even
+// when the client didn't send a tool_choice at all (a bare "type":"auto" object
+// is synthesized so the flag has somewhere to live).
+func TestTranslateRequest_ParallelToolCallsFalse(t *testing.T) {
+	body := []byte(`{"model":"m","parallel_tool_calls":false,` +
+		`"tools":[{"type":"function","function":{"name":"foo"}}],"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	var got struct {
+		ToolChoice struct {
+			Type                   string `json:"type"`
+			DisableParallelToolUse bool   `json:"disable_parallel_tool_use"`
+		} `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("bad body: %v", err)
+	}
+	if got.ToolChoice.Type != "auto" || !got.ToolChoice.DisableParallelToolUse {
+		t.Errorf("tool_choice = %+v, want {type:auto disable_parallel_tool_use:true}", got.ToolChoice)
+	}
+}
+
+// parallel_tool_calls:false must merge into an explicit tool_choice, not
+// clobber it.
+func TestTranslateRequest_ParallelToolCallsFalseWithExplicitChoice(t *testing.T) {
+	body := []byte(`{"model":"m","parallel_tool_calls":false,"tool_choice":"required",` +
+		`"tools":[{"type":"function","function":{"name":"foo"}}],"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	var got struct {
+		ToolChoice struct {
+			Type                   string `json:"type"`
+			DisableParallelToolUse bool   `json:"disable_parallel_tool_use"`
+		} `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("bad body: %v", err)
+	}
+	if got.ToolChoice.Type != "any" || !got.ToolChoice.DisableParallelToolUse {
+		t.Errorf("tool_choice = %+v, want {type:any disable_parallel_tool_use:true}", got.ToolChoice)
 	}
 }
 

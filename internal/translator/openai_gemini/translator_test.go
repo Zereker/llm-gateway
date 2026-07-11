@@ -7,6 +7,29 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// TestTranslateRequest_MultipleSystemMessagesMerge regresses a bug where each
+// system message replaced systemInstruction wholesale, so a client (or an
+// injected middleware reminder) sending more than one system message silently
+// lost all but the last.
+func TestTranslateRequest_MultipleSystemMessagesMerge(t *testing.T) {
+	body := []byte(`{"model":"gemini-x","messages":[
+		{"role":"system","content":"be terse"},
+		{"role":"system","content":"never mention prices"},
+		{"role":"user","content":"hi"}
+	]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	parts := gjson.GetBytes(out, "systemInstruction.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("systemInstruction.parts = %d entries, want 2: %s", len(parts), out)
+	}
+	if parts[0].Get("text").String() != "be terse" || parts[1].Get("text").String() != "never mention prices" {
+		t.Errorf("system parts wrong: %s", out)
+	}
+}
+
 // TestMapFinishReason_Completeness covers every documented Gemini
 // Candidate.FinishReason value so a value the mapping doesn't know about
 // can't silently collapse into "stop" and hide a safety block or a malformed
