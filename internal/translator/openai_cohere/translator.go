@@ -239,11 +239,19 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		}
 		return h.chunk(map[string]any{"content": text}, "")
 	case "message-end":
-		in := ev.Get("delta.usage.tokens.input_tokens").Int()
-		outTok := ev.Get("delta.usage.tokens.output_tokens").Int()
-		// message-end carries Cohere's exact token counts — mark it Exact so
-		// billing doesn't treat these as an estimate (zero-value confidence).
-		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Source: domain.UsageSourceExtracted, Confidence: domain.UsageConfidenceExact}
+		usageResult := ev.Get("delta.usage")
+		in := usageResult.Get("tokens.input_tokens").Int()
+		outTok := usageResult.Get("tokens.output_tokens").Int()
+		// message-end carries Cohere's exact, natively-reported token counts —
+		// Source=upstream (not derived by us), Confidence=exact. Raw preserves
+		// the verbatim usage object, including billed_units (Cohere's actually
+		// -charged count, which can differ from the raw tokens count) for
+		// downstream billing to price (docs/architecture/05-metering-billing.md §3).
+		var rawUsage []byte
+		if usageResult.Exists() {
+			rawUsage = []byte(usageResult.Raw)
+		}
+		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Raw: rawUsage, Source: domain.UsageSourceUpstream, Confidence: domain.UsageConfidenceExact}
 		return h.chunk(map[string]any{}, mapFinishReason(ev.Get("delta.finish_reason").String()))
 	default: // content-start / content-end etc.: skip
 		return nil
@@ -277,13 +285,19 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 		return true
 	})
 
-	in := root.Get("usage.tokens.input_tokens").Int()
-	outTok := root.Get("usage.tokens.output_tokens").Int()
+	usageResult := root.Get("usage")
+	in := usageResult.Get("tokens.input_tokens").Int()
+	outTok := usageResult.Get("tokens.output_tokens").Int()
+	var rawUsage []byte
+	if usageResult.Exists() {
+		rawUsage = []byte(usageResult.Raw)
+	}
 	usage := &domain.Usage{
 		Input:      in,
 		Output:     outTok,
 		Total:      in + outTok,
-		Source:     domain.UsageSourceExtracted,
+		Raw:        rawUsage,
+		Source:     domain.UsageSourceUpstream,
 		Confidence: domain.UsageConfidenceExact,
 	}
 
