@@ -17,9 +17,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/zereker/llm-gateway/pkg/endpointcheck"
-	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/internal/endpointcheck"
+	"github.com/zereker/llm-gateway/internal/metric"
+	"github.com/zereker/llm-gateway/internal/repo"
 )
 
 // scanEndpoints fetches all endpoints and validates them row by row. A DB

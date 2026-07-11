@@ -6,8 +6,8 @@ package requeststate
 import (
 	"time"
 
-	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/protocol"
+	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/protocol"
 )
 
 // State is populated progressively by the gateway middleware chain.

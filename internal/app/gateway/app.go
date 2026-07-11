@@ -9,7 +9,7 @@
 // server / middleware / database / outbox (apikeys has moved to the DB, so
 // there's no more paths.apikeys).
 //
-// Routing and middleware assembly live in pkg/router. Production schema
+// Routing and middleware assembly live in internal/router. Production schema
 // migration is owned by cmd/migrate; this package performs read-only startup
 // checks. Business data can be maintained through SQL or cmd/console.
 //
@@ -27,15 +27,15 @@ import (
 
 	appRuntime "github.com/zereker/llm-gateway/internal/app/runtime"
 	"github.com/zereker/llm-gateway/internal/builtin"
-	"github.com/zereker/llm-gateway/pkg/cachebus"
-	"github.com/zereker/llm-gateway/pkg/config"
-	"github.com/zereker/llm-gateway/pkg/endpointcheck"
-	"github.com/zereker/llm-gateway/pkg/infra"
-	"github.com/zereker/llm-gateway/pkg/invoker"
-	"github.com/zereker/llm-gateway/pkg/ratelimit"
-	"github.com/zereker/llm-gateway/pkg/repo"
-	"github.com/zereker/llm-gateway/pkg/router"
-	"github.com/zereker/llm-gateway/pkg/selector"
+	"github.com/zereker/llm-gateway/internal/cachebus"
+	"github.com/zereker/llm-gateway/internal/config"
+	"github.com/zereker/llm-gateway/internal/endpointcheck"
+	"github.com/zereker/llm-gateway/internal/infra"
+	"github.com/zereker/llm-gateway/internal/invoker"
+	"github.com/zereker/llm-gateway/internal/ratelimit"
+	"github.com/zereker/llm-gateway/internal/repo"
+	"github.com/zereker/llm-gateway/internal/router"
+	"github.com/zereker/llm-gateway/internal/selector"
 )
 
 // Run loads configuration, assembles dependencies and serves until shutdown.
@@ -239,7 +239,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 		RateLimitStore: rateStore,
 		QuotaPolicies:  ratelimit.NewPolicyCache(adaptQuotaPolicies(quotaPolicyReader), 0),
 
-		// M7 Schedule (Dispatcher orchestration: fallback / retry / streaming live in pkg/dispatch)
+		// M7 Schedule (Dispatcher orchestration: fallback / retry / streaming live in internal/dispatch)
 		Dispatcher: dispatcher,
 
 		// Response cache middleware (after M6, before M7): exact / semantic / no-op

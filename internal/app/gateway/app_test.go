@@ -13,9 +13,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/zereker/llm-gateway/pkg/config"
-	"github.com/zereker/llm-gateway/pkg/infra"
-	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/internal/config"
+	"github.com/zereker/llm-gateway/internal/infra"
+	"github.com/zereker/llm-gateway/internal/repo"
 )
 
 // devDataKey is the AES KEK used by the e2e tests; TestMain loads it so

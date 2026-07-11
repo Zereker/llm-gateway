@@ -11,15 +11,15 @@ This document records the M7 endpoint scheduling boundary. The scheduling layer'
 
 | Package | Responsibility |
 |----|----|
-| `pkg/middleware/model_service.go` (M5) | Parses `X-Gateway-Fallback-Models`, walks catalog + subscription per model, writes the validated sequence to `rc.ModelChain` |
-| `pkg/middleware/schedule.go` (M7) | **thin adapter**: maps RC ↔ `dispatch.Input/Outcome`; content log enrichment; overall metrics. **Makes no scheduling decisions** |
-| `pkg/dispatch` | **Sole owner of scheduling execution order**: Dispatcher.Dispatch / step main loop; 4 ports (CandidateSource / Selector / InvokerFactory / EndpointQuota) + 3 policies (AttemptCap / RetryPolicy / FallbackPolicy) + internal `filterEligible` helper |
-| `pkg/dispatch/adapters/` | Bridges primitive packages into dispatch ports: selector → Selector / invoker → InvokerFactory / ratelimit → EndpointQuota |
-| `pkg/selector` | Selection primitives: filter / score / pick over a batch of candidates. **Holds no repo, knows nothing about protocol / handler / fallback** |
-| `pkg/invoker` | Takes a Handler and runs `PrepareCall + HTTP Do + response forwarding + error classification` (**does no protocol lookup**—dispatch has already obtained the Handler via `protocol.Lookup`) |
-| `pkg/protocol` | Facade: `Handler = Factory + Translator + Quirks`; consumers only see `Handler / Lookup` |
-| `pkg/ratelimit` | bucket / store primitives; `dispatch/adapters.EndpointQuotaAdapter` wires it into `dispatch.EndpointQuota` |
-| `pkg/repo` | SQL endpoint reader + TTL LRU cached wrapper |
+| `internal/middleware/model_service.go` (M5) | Parses `X-Gateway-Fallback-Models`, walks catalog + subscription per model, writes the validated sequence to `rc.ModelChain` |
+| `internal/middleware/schedule.go` (M7) | **thin adapter**: maps RC ↔ `dispatch.Input/Outcome`; content log enrichment; overall metrics. **Makes no scheduling decisions** |
+| `internal/dispatch` | **Sole owner of scheduling execution order**: Dispatcher.Dispatch / step main loop; 4 ports (CandidateSource / Selector / InvokerFactory / EndpointQuota) + 3 policies (AttemptCap / RetryPolicy / FallbackPolicy) + internal `filterEligible` helper |
+| `internal/dispatch/adapters/` | Bridges primitive packages into dispatch ports: selector → Selector / invoker → InvokerFactory / ratelimit → EndpointQuota |
+| `internal/selector` | Selection primitives: filter / score / pick over a batch of candidates. **Holds no repo, knows nothing about protocol / handler / fallback** |
+| `internal/invoker` | Takes a Handler and runs `PrepareCall + HTTP Do + response forwarding + error classification` (**does no protocol lookup**—dispatch has already obtained the Handler via `protocol.Lookup`) |
+| `internal/protocol` | Facade: `Handler = Factory + Translator + Quirks`; consumers only see `Handler / Lookup` |
+| `internal/ratelimit` | bucket / store primitives; `dispatch/adapters.EndpointQuotaAdapter` wires it into `dispatch.EndpointQuota` |
+| `internal/repo` | SQL endpoint reader + TTL LRU cached wrapper |
 
 **Key boundary**: execution order (candidate fetch / eligibility / selection / pre-charge / invoke / report /
 retry / fallback / post-charge) belongs to `dispatch.Dispatcher`, **not** middleware. M7
@@ -36,7 +36,7 @@ calls `dispatcher.Dispatch(ctx, w, input)`, then maps `dispatch.Outcome` back on
 
 M5 has already prepared `rc.ModelChain = [primary, fb1, fb2, ...]` (a validated `*ModelService` sequence), which `dispatch.Dispatcher` consumes directly without any further catalog/subscription calls. Fallbacks that can't be found are already dropped at the M5 stage.
 
-Actual execution flow (`pkg/dispatch/dispatcher.go`):
+Actual execution flow (`internal/dispatch/dispatcher.go`):
 
 ```text
 # M7 middleware (thin adapter):
@@ -100,7 +100,7 @@ type Endpoint struct {
     Routing      EndpointRouting
     Quota        EndpointQuota
     Capabilities EndpointCapabilities // includes the Modalities subfield (v0.7)
-    Quirks       json.RawMessage      // body / header tuning DSL, pkg/protocol/quirks
+    Quirks       json.RawMessage      // body / header tuning DSL, internal/protocol/quirks
 }
 ```
 
@@ -130,7 +130,7 @@ Endpoint field constraints:
 
 ## 3. Candidate eligibility filtering
 
-Candidate eligibility filtering must complete before entering `pkg/selector`. Rules:
+Candidate eligibility filtering must complete before entering `internal/selector`. Rules:
 
 1. If `protocol.Lookup.Get(ep, env.SourceProtocol)` returns nil → no Handler is available (missing
    vendor Factory, missing translator, or `ep.Protocol == ProtoUnknown`) → dropped.
@@ -144,16 +144,16 @@ These are not upstream failures, must not be reported to `Scheduler.Report`, and
 
 Eligibility filtering is a hard precondition of the dispatcher's driver loop. Missing Factory, protocol mismatch, missing translator, and modality mismatch are all cases of "lacking the capability to serve," and must not enter retry/cooldown.
 
-Implemented in `pkg/dispatch/eligibility.go` (an internal dispatch helper, not a standalone package), as a pure
+Implemented in `internal/dispatch/eligibility.go` (an internal dispatch helper, not a standalone package), as a pure
 function; it takes `*domain.RequestEnvelope`, candidate endpoints, and `protocol.Lookup` as input and outputs
 eligible endpoints. The dispatcher calls it inside `step()`, rather than inlining complex conditionals.
 
 ## 4. The selector only does in-batch selection
 
-`pkg/selector` provides selection primitives—running filter / scorer / picker over a batch of candidates and
+`internal/selector` provides selection primitives—running filter / scorer / picker over a batch of candidates and
 outputting one endpoint. It is **completely unaware** of dispatch / protocol / handler / fallback.
 
-Interface shape (`pkg/selector/types.go`):
+Interface shape (`internal/selector/types.go`):
 
 ```go
 type Scheduler interface {
@@ -178,7 +178,7 @@ type Request struct {
 `Request` carries no `LoadFallback` / `FallbackModels` / `attempts` state—these are all internal state of
 `dispatch.Dispatcher` (the `attempts` / `excluded` / `modelChain` / `decisions` fields in the `state` struct).
 
-Dispatch uses `pkg/dispatch/adapters/SelectorAdapter` to bridge `selector.Scheduler` into `dispatch.Selector` (which
+Dispatch uses `internal/dispatch/adapters/SelectorAdapter` to bridge `selector.Scheduler` into `dispatch.Selector` (which
 accepts eligible endpoints + a PickQuery). The selector always receives a candidate list that is already eligible,
 and only runs its own filter chain → scorer → picker.
 
@@ -241,7 +241,7 @@ The gateway only tries endpoints for these models in the declared order; it neve
 substitution, nor implicit downgrading based on some default chain. When this header is absent, the gateway only
 switches endpoints within the current request's model, even if other models have available endpoints.
 
-Header parsing + validation is entirely done in **M5 (`pkg/middleware/model_service.go`)**, and the result is
+Header parsing + validation is entirely done in **M5 (`internal/middleware/model_service.go`)**, and the result is
 written to `rc.ModelChain`. M7 no longer reads the header or calls catalog/subscription. Rules:
 
 - Deduplicate while preserving first-occurrence order; entries matching primary's name are also dropped.
@@ -258,7 +258,7 @@ written to `rc.ModelChain`. M7 no longer reads the header or calls catalog/subsc
 ## 6. Error classification
 
 Dispatch uses `dispatch.Class` (the outer Verdict field), while the selector internally uses the semantically
-equivalent `selector.ErrorClass`; the two are mapped bidirectionally in `pkg/dispatch/adapters/` (the
+equivalent `selector.ErrorClass`; the two are mapped bidirectionally in `internal/dispatch/adapters/` (the
 dispatch→selector direction is in `adapters/selector.go`, and the selector→dispatch direction is in
 `adapters/invoker.go`'s `invokerClassToDispatch`), keeping dispatch independent of invoker/selector types and the selector
 independent of dispatch types:
@@ -272,7 +272,7 @@ independent of dispatch types:
 | `invalid` | Client-side 4xx or translation failure | No |
 | `unknown` | Cannot be classified | Yes |
 
-`pkg/invoker` converts HTTP / network / Handler `Classifier` results into this classification, and the dispatcher
+`internal/invoker` converts HTTP / network / Handler `Classifier` results into this classification, and the dispatcher
 feeds it back to `Scheduler.Report`.
 
 An unregistered vendor Factory, `ep.Protocol == ProtoUnknown`, or an unregistered translator should all be dropped
@@ -294,7 +294,7 @@ after the dispatcher has picked an endpoint (`EndpointQuota.Reserve`), not at th
 
 ## 8. Runtime Scoring (opt-in, disabled by default)
 
-**Implementation status**: shipped (`pkg/selector` DefaultScorer + EndpointStatsStore); `scoring.enabled` is off by
+**Implementation status**: shipped (`internal/selector` DefaultScorer + EndpointStatsStore); `scoring.enabled` is off by
 default. When enabled, `Scheduler.Report` writes EMA stats, and `Pick` adjusts `EffectiveWeight` using
 success/latency factors. The stats store has two drivers: `inmemory` (per-replica, independent) and `redis`
 (shared across replicas, consistent scoring)—see the `scoring:` section in 07-configuration. What follows are the
@@ -389,7 +389,7 @@ configuration:
 Eligibility filtering failures never enter cooldown.
 
 **Reset-aware TTL**: when the failed upstream response carries its own recovery hint, the cooldown TTL follows
-the upstream instead of the static per-class duration. `pkg/invoker` parses, in priority order: `Retry-After`
+the upstream instead of the static per-class duration. `internal/invoker` parses, in priority order: `Retry-After`
 (delay-seconds or HTTP-date), OpenAI-style `x-ratelimit-reset-requests` / `x-ratelimit-reset-tokens` (Go
 durations; both buckets must clear, so the max of the pair wins), and Anthropic-style
 `anthropic-ratelimit-*-reset` (RFC 3339, same max rule). The hint travels through
@@ -402,7 +402,7 @@ A cooldown can also end early — see probe-gated recovery in §10.
 
 ## 10. Health Probing
 
-`pkg/health.Prober` actively probes **self-hosted** endpoints (`capabilities.self_hosted=true` with
+`internal/health.Prober` actively probes **self-hosted** endpoints (`capabilities.self_hosted=true` with
 `capabilities.health_probe_endpoint` set) on a fixed interval (`health.enabled`, default off; see docs/07).
 Vendor API endpoints are never probed — a probe there would burn quota against a third party.
 
@@ -455,7 +455,7 @@ Attempts after a cross-model fallback continue to append to the same decision, w
 
 ## 12. Evolution rules
 
-- `pkg/selector` only handles a single batch of candidates; it is not responsible for loading fallback models from the repo.
+- `internal/selector` only handles a single batch of candidates; it is not responsible for loading fallback models from the repo.
 - Cross-model fallback comes only from `X-Gateway-Fallback-Models`; header parsing + catalog/subscription validation happens in M5, `dispatch.Dispatcher` consumes `rc.ModelChain` directly, and middleware only passes it through.
 - When adding endpoint native protocol / modality configuration, add the candidate eligibility filter first, before letting requests enter retry/cooldown.
 - Protocol incompatibility must never be classified as an upstream failure; doing so amplifies useless retries and pollutes cooldown.

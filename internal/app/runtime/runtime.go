@@ -17,8 +17,8 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/zereker/llm-gateway/pkg/infra"
-	"github.com/zereker/llm-gateway/pkg/metric"
+	"github.com/zereker/llm-gateway/internal/infra"
+	"github.com/zereker/llm-gateway/internal/metric"
 )
 
 // Runtime owns opened infrastructure and closes it in reverse order.

@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/internal/domain"
 )
 
 // CachedResponse is one complete, non-streaming cached response.

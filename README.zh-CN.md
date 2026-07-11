@@ -17,39 +17,39 @@
 HTTP request
   │
   ▼
-pkg/middleware        ── 请求生命周期（M1-M10）：auth / envelope / budget /
+internal/middleware        ── 请求生命周期（M1-M10）：auth / envelope / budget /
                          catalog / ratelimit / moderation / **M7 → dispatch** /
                          tracing。每个 middleware 单一职责，配 OTel option。
   │
   ▼  (M7 是 dispatch.Dispatcher 的 thin adapter)
-pkg/dispatch          ── 调度执行时序的**唯一**所有者：
+internal/dispatch          ── 调度执行时序的**唯一**所有者：
                          CandidateSource → filterEligible → Selector.Pick →
                          EndpointQuota.Reserve → Handler lookup → Invoker →
                          Selector.Report → RetryPolicy → Stream / Charge
-                         （pkg/dispatch/adapters/ 桥接 selector / invoker /
+                         （internal/dispatch/adapters/ 桥接 selector / invoker /
                          ratelimit / repo primitives → dispatch ports）
   │
-  ├── pkg/selector    ── primitives：filters / scorer / picker / cooldown。
+  ├── internal/selector    ── primitives：filters / scorer / picker / cooldown。
   │                      只做选择算法，不知道 protocol / handler / middleware
-  ├── pkg/invoker     ── primitives：一次 HTTP 调用 + 响应 forward，不做调度
-  ├── pkg/ratelimit   ── primitives：Store / Bucket / endpoint bucket helpers
-  └── pkg/protocol    ── facade：Handler = Factory + Translator + Quirks
+  ├── internal/invoker     ── primitives：一次 HTTP 调用 + 响应 forward，不做调度
+  ├── internal/ratelimit   ── primitives：Store / Bucket / endpoint bucket helpers
+  └── internal/protocol    ── facade：Handler = Factory + Translator + Quirks
                          消费侧只看 Handler / Lookup；Factory / Session 是内部
        ├── protocol/<vendor>/  OpenAI(+ark alias) / Anthropic / Gemini Factory + Session
        ├── protocol/quirks/    endpoint 级 body+header 微调 DSL（rename/strip/set/set_default）
-       └── translator (pkg/)   body shape 转换：identity + 跨协议 pairs（init() 注册）
+       └── translator (internal/)   body shape 转换：identity + 跨协议 pairs（internal/builtin 显式装配）
 
-pkg/moderation        ── Moderator + 响应流装饰器 + ctx helpers
-pkg/usage             ── usage 提取 + outbox（file | kafka）；计价在下游完成
-pkg/trace / metric    ── Tracer 抽象（slog / OTel）+ Prom metric name 常量
+internal/moderation        ── Moderator + 响应流装饰器 + ctx helpers
+internal/usage             ── usage 提取 + outbox（file | kafka）；计价在下游完成
+internal/trace / metric    ── Tracer 抽象（slog / OTel）+ Prom metric name 常量
 
-pkg/repo              ── data access：sqlx Reader/Provider + TTL LRU cache wrapper
+internal/repo              ── data access：sqlx Reader/Provider + TTL LRU cache wrapper
                          （5 个 cached wrapper：APIKey / ModelService / Endpoint /
                          QuotaPolicy / Subscription；llm_gateway_repo_cache_total
                          metric 上报 hit/miss）
-pkg/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
-pkg/domain            ── 跨包共享 typed structs（RequestContext / Endpoint / ...）
-pkg/config            ── gateway.yaml loader
+internal/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
+internal/domain            ── 跨包共享 typed structs（RequestContext / Endpoint / ...）
+internal/config            ── gateway.yaml loader
 
 internal/app/gateway  ── 数据面 composition root
 internal/builtin      ── 内置 vendor / translator 的唯一注册入口
@@ -100,7 +100,7 @@ make test-integration   # 起 stack 后跑全部测试，包含 SQL/outbox
 
 `gateway.yaml` 控制 server 设置（监听地址、超时、body 大小限制）、数据库连接、
 outbox driver 以及各 middleware 的可调参数。默认值是合理的开箱即用值——
-完整 schema 见 [`pkg/config/config.go`](pkg/config/config.go)。
+完整 schema 见 [`internal/config/config.go`](internal/config/config.go)。
 
 Gateway 默认监听 `:8080`。用仓库自带的配置时：
 
@@ -115,7 +115,7 @@ Gateway 默认监听 `:8080`。用仓库自带的配置时：
 | `/v1/images/{generations,edits,variations}` | POST | OpenAI Images |
 | `/v1/audio/{speech,transcriptions,translations}` | POST | TTS + ASR |
 
-路由按 modality 定义在 [`pkg/router/`](pkg/router/) 下——每个 modality 文件
+路由按 modality 定义在 [`internal/router/`](internal/router/) 下——每个 modality 文件
 （`chat.go` / `image.go` / `audio.go` / `embedding.go`）注册自己的路径，并显式
 列出自己的 middleware 链。
 

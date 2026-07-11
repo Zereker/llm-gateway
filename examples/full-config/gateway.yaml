@@ -21,7 +21,7 @@ request:
 
 database:
   driver: mysql
-  # Production DSN: enable multiStatements + connection pool (pkg/infra defaults to maxOpenConns=20)
+  # Production DSN: enable multiStatements + connection pool (internal/infra defaults to maxOpenConns=20)
   dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/llm_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
   auto_migrate: false
 
@@ -37,7 +37,7 @@ redis:
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 usage_events:
-  # Downstream channel for usage events (Transactional Outbox Pattern implementation, pkg/usage.DualWriteOutbox).
+  # Downstream channel for usage events (Transactional Outbox Pattern implementation, internal/usage.DualWriteOutbox).
   # Production recommendation: file_and_kafka — file is the source of truth, Kafka broadcasts asynchronously; no data loss if the broker goes down.
   # Other available drivers: file (local only) / kafka (Kafka only, not recommended) / async_kafka (Kafka + retry + DLQ)
   driver: file_and_kafka

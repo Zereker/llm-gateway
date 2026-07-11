@@ -1,6 +1,6 @@
 # gateway.yaml — llm-gateway local startup configuration
 #
-# All fields are optional; when omitted, defaults from pkg/config.ApplyDefaults apply.
+# All fields are optional; when omitted, defaults from internal/config.ApplyDefaults apply.
 # Run:
 #   go run ./cmd/gateway -config ./configs/local/gateway.yaml
 #
@@ -34,7 +34,7 @@ redis:
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 request:
-  # per-request HTTP defaults (historically named middleware:, but actually unrelated to the M1-M10 chain; see the pkg/config RequestConfig docs)
+  # per-request HTTP defaults (historically named middleware:, but actually unrelated to the M1-M10 chain; see the internal/config RequestConfig docs)
   body_limit_bytes: 10485760  # 10 MiB; rejected at the router layer before M1
   timeout: 60s                # gin TimeoutMiddleware's global fallback wrapping the whole M1-M10 chain
 

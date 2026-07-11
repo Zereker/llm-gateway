@@ -50,7 +50,7 @@ This directory records **architecture-level** decisions for llm-gateway. Bug fix
 
 Why is this decision needed? What is the current situation? What constraints / pain points are driving it?
 
-Reference specific code locations: `pkg/foo/bar.go:42`, commit hash, issue number.
+Reference specific code locations: `internal/foo/bar.go:42`, commit hash, issue number.
 
 ## Options Considered
 
