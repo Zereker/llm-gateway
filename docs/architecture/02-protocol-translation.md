@@ -313,9 +313,9 @@ Response direction: tgt chunks → back.handler(tgt→openai) → openai body �
   automatically takes over, transparently to the caller
 - Usage extraction preferentially takes the upstream-side handler (closest to the real
   response; what the client side sees is the secondhand pivot bytes)
-- Composed handlers log `slog.Warn` on creation (handlerCache guarantees only one warn
-  per (vendor, src, tgt)) — **lossy**: fields the pivot cannot express are lost across
-  the double hop
+- Composed handlers log `slog.Warn` on creation (the lookup's Handler cache guarantees
+  only one warn per (vendor, src, tgt)) — **lossy**: fields the pivot cannot express are
+  lost across the double hop
 - If either leg is missing → returns nil → eligibility removes it as usual, same
   behavior as before
 
@@ -333,6 +333,24 @@ Layer 1 once real demand appears.
   `Envelope.Canonical` in v0.5 and won't go back down that path: a full-fidelity IR
   double hop is fully lossy + adds streaming complexity, which is worse than the
   two-layer structure of "direct high fidelity + composition fallback"
+
+### 6b. Lossy-feature observability (cross-protocol pairs carry text only)
+
+The cross-protocol pairs currently translate **text content only** — tool
+definitions / tool calls and non-text multimodal parts are dropped. To keep that
+loss from being silent (the same discipline as the pivot-composition warning
+above), each text-only pair calls `translator.ReportLossyRequest(src, tgt, body)`
+at the top of `TranslateRequest`:
+
+- it increments `llm_gateway_translator_feature_dropped_total{src,tgt,feature}`
+  (`feature` = `tools | tool_calls | multimodal`) on every dropping request, and
+- logs a one-time `slog.Warn` per (src, tgt, feature) — a client sending tools on
+  every request produces one warning, not one per request.
+
+Detection is best-effort via gjson and never mutates the body. Identity (same
+protocol) translators carry everything through and do not call it. A rising
+`feature_dropped_total` for a pair is the signal to implement real tool /
+multimodal translation there.
 
 ## 7. `pkg/protocol` — vendor HTTP layer (internal detail of the facade)
 
