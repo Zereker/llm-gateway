@@ -90,5 +90,19 @@ func (q *EndpointQuotaAdapter) ChargeUsage(_ context.Context, ep *domain.Endpoin
 	_, _ = q.store.ChargeBatch(bgCtx, []ratelimit.Bucket{*b})
 }
 
+// Release implements dispatch.EndpointQuota.Release — rolls back the RPM/RPS
+// reserve for an attempt that never reached the endpoint. Best-effort: a
+// failure only logs (the request is already failing anyway).
+func (q *EndpointQuotaAdapter) Release(ctx context.Context, ep *domain.Endpoint) {
+	if q == nil || q.store == nil || ep == nil {
+		return
+	}
+	buckets := ratelimit.EndpointReserveBuckets(ep)
+	if len(buckets) == 0 {
+		return
+	}
+	_ = q.store.ReleaseBatch(ctx, buckets)
+}
+
 // Compile-time assertion.
 var _ dispatch.EndpointQuota = (*EndpointQuotaAdapter)(nil)
