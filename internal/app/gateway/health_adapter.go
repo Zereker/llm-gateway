@@ -3,8 +3,8 @@ package gateway
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/health"
-	"github.com/zereker/llm-gateway/pkg/selector"
+	"github.com/zereker/llm-gateway/internal/health"
+	"github.com/zereker/llm-gateway/internal/selector"
 )
 
 type healthFeedbackAdapter struct{ stats selector.EndpointStatsStore }

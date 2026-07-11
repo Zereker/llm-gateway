@@ -22,7 +22,7 @@ go run ./cmd/gateway -config ./examples/full-config/gateway.yaml
 # 3) Seed sample data (quota_policies / accounts / model_services / subscriptions /
 #    pricing). The encrypted / hash columns for endpoints + api_keys need to be
 #    computed yourself via a script or by referencing EncodePayload / HashAPIKey
-#    in pkg/repo to generate the ciphertext / hash before INSERTing.
+#    in internal/repo to generate the ciphertext / hash before INSERTing.
 docker exec -i $(docker compose ps -q mysql) mysql -uroot llm_gateway < examples/full-config/seed.sql
 
 # 4) Try it

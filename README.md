@@ -17,40 +17,40 @@ in [`docs/architecture`](docs/architecture/).
 HTTP request
   │
   ▼
-pkg/middleware        ── request lifecycle (M1-M10): auth / envelope / budget /
+internal/middleware        ── request lifecycle (M1-M10): auth / envelope / budget /
                          catalog / ratelimit / moderation / **M7 → dispatch** /
                          tracing. Each middleware has a single responsibility,
                          wired via an OTel option.
   │
   ▼  (M7 is a thin adapter over dispatch.Dispatcher)
-pkg/dispatch          ── the **sole** owner of scheduling/execution sequencing:
+internal/dispatch          ── the **sole** owner of scheduling/execution sequencing:
                          CandidateSource → filterEligible → Selector.Pick →
                          EndpointQuota.Reserve → Handler lookup → Invoker →
                          Selector.Report → RetryPolicy → Stream / Charge
-                         (pkg/dispatch/adapters/ bridges selector / invoker /
+                         (internal/dispatch/adapters/ bridges selector / invoker /
                          ratelimit / repo primitives into dispatch ports)
   │
-  ├── pkg/selector    ── primitives: filters / scorer / picker / cooldown.
+  ├── internal/selector    ── primitives: filters / scorer / picker / cooldown.
   │                      Pure selection algorithms, unaware of protocol / handler / middleware
-  ├── pkg/invoker     ── primitives: a single HTTP call + response forwarding, no scheduling
-  ├── pkg/ratelimit   ── primitives: Store / Bucket / endpoint bucket helpers
-  └── pkg/protocol    ── facade: Handler = Factory + Translator + Quirks
+  ├── internal/invoker     ── primitives: a single HTTP call + response forwarding, no scheduling
+  ├── internal/ratelimit   ── primitives: Store / Bucket / endpoint bucket helpers
+  └── internal/protocol    ── facade: Handler = Factory + Translator + Quirks
                          Consumers only see Handler / Lookup; Factory / Session are internal
        ├── protocol/<vendor>/  OpenAI(+ark alias) / Anthropic / Gemini Factory + Session
        ├── protocol/quirks/    endpoint-level body+header tweak DSL (rename/strip/set/set_default)
-       └── translator (pkg/)   body shape conversion: identity + cross-protocol pairs (registered via init())
+       └── translator (internal/)   body shape conversion: identity + cross-protocol pairs (assembled in internal/builtin)
 
-pkg/moderation        ── Moderator + response-stream decorator + ctx helpers
-pkg/usage             ── usage extraction + outbox (file | kafka); pricing is downstream
-pkg/trace / metric    ── Tracer abstraction (slog / OTel) + Prometheus metric name constants
+internal/moderation        ── Moderator + response-stream decorator + ctx helpers
+internal/usage             ── usage extraction + outbox (file | kafka); pricing is downstream
+internal/trace / metric    ── Tracer abstraction (slog / OTel) + Prometheus metric name constants
 
-pkg/repo              ── data access: sqlx Reader/Provider + TTL LRU cache wrapper
+internal/repo              ── data access: sqlx Reader/Provider + TTL LRU cache wrapper
                          (5 cached wrappers: APIKey / ModelService / Endpoint /
                          QuotaPolicy / Subscription; llm_gateway_repo_cache_total
                          metric reports hit/miss)
-pkg/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
-pkg/domain            ── typed structs shared across packages (RequestContext / Endpoint / ...)
-pkg/config            ── gateway.yaml loader
+internal/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
+internal/domain            ── typed structs shared across packages (RequestContext / Endpoint / ...)
+internal/config            ── gateway.yaml loader
 
 internal/app/gateway  ── composition root: assembles data-plane dependencies
 internal/builtin      ── the single built-in vendor/translator registration entry
@@ -101,7 +101,7 @@ make test-integration   # bring up stack, run all tests including SQL/outbox
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the
 database connection, outbox driver, and middleware tunables. Defaults are
-sensible — see [`pkg/config/config.go`](pkg/config/config.go) for the full
+sensible — see [`internal/config/config.go`](internal/config/config.go) for the full
 schema.
 
 The gateway listens on `:8080` by default. With the bundled config:
@@ -117,7 +117,7 @@ The gateway listens on `:8080` by default. With the bundled config:
 | `/v1/images/{generations,edits,variations}` | POST | OpenAI Images |
 | `/v1/audio/{speech,transcriptions,translations}` | POST | TTS + ASR |
 
-Routes are defined per-modality under [`pkg/router/`](pkg/router/) — each
+Routes are defined per-modality under [`internal/router/`](internal/router/) — each
 modality file (`chat.go` / `image.go` / `audio.go` / `embedding.go`) registers
 its own paths and explicitly lists its middleware chain.
 

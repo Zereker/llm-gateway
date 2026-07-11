@@ -9,7 +9,7 @@ llm-gateway is a Go-implemented LLM inference gateway: it exposes OpenAI / Anthr
 ## Processes
 
 The repo has two binaries: `cmd/gateway` (the data plane, :8080) and `cmd/console` (a separate
-control-plane binary — an Admin API for managing business data, backed by `pkg/console`):
+control-plane binary — an Admin API for managing business data, backed by `internal/console`):
 
 - `cmd/gateway` at startup runs `infra.Migrate` to create tables, plus `repo.CheckSchema` as a defensive check
 - `cmd/gateway` handles `/v1/*` traffic; the middleware chain is M1-M10
@@ -36,8 +36,8 @@ make run-gateway        # run gateway (auto-runs infra.Migrate at startup)
 make run-mockupstream   # run the mock upstream (for debugging)
 
 # single test case (by package / by name)
-go test -run TestAuth ./pkg/middleware
-MYSQL_DSN='root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4' go test ./pkg/repo
+go test -run TestAuth ./internal/middleware
+MYSQL_DSN='root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4' go test ./internal/repo
 ```
 
 `go test ./...` is the source of truth for CI; Make is just local convenience.
@@ -46,7 +46,7 @@ MYSQL_DSN='root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4'
 
 ### Middleware Chain (M1-M10)
 
-The request pipeline consists of 10 middlewares. **The shared security / quota / observability order lives in one place, `pkg/router/pipeline.go`** (`llmRouteGroup` + `registerLLMRoute`); each modality file supplies only how it differs (path, source protocol, modality, and its Cache stage) via `routeSpec`. Current order:
+The request pipeline consists of 10 middlewares. **The shared security / quota / observability order lives in one place, `internal/router/pipeline.go`** (`llmRouteGroup` + `registerLLMRoute`); each modality file supplies only how it differs (path, source protocol, modality, and its Cache stage) via `routeSpec`. Current order:
 
 ```
 M1 TraceContext → M10 Tracing → M9 Recover → M2 Auth   (pre-Envelope, attached on the group)
@@ -70,14 +70,14 @@ Request-level state shared across middlewares goes through the `*requeststate.St
 
 ### Protocol facade (P3 / P4)
 
-- End-to-end protocol handling goes through the `pkg/protocol.Handler` facade; consumers (dispatch / middleware / invoker) only see the `Handler` / `Lookup` interfaces, and **never touch** `Factory` / `Session` directly.
+- End-to-end protocol handling goes through the `internal/protocol.Handler` facade; consumers (dispatch / middleware / invoker) only see the `Handler` / `Lookup` interfaces, and **never touch** `Factory` / `Session` directly.
 - Internally, Handler = `Combine(Factory, translator.Translator)` + an endpoint-level `quirks.Rewriter`:
-    - `pkg/protocol/<vendor>/`: the vendor HTTP layer (URL / auth header / Content-Type) — Factory + Session implementation.
-    - `pkg/translator/<src>_<dst>/`: protocol shape conversion (OpenAI ↔ Anthropic / OpenAI ↔ Gemini / identity, etc.).
-    - `pkg/protocol/quirks`: an endpoint-level body + header tweak DSL (stored in the `endpoints.quirks` JSON column); driven by deployer config, not registered in code.
+    - `internal/protocol/<vendor>/`: the vendor HTTP layer (URL / auth header / Content-Type) — Factory + Session implementation.
+    - `internal/translator/<src>_<dst>/`: protocol shape conversion (OpenAI ↔ Anthropic / OpenAI ↔ Gemini / identity, etc.).
+    - `internal/protocol/quirks`: an endpoint-level body + header tweak DSL (stored in the `endpoints.quirks` JSON column); driven by deployer config, not registered in code.
 - Vendor factories and translators are assembled **explicitly** in `internal/builtin.NewLookup` (`protocol.NewLookup(factories, translator.NewRegistry(...))`) — no process-global registries / `init()` side effects. `DefaultLookup` composes the per-request Handler from that application-scoped set. Gateway and console both consume the same built-in lookup.
 - Adding a new vendor / translator: implement the Factory / Translator in its sub-package, then add it to the factory map / translator list in `internal/builtin.NewLookup`.
-- As of v0.7, `pkg/adapter` has been merged into `pkg/protocol`; references to `pkg/adapter/<vendor>/` in older docs are historical paths — the code now lives under `pkg/protocol/<vendor>/`.
+- As of v0.7, the former `pkg/adapter` has been merged into the protocol package; references to `pkg/adapter/<vendor>/` in older docs are historical paths — the code now lives under `internal/protocol/<vendor>/`.
 
 ### Client Protocol Scope
 
@@ -93,6 +93,7 @@ All external dependencies go through interfaces: `BudgetGate` / `Moderator` / `T
 
 ## Code Conventions
 
+- **Package layout**: this is an application, not a library — all Go packages live under `internal/` (enforced by the Go compiler against external import). There is no `pkg/` directory; do not reintroduce one. `cmd/*` holds only the binaries' main wiring.
 - **Path prefixes**: each route declares its full `/v1/...` path in its own `.POST` call — **do not** use `engine.Group("/v1")`. Reading chat.go should show the full URL at a glance.
 - **`X-Gateway-*` headers**: all gateway custom headers use this prefix, to distinguish them from vendor / client headers. Client-overridable parameters (timeout / max_attempts / fallback_models) may only be **stricter** than the cfg defaults; parsing failures silently fall back.
 - **Config driver paths**: all pluggable implementations are selected via a `driver:` field in yaml (`alwayspass` / `inmemory` / `slog` / `otel` / `file` / `kafka` / `none` / `openai`, etc.); the `build*` functions in `cmd/*/main.go` switch on it to the concrete implementation.

@@ -1,6 +1,6 @@
 // middleware_adapters.go: a small adapter layer in the composition root.
 //
-// Why not in pkg/repo: it would form a cycle (middleware → ratelimit → repo →
+// Why not in internal/repo: it would form a cycle (middleware → ratelimit → repo →
 // middleware). An adapter is wiring glue code, and it naturally belongs in
 // the composition root—every upstream
 // and downstream package is already imported there, so there's zero cycle.
@@ -12,9 +12,9 @@ package gateway
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/middleware"
-	"github.com/zereker/llm-gateway/pkg/ratelimit"
-	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/internal/middleware"
+	"github.com/zereker/llm-gateway/internal/ratelimit"
+	"github.com/zereker/llm-gateway/internal/repo"
 )
 
 // adaptSubscriptions adapts SubscriptionProvider to middleware.SubscriptionChecker.
@@ -45,9 +45,9 @@ func (a repoQuotaPolicyAdapter) RuleJSONByID(ctx context.Context, id int64) ([]b
 
 // Compile-time port satisfaction assertions—verifies that the concrete types
 // referenced at wiring points satisfy the middleware port. Placed in
-// internal/app/gateway rather than pkg/repo / pkg/ratelimit to avoid an import cycle
+// internal/app/gateway rather than internal/repo / internal/ratelimit to avoid an import cycle
 // (see this file's doc comment).
 var (
-	// pkg/repo
+	// internal/repo
 	_ middleware.IdentityProvider = (*repo.SQLAPIKeyProvider)(nil)
 )

@@ -2,7 +2,7 @@
 #
 # Prometheus alert rules for llm-gateway.
 #
-# Naming convention: the consts in pkg/metric/names.go directly use the Prometheus-native underscore form
+# Naming convention: the consts in internal/metric/names.go directly use the Prometheus-native underscore form
 # (e.g. llm_gateway_http_request_duration_seconds); this file references those exact literal names.
 # Units follow Prometheus's recommended base SI units (_seconds, not _ms).
 #

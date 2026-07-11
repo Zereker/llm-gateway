@@ -54,11 +54,11 @@ route:
 
 ## Metric Naming Convention
 
-llm-gateway names metrics as `llm_gateway.<component>.<name>` (see `pkg/metric/names.go`);
+llm-gateway names metrics as `llm_gateway.<component>.<name>` (see `internal/metric/names.go`);
 when landed in Prometheus, `.` becomes `_`, so the alert expressions here all use the underscore form.
 
 Label dimensions: `vendor` / `model` / `class` / `endpoint_id` / `result` / `scope`,
-which appear on different parts of a metric depending on context. Check the Inc/Observe calls in `pkg/metric/recorder.go` to confirm.
+which appear on different parts of a metric depending on context. Check the Inc/Observe calls in `internal/metric/recorder.go` to confirm.
 
 ## Custom Thresholds
 

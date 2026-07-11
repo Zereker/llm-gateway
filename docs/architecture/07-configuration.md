@@ -18,7 +18,7 @@ to `kafka` / `async_kafka` / `file_and_kafka`. Production runs `cmd/migrate` bef
 startup performs read-only migration-version and schema checks. Local configuration may explicitly
 enable `database.auto_migrate`.
 
-The repo layer uses an in-process TTL LRU cache (`pkg/repo/cache.go` + `pkg/repo/cached.go`). Most
+The repo layer uses an in-process TTL LRU cache (`internal/repo/cache.go` + `internal/repo/cached.go`). Most
 records rely on TTL; API-key revocation optionally uses best-effort cachebus invalidation. See
 [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details.
 
@@ -57,7 +57,7 @@ redis:
 data_key: "<hex-encoded-32-byte-key>"
 
 usage_events:
-  # Downstream channel for usage events (implemented via the Outbox Pattern, pkg/usage.OutboxPublisher).
+  # Downstream channel for usage events (implemented via the Outbox Pattern, internal/usage.OutboxPublisher).
   # The section is named by "purpose", consistent with the content_log: / trace: style; the internal
   # implementation being called Outbox is a pattern name and is not exposed on the operational surface.
   #
@@ -80,7 +80,7 @@ usage_events:
     backoff_base: 200ms       # exponential backoff starting point; 0 = default 200ms
     # Note: legacy fields such as client_id / acks / compression / backpressure / publish_timeout
     # no longer exist (the config struct has no corresponding fields; setting them is silently
-    # ignored); producer-level parameters are fixed at code defaults where pkg/infra KafkaWriter
+    # ignored); producer-level parameters are fixed at code defaults where internal/infra KafkaWriter
     # is constructed
 
 selector:
@@ -157,7 +157,7 @@ cache:
 
 # Note: the ratelimit quota-policy cache TTL is not a yaml field -- main.go
 # constructs ratelimit.NewPolicyCache(reader, 0). The repo layer's TTL LRU cache
-# parameters are likewise hardcoded (see pkg/repo/cached.go) and not exposed in
+# parameters are likewise hardcoded (see internal/repo/cached.go) and not exposed in
 # yaml; change the code constants directly if tuning is needed.
 
 budget:
@@ -266,7 +266,7 @@ Fail-fast is split into two layers, each covering a different class of error:
 
 Adding a new config field requires synchronized changes to:
 
-- The struct, defaults, and validation in `pkg/config`.
+- The struct, defaults, and validation in `internal/config`.
 - `configs/local`, `configs/prod`, K8s values / configmap.
 - This document.
 - Any architecture chapters covering the related behavior, e.g. scheduler, rate limit, metering.

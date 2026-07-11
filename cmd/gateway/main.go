@@ -7,7 +7,7 @@ import (
 	"os"
 
 	gatewayapp "github.com/zereker/llm-gateway/internal/app/gateway"
-	"github.com/zereker/llm-gateway/pkg/trace"
+	"github.com/zereker/llm-gateway/internal/trace"
 )
 
 func main() {
