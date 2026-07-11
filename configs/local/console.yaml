@@ -13,11 +13,10 @@ server:
   shutdown_timeout: 15s
 
 database:
+  # Same MySQL as the gateway; pool sizing uses infra.Open's built-in defaults
+  # (DBConfig only exposes driver / dsn / auto_migrate).
   driver: mysql
   dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
-  max_open_conns: 10
-  max_idle_conns: 5
-  conn_max_lifetime: 30m
 
 # Optional: if configured, precise invalidation goes through cachebus — revoking
 # a key notifies the data plane to evict in sub-second time, instead of waiting

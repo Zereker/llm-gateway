@@ -15,17 +15,12 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/zereker/llm-gateway/internal/builtin"
 	"github.com/zereker/llm-gateway/internal/cachebus"
 	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/endpointcheck"
 	"github.com/zereker/llm-gateway/internal/infra"
 	"github.com/zereker/llm-gateway/internal/repo"
-
-	// vendor / translator registrations for endpointcheck (otherwise a valid endpoint gets misjudged)
-	_ "github.com/zereker/llm-gateway/internal/protocol/anthropic"
-	_ "github.com/zereker/llm-gateway/internal/protocol/gemini"
-	_ "github.com/zereker/llm-gateway/internal/protocol/openai"
-	_ "github.com/zereker/llm-gateway/internal/translator/identity"
-	_ "github.com/zereker/llm-gateway/internal/translator/openai_anthropic"
 )
 
 const (
@@ -71,7 +66,13 @@ func newTestEngine(t *testing.T) (*gin.Engine, *sqlx.DB) {
 		t.Fatalf("fk on: %v", err)
 	}
 
-	return NewEngine(NewStore(db), []Token{{Value: testToken, Role: RoleAdmin}}), db
+	return NewEngine(newTestStore(db), []Token{{Value: testToken, Role: RoleAdmin}}), db
+}
+
+// newTestStore mirrors cmd/console's production wiring: the endpoint validator
+// gets its protocol catalog from the built-in lookup.
+func newTestStore(db *sqlx.DB) *Store {
+	return NewStore(db).WithEndpointValidator(endpointcheck.Validator{Catalog: builtin.NewLookup()})
 }
 
 // do sends a JSON request with the admin token, returning the code + parsed body map.
@@ -252,7 +253,7 @@ func TestConsole_RevokeEvictsDataPlaneCache(t *testing.T) {
 	// Control plane side: a store with a publisher (reusing the same engine
 	// through the API would be more realistic, but here we trigger revoke
 	// directly via the store to focus on the cachebus loop).
-	store := NewStore(db).WithPublisher(cachebus.NewPublisher(rdb, channel))
+	store := newTestStore(db).WithPublisher(cachebus.NewPublisher(rdb, channel))
 	api := NewEngine(store, []Token{{Value: testToken, Role: RoleAdmin}})
 
 	// Create account + issue key.
@@ -294,7 +295,7 @@ func TestConsole_RevokeEvictsDataPlaneCache(t *testing.T) {
 func TestConsole_ViewerRoleReadOnly(t *testing.T) {
 	_, db := newTestEngine(t)
 	const viewerTok = "viewer-only-token"
-	engine := NewEngine(NewStore(db), []Token{
+	engine := NewEngine(newTestStore(db), []Token{
 		{Value: testToken, Role: RoleAdmin},
 		{Value: viewerTok, Role: RoleViewer},
 	})
@@ -469,7 +470,7 @@ func TestConsole_AuditLog(t *testing.T) {
 	if _, err := db.Exec("TRUNCATE TABLE audit_log"); err != nil {
 		t.Fatalf("truncate audit_log: %v", err)
 	}
-	engine := NewEngine(NewStore(db), []Token{
+	engine := NewEngine(newTestStore(db), []Token{
 		{Value: testToken, Role: RoleAdmin, Name: "alice-admin"},
 		{Value: "viewer-tok", Role: RoleViewer, Name: "bob"},
 	})
@@ -519,7 +520,7 @@ func TestConsole_PricingConcurrentSingleActive(t *testing.T) {
 	_, resp := do(t, engine, "POST", "/admin/model-services", ModelServiceInput{ServiceID: "o/m", Model: "cm"}, true)
 	msID := int64(resp["id"].(float64))
 
-	store := NewStore(db)
+	store := newTestStore(db)
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
