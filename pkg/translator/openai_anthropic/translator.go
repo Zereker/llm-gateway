@@ -11,9 +11,10 @@
 //     client gets the OpenAI SSE experience
 //
 // **Limitations**:
-//   - Only chat is supported (system/user/assistant messages)
+//   - Only chat is supported (system/user/assistant/tool messages)
+//   - Tool definitions and tool calls ARE carried across (see translateRequest)
 //   - Multi-part content arrays are accepted, but only their text parts are
-//     carried across; non-text parts (images / tool calls) are dropped
+//     carried across; non-text image parts are dropped
 //
 // See translateRequest / translateResponse / parseAndEmitStreamEvent for field mapping details.
 package openai_anthropic
@@ -46,7 +47,9 @@ func (openaiAnthropic) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiAnthropic) Target() domain.Protocol { return domain.ProtoAnthropic }
 
 func (openaiAnthropic) TranslateRequest(srcBody []byte) ([]byte, error) {
-	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoAnthropic, srcBody)
+	// Tools / tool_calls are now translated; only image multimodal content is
+	// still dropped, so restrict the lossy report to that feature.
+	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoAnthropic, srcBody, "multimodal")
 	return translateRequest(srcBody)
 }
 
@@ -78,6 +81,12 @@ type responseHandler struct {
 	chatcmplID    string // streaming response shares one id (OpenAI convention: chunks share an id)
 	upstreamModel string // taken from message_start.message.model
 	createdSec    int64  // streaming chunks share one created timestamp (fixed at first chunk)
+
+	// Streaming tool state: maps an Anthropic content-block index to the 0-based
+	// OpenAI tool_call index. Only tool_use blocks are recorded; nextToolIdx is
+	// the counter over tool_use blocks (independent of text blocks).
+	toolBlocks  map[int]int
+	nextToolIdx int
 
 	// usage side channel
 	ex extractor.Session
@@ -163,8 +172,10 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 // Anthropic event types → OpenAI chunk mapping:
 //
 //	message_start       → 1 chunk: delta={role:"assistant"} (OpenAI SDK expects role first)
-//	content_block_start → no output (no text delta)
-//	content_block_delta → 1 chunk: delta={content:"<text>"}
+//	content_block_start → text: no output; tool_use: 1 chunk with a tool_calls
+//	                      header delta (index/id/name, arguments:"")
+//	content_block_delta → text_delta: delta={content:"<text>"};
+//	                      input_json_delta: delta={tool_calls:[{index, function:{arguments}}]}
 //	content_block_stop  → no output
 //	message_delta       → 1 chunk: delta={}, finish_reason=<mapped> (when stop_reason is present)
 //	message_stop        → 1 sentinel: data: [DONE]
@@ -180,11 +191,17 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			ID    string `json:"id"`
 			Model string `json:"model"`
 		} `json:"message,omitempty"`
-		Index int `json:"index"`
+		Index        int `json:"index"`
+		ContentBlock *struct {
+			Type string `json:"type"`
+			ID   string `json:"id,omitempty"`
+			Name string `json:"name,omitempty"`
+		} `json:"content_block,omitempty"`
 		Delta *struct {
-			Type       string `json:"type"`
-			Text       string `json:"text,omitempty"`
-			StopReason string `json:"stop_reason,omitempty"`
+			Type        string `json:"type"`
+			Text        string `json:"text,omitempty"`
+			PartialJSON string `json:"partial_json,omitempty"`
+			StopReason  string `json:"stop_reason,omitempty"`
 		} `json:"delta,omitempty"`
 	}
 	if err := json.Unmarshal(data, &ev); err != nil {
@@ -199,9 +216,49 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		// Emit the role chunk (OpenAI SDK convention)
 		h.writeChunk(out, map[string]any{"role": "assistant"}, "")
 
+	case "content_block_start":
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+			toolIdx := h.nextToolIdx
+			h.nextToolIdx++
+			if h.toolBlocks == nil {
+				h.toolBlocks = make(map[int]int)
+			}
+			h.toolBlocks[ev.Index] = toolIdx
+			delta := map[string]any{
+				"tool_calls": []map[string]any{{
+					"index": toolIdx,
+					"id":    ev.ContentBlock.ID,
+					"type":  "function",
+					"function": map[string]any{
+						"name":      ev.ContentBlock.Name,
+						"arguments": "",
+					},
+				}},
+			}
+			h.writeChunk(out, delta, "")
+		}
+
 	case "content_block_delta":
-		if ev.Delta != nil && ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
-			h.writeChunk(out, map[string]any{"content": ev.Delta.Text}, "")
+		if ev.Delta == nil {
+			return
+		}
+		switch ev.Delta.Type {
+		case "text_delta":
+			if ev.Delta.Text != "" {
+				h.writeChunk(out, map[string]any{"content": ev.Delta.Text}, "")
+			}
+		case "input_json_delta":
+			toolIdx, ok := h.toolBlocks[ev.Index]
+			if !ok {
+				return
+			}
+			delta := map[string]any{
+				"tool_calls": []map[string]any{{
+					"index":    toolIdx,
+					"function": map[string]any{"arguments": ev.Delta.PartialJSON},
+				}},
+			}
+			h.writeChunk(out, delta, "")
 		}
 
 	case "message_delta":
@@ -212,7 +269,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 	case "message_stop":
 		out.WriteString("data: [DONE]\n\n")
 
-	case "ping", "content_block_start", "content_block_stop":
+	case "ping", "content_block_stop":
 		// No output
 	}
 }
@@ -259,20 +316,59 @@ type openAIRequest struct {
 	TopP        *float64               `json:"top_p,omitempty"`
 	Stop        json.RawMessage        `json:"stop,omitempty"`
 	Stream      bool                   `json:"stream,omitempty"`
+	Tools       []openAITool           `json:"tools,omitempty"`
+	ToolChoice  json.RawMessage        `json:"tool_choice,omitempty"`
+}
+
+// openAITool is one entry of the OpenAI request "tools" array. Only function
+// tools are handled; the JSON schema lives under function.parameters.
+type openAITool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description,omitempty"`
+		Parameters  json.RawMessage `json:"parameters,omitempty"`
+	} `json:"function"`
+}
+
+// openAIToolCall is one entry of an assistant message's "tool_calls" array;
+// function.arguments is a JSON string (not an object).
+type openAIToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 // openAIMessage is the OpenAI-shaped message used when BUILDING a response back
-// to the client (content is always a plain string).
+// to the client. Content is `any` so it can be a plain string or null (OpenAI
+// allows content:null when tool_calls is present).
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string               `json:"role"`
+	Content   any                  `json:"content"`
+	ToolCalls []openAIRespToolCall `json:"tool_calls,omitempty"`
+}
+
+// openAIRespToolCall is one entry of an assistant response message's
+// "tool_calls" array; function.arguments is a JSON string.
+type openAIRespToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 // openAIInboundMessage parses an incoming OpenAI request message, whose content
 // may be a JSON string OR an array of content parts.
 type openAIInboundMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string           `json:"role"`
+	Content    json.RawMessage  `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 // contentToString normalizes an OpenAI message content field that may be a JSON
@@ -313,11 +409,24 @@ type anthropicRequest struct {
 	TopP          *float64           `json:"top_p,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
 	Stream        bool               `json:"stream,omitempty"`
+	Tools         []anthropicTool    `json:"tools,omitempty"`
+	ToolChoice    json.RawMessage    `json:"tool_choice,omitempty"`
 }
 
+// anthropicTool is one entry of the Anthropic request "tools" array. The JSON
+// schema lives under input_schema (the OpenAI function.parameters equivalent).
+type anthropicTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+// anthropicMessage.Content is a raw message so it can hold either the simple
+// string shape (plain text messages) or a content-block array (messages that
+// carry tool_use / tool_result blocks), matching whatever Anthropic expects.
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
 }
 
 type anthropicResponse struct {
@@ -331,8 +440,11 @@ type anthropicResponse struct {
 }
 
 type anthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -374,20 +486,62 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 		Stream: in.Stream,
 	}
 
+	// tools: OpenAI function tools → Anthropic tools (input_schema).
+	for _, t := range in.Tools {
+		if t.Type != "" && t.Type != "function" {
+			continue
+		}
+		out.Tools = append(out.Tools, anthropicTool{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			InputSchema: normalizeToolSchema(t.Function.Parameters),
+		})
+	}
+	if len(in.ToolChoice) > 0 {
+		out.ToolChoice = mapToolChoice(in.ToolChoice)
+	}
+
 	var systemParts []string
-	for _, m := range in.Messages {
+	for i := 0; i < len(in.Messages); i++ {
+		m := in.Messages[i]
 		switch m.Role {
 		case "system":
 			if s := contentToString(m.Content); s != "" {
 				systemParts = append(systemParts, s)
 			}
-		case "user", "assistant":
-			out.Messages = append(out.Messages, anthropicMessage{
-				Role:    m.Role,
-				Content: contentToString(m.Content),
-			})
+		case "user":
+			c, err := json.Marshal(contentToString(m.Content))
+			if err != nil {
+				return nil, fmt.Errorf("user content marshal: %w", err)
+			}
+			out.Messages = append(out.Messages, anthropicMessage{Role: "user", Content: c})
+		case "assistant":
+			msg, err := buildAssistantMessage(m)
+			if err != nil {
+				return nil, err
+			}
+			out.Messages = append(out.Messages, msg)
+		case "tool":
+			// Merge consecutive tool messages into one Anthropic user turn whose
+			// content array holds all their tool_result blocks.
+			var blocks []any
+			for i < len(in.Messages) && in.Messages[i].Role == "tool" {
+				tm := in.Messages[i]
+				blocks = append(blocks, map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": tm.ToolCallID,
+					"content":     contentToString(tm.Content),
+				})
+				i++
+			}
+			i-- // compensate for the outer loop's increment
+			raw, err := json.Marshal(blocks)
+			if err != nil {
+				return nil, fmt.Errorf("tool_result marshal: %w", err)
+			}
+			out.Messages = append(out.Messages, anthropicMessage{Role: "user", Content: raw})
 		default:
-			return nil, fmt.Errorf("unsupported message role %q (handles system/user/assistant only)", m.Role)
+			return nil, fmt.Errorf("unsupported message role %q (handles system/user/assistant/tool only)", m.Role)
 		}
 	}
 	if len(systemParts) > 0 {
@@ -424,6 +578,92 @@ func parseStopField(raw json.RawMessage) []string {
 	return nil
 }
 
+// normalizeToolSchema returns the OpenAI function.parameters JSON schema, or the
+// Anthropic-required empty object schema {"type":"object"} when it is missing or
+// empty.
+func normalizeToolSchema(raw json.RawMessage) json.RawMessage {
+	switch strings.TrimSpace(string(raw)) {
+	case "", "null", "{}":
+		return json.RawMessage(`{"type":"object"}`)
+	default:
+		return raw
+	}
+}
+
+// mapToolChoice converts an OpenAI tool_choice → Anthropic tool_choice.
+//
+//	"auto"                                       → {"type":"auto"}
+//	"required"                                   → {"type":"any"}
+//	{"type":"function","function":{"name":"X"}}  → {"type":"tool","name":"X"}
+//	"none" (and anything unrecognized)           → nil (omit; let the model decide)
+func mapToolChoice(raw json.RawMessage) json.RawMessage {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch s {
+		case "auto":
+			return json.RawMessage(`{"type":"auto"}`)
+		case "required":
+			return json.RawMessage(`{"type":"any"}`)
+		default: // "none" or unknown → omit
+			return nil
+		}
+	}
+	var obj struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Function.Name != "" {
+		b, err := json.Marshal(map[string]any{"type": "tool", "name": obj.Function.Name})
+		if err == nil {
+			return b
+		}
+	}
+	return nil
+}
+
+// buildAssistantMessage builds an Anthropic assistant message. When the OpenAI
+// message carries tool_calls, its content becomes a block array: an optional
+// leading text block (only if content is non-empty) followed by one tool_use
+// block per tool_call. Otherwise it keeps the simple string content shape.
+func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
+	if len(m.ToolCalls) == 0 {
+		c, err := json.Marshal(contentToString(m.Content))
+		if err != nil {
+			return anthropicMessage{}, fmt.Errorf("assistant content marshal: %w", err)
+		}
+		return anthropicMessage{Role: "assistant", Content: c}, nil
+	}
+
+	var blocks []any
+	if s := contentToString(m.Content); s != "" {
+		blocks = append(blocks, map[string]any{"type": "text", "text": s})
+	}
+	for _, tc := range m.ToolCalls {
+		// function.arguments is a JSON string; parse it into the input object.
+		// Fall back to an empty object if it is absent or not a valid object.
+		input := json.RawMessage(`{}`)
+		if tc.Function.Arguments != "" {
+			var obj map[string]any
+			if json.Unmarshal([]byte(tc.Function.Arguments), &obj) == nil {
+				input = json.RawMessage(tc.Function.Arguments)
+			}
+		}
+		blocks = append(blocks, map[string]any{
+			"type":  "tool_use",
+			"id":    tc.ID,
+			"name":  tc.Function.Name,
+			"input": input,
+		})
+	}
+	raw, err := json.Marshal(blocks)
+	if err != nil {
+		return anthropicMessage{}, fmt.Errorf("assistant tool_use marshal: %w", err)
+	}
+	return anthropicMessage{Role: "assistant", Content: raw}, nil
+}
+
 // translateResponse converts an Anthropic body → OpenAI body (non-streaming).
 //
 // Returning *domain.Usage to the caller has been moved out (goes through the
@@ -441,10 +681,34 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	}
 
 	var content strings.Builder
+	var toolCalls []openAIRespToolCall
 	for _, blk := range in.Content {
-		if blk.Type == "text" {
+		switch blk.Type {
+		case "text":
 			content.WriteString(blk.Text)
+		case "tool_use":
+			args := "{}"
+			if len(blk.Input) > 0 {
+				args = string(blk.Input)
+			}
+			tc := openAIRespToolCall{ID: blk.ID, Type: "function"}
+			tc.Function.Name = blk.Name
+			tc.Function.Arguments = args
+			toolCalls = append(toolCalls, tc)
 		}
+	}
+
+	msg := openAIMessage{Role: "assistant"}
+	if len(toolCalls) > 0 {
+		msg.ToolCalls = toolCalls
+		// OpenAI allows content:null alongside tool_calls; use the text only if present.
+		if content.Len() > 0 {
+			msg.Content = content.String()
+		} else {
+			msg.Content = nil
+		}
+	} else {
+		msg.Content = content.String()
 	}
 
 	out := openAIResponse{
@@ -455,7 +719,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 		Choices: []openAIChoice{
 			{
 				Index:        0,
-				Message:      openAIMessage{Role: "assistant", Content: content.String()},
+				Message:      msg,
 				FinishReason: mapStopReason(in.StopReason),
 			},
 		},
