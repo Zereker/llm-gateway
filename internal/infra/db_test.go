@@ -13,7 +13,7 @@ func mysqlDSN(t *testing.T) string {
 	dsn := os.Getenv("MYSQL_DSN")
 	if dsn == "" {
 		t.Skip("MYSQL_DSN not set; skipping MySQL integration test " +
-			"(set to e.g. root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4)")
+			"(set to e.g. root:@tcp(localhost:3306)/llm_gateway_test?parseTime=true&charset=utf8mb4)")
 	}
 	return dsn
 }

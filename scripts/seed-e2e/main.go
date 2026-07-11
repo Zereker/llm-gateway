@@ -37,6 +37,10 @@ func main() {
 	dsn := flag.String("dsn", "", "MySQL DSN")
 	dataKey := flag.String("data-key", "", "endpoints.auth KEK (hex 32 bytes)")
 	upstream := flag.String("upstream", "http://localhost:9090/v1/chat/completions", "upstream URL")
+	upstreamKey := flag.String("upstream-key", "sk-upstream-dontcare", "upstream key (encrypted into endpoints.auth; bearer or x-api-key by protocol)")
+	name := flag.String("name", "e2e-mockupstream", "endpoint name (unique key uk_name)")
+	vendor := flag.String("vendor", "openai", "endpoint vendor (protocol factory key: openai/anthropic/gemini/...)")
+	protocol := flag.String("protocol", "openai", "protocol the upstream speaks (openai/anthropic/responses/...)")
 	apiKey := flag.String("api-key", "sk-test-alice", "plaintext api key (written into the Bearer header)")
 	model := flag.String("model", "gpt-4o", "model name (written into the client request body)")
 	flag.Parse()
@@ -58,14 +62,35 @@ func main() {
 	if err := infra.Migrate(ctx, db); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
-	if err := seed(ctx, db, *upstream, *apiKey, *model); err != nil {
+	if err := seed(ctx, db, seedSpec{
+		upstreamURL: *upstream,
+		upstreamKey: *upstreamKey,
+		name:        *name,
+		vendor:      *vendor,
+		protocol:    *protocol,
+		apiKey:      *apiKey,
+		model:       *model,
+	}); err != nil {
 		log.Fatalf("seed: %v", err)
 	}
 
 	fmt.Fprintln(os.Stdout, *apiKey)
 }
 
-func seed(ctx context.Context, db *sqlx.DB, upstreamURL, apiKey, model string) error {
+// seedSpec collects the endpoint knobs so new upstream variants don't keep
+// growing the seed signature.
+type seedSpec struct {
+	upstreamURL string
+	upstreamKey string
+	name        string
+	vendor      string
+	protocol    string
+	apiKey      string
+	model       string
+}
+
+func seed(ctx context.Context, db *sqlx.DB, spec seedSpec) error {
+	upstreamURL, apiKey, model := spec.upstreamURL, spec.apiKey, spec.model
 	// 1) quota_policy
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO quota_policies (name, description, rule_json)
@@ -116,15 +141,24 @@ func seed(ctx context.Context, db *sqlx.DB, upstreamURL, apiKey, model string) e
 	}
 
 	// 5) endpoint
-	auth, err := repo.EncodePayload(domain.AuthTypeBearer, domain.BearerAuth{APIKey: "sk-upstream-dontcare"})
+	// anthropic-protocol upstreams authenticate via the x-api-key header;
+	// everything else here is bearer.
+	var auth repo.AuthConfig
+
+	if spec.protocol == "anthropic" {
+		auth, err = repo.EncodePayload(domain.AuthTypeXAPIKey, domain.XAPIKeyAuth{APIKey: spec.upstreamKey})
+	} else {
+		auth, err = repo.EncodePayload(domain.AuthTypeBearer, domain.BearerAuth{APIKey: spec.upstreamKey})
+	}
+
 	if err != nil {
 		return fmt.Errorf("encode auth: %w", err)
 	}
 	routing := repo.RoutingConfig{URL: upstreamURL}
 	ep := &repo.Endpoint{
-		Name:     "e2e-mockupstream",
-		Vendor:   "openai",
-		Protocol: "openai",
+		Name:     spec.name,
+		Vendor:   spec.vendor,
+		Protocol: spec.protocol,
 		Model:    model,
 		Group:    "default",
 		Weight:   100,

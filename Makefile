@@ -1,6 +1,10 @@
 # Common local development commands. CI does not depend on Make -- `go test ./...` is the source of truth.
 
-MYSQL_DSN ?= root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4
+# Tests run against a SEPARATE database (llm_gateway_test) so the suite's
+# TRUNCATEs never wipe the llm_gateway data a developer seeds for manual / e2e
+# work. The test DB is created by configs/mysql-init on a fresh volume; the
+# test-integration target also creates it defensively for pre-existing volumes.
+MYSQL_DSN ?= root:@tcp(localhost:3306)/llm_gateway_test?parseTime=true&charset=utf8mb4
 
 .PHONY: stack stack-stop stack-clean
 stack:                  ## Start mysql + redis + redpanda containers (lightweight; for running local Go processes)
@@ -17,6 +21,7 @@ test:                   ## Run unit tests (SQL tests depend on MYSQL_DSN; skippe
 test-integration: stack ## Start the stack then run the full test suite serially (including SQL / outbox)
 	@echo "Waiting for MySQL..."
 	@until docker compose exec -T mysql mysqladmin ping -h localhost -uroot --silent; do sleep 1; done
+	@docker compose exec -T mysql mysql -uroot -e "CREATE DATABASE IF NOT EXISTS llm_gateway_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 	MYSQL_DSN='$(MYSQL_DSN)' go test -p 1 ./...
 
 build:                  ## Compile cmd/gateway / cmd/console / cmd/mockupstream into ./bin (static binaries, for containers)
