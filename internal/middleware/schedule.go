@@ -156,6 +156,8 @@ func errCodeFromDispatchClass(c dispatch.Class, r dispatch.OutcomeResult) string
 		return domain.ErrCodeNoEndpointAvailable
 	case dispatch.OutcomeDepFail:
 		return domain.ErrCodeDependencyUnavailable
+	case dispatch.OutcomeClientAbort:
+		return domain.ErrCodeClientClosedRequest
 	}
 	switch c {
 	case dispatch.ClassCapacity:

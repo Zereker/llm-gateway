@@ -138,18 +138,8 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 			metric.Inc(metric.RateLimitDecisionsTotal, "scope", "user", "dimension", "rpm_rps", "result", "allowed")
 		}
 
-		// Stash the TPM bucket keys for post-side (rc.RateLimit also carries this
-		// along for metric / observability)
-		if len(tpmBuckets) > 0 {
-			if rc.RateLimit == nil {
-				rc.RateLimit = &domain.RateLimitState{}
-			}
-			for _, b := range tpmBuckets {
-				rc.RateLimit.TPMBucketKeys = append(rc.RateLimit.TPMBucketKeys, b.Key)
-			}
-		}
-
-		// Run downstream + post-side TPM charge
+		// Run downstream + post-side TPM charge (the tpmBuckets local carries
+		// the keys through the onion — no RC state needed)
 		c.Next()
 		chargeTPM(rc, cfg.store, tpmBuckets)
 	}
@@ -165,10 +155,8 @@ func chargeTPM(rc *requeststate.State, store ratelimit.Store, tpmBuckets []ratel
 	if rc.Usage == nil || rc.Usage.Total <= 0 || len(tpmBuckets) == 0 {
 		return
 	}
-	cost := uint32(rc.Usage.Total)
-	if cost == 0 {
-		return
-	}
+
+	cost := uint32(min(rc.Usage.Total, int64(^uint32(0)))) // clamp: a Total beyond uint32 must not wrap to a tiny charge
 	// Inject cost into each bucket
 	for i := range tpmBuckets {
 		tpmBuckets[i].Cost = cost

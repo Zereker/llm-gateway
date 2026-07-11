@@ -79,8 +79,8 @@ M2 Auth              Parses API key/JWT into domain.UserIdentity
 M3 Envelope          Reads the raw body, extracts model, records source protocol + modality
 M4 Budget            alwayspass or inmemory gate; failure aborts immediately
 M5 ModelService      Looks up the global model catalog and the primary account's subscription
-M8 Moderation        Optional content moderation; defaults to none
 M6 Limit             Pre-deducts the user-side RPM/RPS, post-deducts TPM based on usage after the response
+M8 Moderation        Optional content moderation; defaults to none
 M7 Schedule          Pulls endpoint candidates, schedules, retries, forwards upstream, writes Usage/Decision/Error
 M10 Tracing          metric, usage meta, outbox, scheduling trace
   |
@@ -143,7 +143,6 @@ internal/repo + internal/infra
 | `Adapter` | The vendor's HTTP-layer factory/session; not responsible for protocol conversion or usage aggregation |
 | `Translator` | The protocol conversion layer; responsible for request body conversion, response handler, usage extraction |
 | `Scheduler` | M7's within-batch endpoint selector, exposing Pick/Report, not responsible for cross-model fallback |
-| `RateLimitState` | Rate-limit state written by M6/M7, used for TPM post-deduction and troubleshooting; not a client header contract |
 | `Usage` | Resource consumption and metadata for a single request, published by M10 to the outbox |
 | `TTLCache` | The gateway's in-process LRU + TTL cache (`internal/repo/cache.go`), the repo's sole caching strategy |
 | `CachedXxxReader` | The repo layer's cached wrapper, wrapping a SQL Reader with a TTL LRU layer; default 30s |

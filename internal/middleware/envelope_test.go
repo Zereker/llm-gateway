@@ -262,3 +262,23 @@ func TestEnvelope_ResponseStartedAlready_StatusCode(t *testing.T) {
 
 // prevent an unused import warning
 var _ = io.EOF
+
+// An oversized body (BodyLimit's MaxBytesReader trips inside Envelope's read)
+// must map to 413, not a generic 400 — this is the documented BodyLimit
+// contract (docs/01 §4).
+func TestEnvelope_OversizedBodyReturns413(t *testing.T) {
+	r := newGinTest(
+		BodyLimit(10),
+		TraceContext(), Recover(),
+		WithSourceProtocol(domain.ProtoOpenAI, domain.ModalityChat),
+		Envelope(&fakeHandlerLookup{}),
+	)
+	r.POST("/x", func(c *gin.Context) { c.Status(200) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", strings.NewReader(`{"model":"gpt-4o","messages":[]}`)))
+
+	if w.Code != 413 {
+		t.Fatalf("status=%d body=%s, want 413", w.Code, w.Body.String())
+	}
+}

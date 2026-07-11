@@ -396,7 +396,9 @@ durations; both buckets must clear, so the max of the pair wins), and Anthropic-
 `invoker.Outcome.RetryAfter → dispatch.Verdict.RetryAfter → selector.Result.RetryAfter` into
 `CooldownManager.Mark`, where it is clamped to `[1s, 10m]` — the floor absorbs sub-second churn, the cap stops
 a pathological "retry in 24h" from poisoning the endpoint. A class whose configured duration is 0 stays opted
-out; the hint never re-enables it.
+out; the hint never re-enables it. The effective TTL then gets ±10% jitter: a vendor-wide incident cools a
+whole batch of endpoints with identical TTLs, and without jitter they would all recover at the same instant
+and re-form a synchronized retry storm.
 
 A cooldown can also end early — see probe-gated recovery in §10.
 
