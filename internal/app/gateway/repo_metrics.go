@@ -5,8 +5,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/repo"
+	"github.com/zereker/llm-gateway/internal/metric"
+	"github.com/zereker/llm-gateway/internal/repo"
 )
 
 // repoCacheMetrics bridges the repo.Metrics interface to a Prometheus counter.

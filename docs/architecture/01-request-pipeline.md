@@ -1,10 +1,10 @@
 # 01 — Request Pipeline
 
-This document records the request chain for `pkg/router` + `pkg/middleware`, along with `internal/requeststate.State`.
+This document records the request chain for `internal/router` + `internal/middleware`, along with `internal/requeststate.State`.
 
 ## 1. Route Assembly
 
-`pkg/router.NewEngine` creates the `gin.Engine` and registers:
+`internal/router.NewEngine` creates the `gin.Engine` and registers:
 
 - ops routes: `/healthz`, `/readyz`, `/metrics`, etc., maintained in `helpers.go`.
 - chat: `/v1/chat/completions`, `/v1/messages`, `/v1/responses`.
@@ -12,7 +12,7 @@ This document records the request chain for `pkg/router` + `pkg/middleware`, alo
 - audio: `/v1/audio/{speech,transcriptions,translations}`.
 - embedding: `/v1/embeddings`.
 
-Each route file declares its own complete `/v1/...` path; a global `/v1` group is not used. The shared security / quota / observability middleware order lives in `pkg/router/pipeline.go` (`llmRouteGroup` + `registerLLMRoute`); each modality file supplies only how it differs — path, source protocol, modality, and its Cache stage — via a `routeSpec`. Modality-specific stages (e.g. a future image multipart parser) are added as `routeSpec` fields rather than by re-inlining a whole chain.
+Each route file declares its own complete `/v1/...` path; a global `/v1` group is not used. The shared security / quota / observability middleware order lives in `internal/router/pipeline.go` (`llmRouteGroup` + `registerLLMRoute`); each modality file supplies only how it differs — path, source protocol, modality, and its Cache stage — via a `routeSpec`. Modality-specific stages (e.g. a future image multipart parser) are added as `routeSpec` fields rather than by re-inlining a whole chain.
 
 ## 2. RequestContext Storage
 
@@ -125,11 +125,11 @@ type RequestEnvelope struct {
 }
 ```
 
-M3 does not perform canonicalization and does not parse the full set of protocol fields. Request body shape conversion is handled by `pkg/translator`.
+M3 does not perform canonicalization and does not parse the full set of protocol fields. Request body shape conversion is handled by `internal/translator`.
 
 ## 7. M5 ModelService
 
-M5 uses middleware-owned interfaces, injected by cached wrappers from `pkg/repo`:
+M5 uses middleware-owned interfaces, injected by cached wrappers from `internal/repo`:
 
 - `ModelCatalog.GetByModel` looks up the global model catalog (production implementation: `repo.CachedModelServiceReader`
   returns directly on a TTL LRU hit; on a miss it falls through to `repo.SQLModelServiceReader.GetByModel`; TTL defaults to 30s).

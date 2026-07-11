@@ -4,25 +4,25 @@ This document records the pluggable boundaries of the infrastructure, and the de
 
 Core principles:
 
-1. `pkg/domain` defines the gateway's business model, does not reference `pkg/repo`, and must not use repo struct aliases.
-2. `pkg/middleware` defines the minimal dependency interfaces it needs itself.
-3. `pkg/repo` is the SQL implementation layer, and can implement the interfaces defined by middleware.
+1. `internal/domain` defines the gateway's business model, does not reference `internal/repo`, and must not use repo struct aliases.
+2. `internal/middleware` defines the minimal dependency interfaces it needs itself.
+3. `internal/repo` is the SQL implementation layer, and can implement the interfaces defined by middleware.
 4. repo interfaces and implementations return `domain` structs, instead of leaking repo models to the upper layer.
 5. middleware construction uses the option pattern, to make it easy to inject stub / fake in unit tests.
 
-The existence of `pkg/domain` should not be just an import-path wrapper. If domain points to repo via a type alias, the business layer appears to depend on domain, but actually still drags SQL schema, ORM tags, and Scanner / Valuer into packages like schedule, translator, and upstream. Later, when replacing the storage implementation, writing unit tests, or adjusting the table structure, you'll get dragged back by the repo type.
+The existence of `internal/domain` should not be just an import-path wrapper. If domain points to repo via a type alias, the business layer appears to depend on domain, but actually still drags SQL schema, ORM tags, and Scanner / Valuer into packages like schedule, translator, and upstream. Later, when replacing the storage implementation, writing unit tests, or adjusting the table structure, you'll get dragged back by the repo type.
 
 ## 1. Dependency Direction
 
 Target dependency direction:
 
 ```text
-pkg/domain                         pure business structs, no repo import
+internal/domain                         pure business structs, no repo import
       ▲
-      ├── pkg/middleware           defines middleware's minimal interfaces, calls schedule / upstream
-      │       └── pkg/selector     pure scheduling logic and eligibility, holds no repo
+      ├── internal/middleware           defines middleware's minimal interfaces, calls schedule / upstream
+      │       └── internal/selector     pure scheduling logic and eligibility, holds no repo
       │
-      └── pkg/repo                 SQL schema model + SQL implementation, adapts and returns domain types
+      └── internal/repo                 SQL schema model + SQL implementation, adapts and returns domain types
 
 cmd/gateway                         wires up repo, middleware, schedule and infra drivers
 ```
@@ -55,13 +55,13 @@ Target startup dependencies of `cmd/gateway`:
 | OTel collector | used when trace driver is `otel` | Optional |
 | OpenAI moderation API | used when moderation driver is `openai` | Optional |
 
-The DB schema source of truth is `pkg/infra/schema.sql`. gateway only runs `repo.CheckSchema` — it does not AutoMigrate and does not create tables.
+The DB schema source of truth is `internal/infra/schema.sql`. gateway only runs `repo.CheckSchema` — it does not AutoMigrate and does not create tables.
 
 Pricing does not do active price lookups on the gateway's hot path; price matching and amount calculation are done by the downstream billing platform based on when the request occurred.
 
 ## 3. Domain Model
 
-`pkg/domain` should only contain the structs needed by the gateway's business layer, for example:
+`internal/domain` should only contain the structs needed by the gateway's business layer, for example:
 
 - `UserIdentity`
 - `Credentials`
@@ -76,7 +76,7 @@ Requirements for domain structs:
 
 - No `db` / `gorm` tags.
 - Do not implement SQL `Scanner` / `Valuer`.
-- Do not import `pkg/repo`.
+- Do not import `internal/repo`.
 - Fields express business semantics, not table structure.
 
 Counter-example:
@@ -114,7 +114,7 @@ Complex JSON columns follow the same rule: business meaning goes in the domain t
 
 ## 4. Middleware-owned Interfaces
 
-Each middleware defines the minimal interface it needs itself. Interfaces live in `pkg/middleware` or in a file adjacent to that middleware, and return `domain` types.
+Each middleware defines the minimal interface it needs itself. Interfaces live in `internal/middleware` or in a file adjacent to that middleware, and return `domain` types.
 
 Example:
 
@@ -144,11 +144,11 @@ type EndpointReader interface {
 }
 ```
 
-These interfaces should not live in `pkg/repo` as an upper-layer contract. `pkg/repo` only provides the implementation.
+These interfaces should not live in `internal/repo` as an upper-layer contract. `internal/repo` only provides the implementation.
 
 ## 5. Repo as the Implementation Layer
 
-`pkg/repo` can contain two kinds of structs:
+`internal/repo` can contain two kinds of structs:
 
 1. SQL row / record: carries `db` / `gorm` tags, Scanner / Valuer, close to the schema.
 2. SQL reader/provider implementation: queries the database, converts rows into `domain`.
@@ -156,9 +156,9 @@ These interfaces should not live in `pkg/repo` as an upper-layer contract. `pkg/
 Recommended migration shape:
 
 ```text
-pkg/domain/endpoint.go      the real domain.Endpoint, no db/gorm tags
-pkg/repo/endpoint_row.go    endpointRow / EndpointRow, carries SQL tags and column encoding/decoding
-pkg/repo/endpoint_reader.go SQL-queries rows, and returns domain.Endpoint
+internal/domain/endpoint.go      the real domain.Endpoint, no db/gorm tags
+internal/repo/endpoint_row.go    endpointRow / EndpointRow, carries SQL tags and column encoding/decoding
+internal/repo/endpoint_reader.go SQL-queries rows, and returns domain.Endpoint
 ```
 
 repo can use embedding to reduce duplicate fields, but shouldn't let the embedding pollute domain in reverse:
@@ -216,8 +216,8 @@ Implementation can migrate entity by entity. It's recommended to start with `End
 
 Acceptance criteria for each entity migration:
 
-- No `type X = repo.X` in `pkg/domain`.
-- `pkg/domain` does not import `pkg/repo`.
+- No `type X = repo.X` in `internal/domain`.
+- `internal/domain` does not import `internal/repo`.
 - Public return values of repo readers/providers use `domain` types.
 - middleware / schedule / translator / upstream do not receive repo row types.
 - `go test ./...` passes.
@@ -225,13 +225,13 @@ Acceptance criteria for each entity migration:
 The dependency closure should also be checked:
 
 ```bash
-go list -deps ./pkg/domain | rg '/pkg/repo$'
-go list -deps ./pkg/selector | rg '/pkg/repo$'
-go list -deps ./pkg/translator | rg '/pkg/repo$'
-go list -deps ./pkg/invoker | rg '/pkg/repo$'
+go list -deps ./internal/domain | rg '/internal/repo$'
+go list -deps ./internal/selector | rg '/internal/repo$'
+go list -deps ./internal/translator | rg '/internal/repo$'
+go list -deps ./internal/invoker | rg '/internal/repo$'
 ```
 
-The goal of these commands is no output. It is fine for `pkg/repo` itself to depend on `pkg/domain`.
+The goal of these commands is no output. It is fine for `internal/repo` itself to depend on `internal/domain`.
 
 ## 6. Middleware Options
 
@@ -326,7 +326,7 @@ Option pattern rules:
   `func(c) { c.Next() }` at construction time — **not even the tracer is turned on** — saving one
   `Tracer()` call at startup and one span Start/End per request.
 - options only do wiring, no IO; the constructor must not open a DB / Redis connection (resources are
-  managed by `cmd/gateway` or `pkg/server`).
+  managed by `cmd/gateway` or `internal/server`).
 - All `WithXxx*` options of the same middleware must share the same `XxxOptionFunc` adapter
   type; do not introduce a separate struct option type for a single option.
 
@@ -371,9 +371,9 @@ deployer --SQL INSERT/UPDATE--> MySQL
 
 | Layer | Role | Implementation |
 |----|------|------|
-| MySQL | source of truth | `pkg/infra/schema.sql` |
-| `repo.TTLCache[K, V]` | in-process LRU + TTL; does not cache not-found | `pkg/repo/cache.go` |
-| `repo.CachedXxxReader` | cached wrapper for the 5 SQL Readers/Providers | `pkg/repo/cached.go` |
+| MySQL | source of truth | `internal/infra/schema.sql` |
+| `repo.TTLCache[K, V]` | in-process LRU + TTL; does not cache not-found | `internal/repo/cache.go` |
+| `repo.CachedXxxReader` | cached wrapper for the 5 SQL Readers/Providers | `internal/repo/cached.go` |
 
 ### 8.2 Applicable Tables and Default Parameters
 
@@ -434,7 +434,7 @@ When the moderator returned is nil, M8 is pass-through.
 
 ## 11. Recording / Usage Events
 
-Usage events are selected via `usage_events.driver`, four mutually exclusive drivers (implementation goes through the Outbox Pattern, `pkg/usage.OutboxPublisher` interface):
+Usage events are selected via `usage_events.driver`, four mutually exclusive drivers (implementation goes through the Outbox Pattern, `internal/usage.OutboxPublisher` interface):
 
 - `file`: local JSONL append; suitable only for local development or ad-hoc troubleshooting.
 - `kafka`: synchronous Kafka producer; only returns once publishing completes — higher latency, no local copy.
@@ -447,7 +447,7 @@ See [07-configuration §2 `usage_events`](./07-configuration.md#2-gatewayyaml) f
 
 Content Log is a separate channel, and does not reuse the Usage Event schema. A content recorder can be wired up via `upstream.WithHooks(...)`.
 
-`async_kafka`'s buffer, max retries, backoff, and DLQ topic are declared in the `usage_events.kafka.*` config block (`file_and_kafka` reuses these fields to configure the Kafka side). Producer shutdown is centrally managed by `pkg/server` (see §12 graceful shutdown order).
+`async_kafka`'s buffer, max retries, backoff, and DLQ topic are declared in the `usage_events.kafka.*` config block (`file_and_kafka` reuses these fields to configure the Kafka side). Producer shutdown is centrally managed by `internal/server` (see §12 graceful shutdown order).
 
 ## 12. Tracing
 
@@ -518,7 +518,7 @@ gateway is read-only against these tables, except for audit-type fields such as 
 
 ## 15. Evolution Rules
 
-- Adding an import of, or a type alias to, `pkg/repo` in `pkg/domain` is forbidden.
+- Adding an import of, or a type alias to, `internal/repo` in `internal/domain` is forbidden.
 - For a new middleware, first define the minimal interface in the middleware package, then have repo
   implement it; Options use the interface + optionFunc shape, aligned with otelgin v0.68.0 (§6).
 - repo returns domain structs — repo row types must not be leaked to middleware.
@@ -544,4 +544,4 @@ gateway is read-only against these tables, except for audit-type fields such as 
 - **Rate limiting is incompatible with Redis Cluster**: see [04 §7a](./04-rate-limiting.md#7a-redis-deployment-shape-limitations).
 - **OTel Baggage must not be injected into upstream requests**: internal tenant identifiers live in
   baggage; the upstream client is only allowed to inject traceparent (see the comment in
-  `pkg/trace/otel.go`).
+  `internal/trace/otel.go`).

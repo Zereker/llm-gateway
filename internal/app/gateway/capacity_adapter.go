@@ -3,8 +3,8 @@ package gateway
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/domain"
-	"github.com/zereker/llm-gateway/pkg/ratelimit"
+	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/ratelimit"
 )
 
 // endpointCapacityAdapter translates selector's availability question into

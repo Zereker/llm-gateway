@@ -24,11 +24,11 @@ import (
 
 	appRuntime "github.com/zereker/llm-gateway/internal/app/runtime"
 	"github.com/zereker/llm-gateway/internal/builtin"
-	"github.com/zereker/llm-gateway/pkg/cachebus"
-	"github.com/zereker/llm-gateway/pkg/console"
-	"github.com/zereker/llm-gateway/pkg/endpointcheck"
-	"github.com/zereker/llm-gateway/pkg/repo"
-	"github.com/zereker/llm-gateway/pkg/trace"
+	"github.com/zereker/llm-gateway/internal/cachebus"
+	"github.com/zereker/llm-gateway/internal/console"
+	"github.com/zereker/llm-gateway/internal/endpointcheck"
+	"github.com/zereker/llm-gateway/internal/repo"
+	"github.com/zereker/llm-gateway/internal/trace"
 )
 
 func main() {

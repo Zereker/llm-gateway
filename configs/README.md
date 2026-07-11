@@ -25,7 +25,7 @@ This project's target architecture **does not provide zero-external-dependency s
 - Redis backs M6 rate limit buckets and scheduler cooldown state.
 - Kafka/Redpanda is only required when the outbox driver is set to kafka; file outbox can be used for local debugging.
 
-Schema changes are versioned in `pkg/infra` and applied with `cmd/migrate`.
+Schema changes are versioned in `internal/infra` and applied with `cmd/migrate`.
 The local/docker configs set `database.auto_migrate: true` for convenience;
 production should run the migration command or Helm migration Job first.
 Gateway startup verifies the migration version and then runs `repo.CheckSchema`.
@@ -101,7 +101,7 @@ trace:
   service_name: llm-gateway
 ```
 
-When adding new config fields, you need to update `pkg/config`, the example config, this file, and the corresponding architecture doc in sync.
+When adding new config fields, you need to update `internal/config`, the example config, this file, and the corresponding architecture doc in sync.
 
 ## Adding a New Environment
 

@@ -2,9 +2,9 @@
 
 This document records the abstraction and composition of protocol translation: client
 protocol in, upstream protocol out (pre-call), upstream response back, client protocol
-out (post-call). The two phases are wrapped under the `pkg/protocol.Handler` facade;
-internally it is still composed of two independent sub-abstractions — `pkg/protocol`
-(vendor HTTP layer) + `pkg/translator` (body shape layer) — but consumers only see the
+out (post-call). The two phases are wrapped under the `internal/protocol.Handler` facade;
+internally it is still composed of two independent sub-abstractions — `internal/protocol`
+(vendor HTTP layer) + `internal/translator` (body shape layer) — but consumers only see the
 Handler.
 
 Core principles:
@@ -22,10 +22,10 @@ Core principles:
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│ pkg/protocol.Handler  (facade, consumers only see this)           │
+│ internal/protocol.Handler  (facade, consumers only see this)           │
 │                                                                  │
 │   ┌──────────────────────────┐  ┌────────────────────────────┐   │
-│   │ pkg/protocol.Factory      │  │ pkg/translator.Translator  │   │
+│   │ internal/protocol.Factory      │  │ internal/translator.Translator  │   │
 │   │ (vendor HTTP layer)      │  │ (body shape conversion +    │   │
 │   │  - Metadata              │  │  usage)                     │   │
 │   │  - NewSession            │  │  - Source / Target          │   │
@@ -96,7 +96,7 @@ multiple endpoints of different protocols at the same time. Example:
 The vendor adapter no longer declares `NativeProtocol` — it only knows HTTP-layer
 details (auth header / URL / TLS); protocol ownership is left to the endpoint.
 
-## 4. `pkg/protocol.Handler` — facade
+## 4. `internal/protocol.Handler` — facade
 
 ```go
 type Handler interface {
@@ -125,7 +125,7 @@ type Capabilities struct {
 Handler; the Handler is a dynamic (adapter, translator) composition, and it only
 touches the specific endpoint once passed as the `PrepareCall` argument.
 
-## 4a. Quirks — endpoint-level request tweaks (`pkg/protocol/quirks`)
+## 4a. Quirks — endpoint-level request tweaks (`internal/protocol/quirks`)
 
 `translator` is only responsible for shape conversion from "client protocol → upstream
 protocol"; within the same upstream protocol, different vendors / models can still have
@@ -191,7 +191,7 @@ The application order within the body / headers sub-sections is fixed:
 `rename → strip → set → set_default` (make room first, then clean up, then override,
 then finally fill defaults).
 
-Interface (`pkg/protocol/quirks/quirks.go`):
+Interface (`internal/protocol/quirks/quirks.go`):
 
 ```go
 type Rewriter interface {
@@ -292,7 +292,7 @@ slow-growing axis, but it still grows multiplicatively as more protocols are onb
 The governance strategy has two layers:
 
 **Layer 1: direct translator (high fidelity, preferred)** — for every (src, tgt) pair
-that has real traffic, hand-write a `pkg/translator/<src>_<tgt>/` that fully maps the
+that has real traffic, hand-write a `internal/translator/<src>_<tgt>/` that fully maps the
 protocol-specific fields (thinking blocks / cache_control / tool schema, etc.).
 
 **Layer 2: pivot composition (fallback, potentially lossy)** — `Registry.FindVia(src,
@@ -369,7 +369,7 @@ protocol) translators carry everything through and do not call it. A rising
 `feature_dropped_total` for a pair is the signal to implement real translation
 for that feature there.
 
-## 7. `pkg/protocol` — vendor HTTP layer (internal detail of the facade)
+## 7. `internal/protocol` — vendor HTTP layer (internal detail of the facade)
 
 ```go
 type Metadata struct {
@@ -403,16 +403,16 @@ type-asserts and calls it on non-2xx HTTP responses.
 
 Vendor sub-packages:
 
-- `pkg/protocol/openai/` — vendor=openai + alias=ark
-- `pkg/protocol/anthropic/`
-- `pkg/protocol/gemini/`
+- `internal/protocol/openai/` — vendor=openai + alias=ark
+- `internal/protocol/anthropic/`
+- `internal/protocol/gemini/`
 
 Each vendor sub-package only defines its `Factory` type; `internal/builtin.NewLookup`
 assembles the factory map (keyed by vendor name) at startup, and the Handler is
 dynamically synthesized by `DefaultLookup` at request time, not registered into a
 matrix.
 
-## 8. `pkg/translator` — body shape layer (internal detail of the facade)
+## 8. `internal/translator` — body shape layer (internal detail of the facade)
 
 ```go
 type Translator interface {
@@ -457,7 +457,7 @@ Built-in translators:
 
 ## 9. eligibility filtering
 
-The internal helper `pkg/dispatch.filterEligible` filters endpoint candidates using a
+The internal helper `internal/dispatch.filterEligible` filters endpoint candidates using a
 single `protocol.Lookup` argument:
 
 ```go
@@ -535,10 +535,10 @@ retrying the same endpoint, so it can Switch directly to the next model or Abort
 
 ## 12. Steps for adding a new vendor / endpoint
 
-1. Implement `protocol.Factory` and `protocol.Session` in `pkg/protocol/<vendor>/`.
+1. Implement `protocol.Factory` and `protocol.Session` in `internal/protocol/<vendor>/`.
 2. Export the factory and add it to `internal/builtin.NewLookup`.
 3. If the protocol the client will use doesn't match the vendor's upstream protocol,
-   and `pkg/translator/<src>_<dst>/` isn't registered yet — add a new translator
+   and `internal/translator/<src>_<dst>/` isn't registered yet — add a new translator
    implementation with an exported `New()` constructor.
 4. Add that translator instance to the explicit list in `internal/builtin.NewLookup`.
 5. Rebuild and restart the gateway process.

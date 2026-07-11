@@ -25,7 +25,6 @@ RUN go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
-COPY pkg ./pkg
 
 # CGO off -> fully static binary; -trimpath strips host paths; -s -w strips the symbol table to shrink size
 ENV CGO_ENABLED=0

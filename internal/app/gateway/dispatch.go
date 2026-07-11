@@ -1,25 +1,25 @@
 // dispatch_wiring.go: composition root that assembles dispatch.Dispatcher.
 //
 // **Zero business logic**—all dispatch port implementations live in
-// pkg/dispatch/adapters (the primitive packages don't depend back on
+// internal/dispatch/adapters (the primitive packages don't depend back on
 // dispatch; composition happens in the adapters layer):
 //
 //	dispatch.CandidateSource ← cmd middleware_adapters.go adaptEndpoints (repo bridge)
 //	dispatch.Selector        ← adapters.PickerAdapter (selector.Scheduler)
 //	dispatch.InvokerFactory  ← adapters.InvokerFactoryAdapter (invoker.Sender)
 //	dispatch.EndpointQuota   ← adapters.EndpointQuotaAdapter (ratelimit.Store + bucket helpers)
-//	Policies                 ← built-in defaults from pkg/dispatch (HeaderAttemptCap / DefaultRetry / ModelChainFallback)
+//	Policies                 ← built-in defaults from internal/dispatch (HeaderAttemptCap / DefaultRetry / ModelChainFallback)
 //
 // cmd only "news up the types per the dependency graph and feeds them into dispatch.New".
 package gateway
 
 import (
-	"github.com/zereker/llm-gateway/pkg/dispatch"
-	"github.com/zereker/llm-gateway/pkg/dispatch/adapters"
-	"github.com/zereker/llm-gateway/pkg/invoker"
-	"github.com/zereker/llm-gateway/pkg/ratelimit"
-	"github.com/zereker/llm-gateway/pkg/selector"
-	"github.com/zereker/llm-gateway/pkg/trace"
+	"github.com/zereker/llm-gateway/internal/dispatch"
+	"github.com/zereker/llm-gateway/internal/dispatch/adapters"
+	"github.com/zereker/llm-gateway/internal/invoker"
+	"github.com/zereker/llm-gateway/internal/ratelimit"
+	"github.com/zereker/llm-gateway/internal/selector"
+	"github.com/zereker/llm-gateway/internal/trace"
 )
 
 // buildDispatcher assembles dispatch.Dispatcher.

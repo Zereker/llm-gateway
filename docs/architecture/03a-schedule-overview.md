@@ -18,7 +18,7 @@ middleware/schedule.go (M7 thin adapter):
   outcome := dispatcher.Dispatch(ctx, w, input)
   outcome → rc.{RoutedModelService, Usage, Error, SchedulingDecision} + HTTP
 
-dispatch.Dispatcher.Dispatch (pkg/dispatch/dispatcher.go):
+dispatch.Dispatcher.Dispatch (internal/dispatch/dispatcher.go):
   state := newState(input, AttemptCap.Resolve(input))
   for {
       action := step(ctx, w, state)
@@ -33,12 +33,12 @@ dispatch.Dispatcher.Dispatch (pkg/dispatch/dispatcher.go):
 dispatch.Dispatcher.step (a single attempt):
   if Exhausted → Abort(NoEndpoint, 503)
   candidates := CandidateSource.ListForModel(model, group)
-  eligible   := filterEligible(candidates, env, handlers)   # pkg/dispatch/eligibility.go
+  eligible   := filterEligible(candidates, env, handlers)   # internal/dispatch/eligibility.go
   if no eligible → FallbackPolicy.OnExhausted(state)
-  ep := Selector.Pick(eligible, query)                       # pkg/selector → adapters.SelectorAdapter
+  ep := Selector.Pick(eligible, query)                       # internal/selector → adapters.SelectorAdapter
   if denied := EndpointQuota.Reserve(ep) → Verdict + RetryPolicy.Decide
   handler := state.Handlers().Get(ep, srcProto)              # protocol.Lookup
-  res := InvokerFactory.For(ep, handler, env).Invoke(ctx)    # pkg/invoker → adapters.InvokerFactoryAdapter
+  res := InvokerFactory.For(ep, handler, env).Invoke(ctx)    # internal/invoker → adapters.InvokerFactoryAdapter
   Selector.Report(ep, verdict)
   switch RetryPolicy.Decide(verdict):
   case Stream:   res.StreamTo(w) + EndpointQuota.ChargeUsage  # deducted after TPM
@@ -49,24 +49,24 @@ Three-layer division of responsibility:
 
 | Who | Responsible for |
 |----|------|
-| `pkg/middleware/schedule.go` | RC ↔ dispatch.Input/Outcome mapping; content log enrichment; metric `scheduling_duration_seconds`; **does not make scheduling decisions** |
-| `dispatch.Dispatcher` (`pkg/dispatch`) | The **sole** owner of scheduling execution timing: candidates → eligibility filter → selection → pre-deduction → invocation → reporting → retry/fallback → post-deduction |
-| `pkg/selector` | Runs the filter chain → scorer → picker over a batch of candidates, outputs 1 endpoint. **Stateless**, unaware of protocol / handler / repo / fallback |
-| `pkg/invoker` | Takes a Handler and runs `PrepareCall + HTTP Do + response forward + error classification` (does not do protocol lookup — dispatch has already obtained the Handler via `protocol.Lookup`) |
-| `pkg/protocol` | facade: Handler = Factory + Translator + Quirks; consumers only see Handler / Lookup |
-| `pkg/ratelimit` | bucket / store primitives; `dispatch/adapters.EndpointQuotaAdapter` wires it into `dispatch.EndpointQuota` |
-| `pkg/dispatch/adapters/` | Bridges the 4 primitive packages above into dispatch's 4 ports (CandidateSource / Selector / InvokerFactory / EndpointQuota), decoupling composition logic from the primitives |
+| `internal/middleware/schedule.go` | RC ↔ dispatch.Input/Outcome mapping; content log enrichment; metric `scheduling_duration_seconds`; **does not make scheduling decisions** |
+| `dispatch.Dispatcher` (`internal/dispatch`) | The **sole** owner of scheduling execution timing: candidates → eligibility filter → selection → pre-deduction → invocation → reporting → retry/fallback → post-deduction |
+| `internal/selector` | Runs the filter chain → scorer → picker over a batch of candidates, outputs 1 endpoint. **Stateless**, unaware of protocol / handler / repo / fallback |
+| `internal/invoker` | Takes a Handler and runs `PrepareCall + HTTP Do + response forward + error classification` (does not do protocol lookup — dispatch has already obtained the Handler via `protocol.Lookup`) |
+| `internal/protocol` | facade: Handler = Factory + Translator + Quirks; consumers only see Handler / Lookup |
+| `internal/ratelimit` | bucket / store primitives; `dispatch/adapters.EndpointQuotaAdapter` wires it into `dispatch.EndpointQuota` |
+| `internal/dispatch/adapters/` | Bridges the 4 primitive packages above into dispatch's 4 ports (CandidateSource / Selector / InvokerFactory / EndpointQuota), decoupling composition logic from the primitives |
 
-`pkg/selector` does not hold a repo, and doesn't know fallback models exist. Cross-model fallback is
+`internal/selector` does not hold a repo, and doesn't know fallback models exist. Cross-model fallback is
 business semantics, and stays in the outer loop of `dispatch.Dispatcher` (FallbackPolicy triggers the Switch action).
 
 ## 1. Overview of package / file responsibilities
 
 ```
-pkg/middleware/schedule.go     M7 thin adapter (gin.HandlerFunc Schedule()):
+internal/middleware/schedule.go     M7 thin adapter (gin.HandlerFunc Schedule()):
                                RC → dispatch.Input → dispatcher.Dispatch → RC
 
-pkg/dispatch/                  owner of scheduling execution timing
+internal/dispatch/                  owner of scheduling execution timing
     dispatcher.go              Dispatcher.Dispatch / step main loop
     eligibility.go             pure function filterEligible: takes candidates + envelope + protocol.Lookup
                                outputs eligible endpoints; semantics in §2
@@ -81,7 +81,7 @@ pkg/dispatch/                  owner of scheduling execution timing
         invoker.go             invoker.Sender   → dispatch.InvokerFactory
         quota.go               ratelimit.Store  → dispatch.EndpointQuota
 
-pkg/selector/                  selection primitives, **unaware** of protocol / handler / repo
+internal/selector/                  selection primitives, **unaware** of protocol / handler / repo
     types.go                   Candidate / Request / Result / ErrorClass / Scheduler interfaces
     scheduler.go               defaultScheduler: Pick (filter→scorer→picker) + Report
     filter.go                  Filter interface + runChain
@@ -91,9 +91,9 @@ pkg/selector/                  selection primitives, **unaware** of protocol / h
     weighted.go                Picker interface + WeightedRandomPicker
     scorer.go                  Scorer + EndpointStatsStore + DefaultScorer
 
-pkg/invoker/                   HTTP invocation + forward stream, does not do protocol lookup
-pkg/ratelimit/                 Store / Bucket / endpoint bucket helpers
-pkg/protocol/                  Handler facade + Factory/Session + quirks
+internal/invoker/                   HTTP invocation + forward stream, does not do protocol lookup
+internal/ratelimit/                 Store / Bucket / endpoint bucket helpers
+internal/protocol/                  Handler facade + Factory/Session + quirks
 
 internal/app/gateway/          composition root
     app.go                     wires primitives together into dispatch.Dispatcher
@@ -106,10 +106,10 @@ internal/app/gateway/          composition root
 
 | Layer | Who | Semantics | Consequence of failure |
 |----|----|------|----------|
-| **Eligibility** | `pkg/dispatch/eligibility.go` (an internal helper of dispatch, not a standalone package) | Can it handle this at all: protocol.Lookup can't find a Handler / modality unsupported | Excluded, **does not enter cooldown, not counted as an upstream failure** |
-| **Hard Filter** | `pkg/selector.Filter` (cooldown / limit_read / busy / prefix_cache) | Should it be picked right now: in cooldown / quota exhausted / too busy / prefix affinity | Not chosen this Pick; does not directly terminate the request |
-| **Soft Scoring** | `pkg/selector.Scorer` | Who is preferred: adjusts `EffectiveWeight` based on success/latency/cost | Only adjusts weight, **never eliminates** a candidate |
-| **Selector** | `pkg/selector.Selector` (default weighted_random) | Picks 1 from the filtered candidates by `EffectiveWeight` | All-zero → nil → inner break |
+| **Eligibility** | `internal/dispatch/eligibility.go` (an internal helper of dispatch, not a standalone package) | Can it handle this at all: protocol.Lookup can't find a Handler / modality unsupported | Excluded, **does not enter cooldown, not counted as an upstream failure** |
+| **Hard Filter** | `internal/selector.Filter` (cooldown / limit_read / busy / prefix_cache) | Should it be picked right now: in cooldown / quota exhausted / too busy / prefix affinity | Not chosen this Pick; does not directly terminate the request |
+| **Soft Scoring** | `internal/selector.Scorer` | Who is preferred: adjusts `EffectiveWeight` based on success/latency/cost | Only adjusts weight, **never eliminates** a candidate |
+| **Selector** | `internal/selector.Selector` (default weighted_random) | Picks 1 from the filtered candidates by `EffectiveWeight` | All-zero → nil → inner break |
 
 **Core principle** (03 §3): capability issues (missing vendor Factory / translator / ep.Protocol unknown)
 must be excluded at the Eligibility stage — they must never reach `Scheduler.Report`, otherwise
@@ -342,7 +342,7 @@ sender := invoker.New(senderOpts...)
 
 dispatcher := buildDispatcher(
     adaptEndpoints(endpointReader),  // CandidateSource bridge for repo.EndpointReader
-    sched,                            // Selector bridge (pkg/dispatch/adapters/SelectorAdapter)
+    sched,                            // Selector bridge (internal/dispatch/adapters/SelectorAdapter)
     sender,                           // InvokerFactory bridge (adapters/InvokerFactoryAdapter)
     rateStore,                        // EndpointQuota bridge (adapters/EndpointQuotaAdapter; ratelimit.Store)
     cfg.Selector.MaxAttempts,         // AttemptCap.Default
@@ -407,8 +407,8 @@ In cooldown durations, 0 = no cooldown; a deployer setting invalid / unknown to 
 1. Cross-model fallback can only come from a client header, never implicitly demoted by the gateway's default path.
 2. When adding new endpoint Protocol / Capabilities.Modalities config, extend eligibility first, and only then let the request fall into retry/cooldown.
 3. To add a new Filter: implement `selector.Filter` → register the name in `cmd/gateway/buildSchedulerFilters` → add a yaml field.
-4. To add a new Scorer / Stats implementation: the interface is in `pkg/selector/scorer.go`; when cross-replica consistency is needed, swap InMemoryStatsStore for a Redis implementation, interface unchanged.
-5. `pkg/selector` never holds a repo dependency; anything that needs to query SQL belongs in a dispatch port adapter or cmd wiring.
+4. To add a new Scorer / Stats implementation: the interface is in `internal/selector/scorer.go`; when cross-replica consistency is needed, swap InMemoryStatsStore for a Redis implementation, interface unchanged.
+5. `internal/selector` never holds a repo dependency; anything that needs to query SQL belongs in a dispatch port adapter or cmd wiring.
 6. Runtime Scoring can only adjust `EffectiveWeight`; it cannot eliminate candidates, let alone introduce a per-request state machine.
 7. **Don't push responsibilities back into middleware**: candidate fetching, eligibility, retry/fallback decisions, quota
    reserve/charge all live in `dispatch.Dispatcher`. The M7 middleware is always a thin adapter,
@@ -419,14 +419,14 @@ In cooldown durations, 0 = no cooldown; a deployer setting invalid / unknown to 
 The fastest onboarding path is to read in this order:
 
 1. [03-endpoint-scheduling.md](./03-endpoint-scheduling.md) §1 (flow diagram) → §3 (eligibility) → §6 (error classification)
-2. `pkg/middleware/schedule.go` `Schedule()` (thin adapter, ~165 lines, look at the RC ↔ Input/Outcome mapping)
-3. `pkg/dispatch/dispatcher.go` `Dispatch` / `step` (main scheduling-timing loop, ~250 lines)
-4. `pkg/dispatch/ports.go` (4 port interfaces ~150 lines; understand dispatch's seams)
-5. `pkg/dispatch/eligibility.go` (pure function ~70 lines)
-6. `pkg/dispatch/adapters/` (3 files ~200 lines: bridging selector / invoker / ratelimit into ports)
-7. `pkg/selector/types.go` (Candidate / Request / Result and other data structures)
-8. `pkg/selector/scheduler.go` `defaultScheduler.Pick / Report` (~50 lines of substantive logic)
+2. `internal/middleware/schedule.go` `Schedule()` (thin adapter, ~165 lines, look at the RC ↔ Input/Outcome mapping)
+3. `internal/dispatch/dispatcher.go` `Dispatch` / `step` (main scheduling-timing loop, ~250 lines)
+4. `internal/dispatch/ports.go` (4 port interfaces ~150 lines; understand dispatch's seams)
+5. `internal/dispatch/eligibility.go` (pure function ~70 lines)
+6. `internal/dispatch/adapters/` (3 files ~200 lines: bridging selector / invoker / ratelimit into ports)
+7. `internal/selector/types.go` (Candidate / Request / Result and other data structures)
+8. `internal/selector/scheduler.go` `defaultScheduler.Pick / Report` (~50 lines of substantive logic)
 9. Each Filter (cooldown / limit_filter / busy / prefix_cache), as needed
-10. To understand runtime scoring, go back to `pkg/selector/scorer.go`
+10. To understand runtime scoring, go back to `internal/selector/scorer.go`
 
 After this pass, all the control flow + data flow of the schedule module will be in your head.

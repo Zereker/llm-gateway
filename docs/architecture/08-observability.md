@@ -78,7 +78,7 @@ Metric names use the `llm_gateway_` prefix. Histogram buckets are implementation
 | `llm_gateway_repo_cache_total` | counter | `table`, `result` | repo TTL LRU hit stats; `result` ∈ `hit\|miss\|error`; `table` ∈ `api_keys\|model_services\|endpoints_list\|endpoints_id\|quota_policies\|subscriptions` |
 | `llm_gateway_repo_sql_load_total` | counter | `table`, `result` | repo direct SQL query stats; `result` ∈ `ok\|error\|not_found` |
 
-repo cache metrics implementation: `pkg/repo/cache_metrics.go` (Metrics interface) + `internal/app/gateway/repo_metrics.go` (Prom counter adapter).
+repo cache metrics implementation: `internal/repo/cache_metrics.go` (Metrics interface) + `internal/app/gateway/repo_metrics.go` (Prom counter adapter).
 
 When metrics are used for Runtime Scoring, the Scheduler does not read Prometheus directly; it should read the EMA / sliding-window summary in `EndpointStatsStore`. Metrics is the observability layer; `EndpointStatsStore` is internal scheduler state.
 
@@ -143,9 +143,9 @@ gateway.request                     (M1, span name = "POST /v1/chat/completions"
   catalog.resolve                    (M5)
   moderation.check                   (M8, optional)
   ratelimit.reserve                  (M6 pre-side)
-  dispatch.request                   (M7, pkg/dispatch)
+  dispatch.request                   (M7, internal/dispatch)
     dispatch.attempt                 (per attempt; attrs: model / endpoint / verdict)
-      upstream.call                  (pkg/invoker)
+      upstream.call                  (internal/invoker)
       usage.extract                  (inside translator)
     dispatch.fallback (event)        (triggered by Switch action)
   ratelimit.charge_tpm               (M6 post-side, runs after c.Next())
