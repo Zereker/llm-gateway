@@ -487,15 +487,24 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 	return body, nil
 }
 
+// mapFinishReason converts Gemini's finishReason to an OpenAI finish_reason.
+// Gemini's enum (Candidate.FinishReason) has more members than OpenAI's five;
+// every documented value is mapped explicitly so a new one added upstream
+// fails a completeness test instead of silently collapsing into "stop".
 func mapFinishReason(g string) string {
 	switch strings.ToUpper(g) {
-	case "STOP":
+	case "STOP", "":
 		return "stop"
 	case "MAX_TOKENS":
 		return "length"
-	case "SAFETY", "RECITATION":
+	case "SAFETY", "RECITATION", "LANGUAGE", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
 		return "content_filter"
-	case "":
+	case "MALFORMED_FUNCTION_CALL":
+		// The model attempted a tool call but produced invalid arguments; route
+		// through the tool_calls path so the client inspects the call instead of
+		// treating it as a clean stop.
+		return "tool_calls"
+	case "OTHER", "FINISH_REASON_UNSPECIFIED":
 		return "stop"
 	default:
 		return "stop"

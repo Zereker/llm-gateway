@@ -6,6 +6,33 @@ import (
 	"testing"
 )
 
+// TestMapStopReason_Completeness covers every documented Anthropic stop_reason
+// value (https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)
+// so a refusal or a mid-turn pause can't silently collapse into a generic
+// "stop" that looks like a normal completion.
+func TestMapStopReason_Completeness(t *testing.T) {
+	openAIValidFinishReasons := map[string]bool{
+		"stop": true, "length": true, "tool_calls": true, "content_filter": true,
+	}
+	for in, want := range map[string]string{
+		"end_turn":      "stop",
+		"stop_sequence": "stop",
+		"max_tokens":    "length",
+		"tool_use":      "tool_calls",
+		"refusal":       "content_filter",
+		"pause_turn":    "stop",
+		"":              "stop",
+	} {
+		got := mapStopReason(in)
+		if got != want {
+			t.Errorf("mapStopReason(%q) = %q, want %q", in, got, want)
+		}
+		if !openAIValidFinishReasons[got] {
+			t.Errorf("mapStopReason(%q) = %q, not a valid OpenAI finish_reason", in, got)
+		}
+	}
+}
+
 // OpenAI vision / multi-part requests send content as an array of parts.
 // translateRequest must accept it, not reject it with a parse error.
 func TestTranslateRequest_ArrayContent(t *testing.T) {

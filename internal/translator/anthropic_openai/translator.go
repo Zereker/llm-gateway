@@ -850,6 +850,8 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 }
 
 // mapFinishReason converts an OpenAI finish_reason to an Anthropic stop_reason.
+// Every documented OpenAI value (stop/length/tool_calls/content_filter, plus
+// the deprecated function_call) is mapped explicitly.
 func mapFinishReason(r string) string {
 	switch r {
 	case "stop", "":
@@ -858,7 +860,10 @@ func mapFinishReason(r string) string {
 		return "max_tokens"
 	case "content_filter":
 		return "stop_sequence"
-	case "tool_calls":
+	case "tool_calls", "function_call":
+		// function_call is the deprecated single-function precursor to
+		// tool_calls; both signal the same "model wants to call a function"
+		// condition, so route both to tool_use.
 		return "tool_use"
 	default:
 		return "end_turn"

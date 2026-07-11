@@ -310,17 +310,25 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	return body, usage
 }
 
-// mapFinishReason maps Cohere's uppercase enum to OpenAI's.
+// mapFinishReason maps Cohere's uppercase enum to OpenAI's. Every documented
+// Cohere v2 value (COMPLETE/STOP_SEQUENCE/MAX_TOKENS/TOOL_CALL/ERROR/TIMEOUT)
+// is mapped explicitly — the previous strings.ToLower(c) fallback produced
+// "tool_call" (singular) for Cohere's TOOL_CALL, which is not a valid OpenAI
+// finish_reason ("tool_calls") and broke client enum matching.
 func mapFinishReason(c string) string {
 	switch c {
-	case "COMPLETE", "STOP_SEQUENCE":
+	case "COMPLETE", "STOP_SEQUENCE", "":
 		return "stop"
 	case "MAX_TOKENS":
 		return "length"
-	case "":
+	case "TOOL_CALL":
+		return "tool_calls"
+	case "ERROR", "TIMEOUT":
+		// OpenAI's enum has no error/timeout member; "stop" is the closest safe
+		// default (callers should also check the HTTP status / error body).
 		return "stop"
 	default:
-		return strings.ToLower(c)
+		return "stop"
 	}
 }
 

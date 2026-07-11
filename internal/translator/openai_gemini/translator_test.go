@@ -7,6 +7,38 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// TestMapFinishReason_Completeness covers every documented Gemini
+// Candidate.FinishReason value so a value the mapping doesn't know about
+// can't silently collapse into "stop" and hide a safety block or a malformed
+// tool call behind a reply that looks like a clean completion.
+func TestMapFinishReason_Completeness(t *testing.T) {
+	openAIValidFinishReasons := map[string]bool{
+		"stop": true, "length": true, "tool_calls": true, "content_filter": true,
+	}
+	for in, want := range map[string]string{
+		"STOP":                      "stop",
+		"MAX_TOKENS":                "length",
+		"SAFETY":                    "content_filter",
+		"RECITATION":                "content_filter",
+		"LANGUAGE":                  "content_filter",
+		"BLOCKLIST":                 "content_filter",
+		"PROHIBITED_CONTENT":        "content_filter",
+		"SPII":                      "content_filter",
+		"MALFORMED_FUNCTION_CALL":   "tool_calls",
+		"OTHER":                     "stop",
+		"FINISH_REASON_UNSPECIFIED": "stop",
+		"":                          "stop",
+	} {
+		got := mapFinishReason(in)
+		if got != want {
+			t.Errorf("mapFinishReason(%q) = %q, want %q", in, got, want)
+		}
+		if !openAIValidFinishReasons[got] {
+			t.Errorf("mapFinishReason(%q) = %q, not a valid OpenAI finish_reason", in, got)
+		}
+	}
+}
+
 // A success response whose body happens to contain "error" should not be misdetected as
 // an error (the old byte-scanning bug); only a genuine error body should be.
 func TestIsGeminiError(t *testing.T) {
