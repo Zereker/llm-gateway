@@ -2,6 +2,7 @@ package openai_cohere
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -31,6 +32,86 @@ func TestTranslateRequest(t *testing.T) {
 	}
 	if r.Get("messages.0.role").String() != "system" || r.Get("messages.1.content").String() != "hi" {
 		t.Errorf("messages mapping wrong: %s", out)
+	}
+}
+
+// TestTranslateRequest_ToolsPassthrough: Cohere v2's tool shape is identical
+// to OpenAI's, so tools should pass through field-for-field.
+func TestTranslateRequest_ToolsPassthrough(t *testing.T) {
+	in := `{"model":"m","tools":[{"type":"function","function":{"name":"get_weather","description":"gets weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],
+	        "messages":[{"role":"user","content":"weather in SF?"}]}`
+	out, err := translateRequest([]byte(in))
+	if err != nil {
+		t.Fatalf("translateRequest: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	if r.Get("tools.0.function.name").String() != "get_weather" {
+		t.Errorf("tools not passed through: %s", out)
+	}
+	if r.Get("tools.0.function.parameters.properties.city.type").String() != "string" {
+		t.Errorf("tool parameters schema lost: %s", out)
+	}
+}
+
+// TestTranslateRequest_ToolChoice covers the lossy OpenAI -> Cohere v2
+// tool_choice mapping: Cohere only has REQUIRED/NONE, no "auto" and no way to
+// force one specific named tool.
+func TestTranslateRequest_ToolChoice(t *testing.T) {
+	cases := []struct {
+		name   string
+		choice string
+		want   string // "" means tool_choice omitted
+	}{
+		{"required", `"required"`, `"REQUIRED"`},
+		{"none", `"none"`, `"NONE"`},
+		{"auto_omitted", `"auto"`, ``},
+		{"named_function_forces_required", `{"type":"function","function":{"name":"foo"}}`, `"REQUIRED"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"m","tool_choice":` + tc.choice + `,"messages":[{"role":"user","content":"hi"}]}`)
+			out, err := translateRequest(body)
+			if err != nil {
+				t.Fatalf("translateRequest: %v", err)
+			}
+			got := gjson.GetBytes(out, "tool_choice")
+			if tc.want == "" {
+				if got.Exists() {
+					t.Errorf("want tool_choice omitted, got %s", got.Raw)
+				}
+				return
+			}
+			if got.Raw != tc.want {
+				t.Errorf("tool_choice = %s, want %s", got.Raw, tc.want)
+			}
+		})
+	}
+}
+
+// TestTranslateRequest_AssistantToolCallsHistory: a prior assistant turn that
+// called a tool must translate to Cohere's {tool_calls:[...], content omitted
+// when there's no accompanying text} shape.
+func TestTranslateRequest_AssistantToolCallsHistory(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"weather in SF?"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"sunny"}
+	]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	if r.Get("messages.1.content").Exists() {
+		t.Errorf("assistant content should be omitted (tool_calls only), got %s", r.Get("messages.1.content").Raw)
+	}
+	if r.Get("messages.1.tool_calls.0.id").String() != "call_1" ||
+		r.Get("messages.1.tool_calls.0.function.name").String() != "get_weather" ||
+		r.Get("messages.1.tool_calls.0.function.arguments").String() != `{"city":"SF"}` {
+		t.Errorf("assistant tool_calls mapping wrong: %s", out)
+	}
+	if r.Get("messages.2.role").String() != "tool" || r.Get("messages.2.tool_call_id").String() != "call_1" || r.Get("messages.2.content").String() != "sunny" {
+		t.Errorf("tool result message mapping wrong (missing tool_call_id?): %s", out)
 	}
 }
 
@@ -113,6 +194,102 @@ func TestTranslateResponse(t *testing.T) {
 	}
 	if !gjson.GetBytes(usage.Raw, "billed_units").Exists() {
 		t.Errorf("billed_units dropped from Raw: %s", usage.Raw)
+	}
+}
+
+// TestTranslateResponse_ToolCalls: message.tool_calls -> OpenAI tool_calls,
+// content:null (no accompanying text), finish_reason:tool_calls.
+func TestTranslateResponse_ToolCalls(t *testing.T) {
+	cohere := `{"id":"c-123","finish_reason":"TOOL_CALL",
+	           "message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},
+	           "usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}`
+	body, _ := translateResponse([]byte(cohere))
+	r := gjson.ParseBytes(body)
+	if r.Get("choices.0.finish_reason").String() != "tool_calls" {
+		t.Errorf("finish_reason = %q, want tool_calls", r.Get("choices.0.finish_reason").String())
+	}
+	if !r.Get("choices.0.message.content").IsObject() && r.Get("choices.0.message.content").Type != gjson.Null {
+		t.Errorf("content should be null, got %s", r.Get("choices.0.message.content").Raw)
+	}
+	tc := r.Get("choices.0.message.tool_calls.0")
+	if tc.Get("id").String() != "call_1" || tc.Get("type").String() != "function" ||
+		tc.Get("function.name").String() != "get_weather" || tc.Get("function.arguments").String() != `{"city":"SF"}` {
+		t.Errorf("tool_calls mapping wrong: %s", body)
+	}
+}
+
+// TestTranslateResponse_ToolCallsWithText: text alongside tool_calls must
+// survive as content (not forced to null).
+func TestTranslateResponse_ToolCallsWithText(t *testing.T) {
+	cohere := `{"id":"c-123","finish_reason":"TOOL_CALL",
+	           "message":{"role":"assistant","content":[{"type":"text","text":"let me check"}],
+	                      "tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+	           "usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}`
+	body, _ := translateResponse([]byte(cohere))
+	r := gjson.ParseBytes(body)
+	if r.Get("choices.0.message.content").String() != "let me check" {
+		t.Errorf("content = %q, want %q", r.Get("choices.0.message.content").String(), "let me check")
+	}
+	if r.Get("choices.0.message.tool_calls.0.id").String() != "call_1" {
+		t.Errorf("tool_calls missing: %s", body)
+	}
+}
+
+// TestCohereStreamTranslate_ToolCalls: tool-call-start -> tool-call-delta
+// (arguments streamed incrementally) -> tool-call-end must assemble into
+// OpenAI's streaming tool_calls delta chunk shape, indexed for parallel calls.
+func TestCohereStreamTranslate_ToolCalls(t *testing.T) {
+	h := &responseHandler{}
+	sse := `data: {"type":"message-start"}
+
+data: {"type":"tool-plan-delta","delta":{"message":{"tool_plan":"I should check the weather"}}}
+
+data: {"type":"tool-call-start","index":0,"delta":{"message":{"tool_calls":{"id":"call_1","type":"function","function":{"name":"get_weather"}}}}}
+
+data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"city\":"}}}}}
+
+data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"\"SF\"}"}}}}}
+
+data: {"type":"tool-call-end","index":0}
+
+data: {"type":"message-end","delta":{"finish_reason":"TOOL_CALL","usage":{"tokens":{"input_tokens":5,"output_tokens":8}}}}
+
+`
+	out, _ := h.Feed([]byte(sse))
+	fin, usage, _ := h.Flush()
+	all := string(out) + string(fin)
+
+	var id, name string
+	var argsBuf strings.Builder
+	for _, line := range strings.Split(all, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		payload := line[len("data: "):]
+		tc := gjson.Get(payload, "choices.0.delta.tool_calls.0")
+		if !tc.Exists() {
+			continue
+		}
+		if v := tc.Get("id").String(); v != "" {
+			id = v
+		}
+		if v := tc.Get("function.name").String(); v != "" {
+			name = v
+		}
+		argsBuf.WriteString(tc.Get("function.arguments").String())
+	}
+	if id != "call_1" || name != "get_weather" {
+		t.Errorf("id=%q name=%q, want call_1/get_weather", id, name)
+	}
+	if argsBuf.String() != `{"city":"SF"}` {
+		t.Errorf("assembled arguments = %q, want %q", argsBuf.String(), `{"city":"SF"}`)
+	}
+	if !strings.Contains(all, `"finish_reason":"tool_calls"`) {
+		t.Errorf("missing finish_reason tool_calls: %s", all)
+	}
+	if usage == nil || usage.Total != 13 {
+		t.Errorf("usage = %+v, want total 13", usage)
 	}
 }
 
