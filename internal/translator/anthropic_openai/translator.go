@@ -10,9 +10,8 @@
 //
 // **Limitations**:
 //   - Only chat is supported (system + user/assistant messages).
-//   - Multi-block content arrays are accepted; text and tool blocks (tool_use /
-//     tool_result) are carried across, but non-text multimodal blocks (images)
-//     are still dropped.
+//   - Multi-block content arrays are accepted; text, tool blocks (tool_use /
+//     tool_result), and image blocks are all carried across.
 //   - **In streaming mode, message_start.usage.input_tokens is always 0** — OpenAI only sends the
 //     usage chunk at the end, but the Anthropic protocol requires message_start to report
 //     input_tokens immediately. The workaround is to send 0 first; the real input_tokens is
@@ -44,8 +43,6 @@ func (anthropicOpenAI) Source() domain.Protocol { return domain.ProtoAnthropic }
 func (anthropicOpenAI) Target() domain.Protocol { return domain.ProtoOpenAI }
 
 func (anthropicOpenAI) TranslateRequest(srcBody []byte) ([]byte, error) {
-	// Tools are now translated; only non-text multimodal content is still dropped.
-	translator.ReportLossyRequest(domain.ProtoAnthropic, domain.ProtoOpenAI, srcBody, "multimodal")
 	return translateRequest(srcBody)
 }
 
@@ -428,13 +425,24 @@ type anthropicTool struct {
 // It is deliberately a union of the fields used by every block type we handle:
 // text, tool_use (assistant), and tool_result (user).
 type anthropicBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`          // tool_use
-	Name      string          `json:"name,omitempty"`        // tool_use
-	Input     json.RawMessage `json:"input,omitempty"`       // tool_use
-	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result
-	Content   json.RawMessage `json:"content,omitempty"`     // tool_result (string or []block)
+	Type      string                `json:"type"`
+	Text      string                `json:"text,omitempty"`
+	ID        string                `json:"id,omitempty"`          // tool_use
+	Name      string                `json:"name,omitempty"`        // tool_use
+	Input     json.RawMessage       `json:"input,omitempty"`       // tool_use
+	ToolUseID string                `json:"tool_use_id,omitempty"` // tool_result
+	Content   json.RawMessage       `json:"content,omitempty"`     // tool_result (string or []block)
+	Source    *anthropicImageSource `json:"source,omitempty"`      // image
+}
+
+// anthropicImageSource is an Anthropic image block's source: either
+// base64-inline (media_type + data) or a direct URL (Anthropic fetches it
+// itself — no need for the gateway to proxy the bytes).
+type anthropicImageSource struct {
+	Type      string `json:"type"` // "base64" or "url"
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 // contentToString normalizes a message content / system field that may be a
@@ -485,9 +493,12 @@ type openAIRequest struct {
 // openAIMessage is shared by request building and response parsing. Content is a
 // pointer so a tool-calling assistant message can serialize `content:null`, while
 // a normal message still serializes its string.
+// Content is `any` (not *string) so a user message with an image block can
+// marshal as an OpenAI content-part array instead of being forced into a
+// plain string, which would have to drop the image entirely.
 type openAIMessage struct {
 	Role       string           `json:"role"`
-	Content    *string          `json:"content"`
+	Content    any              `json:"content"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
@@ -585,7 +596,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	if sys := contentToString(in.System); sys != "" {
 		out.Messages = append(out.Messages, openAIMessage{
 			Role:    "system",
-			Content: strPtr(sys),
+			Content: sys,
 		})
 	}
 	for _, m := range in.Messages {
@@ -707,7 +718,7 @@ func anthropicDisablesParallelToolUse(raw json.RawMessage) bool {
 func translateAssistantMessage(raw json.RawMessage) openAIMessage {
 	blocks, ok := parseBlocks(raw)
 	if !ok {
-		return openAIMessage{Role: "assistant", Content: strPtr(contentToString(raw))}
+		return openAIMessage{Role: "assistant", Content: contentToString(raw)}
 	}
 	var text strings.Builder
 	var toolCalls []openAIToolCall
@@ -726,7 +737,7 @@ func translateAssistantMessage(raw json.RawMessage) openAIMessage {
 			})
 		}
 	}
-	msg := openAIMessage{Role: "assistant", Content: strPtr(text.String())}
+	msg := openAIMessage{Role: "assistant", Content: text.String()}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 	}
@@ -737,20 +748,41 @@ func translateAssistantMessage(raw json.RawMessage) openAIMessage {
 // messages. tool_result blocks each become a {role:"tool"} message (emitted
 // first); any accompanying text blocks are emitted as a trailing {role:"user"}
 // message. A plain-string or text-only message stays a single user message.
+// image blocks (with no tool_result) become an OpenAI content-part array
+// (text + image_url) instead of collapsing to a string, which would drop
+// the image entirely.
 func translateUserMessage(raw json.RawMessage) []openAIMessage {
 	blocks, ok := parseBlocks(raw)
 	if !ok {
-		return []openAIMessage{{Role: "user", Content: strPtr(contentToString(raw))}}
+		return []openAIMessage{{Role: "user", Content: contentToString(raw)}}
 	}
-	hasToolResult := false
+	hasToolResult, hasImage := false, false
 	for _, b := range blocks {
-		if b.Type == "tool_result" {
+		switch b.Type {
+		case "tool_result":
 			hasToolResult = true
-			break
+		case "image":
+			hasImage = true
 		}
 	}
+	if hasImage && !hasToolResult {
+		var parts []any
+		for _, b := range blocks {
+			switch b.Type {
+			case "image":
+				if b.Source != nil {
+					parts = append(parts, imageURLPartFromSource(*b.Source))
+				}
+			case "text", "":
+				if b.Text != "" {
+					parts = append(parts, map[string]any{"type": "text", "text": b.Text})
+				}
+			}
+		}
+		return []openAIMessage{{Role: "user", Content: parts}}
+	}
 	if !hasToolResult {
-		return []openAIMessage{{Role: "user", Content: strPtr(contentToString(raw))}}
+		return []openAIMessage{{Role: "user", Content: contentToString(raw)}}
 	}
 
 	var msgs []openAIMessage
@@ -761,16 +793,27 @@ func translateUserMessage(raw json.RawMessage) []openAIMessage {
 			msgs = append(msgs, openAIMessage{
 				Role:       "tool",
 				ToolCallID: b.ToolUseID,
-				Content:    strPtr(contentToString(b.Content)),
+				Content:    contentToString(b.Content),
 			})
 		case "text", "":
 			text.WriteString(b.Text)
 		}
 	}
 	if text.Len() > 0 {
-		msgs = append(msgs, openAIMessage{Role: "user", Content: strPtr(text.String())})
+		msgs = append(msgs, openAIMessage{Role: "user", Content: text.String()})
 	}
 	return msgs
+}
+
+// imageURLPartFromSource converts an Anthropic image block's source into an
+// OpenAI image_url content part: base64 becomes a data: URI (OpenAI has no
+// separate media_type/data fields), url passes straight through.
+func imageURLPartFromSource(src anthropicImageSource) map[string]any {
+	url := src.URL
+	if src.Type == "base64" {
+		url = "data:" + src.MediaType + ";base64," + src.Data
+	}
+	return map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}}
 }
 
 // parseBlocks parses a message content field as an array of content blocks.
@@ -806,8 +849,6 @@ func rawToJSONString(raw json.RawMessage) string {
 	return string(b)
 }
 
-func strPtr(s string) *string { return &s }
-
 // translateResponse converts an OpenAI body to an Anthropic body (non-streaming).
 //
 // The responsibility of returning *domain.Usage to the caller has been moved out (handled via the
@@ -828,8 +869,11 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	var stopReason string
 	if len(in.Choices) > 0 {
 		msg := in.Choices[0].Message
-		if msg.Content != nil && *msg.Content != "" {
-			blocks = append(blocks, anthropicContentBlock{Type: "text", Text: *msg.Content})
+		// OpenAI's own chat-completion response never returns array content —
+		// only a string or null — so a plain type assertion is safe here
+		// (unlike the request-building side, which must also accept arrays).
+		if s, ok := msg.Content.(string); ok && s != "" {
+			blocks = append(blocks, anthropicContentBlock{Type: "text", Text: s})
 		}
 		for _, tc := range msg.ToolCalls {
 			input := json.RawMessage("{}")

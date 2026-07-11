@@ -35,6 +35,83 @@ func TestMapStopReason_Completeness(t *testing.T) {
 
 // OpenAI vision / multi-part requests send content as an array of parts.
 // translateRequest must accept it, not reject it with a parse error.
+// TestTranslateRequest_ImageURL covers OpenAI vision content -> Anthropic
+// image blocks, both the data: URI form (base64 decoded into
+// source.media_type/data) and a plain https URL (passed through as
+// source.type=url). The base64 payload is a real captured image (a tiny PNG)
+// from simonw/llm-anthropic's test_image_prompt.yaml cassette (Apache 2.0),
+// not a synthetic string, so the exact media_type/data split is exercised
+// against real vision-request field shapes.
+func TestTranslateRequest_ImageURL(t *testing.T) {
+	const realPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAKYAAAEaAgMAAADmmcReAAAACVBMVEX///8A/wD+AQASdAFKAAAAR0lEQVR42u3YMREAMAjAwC5d6q8mUYkEVuA+8yvIkVr0oghFURRFURRFURRFUdRCkSRJM7u/CEVRFEVRFEVRFEXRpdQXkcaVBRUPn8UJn6QAAAAASUVORK5CYII="
+
+	t.Run("data_uri", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-x","max_tokens":50,"messages":[
+			{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,` + realPNGBase64 + `"}},
+				{"type":"text","text":"Describe image in three words"}
+			]}
+		]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		var got struct {
+			Messages []struct {
+				Content []struct {
+					Type   string `json:"type"`
+					Text   string `json:"text"`
+					Source struct {
+						Type      string `json:"type"`
+						MediaType string `json:"media_type"`
+						Data      string `json:"data"`
+					} `json:"source"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("output not valid Anthropic request: %v\n%s", err, out)
+		}
+		if len(got.Messages) != 1 || len(got.Messages[0].Content) != 2 {
+			t.Fatalf("want 1 message with 2 blocks, got: %s", out)
+		}
+		img := got.Messages[0].Content[0]
+		if img.Type != "image" || img.Source.Type != "base64" || img.Source.MediaType != "image/png" || img.Source.Data != realPNGBase64 {
+			t.Errorf("image block wrong: %+v", img)
+		}
+		if txt := got.Messages[0].Content[1]; txt.Type != "text" || txt.Text != "Describe image in three words" {
+			t.Errorf("text block wrong: %+v", txt)
+		}
+	})
+
+	t.Run("https_url_passthrough", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-x","max_tokens":50,"messages":[
+			{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}]}
+		]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		var got struct {
+			Messages []struct {
+				Content []struct {
+					Source struct {
+						Type string `json:"type"`
+						URL  string `json:"url"`
+					} `json:"source"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("output not valid Anthropic request: %v\n%s", err, out)
+		}
+		src := got.Messages[0].Content[0].Source
+		if src.Type != "url" || src.URL != "https://example.com/cat.png" {
+			t.Errorf("url image block wrong: %+v", src)
+		}
+	})
+}
+
 func TestTranslateRequest_ArrayContent(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-x",
@@ -325,6 +402,90 @@ func mustCanon(s string) string {
 }
 
 // TestTranslateResponse_TextAndTool: text + tool_use → content + tool_calls.
+// TestTranslateResponse_Thinking covers the non-streaming response side: a
+// thinking block surfaces as reasoning_content/reasoning_signature, not as
+// visible content, and finish_reason still reflects the real stop_reason.
+func TestTranslateResponse_Thinking(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_1","type":"message","role":"assistant","model":"claude-x","stop_reason":"end_turn",
+		"content":[
+			{"type":"thinking","thinking":"reasoning about pelicans","signature":"sig123"},
+			{"type":"text","text":"Pouch and Pelé"}
+		]
+	}`)
+	out, err := translateResponse(body, "claude-x")
+	if err != nil {
+		t.Fatalf("translateResponse error: %v", err)
+	}
+	var got struct {
+		Choices []struct {
+			Message struct {
+				Content            string `json:"content"`
+				ReasoningContent   string `json:"reasoning_content"`
+				ReasoningSignature string `json:"reasoning_signature"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output not valid OpenAI response: %v\n%s", err, out)
+	}
+	msg := got.Choices[0].Message
+	if msg.Content != "Pouch and Pelé" {
+		t.Errorf("content = %q, thinking text leaked into it?", msg.Content)
+	}
+	if msg.ReasoningContent != "reasoning about pelicans" || msg.ReasoningSignature != "sig123" {
+		t.Errorf("reasoning fields wrong: %+v", msg)
+	}
+	if got.Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", got.Choices[0].FinishReason)
+	}
+}
+
+// TestTranslateRequest_ThinkingRoundTrip is the multi-turn regression this
+// whole feature exists for: a client echoing back an assistant message that
+// carries both reasoning_content/reasoning_signature AND tool_calls (a
+// thinking-enabled tool-use turn) must reconstruct the thinking block FIRST
+// in the Anthropic content array — Anthropic 400s with "Expected thinking or
+// redacted_thinking block, but found tool_use" otherwise.
+func TestTranslateRequest_ThinkingRoundTrip(t *testing.T) {
+	body := []byte(`{"model":"gpt-x","max_tokens":100,"messages":[
+		{"role":"user","content":"weather in SF?"},
+		{"role":"assistant","content":null,"reasoning_content":"I should check the weather","reasoning_signature":"sig-abc",
+		 "tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]}
+	]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	var got struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output not valid Anthropic request: %v\n%s", err, out)
+	}
+	var blocks []struct {
+		Type      string `json:"type"`
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+		Name      string `json:"name"`
+	}
+	if err := json.Unmarshal(got.Messages[1].Content, &blocks); err != nil {
+		t.Fatalf("assistant content not a block array: %v\n%s", err, out)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("want 2 blocks (thinking, tool_use), got %d: %s", len(blocks), out)
+	}
+	if blocks[0].Type != "thinking" || blocks[0].Thinking != "I should check the weather" || blocks[0].Signature != "sig-abc" {
+		t.Errorf("thinking block wrong or not first: %+v", blocks[0])
+	}
+	if blocks[1].Type != "tool_use" || blocks[1].Name != "get_weather" {
+		t.Errorf("tool_use block wrong: %+v", blocks[1])
+	}
+}
+
 func TestTranslateResponse_TextAndTool(t *testing.T) {
 	body := []byte(`{
 		"id":"msg_1","type":"message","role":"assistant","model":"claude-x",
@@ -413,6 +574,95 @@ func TestTranslateResponse_ToolOnly(t *testing.T) {
 
 // TestStreaming_ToolCalls feeds an Anthropic tool SSE sequence and checks the
 // emitted OpenAI stream reassembles the tool call.
+// TestStreaming_Thinking replays real captured extended-thinking SSE events
+// (from simonw/llm-anthropic's test_stream_events_thinking.yaml cassette,
+// Apache 2.0 — also saved sanitized at
+// internal/app/gateway/testdata/fieldmatrix/upstream/messages-anthropic-compat-thinking-stream.sse)
+// through the streaming handler: thinking_delta -> reasoning_content deltas,
+// signature_delta -> a reasoning_signature delta, and the final text block
+// still comes through as ordinary content.
+func TestStreaming_Thinking(t *testing.T) {
+	h := New().(openaiAnthropic).NewResponseHandler()
+	events := []string{
+		`data: {"type":"message_start","message":{"id":"msg_01Eg56TYRnKCEgWtZu2yjR1t","model":"claude-haiku-4-5-20251001"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" two names for a pet pelican."}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EuYDCmMIDBgC-real-signature-blob-truncated-for-test"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"1. Pouch 2. Pel"}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+		`data: {"type":"message_stop"}`,
+	}
+	var out strings.Builder
+	for _, e := range events {
+		b, err := h.Feed([]byte(e + "\n\n"))
+		if err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+		out.Write(b)
+	}
+	if _, _, err := h.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	events2 := parseSSEDataLines(t, out.String())
+	var reasoning strings.Builder
+	var signature string
+	var content strings.Builder
+	for _, ev := range events2 {
+		if rc, ok := ev["reasoning_content"].(string); ok {
+			reasoning.WriteString(rc)
+		}
+		if sig, ok := ev["reasoning_signature"].(string); ok {
+			signature = sig
+		}
+		if c, ok := ev["content"].(string); ok {
+			content.WriteString(c)
+		}
+	}
+	if reasoning.String() != "The user wants two names for a pet pelican." {
+		t.Errorf("reasoning_content = %q", reasoning.String())
+	}
+	if signature != "EuYDCmMIDBgC-real-signature-blob-truncated-for-test" {
+		t.Errorf("reasoning_signature = %q", signature)
+	}
+	if content.String() != "1. Pouch 2. Pel" {
+		t.Errorf("content = %q", content.String())
+	}
+}
+
+// parseSSEDataLines extracts every choices[0].delta object from an OpenAI SSE
+// stream's data: lines (skipping [DONE]).
+func parseSSEDataLines(t *testing.T, sse string) []map[string]any {
+	t.Helper()
+	var deltas []map[string]any
+	for _, line := range strings.Split(sse, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(line[len("data:"):])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var ev struct {
+			Choices []struct {
+				Delta map[string]any `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			t.Fatalf("invalid SSE data JSON %q: %v", payload, err)
+		}
+		if len(ev.Choices) > 0 {
+			deltas = append(deltas, ev.Choices[0].Delta)
+		}
+	}
+	return deltas
+}
+
 func TestStreaming_ToolCalls(t *testing.T) {
 	h := New().(openaiAnthropic).NewResponseHandler()
 	events := []string{

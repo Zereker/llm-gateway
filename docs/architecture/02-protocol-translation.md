@@ -338,26 +338,54 @@ Layer 1 once real demand appears.
 
 Cross-protocol pairs do not all carry every request feature. Current coverage:
 
-| pair | text | tool calling | multimodal (images) |
-|---|---|---|---|
-| `openai_anthropic` | ✅ | ✅ | ❌ |
-| `anthropic_openai` | ✅ | ✅ | ❌ |
-| `openai_gemini` | ✅ | ❌ | ❌ |
-| `openai_cohere` | ✅ | ❌ | ❌ |
+| pair | text | tool calling | multimodal (images) | vendor-specific |
+|---|---|---|---|---|
+| `openai_anthropic` | ✅ | ✅ | ✅ | extended thinking round-trip (via `reasoning_content`/`reasoning_signature`) |
+| `anthropic_openai` | ✅ | ✅ | ✅ | — |
+| `openai_gemini` | ✅ | ✅ | ❌ | `n`/`candidateCount`, `response_format` |
+| `openai_cohere` | ✅ | ✅ | ❌ | citations still dropped (no OpenAI-compatible shape decided) |
 
-**Tool calling** (`openai↔anthropic`): request-side maps `tools` /
-`tool_choice`, assistant tool calls, and tool results between OpenAI's flat
-`tool_calls` + `role:"tool"` model and Anthropic's `tool_use` / `tool_result`
-content blocks; response-side maps both non-streaming and streaming (Anthropic
-`content_block_start` + `input_json_delta` ↔ OpenAI indexed `tool_calls`
-argument deltas), including parallel tool calls.
+**Tool calling**: request-side maps `tools` / `tool_choice`, assistant tool
+calls, and tool results between OpenAI's flat `tool_calls` + `role:"tool"`
+model and each upstream's native shape (Anthropic `tool_use`/`tool_result`
+blocks; Gemini `functionCall`/`functionResponse` parts, where `args` is a
+JSON **object** rather than a string — the one field-shape asymmetry versus
+OpenAI/Anthropic/Cohere; Cohere v2's shape is close to identical to OpenAI's).
+Response-side maps both non-streaming and streaming, including parallel tool
+calls; Gemini's `finish_reason` is overridden to `tool_calls` when the message
+carries them since Gemini's own `finishReason` is typically just `STOP`.
+`tool_choice` fidelity varies: Anthropic and Gemini can force one specific
+named tool (`{"type":"tool",...}` / `allowedFunctionNames`); Cohere v2 only
+has `REQUIRED`/`NONE`, so a named-function choice falls back to `REQUIRED`
+(forces *some* call, not necessarily that one).
+
+**Multimodal (images)**: `openai_anthropic`/`anthropic_openai` convert
+between OpenAI's `image_url` content part (`data:` URI or a plain URL) and
+Anthropic's `image` block (`source.type` = `base64`/`url`). Gemini/Cohere
+still drop non-text content — no vendor-verified field mapping has been done
+for those pairs yet.
+
+**Extended thinking** (`openai_anthropic` only — the other direction has no
+concept of it upstream, and same-protocol `identity/anthropic` already
+passes it through byte-for-byte with no translation needed): an Anthropic
+`thinking` block surfaces on the OpenAI-shaped response as
+`message.reasoning_content` (matching the field name real OpenAI-compatible
+reasoning-model vendors already use) plus `message.reasoning_signature`
+(Anthropic-specific). A client that echoes the assistant message back as
+history on its next turn round-trips both fields, and `buildAssistantMessage`
+reconstructs the Anthropic `thinking` block **first** in that turn's content
+array — Anthropic rejects a `tool_use` block in history without a preceding
+signed thinking block once extended thinking was enabled, so replaying the
+signature verbatim (not regenerating it) is required, not cosmetic.
 
 **Lossy observability**: whatever a pair still drops must not drop silently (the
 same discipline as the pivot-composition warning above). Each pair calls
 `translator.ReportLossyRequest(src, tgt, body, only...)` at the top of
 `TranslateRequest`; `only` restricts the report to the features that pair still
-drops (`openai↔anthropic` pass `"multimodal"` now that tools are carried; the
-text-only pairs pass nothing and report everything). It:
+drops (a pair that has since implemented a feature stops passing its label; a
+pair with nothing left to report simply doesn't call it at all — see
+`anthropic_openai`/`openai_anthropic`, both fully covered as of the table
+above). It:
 
 - increments `llm_gateway_translator_feature_dropped_total{src,tgt,feature}`
   (`feature` = `tools | tool_calls | multimodal`) on every dropping request, and
