@@ -9,15 +9,15 @@ import (
 // parseRetryAfter extracts the upstream's "when will capacity come back" hint
 // from a failed response's headers. Returns 0 when no usable hint exists.
 //
-// Recognized headers, in priority order:
+// Recognized headers, in priority order (first family with a usable value
+// wins — families are never mixed or compared against each other):
 //
 //  1. Retry-After — RFC 9110: either delay-seconds ("30") or an HTTP-date.
 //     Sent by OpenAI/Anthropic/Azure on 429 and by many upstreams on 503.
+//     Present and parseable → returned as-is, short-circuiting the rest.
 //  2. OpenAI style x-ratelimit-reset-requests / x-ratelimit-reset-tokens —
-//     Go-duration-like values ("1s", "6m0s", "12ms"); the smaller wins
-//     (the tighter bucket recovers first but both must clear to admit a call,
-//     so the larger of the two present values is the honest wait — we take
-//     the max across these two, then the min against Retry-After).
+//     Go-duration-like values ("1s", "6m0s", "12ms"); both buckets must
+//     clear to admit a call, so the max of the pair is the honest wait.
 //  3. Anthropic style anthropic-ratelimit-requests-reset /
 //     anthropic-ratelimit-tokens-reset — RFC 3339 timestamps; same max rule.
 //

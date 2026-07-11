@@ -141,6 +141,16 @@ func (s *Sender) Forward(
 		feedErr = fErr
 	}
 
+	// docs/05 §3: a stream that did not complete cleanly publishes its
+	// accumulated usage with Truncated=true — the counts may be partial, or
+	// an upstream-reported total that was never fully delivered. Confidence
+	// is downgraded so downstream billing can decide whether to trust the
+	// event.
+	if feedErr != nil && usage != nil {
+		usage.Truncated = true
+		usage.Confidence = domain.UsageConfidenceApproximate
+	}
+
 	return ForwardResult{Usage: usage, FeedErr: feedErr, TTFTMs: tw.ttftMs}
 }
 

@@ -134,6 +134,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Inp
 // step's stack frame, so it can't be returned across methods); step returns
 // Stream{} purely as a signal for Dispatch to exit the loop.
 func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) Action {
+	// The caller is gone (client disconnect / request deadline): retrying
+	// would burn attempts against nobody, and every canceled Do would come
+	// back as a Transient verdict that wrongly penalizes healthy endpoints.
+	// Bail out before touching any endpoint. (The mid-stream counterpart of
+	// this check is isClientAbort below.)
+	if ctx.Err() != nil {
+		return clientAbort(ctx)
+	}
+
 	if s.Exhausted() {
 		return Abort{
 			Result:   OutcomeNoEndpoint,
@@ -221,6 +230,20 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 	// === Invoker.Invoke (pure HTTP) ===
 	inv := d.invokerFactory.For(ep, handler, s.Envelope())
 	res, ierr := inv.Invoke(ctx)
+	if ctx.Err() != nil {
+		// The request ctx died while invoking: whatever Invoke returned
+		// (usually a canceled Do surfacing as a Transient verdict) was caused
+		// by the client going away, not by the endpoint. Record/Report here
+		// would push a healthy endpoint into cooldown and pollute its stats —
+		// skip both and end the loop. The endpoint quota reserve is kept: the
+		// upstream may or may not have been reached, and the sliding window
+		// self-heals (same rationale as real invoke failures, docs/04 §10).
+		if ierr == nil && res != nil {
+			res.Close()
+		}
+		span.SetAttribute("attempt.exit", "client_abort")
+		return clientAbort(ctx)
+	}
 	if ierr != nil {
 		// "unable to construct the call" is very rare (the current default
 		// InvokerFactory never hits this; it's a path left open for custom
@@ -291,6 +314,29 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		return Stream{}
 	}
 	return action
+}
+
+// clientAbort builds the terminal Action for a request whose ctx was
+// canceled before response headers were written. This is not an endpoint
+// failure: no verdict is recorded or reported, so cooldown and stats stay
+// clean. 499 follows the nginx "client closed request" convention; a
+// deadline (gateway-enforced timeout) maps to 504 instead.
+func clientAbort(ctx context.Context) Abort {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return Abort{
+			Result:   OutcomeClientAbort,
+			Class:    ClassUnknown,
+			HTTPCode: 504,
+			Reason:   "request deadline exceeded",
+		}
+	}
+
+	return Abort{
+		Result:   OutcomeClientAbort,
+		Class:    ClassUnknown,
+		HTTPCode: 499,
+		Reason:   "client disconnected before response",
+	}
 }
 
 // isClientAbort determines whether a stream interruption was the client

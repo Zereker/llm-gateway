@@ -212,7 +212,11 @@ func buildUsageEvent(rc *requeststate.State) usage.UsageEvent {
 	}
 }
 
-// newEventID is a simple UUID-like form.
+// newEventID generates the billing dedup key for a usage event. 128-bit
+// random (UUID-strength): consumers deduplicate on event_id, and a birthday
+// collision would silently drop a legitimate event — under-billing. 64 bits
+// (the previous width) reaches 50% collision odds around 2^32 events, which
+// a long-running gateway can plausibly hit.
 func newEventID() string {
-	return "evt_" + randHex(8)
+	return "evt_" + randHex(16)
 }

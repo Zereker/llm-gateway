@@ -2,6 +2,7 @@ package invoker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -593,5 +594,74 @@ func TestPeekBodyForClassify_PreservesBody(t *testing.T) {
 	rest, _ := io.ReadAll(resp.Body)
 	if string(rest) != string(full) {
 		t.Fatalf("body after peek = %q want full = %q", string(rest), string(full))
+	}
+}
+
+// errAfterReader returns its payload, then fails the next Read — simulating
+// an upstream that drops the connection mid-stream.
+type errAfterReader struct {
+	payload io.Reader
+	err     error
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	n, err := r.payload.Read(p)
+	if n > 0 {
+		return n, nil
+	}
+	if err == io.EOF {
+		return 0, r.err
+	}
+	return n, err
+}
+
+// docs/05 §3: a stream cut off mid-way must publish its accumulated usage
+// with Truncated=true and Confidence downgraded to approximate.
+func TestForward_InterruptedStreamMarksUsageTruncated(t *testing.T) {
+	sender := newSender(t, &fakeFactory{meta: protocol.Metadata{Vendor: "fakev"}}, openAIIdentityTranslator(), domain.ProtoOpenAI)
+
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Body:       io.NopCloser(&errAfterReader{payload: strings.NewReader("partial"), err: errors.New("upstream RST")}),
+	}
+	w := httptest.NewRecorder()
+	var stream protocol.ResponseStream = &fakeRespHandler{}
+
+	res := sender.Forward(context.Background(), w, &domain.Endpoint{ID: 99}, resp, stream)
+
+	if res.FeedErr == nil {
+		t.Fatalf("want FeedErr on interrupted stream")
+	}
+	if res.Usage == nil {
+		t.Fatalf("usage should still be published on interruption")
+	}
+	if !res.Usage.Truncated {
+		t.Fatalf("Truncated not set on interrupted stream")
+	}
+	if res.Usage.Confidence != domain.UsageConfidenceApproximate {
+		t.Fatalf("Confidence = %q, want approximate", res.Usage.Confidence)
+	}
+}
+
+// A cleanly completed stream must NOT be marked truncated.
+func TestForward_CleanStreamNotTruncated(t *testing.T) {
+	sender := newSender(t, &fakeFactory{meta: protocol.Metadata{Vendor: "fakev"}}, openAIIdentityTranslator(), domain.ProtoOpenAI)
+
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader("hello")),
+	}
+	w := httptest.NewRecorder()
+	var stream protocol.ResponseStream = &fakeRespHandler{}
+
+	res := sender.Forward(context.Background(), w, &domain.Endpoint{ID: 99}, resp, stream)
+
+	if res.FeedErr != nil {
+		t.Fatalf("FeedErr = %v", res.FeedErr)
+	}
+	if res.Usage.Truncated {
+		t.Fatalf("clean stream must not be truncated")
 	}
 }

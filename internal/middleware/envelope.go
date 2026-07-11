@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"io"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -58,7 +59,8 @@ func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerF
 //
 // Failure behavior (all go through abort → M9 writes out JSON):
 //   - Route forgot to attach WithSourceProtocol → 500 / ErrUnknown
-//   - Reading the body failed → 400 / ErrInvalid / "envelope: read body: <err>"
+//   - Body exceeds the BodyLimit cap (MaxBytesReader trips during read) → 413 / ErrInvalid
+//   - Reading the body failed otherwise → 400 / ErrInvalid / "envelope: read body: <err>"
 //   - Missing model field → 400 / ErrInvalid / "envelope: ..."
 func Envelope(lookup protocol.Lookup) gin.HandlerFunc {
 	if lookup == nil {
@@ -79,6 +81,15 @@ func Envelope(lookup protocol.Lookup) gin.HandlerFunc {
 
 		raw, err := io.ReadAll(c.Request.Body)
 		if err != nil {
+			// BodyLimit's MaxBytesReader surfaces here (it only errors the
+			// Read; it never writes a status itself) — that contract-violating
+			// oversized body is 413, not a generic 400.
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				abort(c, 413, domain.ErrInvalid, "envelope: request body exceeds limit")
+				return
+			}
+
 			abort(c, 400, domain.ErrInvalid, "envelope: read body: "+err.Error())
 			return
 		}

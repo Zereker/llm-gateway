@@ -41,10 +41,12 @@ const (
 	// failure / candidates exhausted).
 	StageSelect
 	// StagePrepare is the pre-call protocol-conversion stage (translator
-	// failure / vendor HTTP construction failure). When Policy sees this
-	// Stage, it should skip other endpoints with the same
-	// (endpoint.Protocol) — they'll likely fail the same way under the same
-	// protocol combination.
+	// failure / vendor HTTP construction failure). Note: DefaultRetry
+	// currently decides on Class only and does not consume Stage — a
+	// StagePrepare failure retries like any other Permanent (bounded by the
+	// attempt cap). A Stage-aware policy could skip same-protocol endpoints
+	// (they'd likely fail the same way), but that optimization is not
+	// implemented; today Stage feeds spans / audit / stats attribution only.
 	StagePrepare
 	// StageReserve is the endpoint ratelimit pre-deduction stage (quota
 	// exhausted).

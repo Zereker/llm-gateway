@@ -39,11 +39,16 @@ func registerLLMRoute(group *gin.RouterGroup, deps Deps, spec routeSpec) {
 			middleware.WithModelCatalog(deps.ModelCatalog),
 			middleware.WithSubscriptionChecker(deps.SubscriptionChecker),
 		),
-		middleware.Moderation(middleware.WithModerator(deps.Moderator)),
+		// M6 before M8: rate limiting is a cheap Redis reserve, moderation is
+		// an external HTTP call — a request that is going to be 429-rejected
+		// must not spend a moderation call first (cost + provider pressure
+		// amplification under abusive traffic). M6 needs rc.ModelService for
+		// its per_model buckets, so it cannot move any earlier than this.
 		middleware.Limit(
 			middleware.WithLimitStore(deps.RateLimitStore),
 			middleware.WithLimitPolicies(deps.QuotaPolicies),
 		),
+		middleware.Moderation(middleware.WithModerator(deps.Moderator)),
 	}
 	if spec.Cache != nil {
 		handlers = append(handlers, spec.Cache)

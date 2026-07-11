@@ -110,7 +110,8 @@ type fakeResult struct {
 	ep        *domain.Endpoint
 	verdict   Verdict
 	streamRep StreamReport
-	invokeErr error // makes fakeInvoker.Invoke return err directly (not a fakeResult)
+	invokeErr error  // makes fakeInvoker.Invoke return err directly (not a fakeResult)
+	onStream  func() // optional hook run inside StreamTo (e.g. cancel the ctx mid-stream)
 	streamed  bool
 	closed    bool
 }
@@ -119,6 +120,9 @@ func (r *fakeResult) Verdict() Verdict           { return r.verdict }
 func (r *fakeResult) Endpoint() *domain.Endpoint { return r.ep }
 func (r *fakeResult) StreamTo(_ context.Context, _ http.ResponseWriter) StreamReport {
 	r.streamed = true
+	if r.onStream != nil {
+		r.onStream()
+	}
 	return r.streamRep
 }
 func (r *fakeResult) Close() error {
