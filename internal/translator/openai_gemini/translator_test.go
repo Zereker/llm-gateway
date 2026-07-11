@@ -30,6 +30,114 @@ func TestTranslateRequest_MultipleSystemMessagesMerge(t *testing.T) {
 	}
 }
 
+// TestTranslateRequest_CandidateCount regresses a bug where OpenAI's "n" was
+// never forwarded, so generationConfig.candidateCount stayed unset and
+// Gemini always returned exactly one candidate regardless of what the client
+// asked for.
+func TestTranslateRequest_CandidateCount(t *testing.T) {
+	body := []byte(`{"model":"gemini-x","n":3,"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "generationConfig.candidateCount").Int(); got != 3 {
+		t.Errorf("candidateCount = %d, want 3: %s", got, out)
+	}
+}
+
+// TestTranslateRequest_ResponseFormat covers the OpenAI response_format ->
+// Gemini responseMimeType/responseSchema mapping for both json_object (no
+// schema) and json_schema (schema passed through as-is).
+func TestTranslateRequest_ResponseFormat(t *testing.T) {
+	t.Run("json_object", func(t *testing.T) {
+		body := []byte(`{"model":"m","response_format":{"type":"json_object"},"messages":[{"role":"user","content":"hi"}]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		if got := gjson.GetBytes(out, "generationConfig.responseMimeType").String(); got != "application/json" {
+			t.Errorf("responseMimeType = %q, want application/json: %s", got, out)
+		}
+		if gjson.GetBytes(out, "generationConfig.responseSchema").Exists() {
+			t.Errorf("responseSchema should be absent for json_object: %s", out)
+		}
+	})
+	t.Run("json_schema", func(t *testing.T) {
+		body := []byte(`{"model":"m","response_format":{"type":"json_schema","json_schema":{"name":"weather","schema":{"type":"object","properties":{"city":{"type":"string"}}}}},"messages":[{"role":"user","content":"hi"}]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		if got := gjson.GetBytes(out, "generationConfig.responseMimeType").String(); got != "application/json" {
+			t.Errorf("responseMimeType = %q, want application/json: %s", got, out)
+		}
+		if got := gjson.GetBytes(out, "generationConfig.responseSchema.properties.city.type").String(); got != "string" {
+			t.Errorf("responseSchema not passed through: %s", out)
+		}
+	})
+	t.Run("text_type_no_override", func(t *testing.T) {
+		body := []byte(`{"model":"m","response_format":{"type":"text"},"messages":[{"role":"user","content":"hi"}]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		if gjson.GetBytes(out, "generationConfig").Exists() {
+			t.Errorf("generationConfig should stay absent for response_format:text: %s", out)
+		}
+	})
+}
+
+// TestResponseHandler_SSE_MultipleCandidates: n>1 streams multiple candidates
+// interleaved in the same SSE chunk; each must keep its own OpenAI choice
+// index rather than only the first candidate surviving translation.
+func TestResponseHandler_SSE_MultipleCandidates(t *testing.T) {
+	h := openaiGemini{}.NewResponseHandler()
+	chunk := `data: {"candidates":[` +
+		`{"content":{"parts":[{"text":"cand0 "}]},"index":0},` +
+		`{"content":{"parts":[{"text":"cand1 "}]},"index":1}` +
+		`]}
+
+`
+	out, _ := h.Feed([]byte(chunk))
+	final := `data: {"candidates":[` +
+		`{"content":{"parts":[{"text":"end0"}]},"finishReason":"STOP","index":0},` +
+		`{"content":{"parts":[{"text":"end1"}]},"finishReason":"STOP","index":1}` +
+		`],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":4,"totalTokenCount":9}}
+
+`
+	out2, _ := h.Feed([]byte(final))
+	fin, usage, _ := h.Flush()
+	all := string(out) + string(out2) + string(fin)
+
+	var cand0, cand1 strings.Builder
+	for _, line := range strings.Split(all, "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		payload := line[len("data: "):]
+		choice := gjson.Get(payload, "choices.0")
+		switch choice.Get("index").Int() {
+		case 0:
+			cand0.WriteString(choice.Get("delta.content").String())
+		case 1:
+			cand1.WriteString(choice.Get("delta.content").String())
+		}
+	}
+	if cand0.String() != "cand0 end0" {
+		t.Errorf("candidate 0 text = %q, want %q", cand0.String(), "cand0 end0")
+	}
+	if cand1.String() != "cand1 end1" {
+		t.Errorf("candidate 1 text = %q, want %q", cand1.String(), "cand1 end1")
+	}
+	if !strings.Contains(all, `"index":0,"delta":{},"finish_reason":"stop"`) &&
+		!strings.Contains(all, `"finish_reason":"stop"`) {
+		t.Errorf("missing finish_reason on a candidate: %s", all)
+	}
+	if usage == nil || usage.Total != 9 {
+		t.Errorf("usage = %+v, want total 9", usage)
+	}
+}
+
 // TestMapFinishReason_Completeness covers every documented Gemini
 // Candidate.FinishReason value so a value the mapping doesn't know about
 // can't silently collapse into "stop" and hide a safety block or a malformed
