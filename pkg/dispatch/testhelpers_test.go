@@ -60,6 +60,19 @@ func (f *fakeSelector) Release(_ context.Context, _ *domain.Endpoint) {
 	f.releases++
 }
 
+// recordingQuota records Reserve/Release calls; Reserve always allows.
+type recordingQuota struct {
+	reserves int
+	releases int
+}
+
+func (q *recordingQuota) Reserve(_ context.Context, _ *domain.Endpoint) (*QuotaVerdict, error) {
+	q.reserves++
+	return nil, nil
+}
+func (q *recordingQuota) ChargeUsage(_ context.Context, _ *domain.Endpoint, _ *domain.Usage) {}
+func (q *recordingQuota) Release(_ context.Context, _ *domain.Endpoint)                      { q.releases++ }
+
 // fakeInvokerFactory consumes results in order.
 type fakeInvokerFactory struct {
 	results []*fakeResult

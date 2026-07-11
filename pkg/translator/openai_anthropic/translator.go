@@ -135,12 +135,11 @@ func (h *responseHandler) detectStreaming(chunk []byte) {
 func (h *responseHandler) parseAndEmitStream() []byte {
 	var out bytes.Buffer
 	for {
-		idx := bytes.Index(h.sseBuffer, []byte("\n\n"))
-		if idx < 0 {
+		event, rest, ok := extractor.NextSSEFrame(h.sseBuffer)
+		if !ok {
 			return out.Bytes()
 		}
-		event := h.sseBuffer[:idx]
-		h.sseBuffer = h.sseBuffer[idx+2:]
+		h.sseBuffer = rest
 
 		// Extract the data: line
 		var dataPayload []byte
