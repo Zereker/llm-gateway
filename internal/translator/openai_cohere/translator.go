@@ -8,8 +8,18 @@
 //
 // **Streaming**: when the client sets stream:true, Cohere returns an SSE event stream with
 // a type field; responseHandler incrementally translates it into OpenAI SSE chunks (see
-// below). Non-streaming uses buffer-then-translate. **Limitation**: only chat text is
-// supported; tool calls/vision are not.
+// below). Non-streaming uses buffer-then-translate.
+//
+// **Tool calling**: Cohere v2's tools/tool_calls shapes are (verified against the official
+// cohere-python SDK type definitions) structurally identical to OpenAI's
+// ({type:"function",function:{name,description,parameters}} request-side;
+// {id,type:"function",function:{name,arguments}} response-side, arguments already a JSON
+// string) — so tools pass through mostly as-is. tool_choice is lossier: Cohere v2 only has
+// two explicit values (REQUIRED/NONE), no "auto" and no per-tool force. Cohere's own
+// tool_plan (reasoning text emitted before a tool call) and citations have no OpenAI
+// equivalent and are not translated.
+//
+// **Limitation**: vision / multimodal content is not supported.
 //
 // Other client protocols (Anthropic / Responses) reach this via the OpenAI pivot composition
 // (see translator.compose).
@@ -37,7 +47,9 @@ func (openaiCohere) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiCohere) Target() domain.Protocol { return domain.ProtoCohere }
 
 func (openaiCohere) TranslateRequest(srcBody []byte) ([]byte, error) {
-	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoCohere, srcBody)
+	// tools/tool_calls now translate (see the package doc); only multimodal
+	// content is still dropped, so restrict the warning to that.
+	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoCohere, srcBody, "multimodal")
 	return translateRequest(srcBody)
 }
 
@@ -61,30 +73,62 @@ type openaiReq struct {
 	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
 	Seed             *int            `json:"seed,omitempty"`
 	N                *int            `json:"n,omitempty"`
+	Tools            json.RawMessage `json:"tools,omitempty"`
+	ToolChoice       json.RawMessage `json:"tool_choice,omitempty"`
 }
 
 type openaiMsg struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string           `json:"role"`
+	Content    json.RawMessage  `json:"content"`
+	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+}
+
+// openaiToolCall is one entry of an assistant message's "tool_calls" array in
+// the request history; function.arguments is a JSON string, matching Cohere's
+// own ToolCallV2Function.arguments shape (verified against cohere-python's
+// type definitions) — no reserialization needed either direction.
+type openaiToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 type cohereReq struct {
-	Model            string      `json:"model"`
-	Messages         []cohereMsg `json:"messages"`
-	MaxTokens        *int        `json:"max_tokens,omitempty"`
-	Temperature      *float64    `json:"temperature,omitempty"`
-	P                *float64    `json:"p,omitempty"`
-	Stream           bool        `json:"stream"`
-	StopSequences    []string    `json:"stop_sequences,omitempty"`
-	FrequencyPenalty *float64    `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64    `json:"presence_penalty,omitempty"`
-	Seed             *int        `json:"seed,omitempty"`
-	NumGenerations   *int        `json:"num_generations,omitempty"`
+	Model            string          `json:"model"`
+	Messages         []cohereMsg     `json:"messages"`
+	MaxTokens        *int            `json:"max_tokens,omitempty"`
+	Temperature      *float64        `json:"temperature,omitempty"`
+	P                *float64        `json:"p,omitempty"`
+	Stream           bool            `json:"stream"`
+	StopSequences    []string        `json:"stop_sequences,omitempty"`
+	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
+	Seed             *int            `json:"seed,omitempty"`
+	NumGenerations   *int            `json:"num_generations,omitempty"`
+	Tools            json.RawMessage `json:"tools,omitempty"`
+	ToolChoice       *string         `json:"tool_choice,omitempty"`
 }
 
 type cohereMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string              `json:"role"`
+	Content    any                 `json:"content,omitempty"` // string; omitted for an assistant message that only carries tool_calls
+	ToolCalls  []cohereToolCallOut `json:"tool_calls,omitempty"`
+	ToolCallID string              `json:"tool_call_id,omitempty"`
+}
+
+type cohereToolCallOut struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function cohereToolCallFunc `json:"function"`
+}
+
+type cohereToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 func translateRequest(srcBody []byte) ([]byte, error) {
@@ -106,11 +150,80 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	if len(in.Stop) > 0 {
 		out.StopSequences = parseStopField(in.Stop)
 	}
+	if len(in.Tools) > 0 {
+		// Cohere v2's tool definition shape is identical to OpenAI's
+		// {type:"function",function:{name,description,parameters}} — verified
+		// against cohere-python's ToolV2/ToolV2Function types — so no
+		// transformation is needed.
+		out.Tools = in.Tools
+	}
+	if len(in.ToolChoice) > 0 {
+		out.ToolChoice = mapToolChoice(in.ToolChoice)
+	}
 	out.Messages = make([]cohereMsg, 0, len(in.Messages))
 	for _, m := range in.Messages {
-		out.Messages = append(out.Messages, cohereMsg{Role: m.Role, Content: contentToString(m.Content)})
+		switch m.Role {
+		case "assistant":
+			cm := cohereMsg{Role: "assistant"}
+			if text := contentToString(m.Content); text != "" {
+				cm.Content = text
+			}
+			for _, tc := range m.ToolCalls {
+				cm.ToolCalls = append(cm.ToolCalls, cohereToolCallOut{
+					ID:   tc.ID,
+					Type: "function",
+					Function: cohereToolCallFunc{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
+				})
+			}
+			out.Messages = append(out.Messages, cm)
+		case "tool":
+			// ToolChatMessageV2 requires tool_call_id to associate the result
+			// with the call it answers — the old code sent {role:"tool",
+			// content} with no tool_call_id at all, so Cohere had no way to
+			// match it back to a pending call.
+			out.Messages = append(out.Messages, cohereMsg{
+				Role:       "tool",
+				ToolCallID: m.ToolCallID,
+				Content:    contentToString(m.Content),
+			})
+		default: // system, user
+			out.Messages = append(out.Messages, cohereMsg{Role: m.Role, Content: contentToString(m.Content)})
+		}
 	}
 	return json.Marshal(out)
+}
+
+// mapToolChoice converts an OpenAI tool_choice to Cohere v2's tool_choice.
+// Cohere v2 only has two explicit values — REQUIRED and NONE — no "auto" (the
+// model already decides freely without the field) and no way to force one
+// specific named tool, so an OpenAI {"type":"function","function":{"name":X}}
+// choice maps to the closest available: REQUIRED (forces *some* tool call,
+// not necessarily X).
+func mapToolChoice(raw json.RawMessage) *string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch s {
+		case "required":
+			v := "REQUIRED"
+			return &v
+		case "none":
+			v := "NONE"
+			return &v
+		default: // "auto" or unrecognized -> omit, let Cohere decide
+			return nil
+		}
+	}
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type == "function" {
+		v := "REQUIRED"
+		return &v
+	}
+	return nil
 }
 
 // parseStopField normalizes the OpenAI stop field (which may be a string or
@@ -283,6 +396,37 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		}
 		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Raw: rawUsage, Source: domain.UsageSourceUpstream, Confidence: domain.UsageConfidenceExact}
 		return h.chunk(map[string]any{}, mapFinishReason(ev.Get("delta.finish_reason").String()))
+	case "tool-call-start":
+		// delta.message.tool_calls is a single object here (not an array) —
+		// verified against cohere-python's ChatToolCallStartEventDeltaMessage
+		// type. index tracks which parallel call this belongs to, matching
+		// OpenAI's own streaming tool_calls[].index convention.
+		tc := ev.Get("delta.message.tool_calls")
+		return h.chunk(map[string]any{"tool_calls": []any{map[string]any{
+			"index": ev.Get("index").Int(),
+			"id":    tc.Get("id").String(),
+			"type":  "function",
+			"function": map[string]any{
+				"name":      tc.Get("function.name").String(),
+				"arguments": "",
+			},
+		}}}, "")
+	case "tool-call-delta":
+		frag := ev.Get("delta.message.tool_calls.function.arguments").String()
+		if frag == "" {
+			return nil
+		}
+		return h.chunk(map[string]any{"tool_calls": []any{map[string]any{
+			"index":    ev.Get("index").Int(),
+			"function": map[string]any{"arguments": frag},
+		}}}, "")
+	case "tool-call-end", "tool-plan-delta", "citation-start", "citation-end":
+		// tool-call-end carries no new content (index only). tool-plan-delta
+		// is Cohere's own "reasoning before calling a tool" channel and
+		// citations are Cohere's grounded-RAG source attributions — neither
+		// has an OpenAI-compatible equivalent, so both are intentionally
+		// dropped rather than guessed at.
+		return nil
 	default: // content-start / content-end etc.: skip
 		return nil
 	}
@@ -336,12 +480,26 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 		id = "chatcmpl-" + randHex(8)
 	}
 
+	message := map[string]any{"role": "assistant"}
+	if toolCalls := extractToolCalls(root.Get("message.tool_calls")); len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+		// OpenAI's convention when tool_calls carries the turn: content is
+		// null unless the model also emitted user-visible text alongside it.
+		if text.Len() > 0 {
+			message["content"] = text.String()
+		} else {
+			message["content"] = nil
+		}
+	} else {
+		message["content"] = text.String()
+	}
+
 	resp := map[string]any{
 		"id":     id,
 		"object": "chat.completion",
 		"choices": []any{map[string]any{
 			"index":         0,
-			"message":       map[string]any{"role": "assistant", "content": text.String()},
+			"message":       message,
 			"finish_reason": mapFinishReason(root.Get("finish_reason").String()),
 		}},
 		"usage": map[string]any{
@@ -352,6 +510,30 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	}
 	body, _ := json.Marshal(resp)
 	return body, usage
+}
+
+// extractToolCalls converts Cohere's message.tool_calls array into OpenAI's
+// tool_calls shape. The two are structurally identical (verified against
+// cohere-python's ToolCallV2/ToolCallV2Function types: id, type:"function",
+// function.name, function.arguments as a JSON string) — this is a field
+// rename, not a reshape.
+func extractToolCalls(arr gjson.Result) []map[string]any {
+	if !arr.IsArray() {
+		return nil
+	}
+	var out []map[string]any
+	arr.ForEach(func(_, tc gjson.Result) bool {
+		out = append(out, map[string]any{
+			"id":   tc.Get("id").String(),
+			"type": "function",
+			"function": map[string]any{
+				"name":      tc.Get("function.name").String(),
+				"arguments": tc.Get("function.arguments").String(),
+			},
+		})
+		return true
+	})
+	return out
 }
 
 // mapFinishReason maps Cohere's uppercase enum to OpenAI's. Every documented
