@@ -12,9 +12,8 @@
 //
 // **Limitations**:
 //   - Only chat is supported (system/user/assistant/tool messages)
-//   - Tool definitions and tool calls ARE carried across (see translateRequest)
-//   - Multi-part content arrays are accepted, but only their text parts are
-//     carried across; non-text image parts are dropped
+//   - Tool definitions, tool calls, and image_url content parts are all
+//     carried across (see translateRequest / buildUserContent)
 //
 // See translateRequest / translateResponse / parseAndEmitStreamEvent for field mapping details.
 package openai_anthropic
@@ -47,9 +46,6 @@ func (openaiAnthropic) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiAnthropic) Target() domain.Protocol { return domain.ProtoAnthropic }
 
 func (openaiAnthropic) TranslateRequest(srcBody []byte) ([]byte, error) {
-	// Tools / tool_calls are now translated; only image multimodal content is
-	// still dropped, so restrict the lossy report to that feature.
-	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoAnthropic, srcBody, "multimodal")
 	return translateRequest(srcBody)
 }
 
@@ -202,6 +198,8 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			Text        string `json:"text,omitempty"`
 			PartialJSON string `json:"partial_json,omitempty"`
 			StopReason  string `json:"stop_reason,omitempty"`
+			Thinking    string `json:"thinking,omitempty"`
+			Signature   string `json:"signature,omitempty"`
 		} `json:"delta,omitempty"`
 	}
 	if err := json.Unmarshal(data, &ev); err != nil {
@@ -246,6 +244,20 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		case "text_delta":
 			if ev.Delta.Text != "" {
 				h.writeChunk(out, map[string]any{"content": ev.Delta.Text}, "")
+			}
+		case "thinking_delta":
+			// Streamed incrementally under reasoning_content, matching how
+			// OpenAI-compatible reasoning-model vendors already stream it
+			// (see testdata/fieldmatrix/upstream/chat-openai-compat-reasoning.json).
+			if ev.Delta.Thinking != "" {
+				h.writeChunk(out, map[string]any{"reasoning_content": ev.Delta.Thinking}, "")
+			}
+		case "signature_delta":
+			// Arrives once, complete, right before content_block_stop — the
+			// client must capture it to round-trip via buildAssistantMessage
+			// on its next turn, or a subsequent tool_use turn gets a 400.
+			if ev.Delta.Signature != "" {
+				h.writeChunk(out, map[string]any{"reasoning_signature": ev.Delta.Signature}, "")
 			}
 		case "input_json_delta":
 			toolIdx, ok := h.toolBlocks[ev.Index]
@@ -390,6 +402,10 @@ type openAIMessage struct {
 	Role      string               `json:"role"`
 	Content   any                  `json:"content"`
 	ToolCalls []openAIRespToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent/ReasoningSignature carry an Anthropic thinking block
+	// through the OpenAI wire shape — see openAIInboundMessage's doc comment.
+	ReasoningContent   string `json:"reasoning_content,omitempty"`
+	ReasoningSignature string `json:"reasoning_signature,omitempty"`
 }
 
 // openAIRespToolCall is one entry of an assistant response message's
@@ -410,6 +426,16 @@ type openAIInboundMessage struct {
 	Content    json.RawMessage  `json:"content"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
+	// ReasoningContent/ReasoningSignature round-trip an Anthropic extended-
+	// thinking block through the OpenAI wire shape (see buildAssistantMessage
+	// and translateResponse) — reasoning_content matches the field name real
+	// OpenAI-compatible vendors already expose (see
+	// testdata/fieldmatrix/upstream/chat-openai-compat-reasoning.json);
+	// reasoning_signature is Anthropic-specific, needed because Anthropic
+	// rejects a tool_use block in history without a preceding *signed*
+	// thinking block once extended thinking was enabled for that turn.
+	ReasoningContent   string `json:"reasoning_content,omitempty"`
+	ReasoningSignature string `json:"reasoning_signature,omitempty"`
 }
 
 // contentToString normalizes an OpenAI message content field that may be a JSON
@@ -439,6 +465,88 @@ func contentToString(raw json.RawMessage) string {
 		return sb.String()
 	}
 	return ""
+}
+
+// buildUserContent converts an OpenAI user message's content into Anthropic
+// shape: a plain string when there's no image_url part, or a content block
+// array (text + image blocks) when one is present — contentToString would
+// silently drop the image otherwise.
+func buildUserContent(raw json.RawMessage) (json.RawMessage, error) {
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return json.Marshal(contentToString(raw))
+	}
+	hasImage := false
+	for _, p := range parts {
+		if p.Type == "image_url" {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		return json.Marshal(contentToString(raw))
+	}
+	var blocks []any
+	for _, p := range parts {
+		switch p.Type {
+		case "image_url":
+			if p.ImageURL != nil {
+				blocks = append(blocks, imageBlockFromURL(p.ImageURL.URL))
+			}
+		case "text", "":
+			if p.Text != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": p.Text})
+			}
+		}
+	}
+	return json.Marshal(blocks)
+}
+
+// imageBlockFromURL converts an OpenAI image_url.url into an Anthropic image
+// block: a data: URI decodes into source.type=base64 (media_type + data
+// split out); anything else passes through as source.type=url (Anthropic
+// fetches it directly — no need for the gateway to proxy the bytes).
+func imageBlockFromURL(url string) map[string]any {
+	if mediaType, data, ok := parseDataURI(url); ok {
+		return map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": mediaType,
+				"data":       data,
+			},
+		}
+	}
+	return map[string]any{
+		"type":   "image",
+		"source": map[string]any{"type": "url", "url": url},
+	}
+}
+
+// parseDataURI splits a "data:<mediaType>;base64,<data>" URI into its parts.
+func parseDataURI(url string) (mediaType, data string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(url, prefix) {
+		return "", "", false
+	}
+	rest := url[len(prefix):]
+	semi := strings.IndexByte(rest, ';')
+	comma := strings.IndexByte(rest, ',')
+	if semi < 0 || comma < 0 || comma < semi {
+		return "", "", false
+	}
+	mediaType = rest[:semi]
+	encoding := rest[semi+1 : comma]
+	if encoding != "base64" {
+		return "", "", false
+	}
+	return mediaType, rest[comma+1:], true
 }
 
 type anthropicRequest struct {
@@ -481,11 +589,13 @@ type anthropicResponse struct {
 }
 
 type anthropicContentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -554,7 +664,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 				systemParts = append(systemParts, s)
 			}
 		case "user":
-			c, err := json.Marshal(contentToString(m.Content))
+			c, err := buildUserContent(m.Content)
 			if err != nil {
 				return nil, fmt.Errorf("user content marshal: %w", err)
 			}
@@ -690,11 +800,19 @@ func applyDisableParallelToolUse(toolChoice json.RawMessage) json.RawMessage {
 }
 
 // buildAssistantMessage builds an Anthropic assistant message. When the OpenAI
-// message carries tool_calls, its content becomes a block array: an optional
-// leading text block (only if content is non-empty) followed by one tool_use
+// message carries tool_calls or a reasoning_content/reasoning_signature pair
+// (a round-tripped extended-thinking block, see translateResponse), its
+// content becomes a block array: an optional leading thinking block, then an
+// optional text block (only if content is non-empty), then one tool_use
 // block per tool_call. Otherwise it keeps the simple string content shape.
+//
+// The thinking block MUST come first when present: Anthropic rejects a
+// tool_use block in history with "Expected thinking or redacted_thinking
+// block, but found tool_use" once extended thinking was enabled for that
+// turn — the signature is what lets Anthropic verify the thinking block
+// wasn't tampered with, so it must be replayed verbatim, not regenerated.
 func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
-	if len(m.ToolCalls) == 0 {
+	if len(m.ToolCalls) == 0 && m.ReasoningContent == "" {
 		c, err := json.Marshal(contentToString(m.Content))
 		if err != nil {
 			return anthropicMessage{}, fmt.Errorf("assistant content marshal: %w", err)
@@ -703,6 +821,13 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 	}
 
 	var blocks []any
+	if m.ReasoningContent != "" {
+		blocks = append(blocks, map[string]any{
+			"type":      "thinking",
+			"thinking":  m.ReasoningContent,
+			"signature": m.ReasoningSignature,
+		})
+	}
 	if s := contentToString(m.Content); s != "" {
 		blocks = append(blocks, map[string]any{"type": "text", "text": s})
 	}
@@ -748,6 +873,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 
 	var content strings.Builder
 	var toolCalls []openAIRespToolCall
+	var reasoningContent, reasoningSignature string
 	for _, blk := range in.Content {
 		switch blk.Type {
 		case "text":
@@ -761,10 +887,17 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 			tc.Function.Name = blk.Name
 			tc.Function.Arguments = args
 			toolCalls = append(toolCalls, tc)
+		case "thinking":
+			// Surfaced via reasoning_content/reasoning_signature (not
+			// content) so it round-trips through buildAssistantMessage on
+			// the next turn instead of being silently dropped — see that
+			// function's doc comment for why the signature must survive.
+			reasoningContent = blk.Thinking
+			reasoningSignature = blk.Signature
 		}
 	}
 
-	msg := openAIMessage{Role: "assistant"}
+	msg := openAIMessage{Role: "assistant", ReasoningContent: reasoningContent, ReasoningSignature: reasoningSignature}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 		// OpenAI allows content:null alongside tool_calls; use the text only if present.

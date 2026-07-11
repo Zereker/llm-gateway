@@ -1,0 +1,56 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-1-20250805","id":"msg_01TRpkkgb2QsnyjsGSVdRtGr","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":2039,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard"}}          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_01SPfvT38PDPAFnkcrMNGUrM","name":"web_search","input":{}}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":" \"San Fran"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"cisco weat"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"her"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":" t"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"oday\"}"}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0 }
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 1, "content_block": {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01SPfvT38PDPAFnkcrMNGUrM", "content": [{"type": "web_search_result", "title": "San Francisco, CA Weather Forecast | AccuWeather", "url": "https://www.accuweather.com/en/us/san-francisco/94103/weather-forecast/347629", "encrypted_content": "<snip-opaque-encrypted-content-truncated-for-fixture-size>", "page_age": "3 days ago"}]}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1         }
+
+: truncated for fixture size - additional text_delta events omitted, see README
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" of rain"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" this"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" weekend."}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":11        }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10423,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":341,"server_tool_use":{"web_search_requests":1}}              }
+
+event: message_stop
+data: {"type":"message_stop"          }
+
