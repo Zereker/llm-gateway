@@ -6,9 +6,8 @@
 #
 # Deployment:
 #   1. Copy this yaml to the target machine: /etc/llm-gateway/gateway.yaml
-#   2. Start gateway, which auto-runs infra.Migrate to create tables, then SQL
-#      INSERT the model_services / endpoints / api_keys records
-#   3. Start gateway: llm-gateway -config /etc/llm-gateway/gateway.yaml
+#   2. Run llm-gateway-migrate -config /etc/llm-gateway/gateway.yaml
+#   3. Start gateway, then manage business data via SQL or cmd/console
 
 server:
   addr: ":8080"
@@ -24,6 +23,7 @@ database:
   # Production MySQL; username/password are injected from secrets (env vars / k8s Secret rendering).
   driver: mysql
   dsn: "llm_gateway:CHANGE_ME@tcp(db:3306)/llm_gateway?parseTime=true&charset=utf8mb4&tls=preferred"
+  auto_migrate: false
 
 usage_events:
   # dual-write (Transactional Outbox Pattern) is recommended for prod: file is the

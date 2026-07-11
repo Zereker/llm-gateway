@@ -29,35 +29,30 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          # entrypoint: use envsubst to inject secrets into the yaml, then start the gateway
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              envsubst < /etc/llm-gateway/gateway.yaml.tmpl > /tmp/gateway.yaml && \
-              exec /usr/local/bin/llm-gateway -config /tmp/gateway.yaml
+          args: ["-config", "/etc/llm-gateway/gateway.yaml"]
           env:
-            - name: DATABASE_DSN
+            - name: LLM_GATEWAY_DATABASE_DSN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "llm-gateway.fullname" . }}-secrets
                   key: database-dsn
-            - name: REDIS_ADDR
+            - name: LLM_GATEWAY_REDIS_ADDR
               valueFrom:
                 secretKeyRef:
                   name: {{ include "llm-gateway.fullname" . }}-secrets
                   key: redis-addr
-            - name: REDIS_PASSWORD
+            - name: LLM_GATEWAY_REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "llm-gateway.fullname" . }}-secrets
                   key: redis-password
-            - name: DATA_KEY
+            - name: LLM_GATEWAY_DATA_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "llm-gateway.fullname" . }}-secrets
                   key: data-key
             {{- if eq .Values.gateway.config.moderation.driver "openai" }}
-            - name: MODERATION_API_KEY
+            - name: LLM_GATEWAY_MODERATION_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "llm-gateway.fullname" . }}-secrets
@@ -75,15 +70,15 @@ spec:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
           volumeMounts:
             - name: config
-              mountPath: /etc/llm-gateway/gateway.yaml.tmpl
+              mountPath: /etc/llm-gateway/gateway.yaml
               subPath: gateway.yaml
-            - name: tmp
-              mountPath: /tmp
+            - name: usage
+              mountPath: /var/log/llm-gateway
       volumes:
         - name: config
           configMap:
             name: {{ include "llm-gateway.fullname" . }}-gateway
-        - name: tmp
+        - name: usage
           emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:

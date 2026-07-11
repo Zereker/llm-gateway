@@ -41,7 +41,7 @@ pkg/dispatch          ── the **sole** owner of scheduling/execution sequenci
        └── translator (pkg/)   body shape conversion: identity + cross-protocol pairs (registered via init())
 
 pkg/moderation        ── Moderator + response-stream decorator + ctx helpers
-pkg/usage             ── usage extraction + outbox (file | kafka) + pricing
+pkg/usage             ── usage extraction + outbox (file | kafka); pricing is downstream
 pkg/trace / metric    ── Tracer abstraction (slog / OTel) + Prometheus metric name constants
 
 pkg/repo              ── data access: sqlx Reader/Provider + TTL LRU cache wrapper
@@ -52,7 +52,11 @@ pkg/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
 pkg/domain            ── typed structs shared across packages (RequestContext / Endpoint / ...)
 pkg/config            ── gateway.yaml loader
 
-cmd/gateway           ── composition root: buildEngine wires up all deps, no business logic
+internal/app/gateway  ── composition root: assembles data-plane dependencies
+internal/builtin      ── the single built-in vendor/translator registration entry
+cmd/gateway           ── thin data-plane process entry
+cmd/console           ── optional control-plane Admin API
+cmd/migrate           ── versioned database migration command
 cmd/mockupstream      ── dev/test fake upstream
 scripts/{e2e-smoke,seed-e2e}  end-to-end smoke tests
 docs/architecture/    design docs (00-overview through 08-observability)
@@ -61,17 +65,19 @@ configs/              per-environment config (local / prod / docker)
 
 ## Quick start
 
-Gateway is one binary that runs `infra.Migrate` on boot to bootstrap the schema.
+Run `make run-migrate` before the gateway in production. The bundled local and
+Docker configs enable `database.auto_migrate` for development convenience.
 Business data (model_services / endpoints / api_keys / pricing / quota_policies /
-subscriptions / accounts) is managed by inserting SQL directly into MySQL —
-this repository does not ship a control-plane / management REST API.
+subscriptions / accounts) can be managed by SQL or the optional `cmd/console`
+control-plane API; the data plane does not depend on the console.
 
 ```sh
 # 1. Start the local stack (MySQL + Redis + Redpanda) via Docker.
 make stack
 # (or: docker compose up -d)
 
-# 2. Start gateway — runs infra.Migrate on boot to create tables.
+# 2. Migrate and start gateway (local config also auto-migrates idempotently).
+make run-migrate
 make run-gateway
 # (or: go run ./cmd/gateway -config ./configs/local/gateway.yaml)
 
@@ -123,10 +129,11 @@ Per-environment configs live under [`configs/`](configs/) (see
 A single environment directory contains one file:
 - `gateway.yaml` — server / middleware / database / redis / outbox
 
-Business data lives in MySQL. The gateway runs `infra.Migrate` on boot to
-create tables; CRUD is performed by inserting SQL directly. The repo layer
+Business data lives in MySQL. `cmd/migrate` applies versioned schema changes;
+CRUD can use SQL directly or `cmd/console`. The repo layer
 caches reads in-process with a TTL LRU (default ~30s), so updates become
-visible within the TTL window without an invalidation channel.
+visible within the TTL window. API-key revocation additionally supports
+best-effort cachebus invalidation for sub-second propagation.
 
 Reload of `gateway.yaml` requires restart.
 

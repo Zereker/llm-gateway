@@ -13,7 +13,6 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
 	"github.com/zereker/llm-gateway/pkg/protocol"
-	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
 // Send makes a single call to an upstream; it does not do retry / cooldown /
@@ -62,7 +61,7 @@ func (s *Sender) Send(
 	if handler == nil {
 		out = Outcome{
 			Stage:   StagePrepare,
-			Class:   selector.ClassPermanent,
+			Class:   ClassPermanent,
 			Reason:  "no handler for endpoint+srcProto",
 			Latency: time.Since(start),
 		}
@@ -86,7 +85,7 @@ func (s *Sender) Send(
 	resp, err := s.client.Do(req)
 	if err != nil {
 		out = Outcome{
-			Class:   selector.ClassTransient,
+			Class:   ClassTransient,
 			Reason:  "upstream call: " + err.Error(),
 			Latency: time.Since(start),
 		}
@@ -98,7 +97,7 @@ func (s *Sender) Send(
 	// to refine the class. A combined Handler automatically forwards this to
 	// the underlying protocol.Classifier; a vendor implementing Classifier
 	// directly also works.
-	if class != selector.ClassSuccess {
+	if class != ClassSuccess {
 		if cls, ok := handler.(protocol.Classifier); ok {
 			peeked := peekBodyForClassify(resp)
 			if refined := cls.Classify(resp.StatusCode, peeked); refined != nil {
@@ -107,7 +106,7 @@ func (s *Sender) Send(
 		}
 	}
 
-	if class != selector.ClassSuccess {
+	if class != ClassSuccess {
 		_ = resp.Body.Close()
 		out = Outcome{
 			Class:    class,
@@ -143,14 +142,14 @@ func handlePrepareError(err error, start time.Time) (Outcome, error) {
 		case protocol.PhaseTranslate:
 			return Outcome{
 				Stage:   StagePrepare,
-				Class:   selector.ClassInvalid,
+				Class:   ClassInvalid,
 				Reason:  "translate request: " + pe.Err.Error(),
 				Latency: time.Since(start),
 			}, fmt.Errorf("%w: %v", ErrInvalidRequest, pe.Err)
 		case protocol.PhaseBuild:
 			return Outcome{
 				Stage:   StagePrepare,
-				Class:   selector.ClassPermanent,
+				Class:   ClassPermanent,
 				Reason:  "build request: " + pe.Err.Error(),
 				Latency: time.Since(start),
 			}, nil
@@ -158,7 +157,7 @@ func handlePrepareError(err error, start time.Time) (Outcome, error) {
 	}
 	return Outcome{
 		Stage:   StagePrepare,
-		Class:   selector.ClassPermanent,
+		Class:   ClassPermanent,
 		Reason:  "prepare: " + err.Error(),
 		Latency: time.Since(start),
 	}, nil
@@ -174,7 +173,7 @@ func emitUpstreamMetrics(ep *domain.Endpoint, out Outcome) {
 	model := ep.Model
 	result := "ok"
 	errClass := ""
-	if out.Class != selector.ClassSuccess {
+	if out.Class != ClassSuccess {
 		result = "error"
 		errClass = out.Class.String()
 	}
@@ -213,38 +212,38 @@ func peekBodyForClassify(resp *http.Response) []byte {
 	return peeked
 }
 
-// classifyHTTPStatus maps an HTTP status code to a selector.ErrorClass.
-func classifyHTTPStatus(code int) selector.ErrorClass {
+// classifyHTTPStatus maps an HTTP status code to a Class.
+func classifyHTTPStatus(code int) Class {
 	switch {
 	case code >= 200 && code < 300:
-		return selector.ClassSuccess
+		return ClassSuccess
 	case code == 401 || code == 403:
-		return selector.ClassPermanent
+		return ClassPermanent
 	case code == 429:
-		return selector.ClassCapacity
+		return ClassCapacity
 	case code >= 500:
-		return selector.ClassTransient
+		return ClassTransient
 	case code >= 400:
-		return selector.ClassInvalid
+		return ClassInvalid
 	default:
-		return selector.ClassUnknown
+		return ClassUnknown
 	}
 }
 
-// adapterErrToScheduleClass maps domain.ErrorClass → selector.ErrorClass.
+// adapterErrToScheduleClass maps domain.ErrorClass → Class.
 //
 // Not a 1:1 mapping: domain.ErrUnknown falls back to the original fallback
 // class (the one derived from HTTP status).
-func adapterErrToScheduleClass(c domain.ErrorClass, fallback selector.ErrorClass) selector.ErrorClass {
+func adapterErrToScheduleClass(c domain.ErrorClass, fallback Class) Class {
 	switch c {
 	case domain.ErrInvalid:
-		return selector.ClassInvalid
+		return ClassInvalid
 	case domain.ErrPermanent:
-		return selector.ClassPermanent
+		return ClassPermanent
 	case domain.ErrTransient:
-		return selector.ClassTransient
+		return ClassTransient
 	case domain.ErrRateLimit:
-		return selector.ClassCapacity
+		return ClassCapacity
 	default:
 		return fallback
 	}

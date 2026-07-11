@@ -14,12 +14,12 @@ scheduling, and plugin drivers; and `cmd/console` (the control plane), a separat
 business data. This document describes `gateway.yaml`; the console carries its own config.
 
 The gateway requires a SQL DB and Redis to start. Kafka is only required when the outbox driver is set
-to `kafka` / `async_kafka` / `file_and_kafka`. At startup the gateway runs `infra.Migrate` to create
-tables (`schema.sql` is fully `IF NOT EXISTS` idempotent) plus `repo.CheckSchema` for defensive
-validation.
+to `kafka` / `async_kafka` / `file_and_kafka`. Production runs `cmd/migrate` before rollout; gateway
+startup performs read-only migration-version and schema checks. Local configuration may explicitly
+enable `database.auto_migrate`.
 
-The repo layer uses an in-process TTL LRU cache (`pkg/repo/cache.go` + `pkg/repo/cached.go`); it does
-not need any external invalidation channel (CDC / Redis pub-sub, etc). See
+The repo layer uses an in-process TTL LRU cache (`pkg/repo/cache.go` + `pkg/repo/cached.go`). Most
+records rely on TTL; API-key revocation optionally uses best-effort cachebus invalidation. See
 [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details.
 
 ## 2. gateway.yaml
@@ -213,14 +213,10 @@ Field descriptions:
 
 ## 3. Schema migration
 
-At startup the gateway runs `infra.Migrate`, applying `pkg/infra/schema.sql` to the database.
-`schema.sql` uses `CREATE TABLE IF NOT EXISTS` throughout, so it is idempotent and safe to rerun.
-
-For production multi-replica deployments: when multiple gateway instances start simultaneously, each
-runs `infra.Migrate` on its own; since all DDL is `IF NOT EXISTS`, concurrent runs are no-ops for
-already-existing objects and do not conflict. If a release includes a destructive schema change
-(dropping a column / changing a type), the external deployment system should ensure the migration
-completes first during a low-traffic window, then roll out the gateway -- see
+`cmd/migrate` applies pending versions and records them in `schema_migrations`.
+The Helm chart runs one migration Job per release revision. Gateway replicas do not require DDL
+permissions; they only verify that the latest version is present. Destructive changes still use an
+expand/migrate/contract rollout and must complete before incompatible application code -- see
 [00 §3 process startup order](./00-overview.md#3-running-processes).
 
 ## 4. Environment variable overrides

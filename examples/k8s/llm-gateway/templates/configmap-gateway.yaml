@@ -12,17 +12,14 @@ data:
       read_header_timeout: {{ $cfg.server.read_header_timeout }}
       shutdown_timeout: {{ $cfg.server.shutdown_timeout }}
     request:
-      body_limit_bytes: {{ $cfg.request.body_limit_bytes }}
+      body_limit_bytes: {{ printf "%.0f" $cfg.request.body_limit_bytes }}
       timeout: {{ $cfg.request.timeout }}
-    # database / redis / data_key are injected from secrets via env vars; placeholders here keep the yaml valid
+    # Sensitive values are overridden directly from LLM_GATEWAY_* env vars.
     database:
       driver: mysql
-      dsn: "${DATABASE_DSN}"
+      auto_migrate: false
     redis:
-      addr: "${REDIS_ADDR}"
-      password: "${REDIS_PASSWORD}"
       db: 0
-    data_key: "${DATA_KEY}"
     usage_events:
       driver: {{ $cfg.usage_events.driver | quote }}
       {{- if or (eq $cfg.usage_events.driver "file") (eq $cfg.usage_events.driver "file_and_kafka") }}
@@ -54,7 +51,6 @@ data:
     moderation:
       driver: {{ $cfg.moderation.driver | quote }}
       {{- if eq $cfg.moderation.driver "openai" }}
-      api_key: "${MODERATION_API_KEY}"
       {{- end }}
     trace:
       driver: {{ $cfg.trace.driver | quote }}

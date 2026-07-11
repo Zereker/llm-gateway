@@ -54,6 +54,9 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate (2nd): %v", err)
 	}
+	if err := CheckMigrationVersion(ctx, db); err != nil {
+		t.Fatalf("CheckMigrationVersion: %v", err)
+	}
 
 	// Query information_schema.tables on MySQL to verify the tables exist
 	var tables []string

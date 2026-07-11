@@ -11,7 +11,6 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/protocol"
-	"github.com/zereker/llm-gateway/pkg/selector"
 	"github.com/zereker/llm-gateway/pkg/translator"
 )
 
@@ -181,7 +180,7 @@ func TestSend_NoFactory(t *testing.T) {
 	ep := &domain.Endpoint{ID: 1, Vendor: "noone"}
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
-	if err != nil || out.Class != selector.ClassPermanent {
+	if err != nil || out.Class != ClassPermanent {
 		t.Fatalf("want Permanent / nil err; got class=%v err=%v", out.Class, err)
 	}
 	if out.Response != nil {
@@ -197,7 +196,7 @@ func TestSend_NoTranslator(t *testing.T) {
 	ep := &domain.Endpoint{ID: 1, Vendor: "fakev"}
 
 	out, err := sender.Send(context.Background(), ep, newEnv(), nil)
-	if err != nil || out.Class != selector.ClassPermanent {
+	if err != nil || out.Class != ClassPermanent {
 		t.Fatalf("want Permanent / nil err; got class=%v err=%v", out.Class, err)
 	}
 	// After the v0.6 merge: missing translator → composeHandler returns nil → Send reports "no handler"
@@ -219,7 +218,7 @@ func TestSend_TranslateRequestError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("want non-nil err to flag invalid request")
 	}
-	if out.Class != selector.ClassInvalid {
+	if out.Class != ClassInvalid {
 		t.Fatalf("want Invalid; got %v", out.Class)
 	}
 }
@@ -240,7 +239,7 @@ func TestSend_5xxClassifiedTransient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if out.Class != selector.ClassTransient {
+	if out.Class != ClassTransient {
 		t.Fatalf("want Transient; got %v", out.Class)
 	}
 	if out.Response != nil {
@@ -270,7 +269,7 @@ func TestSend_ClassifierRefinesTo429AsCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if out.Class != selector.ClassPermanent {
+	if out.Class != ClassPermanent {
 		t.Fatalf("want Permanent (classifier override); got %v", out.Class)
 	}
 }
@@ -285,7 +284,7 @@ func TestSend_NetworkError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err should be nil for transport-level fail; got %v", err)
 	}
-	if out.Class != selector.ClassTransient {
+	if out.Class != ClassTransient {
 		t.Fatalf("want Transient; got %v", out.Class)
 	}
 }
@@ -398,18 +397,18 @@ func TestForward_StripsContentLength(t *testing.T) {
 func TestClassifyHTTPStatus(t *testing.T) {
 	cases := []struct {
 		code int
-		want selector.ErrorClass
+		want Class
 	}{
-		{200, selector.ClassSuccess},
-		{299, selector.ClassSuccess},
-		{401, selector.ClassPermanent},
-		{403, selector.ClassPermanent},
-		{429, selector.ClassCapacity},
-		{500, selector.ClassTransient},
-		{503, selector.ClassTransient},
-		{400, selector.ClassInvalid},
-		{404, selector.ClassInvalid},
-		{100, selector.ClassUnknown},
+		{200, ClassSuccess},
+		{299, ClassSuccess},
+		{401, ClassPermanent},
+		{403, ClassPermanent},
+		{429, ClassCapacity},
+		{500, ClassTransient},
+		{503, ClassTransient},
+		{400, ClassInvalid},
+		{404, ClassInvalid},
+		{100, ClassUnknown},
 	}
 	for _, tc := range cases {
 		if got := classifyHTTPStatus(tc.code); got != tc.want {
@@ -508,7 +507,7 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 	}
 
 	// AttemptComplete fires once (success)
-	if len(hook.completes) != 1 || hook.completes[0].Class != selector.ClassSuccess {
+	if len(hook.completes) != 1 || hook.completes[0].Class != ClassSuccess {
 		t.Fatalf("AttemptComplete got %v", hook.completes)
 	}
 	if hook.completedEPs[0] != 7 {
@@ -535,10 +534,10 @@ func TestHooks_AttemptCompleteFiredOnFailure(t *testing.T) {
 		t.Fatalf("UpstreamRequest must not fire when factory missing; got %d", len(hook.upstreamReq))
 	}
 	// AttemptComplete: must fire on the failure path, and the outcome must be Permanent
-	if len(hook.completes) != 1 || hook.completes[0].Class != selector.ClassPermanent {
+	if len(hook.completes) != 1 || hook.completes[0].Class != ClassPermanent {
 		t.Fatalf("AttemptComplete on failure: %v", hook.completes)
 	}
-	if out.Class != selector.ClassPermanent {
+	if out.Class != ClassPermanent {
 		t.Fatalf("expected Permanent outcome")
 	}
 }

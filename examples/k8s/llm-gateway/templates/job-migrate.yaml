@@ -1,0 +1,37 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-migrate-%d" (include "llm-gateway.fullname" .) .Release.Revision | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "llm-gateway.gateway.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/migrate"]
+          args: ["-config", "/etc/llm-gateway/gateway.yaml"]
+          env:
+            - name: LLM_GATEWAY_DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "llm-gateway.fullname" . }}-secrets
+                  key: database-dsn
+          volumeMounts:
+            - name: config
+              mountPath: /etc/llm-gateway/gateway.yaml
+              subPath: gateway.yaml
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "llm-gateway.fullname" . }}-gateway
+{{- end }}

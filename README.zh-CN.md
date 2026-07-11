@@ -40,7 +40,7 @@ pkg/dispatch          ── 调度执行时序的**唯一**所有者：
        └── translator (pkg/)   body shape 转换：identity + 跨协议 pairs（init() 注册）
 
 pkg/moderation        ── Moderator + 响应流装饰器 + ctx helpers
-pkg/usage             ── usage 提取 + outbox（file | kafka）+ pricing
+pkg/usage             ── usage 提取 + outbox（file | kafka）；计价在下游完成
 pkg/trace / metric    ── Tracer 抽象（slog / OTel）+ Prom metric name 常量
 
 pkg/repo              ── data access：sqlx Reader/Provider + TTL LRU cache wrapper
@@ -51,7 +51,11 @@ pkg/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
 pkg/domain            ── 跨包共享 typed structs（RequestContext / Endpoint / ...）
 pkg/config            ── gateway.yaml loader
 
-cmd/gateway           ── composition root：buildEngine 装配所有 deps，无业务逻辑
+internal/app/gateway  ── 数据面 composition root
+internal/builtin      ── 内置 vendor / translator 的唯一注册入口
+cmd/gateway           ── 精简的数据面进程入口
+cmd/console           ── 可选控制面 Admin API
+cmd/migrate           ── 版本化数据库迁移命令
 cmd/mockupstream      ── dev/test 假上游
 scripts/{e2e-smoke,seed-e2e}  端到端烟测
 docs/architecture/    设计文档（00-overview 至 08-observability）
@@ -60,17 +64,19 @@ configs/              per-environment 配置（local / prod / docker）
 
 ## 快速开始
 
-Gateway 是单一 binary，启动时会跑 `infra.Migrate` 建表。
+生产环境应先运行 `make run-migrate`。local/docker 配置为了开发便利显式开启
+`database.auto_migrate`。
 业务数据（model_services / endpoints / api_keys / pricing / quota_policies /
-subscriptions / accounts）通过直接向 MySQL 插入 SQL 来维护——
-本仓库不提供控制面 / 管理用的 REST API。
+subscriptions / accounts）既可以直接通过 SQL 维护，也可以使用可选的
+`cmd/console` 控制面；数据面不依赖 console。
 
 ```sh
 # 1. 通过 Docker 启动本地 stack（MySQL + Redis + Redpanda）。
 make stack
 # （或者：docker compose up -d）
 
-# 2. 启动 gateway —— 启动期自动跑 infra.Migrate 建表。
+# 2. 执行迁移并启动 gateway（local 配置也会幂等地自动迁移）。
+make run-migrate
 make run-gateway
 # （或者：go run ./cmd/gateway -config ./configs/local/gateway.yaml）
 
@@ -121,9 +127,9 @@ Gateway 默认监听 `:8080`。用仓库自带的配置时：
 单个环境目录下只有一个文件：
 - `gateway.yaml` —— server / middleware / database / redis / outbox
 
-业务数据存在 MySQL 里。Gateway 启动期跑 `infra.Migrate` 建表；增删改查通过直接
-插入 SQL 完成。repo 层用进程内 TTL LRU 缓存读操作（默认约 30s），因此更新会在
-TTL 窗口内自然生效，不需要额外的失效通道。
+业务数据存在 MySQL 里，`cmd/migrate` 负责版本化 schema 迁移；增删改查可使用 SQL
+或 `cmd/console`。repo 层用进程内 TTL LRU 缓存读操作（默认约 30s）；API Key
+撤销还支持 best-effort cachebus 主动失效，将传播时间缩短到秒内。
 
 修改 `gateway.yaml` 需要重启才能生效。
 

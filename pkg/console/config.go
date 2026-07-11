@@ -14,6 +14,7 @@
 package console
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"time"
@@ -71,7 +72,9 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("console: read config: %w", err)
 		}
-		if err := yaml.Unmarshal(b, &cfg); err != nil {
+		decoder := yaml.NewDecoder(bytes.NewReader(b))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&cfg); err != nil {
 			return nil, fmt.Errorf("console: parse config: %w", err)
 		}
 	}
@@ -89,6 +92,12 @@ func (c *Config) applyEnv() {
 	}
 	if v := os.Getenv("LLM_GATEWAY_DATA_KEY"); v != "" {
 		c.DataKey = v
+	}
+	if v := os.Getenv("LLM_GATEWAY_REDIS_ADDR"); v != "" {
+		c.Redis.Addr = v
+	}
+	if v := os.Getenv("LLM_GATEWAY_REDIS_PASSWORD"); v != "" {
+		c.Redis.Password = v
 	}
 	if v := os.Getenv("LLM_GATEWAY_CONSOLE_TOKENS"); v != "" {
 		// Env shorthand form: comma-separated bare tokens, all assigned the admin role.

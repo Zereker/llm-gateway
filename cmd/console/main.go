@@ -22,27 +22,12 @@ import (
 	"log/slog"
 	"os"
 
+	_ "github.com/zereker/llm-gateway/internal/builtin"
 	"github.com/zereker/llm-gateway/pkg/cachebus"
 	"github.com/zereker/llm-gateway/pkg/console"
 	"github.com/zereker/llm-gateway/pkg/repo"
 	"github.com/zereker/llm-gateway/pkg/server"
 	"github.com/zereker/llm-gateway/pkg/trace"
-
-	// vendor Factory registration (used by endpointcheck's vendor_not_registered check)
-	_ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
-	_ "github.com/zereker/llm-gateway/pkg/protocol/azureopenai"
-	_ "github.com/zereker/llm-gateway/pkg/protocol/bedrock"
-	_ "github.com/zereker/llm-gateway/pkg/protocol/cohere"
-	_ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
-	_ "github.com/zereker/llm-gateway/pkg/protocol/openai"
-
-	// translator registration (used by endpointcheck's no_translator_path check)
-	_ "github.com/zereker/llm-gateway/pkg/translator/anthropic_openai"
-	_ "github.com/zereker/llm-gateway/pkg/translator/identity"
-	_ "github.com/zereker/llm-gateway/pkg/translator/openai_anthropic"
-	_ "github.com/zereker/llm-gateway/pkg/translator/openai_cohere"
-	_ "github.com/zereker/llm-gateway/pkg/translator/openai_gemini"
-	_ "github.com/zereker/llm-gateway/pkg/translator/responses_openai"
 )
 
 func main() {

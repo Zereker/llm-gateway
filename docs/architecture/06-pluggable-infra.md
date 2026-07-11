@@ -350,7 +350,7 @@ Unit tests can use a fake store / fake CooldownManager, but only within the test
 
 ## 8. Repo Cache: deployer SQL → gateway Data Propagation
 
-gateway runs `infra.Migrate` on its own to create tables; business rows are maintained by deployer SQL.
+`cmd/migrate` applies versioned schema changes; business rows are maintained by SQL or the optional console.
 The gateway's data plane is **100% read-only** against MySQL — no INSERT / UPDATE / DELETE.
 The propagation bridge between the two sides doesn't need a real-time invalidation channel (Debezium /
 outbox table, etc.) — it's enough for the repo layer to fall back on an in-process
@@ -387,12 +387,10 @@ deployer --SQL INSERT/UPDATE--> MySQL
 
 ### 8.3 Invalidation Semantics
 
-**No active invalidation** — relies on natural TTL expiry. Once deployer SQL finishes changing a business table, gateway sees the new value within ≤ TTL.
+**TTL by default, targeted invalidation for API keys** — most records rely on natural TTL expiry. Console can publish best-effort cachebus events for API-key revocation; TTL remains the fallback.
 
-- Business table changes (endpoint / api_key enable, quota adjustment, pricing) don't need to take
-  effect within seconds; a 30s window is sufficient.
-- Scenarios that need to take effect immediately are handled via a rolling restart of the gateway pod on
-  the deployer side; no invalidate channel is set up in the data plane.
+- Endpoint, quota and pricing changes normally accept the bounded TTL window.
+- API-key revocation can propagate sub-second through cachebus when console is configured with Redis.
 
 ### 8.4 Not Caching "not found"
 
@@ -506,7 +504,7 @@ In-flight requests that exceed the shutdown timeout get interrupted, and this is
 
 ## 14. Admin Boundary
 
-gateway automatically runs schema migrate on startup; business rows are maintained by deployer SQL. The following tables are within the deployer's maintenance scope:
+`cmd/migrate` owns schema changes; business rows are maintained by deployer SQL or console. The following tables are within that maintenance scope:
 
 - accounts
 - api_keys

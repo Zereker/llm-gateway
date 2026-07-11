@@ -18,7 +18,7 @@
 //   - Function calling / tool_use
 //   - Vision / multi-block content (only the text is taken from the content array)
 //
-// To onboard, add a blank import in cmd/gateway/main.go:
+// To onboard, add a blank import in internal/builtin/builtin.go:
 //
 //	import _ "github.com/zereker/llm-gateway/pkg/protocol/anthropic"
 package anthropic
@@ -26,8 +26,8 @@ package anthropic
 import (
 	"context"
 
-	"github.com/zereker/llm-gateway/pkg/protocol"
 	"github.com/zereker/llm-gateway/pkg/domain"
+	"github.com/zereker/llm-gateway/pkg/protocol"
 )
 
 // Factory implements protocol.Factory.

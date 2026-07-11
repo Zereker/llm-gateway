@@ -13,6 +13,7 @@ import (
 
 	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
+	"github.com/zereker/llm-gateway/pkg/respcache"
 )
 
 // ResponseCache is the response-cache middleware — on a hit it returns the cached response
@@ -147,13 +148,9 @@ type ResponseCacheStore interface {
 	Set(ctx context.Context, key string, resp CachedResponse, ttl time.Duration)
 }
 
-// CachedResponse is one complete cached non-streaming response.
-type CachedResponse struct {
-	StatusCode  int
-	ContentType string
-	Body        []byte
-	Usage       *domain.Usage
-}
+// CachedResponse is retained as an alias for source compatibility. The cache
+// capability owns the value; middleware only consumes it.
+type CachedResponse = respcache.CachedResponse
 
 // cacheKey is the hex of SHA256(accountID | protocol | modality | model | body).
 //

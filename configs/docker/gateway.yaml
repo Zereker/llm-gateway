@@ -16,6 +16,7 @@ server:
 database:
   driver: mysql
   dsn: "root:@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+  auto_migrate: true
 
 redis:
   addr: "redis:6379"

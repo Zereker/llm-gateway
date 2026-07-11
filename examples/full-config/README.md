@@ -34,9 +34,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ## Data management
 
-This project is **data plane only** — it does not provide a control plane REST API. Business tables (accounts / model_services /
-endpoints / api_keys / quota_policies / subscriptions / pricing_versions) are maintained by the
-deployer via direct SQL insert / update / delete.
+The data plane is independent; an optional `cmd/console` control-plane API is also provided. Business
+tables can be maintained by console or direct SQL insert / update / delete.
 
 Handling of encrypted / hash columns:
 
@@ -46,7 +45,7 @@ Handling of encrypted / hash columns:
   the plaintext is never stored in the DB, and is given to the user to keep.
 
 After data is written, the gateway gradually picks up the new values through the repo layer's in-process TTL LRU cache (30s by default).
-The deployer does not need to perform any invalidation; accept this delay, since business table changes don't need to take effect within seconds.
+Most changes propagate by TTL. API-key revocation can additionally use console cachebus for best-effort fast invalidation.
 
 ## Differences from configs/local
 
@@ -60,8 +59,7 @@ The deployer does not need to perform any invalidation; accept this delay, since
 
 ## Troubleshooting
 
-- **gateway startup reports "schema check failed"**: gateway runs `infra.Migrate` at startup;
-  if MySQL permissions are insufficient to create tables, run `pkg/infra/schema.sql` manually
+- **gateway startup reports "schema check failed"**: run `cmd/migrate` before starting gateway
 - **request returns 401**: check whether `api_keys.api_key_hash` matches the client's `Authorization` header
   as computed by `repo.HashAPIKey()`
 - **request returns 503 "no endpoint succeeded"**: check whether the endpoint's auth/routing are paired correctly,

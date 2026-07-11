@@ -5,38 +5,27 @@ A reference chart for deploying llm-gateway to Kubernetes. Includes:
 - gateway multi-replica + HPA
 - ConfigMap injecting yaml configuration
 - Secret holding DSN / data_key / moderation API key
-- envsubst substituting env vars into yaml at startup (avoids plaintext config files)
+- direct `LLM_GATEWAY_*` secret environment overrides
+- one versioned schema-migration Job per Helm release revision
 
 **Prerequisites** (not bundled with the chart): MySQL 8.0+ / Redis 7+ / Kafka 3+ (cloud managed recommended for production).
 
 ## Image convention
 
-You need to build an image containing the `llm-gateway` binary + `envsubst` (gettext package).
-Suggested Dockerfile:
+The repository Dockerfile's `gateway` target contains both `/app/gateway` and
+`/app/migrate`; no shell templating tool is required:
 
 ```dockerfile
 FROM golang:1.22 AS builder
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/llm-gateway ./cmd/gateway
+RUN CGO_ENABLED=0 go build -o /out/gateway ./cmd/gateway
+RUN CGO_ENABLED=0 go build -o /out/migrate ./cmd/migrate
 
 FROM alpine:3.20
-RUN apk add --no-cache gettext ca-certificates
-COPY --from=builder /out/llm-gateway /usr/local/bin/
+COPY --from=builder /out/gateway /app/gateway
+COPY --from=builder /out/migrate /app/migrate
 USER 65532:65532
-```
-
-Or distroless (no envsubst; modify the chart so gateway reads env vars directly):
-
-```dockerfile
-FROM golang:1.22 AS builder
-WORKDIR /src
-COPY . .
-RUN CGO_ENABLED=0 go build -o /out/llm-gateway ./cmd/gateway
-
-FROM gcr.io/distroless/base-debian12:nonroot
-COPY --from=builder /out/llm-gateway /usr/local/bin/
-USER nonroot
 ```
 
 ## Installation
@@ -61,15 +50,16 @@ kubectl logs -l app.kubernetes.io/component=gateway --tail=50
 
 ## Business data management
 
-This chart does not provide a control plane — business data (accounts / endpoints / api_keys, etc.) is
-written directly into MySQL via SQL by the deployer. Recommended approach for production:
+The chart deploys only the data plane. Business data can be written directly
+through SQL or managed by a separately deployed `cmd/console` control plane.
 
 - Put SQL files into a separate GitOps repo (ArgoCD app / kubectl job)
 - Use a K8s Job + initContainer to run INSERT scripts before gateway starts
 - Or have the business team write directly to the DB via their own management system (CRM / billing system)
 
-At startup, gateway automatically runs `infra.Migrate` to create tables (`schema.sql` is fully idempotent with `IF NOT EXISTS`),
-so starting multiple replicas simultaneously is safe.
+The chart creates a migration Job for every Helm release revision. Gateway
+replicas perform a read-only schema-version check and fail fast if migration
+has not completed yet.
 
 ## Upgrade / Rollback
 

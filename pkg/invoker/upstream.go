@@ -23,7 +23,7 @@
 //	    if ep == nil { break }
 //	    handler := lookups.Get(ep, srcProto)
 //	    outcome, err := sender.Send(ctx, ep, env, rawBody, handler)
-//	    sel.Report(ep, outcome.ToScheduleResult())
+//	    sel.Report(ep, mapOutcome(outcome))
 //	    if outcome.Success() {
 //	        sender.Forward(w, outcome.Response, outcome.Handler.NewResponseStream())
 //	        break
@@ -40,7 +40,6 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/pkg/protocol"
-	"github.com/zereker/llm-gateway/pkg/selector"
 )
 
 // HTTPDoer abstracts the HTTP client. *http.Client satisfies it
@@ -63,6 +62,36 @@ const (
 	StagePrepare
 )
 
+// Class is invoker's transport/protocol outcome classification. Higher-level
+// scheduling packages translate it at their adapter boundary.
+type Class int
+
+const (
+	ClassUnknown Class = iota
+	ClassSuccess
+	ClassTransient
+	ClassCapacity
+	ClassPermanent
+	ClassInvalid
+)
+
+func (c Class) String() string {
+	switch c {
+	case ClassSuccess:
+		return "success"
+	case ClassTransient:
+		return "transient"
+	case ClassCapacity:
+		return "capacity"
+	case ClassPermanent:
+		return "permanent"
+	case ClassInvalid:
+		return "invalid"
+	default:
+		return "unknown"
+	}
+}
+
 // Outcome is the result of Send.
 //
 // Success = Class==ClassSuccess && Response != nil. Response.Body is closed
@@ -72,7 +101,7 @@ const (
 type Outcome struct {
 	Response *http.Response // populated only on success; nil on failure
 	Stage    Stage          // which phase produced this Outcome
-	Class    selector.ErrorClass
+	Class    Class
 	HTTPCode int
 	Reason   string
 	Latency  time.Duration
@@ -93,18 +122,7 @@ type Outcome struct {
 // Success reports whether the outcome succeeded (HTTP 2xx + no
 // protocol-level error).
 func (o Outcome) Success() bool {
-	return o.Class == selector.ClassSuccess && o.Response != nil
-}
-
-// ToScheduleResult converts to the selector.Result that sel.Report expects.
-func (o Outcome) ToScheduleResult() selector.Result {
-	return selector.Result{
-		Class:      o.Class,
-		HTTPCode:   o.HTTPCode,
-		Reason:     o.Reason,
-		Latency:    o.Latency,
-		RetryAfter: o.RetryAfter,
-	}
+	return o.Class == ClassSuccess && o.Response != nil
 }
 
 // ErrInvalidRequest is returned when Send fails to translate the request

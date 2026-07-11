@@ -15,9 +15,11 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -344,6 +346,32 @@ type CooldownConfig struct {
 // The MySQL DSN is a connection string, and Outbox.File.Path is expected to be
 // an absolute path; both are kept as literal values.
 func Load(path string) (*Config, error) {
+	c, err := decode(path)
+	if err != nil {
+		return nil, err
+	}
+	c.ApplyEnv()
+	c.ApplyDefaults()
+	if err := c.Validate(); err != nil {
+		return nil, fmt.Errorf("config: validate %q: %w", path, err)
+	}
+	return c, nil
+}
+
+// LoadDatabase reads only the database startup settings needed by cmd/migrate.
+// It still parses the complete YAML strictly, but does not validate unrelated
+// runtime drivers such as moderation or outbox.
+func LoadDatabase(path string) (infra.DBConfig, error) {
+	c, err := decode(path)
+	if err != nil {
+		return infra.DBConfig{}, err
+	}
+	c.ApplyEnv()
+	c.ApplyDefaults()
+	return c.Database, nil
+}
+
+func decode(path string) (*Config, error) {
 	if path == "" {
 		return nil, errors.New("config: empty path")
 	}
@@ -352,14 +380,45 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: read %q: %w", path, err)
 	}
 	var c Config
-	if err := yaml.Unmarshal(data, &c); err != nil {
-		return nil, fmt.Errorf("config: parse %q: %w", path, err)
-	}
-	c.ApplyDefaults()
-	if err := c.Validate(); err != nil {
-		return nil, fmt.Errorf("config: validate %q: %w", path, err)
+	if len(bytes.TrimSpace(data)) > 0 {
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&c); err != nil {
+			return nil, fmt.Errorf("config: parse %q: %w", path, err)
+		}
 	}
 	return &c, nil
+}
+
+// ApplyEnv applies the production secret overrides shared with cmd/console.
+// YAML remains the source for non-sensitive behavioral configuration.
+func (c *Config) ApplyEnv() {
+	setStringFromEnv(&c.Database.DSN, "LLM_GATEWAY_DATABASE_DSN")
+	setStringFromEnv(&c.Redis.Addr, "LLM_GATEWAY_REDIS_ADDR")
+	setStringFromEnv(&c.Redis.Password, "LLM_GATEWAY_REDIS_PASSWORD")
+	setStringFromEnv(&c.DataKey, "LLM_GATEWAY_DATA_KEY")
+	setStringFromEnv(&c.Moderation.APIKey, "LLM_GATEWAY_MODERATION_API_KEY")
+	setStringFromEnv(&c.Trace.Endpoint, "LLM_GATEWAY_OTEL_ENDPOINT")
+	if v := os.Getenv("LLM_GATEWAY_KAFKA_BROKERS"); v != "" {
+		c.UsageEvents.Kafka.Brokers = splitNonEmpty(v)
+	}
+}
+
+func setStringFromEnv(dst *string, key string) {
+	if v := os.Getenv(key); v != "" {
+		*dst = v
+	}
+}
+
+func splitNonEmpty(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // Validate does fail-fast validation (docs/07 §5). **It runs after
@@ -426,11 +485,54 @@ func (c *Config) Validate() error {
 		// downstream fan-out is left to fluent-bit / vector (see docs/05 §2 + docs/07 §2).
 		return fmt.Errorf("content_log.driver=%q not supported (use none|file; kafka handling has moved to fluent-bit/vector)", c.ContentLog.Driver)
 	}
+	switch c.Budget.Driver {
+	case "", "alwayspass", "inmemory":
+	default:
+		return fmt.Errorf("budget.driver=%q not supported (use alwayspass|inmemory)", c.Budget.Driver)
+	}
+	switch c.Moderation.Driver {
+	case "", "none":
+	case "openai":
+		if c.Moderation.APIKey == "" {
+			return errors.New("moderation.driver=openai requires moderation.api_key or LLM_GATEWAY_MODERATION_API_KEY")
+		}
+	default:
+		return fmt.Errorf("moderation.driver=%q not supported (use none|openai)", c.Moderation.Driver)
+	}
+	switch c.Scoring.Driver {
+	case "", "inmemory", "redis":
+	default:
+		return fmt.Errorf("scoring.driver=%q not supported (use inmemory|redis)", c.Scoring.Driver)
+	}
+	switch c.Selector.Picker {
+	case "", "weighted_random", "p2c":
+	default:
+		return fmt.Errorf("selector.picker=%q not supported (use weighted_random|p2c)", c.Selector.Picker)
+	}
+	validFilters := map[string]bool{"cooldown": true, "limit_read": true, "weighted_random": true, "prefix_cache": true, "busy": true}
+	for _, filter := range c.Selector.Filters {
+		if !validFilters[filter] {
+			return fmt.Errorf("selector.filters contains unsupported value %q", filter)
+		}
+	}
+	if c.Cache.Semantic.Enabled {
+		if c.Cache.Semantic.Embedder.Driver != "openai" {
+			return fmt.Errorf("cache.semantic.embedder.driver=%q not supported (use openai)", c.Cache.Semantic.Embedder.Driver)
+		}
+		if c.Cache.Semantic.Embedder.APIKey == "" {
+			return errors.New("cache.semantic embedder requires api_key")
+		}
+	}
 	if c.ContentLog.Driver == "file" && c.ContentLog.File.Path == "" {
 		return errors.New("content_log.driver=file requires file.path non-empty")
 	}
 	if c.ContentLog.Backpressure == "block" && c.ContentLog.BlockTimeout <= 0 {
 		return errors.New("content_log.backpressure=block requires block_timeout > 0")
+	}
+	switch c.ContentLog.Backpressure {
+	case "", "drop_oldest", "drop_newest", "block":
+	default:
+		return fmt.Errorf("content_log.backpressure=%q not supported", c.ContentLog.Backpressure)
 	}
 	return nil
 }

@@ -8,7 +8,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/zereker/llm-gateway/pkg/embed"
-	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
 // RedisSemanticStore is the Redis implementation of the semantic cache (middleware.SemanticCacheStore).
@@ -39,19 +38,19 @@ func NewRedisSemanticStore(rdb *redis.Client, prefix string, maxEntries int) *Re
 func (s *RedisSemanticStore) key(ns string) string { return s.prefix + ":sem:" + ns }
 
 type semanticEntry struct {
-	Vec  []float32                 `json:"vec"`
-	Resp middleware.CachedResponse `json:"resp"`
+	Vec  []float32      `json:"vec"`
+	Resp CachedResponse `json:"resp"`
 }
 
 // Lookup brute-force scans every entry in the namespace and returns the response with the
 // highest cosine similarity that is ≥ threshold.
-func (s *RedisSemanticStore) Lookup(ctx context.Context, ns string, vec []float32, threshold float64) (middleware.CachedResponse, bool) {
+func (s *RedisSemanticStore) Lookup(ctx context.Context, ns string, vec []float32, threshold float64) (CachedResponse, bool) {
 	items, err := s.rdb.LRange(ctx, s.key(ns), 0, -1).Result()
 	if err != nil {
-		return middleware.CachedResponse{}, false
+		return CachedResponse{}, false
 	}
 	var best float64
-	var bestResp middleware.CachedResponse
+	var bestResp CachedResponse
 	found := false
 	for _, it := range items {
 		var e semanticEntry
@@ -68,7 +67,7 @@ func (s *RedisSemanticStore) Lookup(ctx context.Context, ns string, vec []float3
 
 // Store does LPUSH of the new entry + LTRIM to the cap + refreshes the TTL (in one pipeline).
 // Best-effort.
-func (s *RedisSemanticStore) Store(ctx context.Context, ns string, vec []float32, resp middleware.CachedResponse, ttl time.Duration) {
+func (s *RedisSemanticStore) Store(ctx context.Context, ns string, vec []float32, resp CachedResponse, ttl time.Duration) {
 	b, err := json.Marshal(semanticEntry{Vec: vec, Resp: resp})
 	if err != nil {
 		return
@@ -85,4 +84,3 @@ func (s *RedisSemanticStore) Store(ctx context.Context, ns string, vec []float32
 }
 
 // Compile-time interface assertion.
-var _ middleware.SemanticCacheStore = (*RedisSemanticStore)(nil)

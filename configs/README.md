@@ -25,11 +25,13 @@ This project's target architecture **does not provide zero-external-dependency s
 - Redis backs M6 rate limit buckets and scheduler cooldown state.
 - Kafka/Redpanda is only required when the outbox driver is set to kafka; file outbox can be used for local debugging.
 
-The schema is created by the gateway automatically running `pkg/infra.Migrate` at startup (`schema.sql` is fully
-idempotent with `IF NOT EXISTS`); `repo.CheckSchema` performs a defensive check after Migrate.
+Schema changes are versioned in `pkg/infra` and applied with `cmd/migrate`.
+The local/docker configs set `database.auto_migrate: true` for convenience;
+production should run the migration command or Helm migration Job first.
+Gateway startup verifies the migration version and then runs `repo.CheckSchema`.
 
-Business data (accounts / endpoints / api_keys, etc.) is written directly via SQL by the deployer —
-this project only implements the data plane, without a control plane REST API.
+Business data can be written directly via SQL or managed through the optional
+`cmd/console` Admin API. The gateway data plane never depends on the console.
 
 ## Path Resolution
 
@@ -53,6 +55,7 @@ request:
 database:
   driver: mysql
   dsn: "user:pass@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+  auto_migrate: false # true only for local development
 
 redis:
   addr: "redis:6379"

@@ -112,7 +112,10 @@ type Logger struct {
 	cfg     Config
 	queue   chan *Record
 	stop    chan struct{}
+	done    chan struct{}
 	wg      sync.WaitGroup
+	close   sync.Once
+	closed  atomic.Bool
 	dropped atomic.Int64
 
 	// Per-request sampling state (decides sampling per request; avoids a single request
@@ -138,6 +141,7 @@ func New(cfg Config) *Logger {
 		cfg:   cfg,
 		queue: make(chan *Record, cfg.BufferSize),
 		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
 	}
 	l.wg.Add(1)
 	go l.worker()
@@ -146,11 +150,12 @@ func New(cfg Config) *Logger {
 
 // Close gracefully stops the worker: exits after draining the queue. Blocks until the worker exits.
 func (l *Logger) Close(ctx context.Context) error {
-	close(l.stop)
-	done := make(chan struct{})
-	go func() { l.wg.Wait(); close(done) }()
+	l.close.Do(func() {
+		l.closed.Store(true)
+		close(l.stop)
+	})
 	select {
-	case <-done:
+	case <-l.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -191,7 +196,7 @@ func (l *Logger) OnClientChunk(ctx context.Context, ep *domain.Endpoint, chunk [
 // =============================================================================
 
 func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction, body []byte) {
-	if l == nil || l.cfg.Publisher == nil {
+	if l == nil || l.cfg.Publisher == nil || l.closed.Load() {
 		return
 	}
 	if !l.shouldSample() {
@@ -300,7 +305,10 @@ func (l *Logger) shouldSample() bool {
 
 // worker single-threadedly consumes the queue, calling Publisher.Publish.
 func (l *Logger) worker() {
-	defer l.wg.Done()
+	defer func() {
+		l.wg.Done()
+		close(l.done)
+	}()
 	for {
 		select {
 		case <-l.stop:

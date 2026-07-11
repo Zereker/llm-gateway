@@ -75,7 +75,7 @@ Request-level state shared across middlewares goes through the `*domain.RequestC
     - `pkg/protocol/<vendor>/`: the vendor HTTP layer (URL / auth header / Content-Type) — Factory + Session implementation; `init()` calls `protocol.RegisterFactory("<vendor>", Factory{})`.
     - `pkg/translator/<src>_<dst>/`: protocol shape conversion (OpenAI ↔ Anthropic / OpenAI ↔ Gemini / identity, etc.), `init()` calls `translator.Register(...)`.
     - `pkg/protocol/quirks`: an endpoint-level body + header tweak DSL (stored in the `endpoints.quirks` JSON column); driven by deployer config, not registered in code.
-- Adding a new vendor / translator: register to the registry inside the sub-package's `init()`; `cmd/gateway/main.go` triggers registration via a blank import (`_ "..."`). **Do not modify the main path.**
+- Adding a new vendor / translator: register inside the sub-package's `init()` and add its single blank import to `internal/builtin/builtin.go`. Gateway and console both consume that built-in set.
 - As of v0.7, `pkg/adapter` has been merged into `pkg/protocol`; references to `pkg/adapter/<vendor>/` in older docs are historical paths — the code now lives under `pkg/protocol/<vendor>/`.
 
 ### Client Protocol Scope
@@ -84,7 +84,7 @@ The gateway only exposes three **client**-facing entry points: OpenAI / Anthropi
 
 ### Pluggable infra (P5)
 
-All external dependencies go through interfaces: `BudgetGate` / `Moderator` / `Tracer` / `OutboxPublisher` / `ratelimit.Store` / `schedule.CooldownManager` / `repo.*Provider`. The `build*` functions in `cmd/gateway/main.go` are the dependency-injection assembly points (switching on `cfg.Driver`) — **an unrecognized driver always panics** (fail-fast to surface config errors).
+All external dependencies go through interfaces: `BudgetGate` / `Moderator` / `Tracer` / `OutboxPublisher` / `ratelimit.Store` / `schedule.CooldownManager` / `repo.*Provider`. Dependency assembly lives in `internal/app/gateway`; config rejects unknown drivers before assembly.
 
 ### Error Classification (P7)
 

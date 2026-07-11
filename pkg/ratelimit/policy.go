@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zereker/llm-gateway/pkg/domain"
 	"github.com/zereker/llm-gateway/pkg/metric"
-	"github.com/zereker/llm-gateway/pkg/repo"
 )
 
 // PolicyRule is the typed shape after parsing quota_policies.rule_json:
@@ -31,8 +31,8 @@ import (
 //     could exceed the default limit
 //   - **additive** (now): per-model is always ≤ default; total usage is strictly bounded by default
 type PolicyRule struct {
-	Default  *repo.QuotaConfig           `json:"default,omitempty"`
-	PerModel map[string]repo.QuotaConfig `json:"per_model,omitempty"`
+	Default  *domain.QuotaConfig           `json:"default,omitempty"`
+	PerModel map[string]domain.QuotaConfig `json:"per_model,omitempty"`
 }
 
 // CachedPolicy is a pre-parsed policy cached with LRU/TTL semantics.
@@ -44,7 +44,13 @@ type CachedPolicy struct {
 	Rule *PolicyRule
 }
 
-// PolicyCache is the cache layer over QuotaPolicyProvider.
+// PolicySource is the persistence-neutral input port used by PolicyCache.
+// SQL/repository records are translated at the composition boundary.
+type PolicySource interface {
+	RuleJSONByID(ctx context.Context, id int64) ([]byte, error)
+}
+
+// PolicyCache is the cache layer over PolicySource.
 //
 // **Design**: sync.Map + a per-entry expiration time (lazy eviction).
 // The number of policies is expected to be in the dozens, so an LRU isn't needed; TTL bounds the
@@ -54,7 +60,7 @@ type CachedPolicy struct {
 // during the window — this is acceptable (rate limiting doesn't need strict real-time consistency;
 // call Invalidate manually or restart for larger changes).
 type PolicyCache struct {
-	upstream repo.QuotaPolicyProvider
+	upstream PolicySource
 	ttl      time.Duration
 	entries  sync.Map // int64 → *cacheEntry
 }
@@ -65,7 +71,7 @@ type cacheEntry struct {
 }
 
 // NewPolicyCache wraps upstream with a cache; TTL defaults to 30s.
-func NewPolicyCache(upstream repo.QuotaPolicyProvider, ttl time.Duration) *PolicyCache {
+func NewPolicyCache(upstream PolicySource, ttl time.Duration) *PolicyCache {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
@@ -90,14 +96,14 @@ func (c *PolicyCache) Get(ctx context.Context, id int64) (*PolicyRule, error) {
 		// expired: fall through and re-query
 	}
 
-	pol, err := c.upstream.GetByID(ctx, id)
+	raw, err := c.upstream.RuleJSONByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("policy_cache: upstream: %w", err)
 	}
 	var rule *PolicyRule
-	if pol != nil && len(pol.RuleJSON) > 0 {
+	if len(raw) > 0 {
 		var r PolicyRule
-		if err := json.Unmarshal(pol.RuleJSON, &r); err != nil {
+		if err := json.Unmarshal(raw, &r); err != nil {
 			return nil, fmt.Errorf("policy_cache: parse rule_json id=%d: %w", id, err)
 		}
 		rule = &r
@@ -156,8 +162,8 @@ func (r *PolicyRule) PickRulesAdditive(model string) []ScopedRule {
 
 // ScopedRule is "the rate-limit config for a given scope". M6 builds a Bucket from this.
 type ScopedRule struct {
-	Scope string            // "*" (default) or the actual model name
-	Quota *repo.QuotaConfig // any of RPM/TPM/RPS/ConcurrentRequests may be set
+	Scope string              // "*" (default) or the actual model name
+	Quota *domain.QuotaConfig // any of RPM/TPM/RPS/ConcurrentRequests may be set
 }
 
 // Compile-time: ensure the signature stays stable.

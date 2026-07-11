@@ -502,7 +502,7 @@ retrying the same endpoint, so it can Switch directly to the next model or Abort
 3. If the protocol the client will use doesn't match the vendor's upstream protocol,
    and `pkg/translator/<src>_<dst>/` isn't registered yet — add a new translator
    implementation and register it in `init()`.
-4. Add a blank import in `cmd/gateway/main.go`:
+4. Add the implementation's blank import once in `internal/builtin/builtin.go`:
    - `_ "github.com/zereker/llm-gateway/pkg/protocol/<vendor>"`
    - `_ "github.com/zereker/llm-gateway/pkg/translator/<pair>"` (identity is already
      imported by default)

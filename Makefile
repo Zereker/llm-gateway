@@ -10,7 +10,7 @@ stack-stop:             ## Stop containers (keep data volumes)
 stack-clean:            ## Stop containers and remove data volumes (full reset)
 	docker compose down -v
 
-.PHONY: test test-integration build run-gateway run-mockupstream
+.PHONY: test test-integration build run-gateway run-console run-migrate run-mockupstream
 test:                   ## Run unit tests (SQL tests depend on MYSQL_DSN; skipped if unset)
 	go test ./...
 
@@ -23,12 +23,15 @@ build:                  ## Compile cmd/gateway / cmd/console / cmd/mockupstream 
 	mkdir -p bin
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway              ./cmd/gateway
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-console      ./cmd/console
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-migrate      ./cmd/migrate
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-mockup       ./cmd/mockupstream
 
 run-gateway:            ## Run gateway (default config; runs infra.Migrate to create tables at startup)
 	go run ./cmd/gateway -config ./configs/local/gateway.yaml
 run-console:            ## Run the control-plane Admin API (:8081; shares MySQL + KEK with gateway)
 	go run ./cmd/console -config ./configs/local/console.yaml
+run-migrate:            ## Apply versioned database migrations
+	go run ./cmd/migrate -config ./configs/local/gateway.yaml
 run-mockupstream:       ## Run the mock upstream (listens on :9090)
 	MOCK_ADDR=:9090 go run ./cmd/mockupstream
 

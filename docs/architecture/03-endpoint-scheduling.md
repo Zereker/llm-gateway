@@ -260,7 +260,7 @@ written to `rc.ModelChain`. M7 no longer reads the header or calls catalog/subsc
 Dispatch uses `dispatch.Class` (the outer Verdict field), while the selector internally uses the semantically
 equivalent `selector.ErrorClass`; the two are mapped bidirectionally in `pkg/dispatch/adapters/` (the
 dispatch→selector direction is in `adapters/selector.go`, and the selector→dispatch direction is in
-`adapters/invoker.go`'s `selectorClassToDispatch`), keeping dispatch independent of selector types and the selector
+`adapters/invoker.go`'s `invokerClassToDispatch`), keeping dispatch independent of invoker/selector types and the selector
 independent of dispatch types:
 
 | Category | Meaning | Keep retrying? |

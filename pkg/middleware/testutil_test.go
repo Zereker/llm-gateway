@@ -144,13 +144,13 @@ type stubQPProvider struct {
 	calls    atomic.Int32
 }
 
-func (p *stubQPProvider) GetByID(_ context.Context, id int64) (*repo.QuotaPolicy, error) {
+func (p *stubQPProvider) RuleJSONByID(_ context.Context, id int64) ([]byte, error) {
 	p.calls.Add(1)
 	if p.err != nil {
 		return nil, p.err
 	}
 	if pol, ok := p.policies[id]; ok {
-		return pol, nil
+		return pol.RuleJSON, nil
 	}
 	return nil, nil
 }

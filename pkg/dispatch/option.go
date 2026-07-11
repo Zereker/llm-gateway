@@ -7,7 +7,7 @@ type Option func(*Dispatcher)
 
 // WithCandidates injects a CandidateSource implementation. Required.
 //
-// Typical implementation: cmd/gateway/middleware_adapters.go's
+// Typical implementation: internal/app/gateway/adapters.go's
 // adaptEndpoints bridges repo.EndpointReader into dispatch.CandidateSource.
 func WithCandidates(c CandidateSource) Option {
 	return func(d *Dispatcher) { d.candidates = c }

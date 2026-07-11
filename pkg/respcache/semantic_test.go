@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/zereker/llm-gateway/pkg/middleware"
 )
 
 func TestRedisSemanticStore_Roundtrip(t *testing.T) {
@@ -29,8 +27,8 @@ func TestRedisSemanticStore_Roundtrip(t *testing.T) {
 	ns := "openai|m"
 
 	// Store two entries with orthogonal vectors
-	s.Store(ctx, ns, []float32{1, 0, 0}, middleware.CachedResponse{StatusCode: 200, Body: []byte("weather-resp")}, time.Minute)
-	s.Store(ctx, ns, []float32{0, 1, 0}, middleware.CachedResponse{StatusCode: 200, Body: []byte("code-resp")}, time.Minute)
+	s.Store(ctx, ns, []float32{1, 0, 0}, CachedResponse{StatusCode: 200, Body: []byte("weather-resp")}, time.Minute)
+	s.Store(ctx, ns, []float32{0, 1, 0}, CachedResponse{StatusCode: 200, Body: []byte("code-resp")}, time.Minute)
 
 	// Query a vector close to [1,0,0] → hits weather-resp
 	if r, ok := s.Lookup(ctx, ns, []float32{0.98, 0.02, 0}, 0.9); !ok || string(r.Body) != "weather-resp" {

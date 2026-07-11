@@ -10,6 +10,10 @@ image:
   tag: "latest"
   pullPolicy: IfNotPresent
 
+# Run one versioned schema-migration Job per Helm release revision.
+migration:
+  enabled: true
+
 # Gateway data plane
 gateway:
   replicaCount: 3

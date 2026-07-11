@@ -192,6 +192,6 @@ func parseFallbackModels(c *gin.Context, primary string) []string {
 }
 
 // The old AdaptRepoCatalog / AdaptRepoSubscriptions have moved to
-// cmd/gateway/middleware_adapters.go (adaptCatalog / adaptSubscriptions);
+// internal/app/gateway/adapters.go (adaptCatalog / adaptSubscriptions);
 // placed at the composition root to avoid a middleware → ratelimit → repo →
 // middleware import cycle. middleware no longer imports pkg/repo.
