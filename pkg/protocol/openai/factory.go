@@ -1,21 +1,20 @@
 // Package openai is the vendor implementation of the OpenAI protocol (chat
 // completions).
 //
-// init() registers into the protocol registry: (vendor, srcProto) → Handler,
-// covering three src protocol combinations:
+// Combined with the identity / anthropic_openai / responses_openai translators,
+// it serves three src protocol combinations:
 //
 //	(openai, OpenAI)     ── identity passthrough
 //	(openai, Anthropic)  ── anthropic_openai translator
 //	(openai, Responses)  ── responses_openai translator
 //
-// To wire up OpenAI, add a blank import in internal/builtin/builtin.go:
-//
-//	import _ "github.com/zereker/llm-gateway/pkg/protocol/openai"
+// internal/builtin.NewLookup wires the Factory into the built-in lookup under
+// the vendor name "openai".
 //
 // This Factory is also reused directly for OpenAI-compatible upstreams
 // (Azure / DeepSeek / vLLM-OpenAI / Ollama), as long as Endpoint.URL points
-// at their respective /v1/chat/completions path — see aliases.go for alias
-// registration.
+// at their respective /v1/chat/completions path — see aliases.go for the alias
+// names NewLookup registers.
 package openai
 
 import (

@@ -2,9 +2,10 @@
 // client protocol equals the upstream protocol, where the request is nearly
 // pass-through and the response only does SSE pass-through + usage extraction.
 //
-// init() registers ProtoOpenAI ↔ ProtoOpenAI (OpenAI client → OpenAI-compatible
-// upstream, covering the real OpenAI as well as DeepSeek / ARK / Qwen and other
-// vendors in the OpenAI protocol family).
+// It provides the ProtoOpenAI ↔ ProtoOpenAI translator (OpenAI client →
+// OpenAI-compatible upstream, covering the real OpenAI as well as DeepSeek /
+// ARK / Qwen and other vendors in the OpenAI protocol family); internal/builtin
+// includes it in the translator registry via identity.All().
 //
 // Future pure pass-through cases such as Anthropic ↔ Anthropic / Gemini ↔ Gemini
 // are likewise extended within this package.

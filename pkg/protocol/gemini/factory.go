@@ -1,6 +1,6 @@
 // Package gemini is the vendor Factory implementation for the Google Gemini protocol.
 //
-// init() registers itself into the protocol vendor registry under the vendor name "gemini".
+// internal/builtin.NewLookup wires this Factory into the built-in lookup under the vendor name "gemini".
 //
 // Two auth paths are supported (the adapter picks automatically based on ep.Auth.Type):
 //   - AI Studio: auth.type = "gemini-key", a public API key (x-goog-api-key header)
@@ -21,9 +21,8 @@
 //   - Function calling / tool_use
 //   - Vision / multimodal (parts only support text)
 //
-// To wire it in, add a blank import in internal/builtin/builtin.go:
-//
-//	import _ "github.com/zereker/llm-gateway/pkg/protocol/gemini"
+// To wire it in, add it to the factory map in internal/builtin.NewLookup under
+// the vendor name "gemini".
 package gemini
 
 import (

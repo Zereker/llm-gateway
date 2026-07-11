@@ -12,7 +12,7 @@ This document records the request chain for `pkg/router` + `pkg/middleware`, alo
 - audio: `/v1/audio/{speech,transcriptions,translations}`.
 - embedding: `/v1/embeddings`.
 
-Each route file declares its own complete `/v1/...` path; a global `/v1` group is not used. Each modality file explicitly lists its own middleware chain, avoiding a shared helper that would tie different modalities together.
+Each route file declares its own complete `/v1/...` path; a global `/v1` group is not used. The shared security / quota / observability middleware order lives in `pkg/router/pipeline.go` (`llmRouteGroup` + `registerLLMRoute`); each modality file supplies only how it differs — path, source protocol, modality, and its Cache stage — via a `routeSpec`. Modality-specific stages (e.g. a future image multipart parser) are added as `routeSpec` fields rather than by re-inlining a whole chain.
 
 ## 2. RequestContext Storage
 

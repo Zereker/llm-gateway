@@ -153,14 +153,14 @@ func TestCompose_PivotMismatchPanics(t *testing.T) {
 // =============================================================================
 
 func TestFindVia_DirectWinsOverComposition(t *testing.T) {
-	Reset()
-	t.Cleanup(Reset)
 	direct := fakePairTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoGemini}
-	Register(direct)
-	Register(fakePairTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
-	Register(fakePairTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoGemini})
+	reg := NewRegistry(
+		direct,
+		fakePairTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI},
+		fakePairTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoGemini},
+	)
 
-	got := FindVia(domain.ProtoAnthropic, domain.ProtoGemini, domain.ProtoOpenAI)
+	got := reg.FindVia(domain.ProtoAnthropic, domain.ProtoGemini, domain.ProtoOpenAI)
 	if got == nil {
 		t.Fatal("FindVia returned nil")
 	}
@@ -170,12 +170,12 @@ func TestFindVia_DirectWinsOverComposition(t *testing.T) {
 }
 
 func TestFindVia_ComposesWhenDirectMissing(t *testing.T) {
-	Reset()
-	t.Cleanup(Reset)
-	Register(fakePairTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
-	Register(fakePairTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoGemini})
+	reg := NewRegistry(
+		fakePairTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI},
+		fakePairTranslator{src: domain.ProtoOpenAI, tgt: domain.ProtoGemini},
+	)
 
-	got := FindVia(domain.ProtoAnthropic, domain.ProtoGemini, domain.ProtoOpenAI)
+	got := reg.FindVia(domain.ProtoAnthropic, domain.ProtoGemini, domain.ProtoOpenAI)
 	if got == nil {
 		t.Fatal("FindVia should compose a translator when both legs are present")
 	}
@@ -188,12 +188,10 @@ func TestFindVia_ComposesWhenDirectMissing(t *testing.T) {
 }
 
 func TestFindVia_MissingLegReturnsNil(t *testing.T) {
-	Reset()
-	t.Cleanup(Reset)
-	Register(fakePairTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
 	// missing openai→gemini leg
+	reg := NewRegistry(fakePairTranslator{src: domain.ProtoAnthropic, tgt: domain.ProtoOpenAI})
 
-	if got := FindVia(domain.ProtoAnthropic, domain.ProtoGemini, domain.ProtoOpenAI); got != nil {
+	if got := reg.FindVia(domain.ProtoAnthropic, domain.ProtoGemini, domain.ProtoOpenAI); got != nil {
 		t.Errorf("should return nil when a leg is missing, got %T", got)
 	}
 }

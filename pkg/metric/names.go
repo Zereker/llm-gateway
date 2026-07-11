@@ -84,6 +84,14 @@ const (
 	EndpointMisconfiguredTotal = "llm_gateway_endpoint_misconfigured_total" // vendor / reason
 )
 
+// === Protocol translation (docs/02) ===
+const (
+	// TranslatorFeatureDroppedTotal counts request features a text-only
+	// cross-protocol translator drops (labels: src / tgt / feature, where
+	// feature is tools | tool_calls | multimodal).
+	TranslatorFeatureDroppedTotal = "llm_gateway_translator_feature_dropped_total"
+)
+
 // === Response Cache (docs/08) ===
 const (
 	ResponseCacheTotal = "llm_gateway_response_cache_total" // result = hit | miss | store | bypass

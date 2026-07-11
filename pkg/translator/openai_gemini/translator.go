@@ -41,6 +41,7 @@ func (openaiGemini) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiGemini) Target() domain.Protocol { return domain.ProtoGemini }
 
 func (openaiGemini) TranslateRequest(srcBody []byte) ([]byte, error) {
+	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoGemini, srcBody)
 	return translateRequest(srcBody)
 }
 

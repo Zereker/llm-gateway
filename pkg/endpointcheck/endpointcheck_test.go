@@ -6,6 +6,14 @@ import (
 	"github.com/zereker/llm-gateway/pkg/domain"
 )
 
+// emptyCatalog is a Catalog with no vendors and no translator paths, used to
+// exercise the misconfiguration reasons that don't depend on a populated
+// capability set.
+type emptyCatalog struct{}
+
+func (emptyCatalog) HasVendor(string) bool                  { return false }
+func (emptyCatalog) CanTranslate(_, _ domain.Protocol) bool { return false }
+
 func TestValidateRoutingURL(t *testing.T) {
 	cases := []struct {
 		url  string
@@ -37,7 +45,7 @@ func TestValidate_UnknownProtocolAndBadQuirks(t *testing.T) {
 		Routing:  domain.RoutingConfig{URL: "https://ok.example.com/v1"},
 		Quirks:   []byte(`{"strips": ["x"]}`), // typo'd field
 	}
-	reasons := Validate(ep)
+	reasons := Validator{Catalog: emptyCatalog{}}.Validate(ep)
 
 	want := map[string]bool{
 		"unknown_protocol":      false,
