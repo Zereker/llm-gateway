@@ -19,11 +19,10 @@ import (
 // Envelope, pinning down "which protocol this path is." Envelope no longer
 // does path-based heuristics (DefaultDetector has been removed).
 //
-// Each modality lists its own required middleware; there's no shared
-// buildChain extracted, because modalities are expected to diverge going
-// forward (chat adds a Moderator / image adds a multipart Parser / audio adds
-// an ASR-only ParamSpec, etc.). As of v0.1 the chains happen to be identical
-// across modalities, but they're kept independent in code.
+// The shared security/quota/observability order lives in pipeline.go
+// (llmRouteGroup + registerLLMRoute); each modality supplies only how it
+// differs via routeSpec (path, protocol, modality, and its Cache stage). Chat
+// routes use the exact-match response cache (deps.Cache).
 func registerChatRoutes(engine *gin.Engine, deps Deps) {
 	// Group the pre-Envelope shared middleware so it doesn't need to be
 	// repeated on every POST; the "/" path prefix keeps the group from

@@ -170,10 +170,10 @@ func recordMigration(ctx context.Context, db *sqlx.DB, version int) error {
 func CheckMigrationVersion(ctx context.Context, db *sqlx.DB) error {
 	var version int
 	if err := db.GetContext(ctx, &version, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`); err != nil {
-		return fmt.Errorf("infra: schema migration state unavailable; run llm-gateway-migrate: %w", err)
+		return fmt.Errorf("infra: schema migration state unavailable; run the migrate binary (cmd/migrate): %w", err)
 	}
 	if version != latestSchemaVersion {
-		return fmt.Errorf("infra: schema version %d, require %d; run llm-gateway-migrate", version, latestSchemaVersion)
+		return fmt.Errorf("infra: schema version %d, require %d; run the migrate binary (cmd/migrate)", version, latestSchemaVersion)
 	}
 	return nil
 }

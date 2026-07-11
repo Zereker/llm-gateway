@@ -57,9 +57,21 @@ through SQL or managed by a separately deployed `cmd/console` control plane.
 - Use a K8s Job + initContainer to run INSERT scripts before gateway starts
 - Or have the business team write directly to the DB via their own management system (CRM / billing system)
 
-The chart creates a migration Job for every Helm release revision. Gateway
-replicas perform a read-only schema-version check and fail fast if migration
-has not completed yet.
+The chart creates a migration Job for every Helm release revision. The Job runs
+as a Helm `pre-install,pre-upgrade` hook, so Helm waits for migration to finish
+before rolling out (or restarting) the gateway. Gateway replicas perform a
+read-only schema-version check and fail fast if migration has not completed yet.
+
+**Upgrading from a pre-`cmd/migrate` deployment**: a database created by an older
+gateway (which migrated at startup) has all tables but no `schema_migrations`
+table, so a new gateway will refuse to boot until migration has run once. When
+using this chart the pre-upgrade Job handles it automatically; if you run the
+gateway outside the chart, run the migrate binary once before starting the new
+gateway:
+
+```bash
+/app/migrate -config /etc/llm-gateway/gateway.yaml   # idempotent; backfills schema_migrations
+```
 
 ## Upgrade / Rollback
 

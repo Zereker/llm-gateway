@@ -37,3 +37,5 @@ jobs:
         run: helm template test examples/k8s/llm-gateway > /tmp/llm-gateway.yaml
       - name: Image command smoke test
         run: docker run --rm --entrypoint /app/gateway llm-gateway:ci -h
+      - name: Migrate binary present in image
+        run: docker run --rm --entrypoint /bin/sh llm-gateway:ci -c "test -x /app/migrate && echo migrate-binary-ok"
