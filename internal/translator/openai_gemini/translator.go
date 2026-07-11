@@ -46,7 +46,7 @@ func (openaiGemini) TranslateRequest(srcBody []byte) ([]byte, error) {
 }
 
 func (openaiGemini) NewResponseHandler() translator.ResponseHandler {
-	return &responseHandler{ex: extractor.NewGemini()}
+	return &responseHandler{ex: extractor.NewGemini(), roleSent: map[int]bool{}}
 }
 
 // responseHandler adapts to the upstream format:
@@ -75,7 +75,7 @@ type responseHandler struct {
 	buf      []byte // accumulates in JSON mode / staging buffer while mode is undetermined
 	lineBuf  []byte // line buffer for SSE mode (keeps a half-line across Feed calls)
 	id       string
-	roleSent bool // SSE: whether the role delta has already been sent
+	roleSent map[int]bool // SSE: which candidate indices have already had their role delta sent (n>1 -> multiple candidates stream in parallel)
 	usage    *domain.Usage
 }
 
@@ -170,7 +170,9 @@ func (h *responseHandler) drainSSE() []byte {
 }
 
 // translateChunk translates a single Gemini SSE chunk (a complete geminiResponse JSON
-// containing incremental candidates) into an OpenAI chat.completion.chunk SSE.
+// containing incremental candidates) into one or more OpenAI chat.completion.chunk SSE
+// lines — one per candidate when the client requested n>1 (generationConfig.candidateCount),
+// each keeping its own OpenAI choice index so the client can tell candidates apart.
 // usageMetadata only appears in the last chunk.
 func (h *responseHandler) translateChunk(data []byte) []byte {
 	ev := gjson.ParseBytes(data)
@@ -183,48 +185,56 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 		}
 		h.usage = &domain.Usage{Input: in, Output: outTok, Total: total, Source: domain.UsageSourceUpstream, Confidence: domain.UsageConfidenceExact}
 	}
-	cand := ev.Get("candidates.0")
-	if !cand.Exists() {
+	candidates := ev.Get("candidates")
+	if !candidates.IsArray() || len(candidates.Array()) == 0 {
 		// No candidate: if the prompt was blocked (blockReason non-empty), synthesize a
 		// content_filter closing chunk so the client doesn't get a completely empty
 		// stream (no content, no finish_reason).
 		if br := ev.Get("promptFeedback.blockReason").String(); br != "" {
 			var out []byte
-			if !h.roleSent {
-				h.roleSent = true
-				out = append(out, h.chunk(map[string]any{"role": "assistant"}, "")...)
-			}
-			return append(out, h.chunk(map[string]any{}, "content_filter")...)
+			out = append(out, h.roleChunkIfNeeded(0)...)
+			return append(out, h.chunk(0, map[string]any{}, "content_filter")...)
 		}
 		return nil
 	}
 	var out []byte
-	if !h.roleSent {
-		h.roleSent = true
-		out = append(out, h.chunk(map[string]any{"role": "assistant"}, "")...)
-	}
-	var text strings.Builder
-	cand.Get("content.parts").ForEach(func(_, p gjson.Result) bool {
-		text.WriteString(p.Get("text").String())
+	candidates.ForEach(func(_, cand gjson.Result) bool {
+		idx := int(cand.Get("index").Int())
+		out = append(out, h.roleChunkIfNeeded(idx)...)
+		var text strings.Builder
+		cand.Get("content.parts").ForEach(func(_, p gjson.Result) bool {
+			text.WriteString(p.Get("text").String())
+			return true
+		})
+		if t := text.String(); t != "" {
+			out = append(out, h.chunk(idx, map[string]any{"content": t}, "")...)
+		}
+		// finishReason is only non-empty on this candidate's last chunk — only send a
+		// closing chunk with finish_reason when it's non-empty.
+		if raw := cand.Get("finishReason").String(); raw != "" {
+			out = append(out, h.chunk(idx, map[string]any{}, mapFinishReason(raw))...)
+		}
 		return true
 	})
-	if t := text.String(); t != "" {
-		out = append(out, h.chunk(map[string]any{"content": t}, "")...)
-	}
-	// finishReason is only non-empty on the last chunk — only send a closing chunk with
-	// finish_reason when it's non-empty.
-	if raw := cand.Get("finishReason").String(); raw != "" {
-		out = append(out, h.chunk(map[string]any{}, mapFinishReason(raw))...)
-	}
 	return out
 }
 
+// roleChunkIfNeeded emits the one-time role:"assistant" delta for a given
+// candidate index, the first time that index is seen.
+func (h *responseHandler) roleChunkIfNeeded(idx int) []byte {
+	if h.roleSent[idx] {
+		return nil
+	}
+	h.roleSent[idx] = true
+	return h.chunk(idx, map[string]any{"role": "assistant"}, "")
+}
+
 // chunk builds one SSE line for an OpenAI chat.completion.chunk.
-func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
+func (h *responseHandler) chunk(idx int, delta map[string]any, finish string) []byte {
 	if h.id == "" {
 		h.id = "chatcmpl-" + randID()
 	}
-	choice := map[string]any{"index": 0, "delta": delta, "finish_reason": nil}
+	choice := map[string]any{"index": idx, "delta": delta, "finish_reason": nil}
 	if finish != "" {
 		choice["finish_reason"] = finish
 	}
@@ -240,13 +250,15 @@ func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
 // =============================================================================
 
 type openAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	MaxTokens   *uint32         `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stop        json.RawMessage `json:"stop,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []openAIMessage `json:"messages"`
+	MaxTokens      *uint32         `json:"max_tokens,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
+	TopP           *float64        `json:"top_p,omitempty"`
+	Stop           json.RawMessage `json:"stop,omitempty"`
+	Stream         bool            `json:"stream,omitempty"`
+	N              *int            `json:"n,omitempty"`
+	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
 }
 
 type openAIMessage struct {
@@ -274,10 +286,13 @@ type geminiPart struct {
 }
 
 type geminiGenConfig struct {
-	Temperature     *float64 `json:"temperature,omitempty"`
-	TopP            *float64 `json:"topP,omitempty"`
-	MaxOutputTokens *uint32  `json:"maxOutputTokens,omitempty"`
-	StopSequences   []string `json:"stopSequences,omitempty"`
+	Temperature      *float64        `json:"temperature,omitempty"`
+	TopP             *float64        `json:"topP,omitempty"`
+	MaxOutputTokens  *uint32         `json:"maxOutputTokens,omitempty"`
+	StopSequences    []string        `json:"stopSequences,omitempty"`
+	CandidateCount   *int            `json:"candidateCount,omitempty"`
+	ResponseMimeType string          `json:"responseMimeType,omitempty"`
+	ResponseSchema   json.RawMessage `json:"responseSchema,omitempty"`
 }
 
 type geminiResponse struct {
@@ -394,11 +409,52 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			hasCfg = true
 		}
 	}
+	if in.N != nil {
+		cfg.CandidateCount = in.N
+		hasCfg = true
+	}
+	if len(in.ResponseFormat) > 0 {
+		if mime, schema := mapResponseFormat(in.ResponseFormat); mime != "" {
+			cfg.ResponseMimeType = mime
+			cfg.ResponseSchema = schema
+			hasCfg = true
+		}
+	}
 	if hasCfg {
 		out.GenerationConfig = &cfg
 	}
 
 	return json.Marshal(out)
+}
+
+// mapResponseFormat converts an OpenAI response_format into Gemini's
+// responseMimeType/responseSchema. json_schema's schema is passed through
+// as-is: Gemini's responseSchema is a restricted OpenAPI-3.0 subset (no
+// $ref, limited keyword support), not full JSON Schema, so an elaborate
+// client schema may still be rejected upstream — full sanitization is out of
+// scope here (matches LiteLLM's apply_response_schema_transformation, which
+// also passes the schema through without rewriting it).
+func mapResponseFormat(raw json.RawMessage) (mimeType string, schema json.RawMessage) {
+	var rf struct {
+		Type       string `json:"type"`
+		JSONSchema *struct {
+			Schema json.RawMessage `json:"schema"`
+		} `json:"json_schema"`
+	}
+	if err := json.Unmarshal(raw, &rf); err != nil {
+		return "", nil
+	}
+	switch rf.Type {
+	case "json_object":
+		return "application/json", nil
+	case "json_schema":
+		if rf.JSONSchema != nil {
+			return "application/json", rf.JSONSchema.Schema
+		}
+		return "application/json", nil
+	default: // "text" or unrecognized: no responseMimeType override
+		return "", nil
+	}
 }
 
 // parseStopField normalizes the OpenAI stop field (which may be a string or []string)
