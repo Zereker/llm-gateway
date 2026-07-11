@@ -6,6 +6,32 @@ import (
 	"testing"
 )
 
+// TestMapFinishReason_Completeness covers every documented OpenAI
+// finish_reason value, including the deprecated function_call, so it can't
+// silently collapse into "end_turn" and hide a pending tool call.
+func TestMapFinishReason_Completeness(t *testing.T) {
+	anthropicValidStopReasons := map[string]bool{
+		"end_turn": true, "max_tokens": true, "stop_sequence": true,
+		"tool_use": true, "refusal": true, "pause_turn": true,
+	}
+	for in, want := range map[string]string{
+		"stop":           "end_turn",
+		"length":         "max_tokens",
+		"content_filter": "stop_sequence",
+		"tool_calls":     "tool_use",
+		"function_call":  "tool_use",
+		"":               "end_turn",
+	} {
+		got := mapFinishReason(in)
+		if got != want {
+			t.Errorf("mapFinishReason(%q) = %q, want %q", in, got, want)
+		}
+		if !anthropicValidStopReasons[got] {
+			t.Errorf("mapFinishReason(%q) = %q, not a valid Anthropic stop_reason", in, got)
+		}
+	}
+}
+
 // parseSSEData extracts the JSON payload of every `data:` line from an Anthropic
 // SSE stream, decoding each into a generic map for assertions.
 func parseSSEData(t *testing.T, out string) []map[string]any {

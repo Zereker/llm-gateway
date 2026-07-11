@@ -778,7 +778,11 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	return body, nil
 }
 
-// mapStopReason converts Anthropic stop_reason → OpenAI finish_reason.
+// mapStopReason converts Anthropic stop_reason → OpenAI finish_reason. Every
+// documented Anthropic value (end_turn/max_tokens/stop_sequence/tool_use/
+// refusal/pause_turn) is mapped explicitly, so a new stop_reason added
+// upstream fails a completeness test instead of silently collapsing into
+// "stop" and losing the refusal/pause signal.
 func mapStopReason(r string) string {
 	switch r {
 	case "end_turn", "stop_sequence", "":
@@ -787,6 +791,14 @@ func mapStopReason(r string) string {
 		return "length"
 	case "tool_use":
 		return "tool_calls"
+	case "refusal":
+		// Claude declined to generate a response; content_filter is the
+		// closest OpenAI-compatible signal that this isn't a clean stop.
+		return "content_filter"
+	case "pause_turn":
+		// A server-tool-use turn paused mid-generation; OpenAI has no
+		// equivalent, so treat it like a normal stop.
+		return "stop"
 	default:
 		return "stop"
 	}

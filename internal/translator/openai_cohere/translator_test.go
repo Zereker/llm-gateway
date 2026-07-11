@@ -96,8 +96,20 @@ func TestResponseHandler_ErrorPassthrough(t *testing.T) {
 	}
 }
 
+// TestFinishReasonMap covers every documented Cohere v2 finish_reason value
+// (https://docs.cohere.com/reference/chat) so a value like TOOL_CALL can't
+// silently fall through a lowercase default into an invalid OpenAI enum
+// member ("tool_call" instead of "tool_calls" — the bug this regresses).
 func TestFinishReasonMap(t *testing.T) {
-	for in, want := range map[string]string{"COMPLETE": "stop", "MAX_TOKENS": "length", "STOP_SEQUENCE": "stop", "": "stop"} {
+	for in, want := range map[string]string{
+		"COMPLETE":      "stop",
+		"MAX_TOKENS":    "length",
+		"STOP_SEQUENCE": "stop",
+		"TOOL_CALL":     "tool_calls",
+		"ERROR":         "stop",
+		"TIMEOUT":       "stop",
+		"":              "stop",
+	} {
 		if got := mapFinishReason(in); got != want {
 			t.Errorf("mapFinishReason(%q) = %q, want %q", in, got, want)
 		}
