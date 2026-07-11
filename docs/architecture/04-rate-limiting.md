@@ -239,6 +239,14 @@ Key constraints:
 - Only the endpoint that will finally be tried may deduct endpoint RPM/RPS.
 - Endpoint TPM is also post-deducted based on real usage.
 - Read-only filtering may only use `SnapshotBatch`.
+- **Reserve release**: if an attempt fails *before the endpoint is ever contacted*
+  (handler-lookup miss / call-construction failure), the dispatcher rolls back
+  the reserve via `Store.ReleaseBatch` so a config gap doesn't silently throttle
+  a healthy endpoint. A genuine upstream response — including a 429/5xx — keeps
+  the reservation: we did send the endpoint a request, and self-throttling on
+  its rejection is the intended behavior. `ReleaseBatch` decrements the current
+  window (used only on fast-failing paths, so window-boundary drift is
+  negligible and always in the caller's favor).
 
 ## 11. PolicyCache
 
