@@ -10,8 +10,19 @@
 //     :streamGenerateContent?alt=sse, and responseHandler incrementally translates
 //     Gemini SSE chunks into OpenAI SSE chunks (see below). Non-streaming uses
 //     buffer-then-translate (translated all at once in Flush).
+//   - function calling: tools -> Gemini tools[].functionDeclarations, tool_choice ->
+//     toolConfig.functionCallingConfig (mode + allowedFunctionNames — verified against
+//     the official generativelanguage v1beta content.proto and LiteLLM's
+//     convert_to_gemini_tool_call_invoke/_result). Gemini's functionCall.args and
+//     functionResponse.response are JSON **objects**, not strings — the one asymmetry
+//     from OpenAI/Anthropic/Cohere's function.arguments string, handled by
+//     parsing/serializing at the boundary. Content.role is only ever "user" or "model"
+//     (per the proto; there is no "tool"/"function" role) — a tool result becomes a
+//     "user" turn carrying a functionResponse part, matching how consecutive tool
+//     messages already get merged into one turn elsewhere in this codebase
+//     (openai_anthropic does the same for Anthropic).
 //
-// **Not supported**: function calling / tool_use / vision (parts only support text).
+// **Not supported**: vision (parts only support text and function call/response).
 //
 // See translateRequest / translateResponse for the field mapping.
 package openai_gemini
@@ -41,7 +52,9 @@ func (openaiGemini) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiGemini) Target() domain.Protocol { return domain.ProtoGemini }
 
 func (openaiGemini) TranslateRequest(srcBody []byte) ([]byte, error) {
-	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoGemini, srcBody)
+	// tools/tool_calls now translate (see the package doc); only multimodal
+	// content is still dropped, so restrict the warning to that.
+	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoGemini, srcBody, "multimodal")
 	return translateRequest(srcBody)
 }
 
@@ -202,17 +215,47 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 		idx := int(cand.Get("index").Int())
 		out = append(out, h.roleChunkIfNeeded(idx)...)
 		var text strings.Builder
+		var toolCalls []any
+		// Gemini emits a functionCall as one complete part (name+args
+		// together), not incremental argument tokens the way OpenAI/Cohere
+		// stream tool calls — so each one becomes a single, fully-formed
+		// tool_calls delta chunk rather than a start/delta/end sequence.
 		cand.Get("content.parts").ForEach(func(_, p gjson.Result) bool {
+			if fc := p.Get("functionCall"); fc.Exists() {
+				args := fc.Get("args").Raw
+				if args == "" {
+					args = "{}"
+				}
+				toolCalls = append(toolCalls, map[string]any{
+					"index": len(toolCalls),
+					"id":    "call_" + randID(),
+					"type":  "function",
+					"function": map[string]any{
+						"name":      fc.Get("name").String(),
+						"arguments": args,
+					},
+				})
+				return true
+			}
 			text.WriteString(p.Get("text").String())
 			return true
 		})
 		if t := text.String(); t != "" {
 			out = append(out, h.chunk(idx, map[string]any{"content": t}, "")...)
 		}
+		if len(toolCalls) > 0 {
+			out = append(out, h.chunk(idx, map[string]any{"tool_calls": toolCalls}, "")...)
+		}
 		// finishReason is only non-empty on this candidate's last chunk — only send a
 		// closing chunk with finish_reason when it's non-empty.
 		if raw := cand.Get("finishReason").String(); raw != "" {
-			out = append(out, h.chunk(idx, map[string]any{}, mapFinishReason(raw))...)
+			finish := mapFinishReason(raw)
+			if len(toolCalls) > 0 {
+				// Trust the message content over Gemini's raw finishReason, same
+				// override as the non-streaming path.
+				finish = "tool_calls"
+			}
+			out = append(out, h.chunk(idx, map[string]any{}, finish)...)
 		}
 		return true
 	})
@@ -259,11 +302,50 @@ type openAIRequest struct {
 	Stream         bool            `json:"stream,omitempty"`
 	N              *int            `json:"n,omitempty"`
 	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
+	Tools          []openAITool    `json:"tools,omitempty"`
+	ToolChoice     json.RawMessage `json:"tool_choice,omitempty"`
 }
 
+// openAIMessage.Content is raw so a tool-calling assistant message (whose
+// content is often null) and a plain string both unmarshal without error —
+// a fixed `string` field is what used to make any null/array content hard-
+// crash json.Unmarshal instead of translating or failing cleanly.
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    json.RawMessage  `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+}
+
+type openAITool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description,omitempty"`
+		Parameters  json.RawMessage `json:"parameters,omitempty"`
+	} `json:"function"`
+}
+
+// openAIToolCall.Function.Arguments is a JSON string (OpenAI's convention);
+// Gemini's functionCall.args is a JSON object — the conversion happens at
+// the call site (json.Unmarshal into a json.RawMessage), matching LiteLLM's
+// convert_to_gemini_tool_call_invoke.
+type openAIToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// contentToString extracts plain text from an OpenAI message's content field
+// (a JSON string) — null (a tool-calling assistant message with no text) and
+// anything else normalize to "".
+func contentToString(raw json.RawMessage) string {
+	var s string
+	_ = json.Unmarshal(raw, &s)
+	return s
 }
 
 // =============================================================================
@@ -271,9 +353,11 @@ type openAIMessage struct {
 // =============================================================================
 
 type geminiRequest struct {
-	Contents          []geminiContent  `json:"contents"`
-	SystemInstruction *geminiContent   `json:"systemInstruction,omitempty"`
-	GenerationConfig  *geminiGenConfig `json:"generationConfig,omitempty"`
+	Contents          []geminiContent   `json:"contents"`
+	SystemInstruction *geminiContent    `json:"systemInstruction,omitempty"`
+	GenerationConfig  *geminiGenConfig  `json:"generationConfig,omitempty"`
+	Tools             []geminiTool      `json:"tools,omitempty"`
+	ToolConfig        *geminiToolConfig `json:"toolConfig,omitempty"`
 }
 
 type geminiContent struct {
@@ -281,8 +365,54 @@ type geminiContent struct {
 	Parts []geminiPart `json:"parts"`
 }
 
+// geminiPart is a union (Gemini's Part is a oneof): exactly one of Text /
+// FunctionCall / FunctionResponse is set on any given part.
 type geminiPart struct {
-	Text string `json:"text"`
+	Text             string                  `json:"text,omitempty"`
+	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+// geminiFunctionCall.Args is a JSON **object**, not a string — the one
+// asymmetry from OpenAI/Anthropic/Cohere's function.arguments string
+// (verified against generativelanguage v1beta content.proto).
+type geminiFunctionCall struct {
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+// geminiFunctionResponse.Response is a JSON object (proto Struct), required.
+// Name must match the functionCall.name it answers.
+type geminiFunctionResponse struct {
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response"`
+}
+
+// geminiTool wraps every function declaration into a single Tools[] entry —
+// the conventional shape (one Tool per request carrying all declarations),
+// not one Tool per function.
+type geminiTool struct {
+	FunctionDeclarations []geminiFunctionDeclaration `json:"functionDeclarations,omitempty"`
+}
+
+type geminiFunctionDeclaration struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// geminiToolConfig.FunctionCallingConfig.Mode is one of AUTO (default,
+// model decides) / ANY (must call a function; combined with
+// AllowedFunctionNames this forces one specific function — Gemini can do
+// this natively, unlike Cohere v2 which only forces *some* call) / NONE
+// (forbidden to call any function).
+type geminiToolConfig struct {
+	FunctionCallingConfig geminiFunctionCallingConfig `json:"functionCallingConfig"`
+}
+
+type geminiFunctionCallingConfig struct {
+	Mode                 string   `json:"mode"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
 }
 
 type geminiGenConfig struct {
@@ -316,29 +446,10 @@ type geminiUsageMeta struct {
 }
 
 // =============================================================================
-// OpenAI response-side shape (translated back to the client)
+// OpenAI response-side shape (translated back to the client via map[string]any
+// — see buildAssistantMessage — so content can be null when tool_calls carries
+// the turn, which a fixed-string field can't represent)
 // =============================================================================
-
-type openAIResponse struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	Model   string         `json:"model"`
-	Choices []openAIChoice `json:"choices"`
-	Usage   openAIUsage    `json:"usage"`
-}
-
-type openAIChoice struct {
-	Index        int           `json:"index"`
-	Message      openAIMessage `json:"message"`
-	FinishReason string        `json:"finish_reason"`
-}
-
-type openAIUsage struct {
-	PromptTokens     int64 `json:"prompt_tokens"`
-	CompletionTokens int64 `json:"completion_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
-}
 
 // =============================================================================
 // Translation functions
@@ -350,13 +461,19 @@ type openAIUsage struct {
 //
 //	messages[role=system]           -> systemInstruction
 //	messages[role=user]             -> contents[role=user, parts[].text]
-//	messages[role=assistant]        -> contents[role=model, parts[].text]
+//	messages[role=assistant]        -> contents[role=model, parts[].text] (+ functionCall
+//	                                    parts for tool_calls)
+//	messages[role=tool]             -> contents[role=user, parts[].functionResponse]
+//	                                    (consecutive tool messages merge into one turn —
+//	                                    Gemini expects all parallel-call results together)
+//	tools                            -> tools[0].functionDeclarations
+//	tool_choice                      -> toolConfig.functionCallingConfig
 //	max_tokens                      -> generationConfig.maxOutputTokens
 //	temperature                     -> generationConfig.temperature
 //	top_p                           -> generationConfig.topP
 //	stop (string or []string)       -> generationConfig.stopSequences []string
 //
-// Unsupported roles (tool / function) return an error.
+// Unsupported roles return an error.
 func translateRequest(rawBody []byte) ([]byte, error) {
 	var in openAIRequest
 	if err := json.Unmarshal(rawBody, &in); err != nil {
@@ -364,7 +481,28 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	}
 
 	out := geminiRequest{}
+	// toolCallName resolves a tool result's tool_call_id back to the function
+	// name it answers — OpenAI's "tool" message only carries the ID, but
+	// Gemini's functionResponse requires the name (matches LiteLLM's
+	// last_message_with_tool_calls tracking).
+	toolCallName := map[string]string{}
+	// pendingToolParts accumulates functionResponse parts across consecutive
+	// "tool" messages so they land in a single Gemini "user" turn — the same
+	// discipline openai_anthropic already applies to consecutive tool
+	// messages, and Gemini expects all of one turn's parallel-call results
+	// together rather than as separate turns.
+	var pendingToolParts []geminiPart
+	flushToolParts := func() {
+		if len(pendingToolParts) > 0 {
+			out.Contents = append(out.Contents, geminiContent{Role: "user", Parts: pendingToolParts})
+			pendingToolParts = nil
+		}
+	}
+
 	for _, m := range in.Messages {
+		if m.Role != "tool" {
+			flushToolParts()
+		}
 		switch m.Role {
 		case "system":
 			// Merge every system message into one systemInstruction — a client
@@ -373,20 +511,55 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			if out.SystemInstruction == nil {
 				out.SystemInstruction = &geminiContent{}
 			}
-			out.SystemInstruction.Parts = append(out.SystemInstruction.Parts, geminiPart{Text: m.Content})
+			out.SystemInstruction.Parts = append(out.SystemInstruction.Parts, geminiPart{Text: contentToString(m.Content)})
 		case "assistant":
-			out.Contents = append(out.Contents, geminiContent{
-				Role:  "model",
-				Parts: []geminiPart{{Text: m.Content}},
-			})
+			var parts []geminiPart
+			if text := contentToString(m.Content); text != "" {
+				parts = append(parts, geminiPart{Text: text})
+			}
+			for _, tc := range m.ToolCalls {
+				var args json.RawMessage
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+					args = json.RawMessage(`{}`)
+				}
+				parts = append(parts, geminiPart{FunctionCall: &geminiFunctionCall{Name: tc.Function.Name, Args: args}})
+				toolCallName[tc.ID] = tc.Function.Name
+			}
+			out.Contents = append(out.Contents, geminiContent{Role: "model", Parts: parts})
 		case "user":
 			out.Contents = append(out.Contents, geminiContent{
 				Role:  "user",
-				Parts: []geminiPart{{Text: m.Content}},
+				Parts: []geminiPart{{Text: contentToString(m.Content)}},
 			})
+		case "tool":
+			pendingToolParts = append(pendingToolParts, geminiPart{FunctionResponse: &geminiFunctionResponse{
+				Name:     toolCallName[m.ToolCallID],
+				Response: wrapToolResultAsResponse(contentToString(m.Content)),
+			}})
 		default:
-			return nil, fmt.Errorf("unsupported message role %q (v0.5 openai_gemini handles system/user/assistant only)", m.Role)
+			return nil, fmt.Errorf("unsupported message role %q (v0.5 openai_gemini handles system/user/assistant/tool only)", m.Role)
 		}
+	}
+	flushToolParts()
+
+	if len(in.Tools) > 0 {
+		var decls []geminiFunctionDeclaration
+		for _, t := range in.Tools {
+			if t.Type != "" && t.Type != "function" {
+				continue
+			}
+			decls = append(decls, geminiFunctionDeclaration{
+				Name:        t.Function.Name,
+				Description: t.Function.Description,
+				Parameters:  t.Function.Parameters,
+			})
+		}
+		if len(decls) > 0 {
+			out.Tools = []geminiTool{{FunctionDeclarations: decls}}
+		}
+	}
+	if len(in.ToolChoice) > 0 {
+		out.ToolConfig = mapToolChoice(in.ToolChoice)
 	}
 
 	hasCfg := false
@@ -457,6 +630,53 @@ func mapResponseFormat(raw json.RawMessage) (mimeType string, schema json.RawMes
 	}
 }
 
+// mapToolChoice converts an OpenAI tool_choice into Gemini's toolConfig.
+// Unlike Cohere v2, Gemini can natively force one *specific* named function
+// via allowedFunctionNames — no lossy fallback needed for that case.
+func mapToolChoice(raw json.RawMessage) *geminiToolConfig {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch s {
+		case "required":
+			return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "ANY"}}
+		case "none":
+			return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "NONE"}}
+		default: // "auto" or unrecognized -> omit; AUTO is Gemini's default anyway
+			return nil
+		}
+	}
+	var obj struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type == "function" && obj.Function.Name != "" {
+		return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{
+			Mode:                 "ANY",
+			AllowedFunctionNames: []string{obj.Function.Name},
+		}}
+	}
+	return nil
+}
+
+// wrapToolResultAsResponse builds a Gemini functionResponse.response object
+// (a required JSON object) from an OpenAI tool message's plain-string
+// content: a JSON object is preserved as-is, anything else (plain text, a
+// JSON array, a bare number/string) is wrapped as {"content": text} — the
+// same rule LiteLLM's convert_to_gemini_tool_call_result uses.
+func wrapToolResultAsResponse(content string) json.RawMessage {
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "{") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &obj); err == nil {
+			return json.RawMessage(trimmed)
+		}
+	}
+	b, _ := json.Marshal(map[string]string{"content": content})
+	return b
+}
+
 // parseStopField normalizes the OpenAI stop field (which may be a string or []string)
 // into a []string.
 func parseStopField(raw json.RawMessage) []string {
@@ -493,25 +713,26 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 		return nil, fmt.Errorf("gemini response parse: %w", err)
 	}
 
-	out := openAIResponse{
-		ID:      "chatcmpl-" + randID(),
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   requestModel,
+	out := map[string]any{
+		"id":      "chatcmpl-" + randID(),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   requestModel,
 	}
+	var choices []map[string]any
 	for _, cand := range in.Candidates {
-		var content string
-		if len(cand.Content.Parts) > 0 {
-			var b strings.Builder
-			for _, p := range cand.Content.Parts {
-				b.WriteString(p.Text)
-			}
-			content = b.String()
+		message, hasToolCalls := buildAssistantMessage(cand.Content.Parts)
+		finish := mapFinishReason(cand.FinishReason)
+		if hasToolCalls {
+			// Trust the message content over Gemini's raw finishReason (often
+			// just "STOP") — the same override LiteLLM's _check_finish_reason
+			// applies, so an OpenAI client's tool_calls branch actually fires.
+			finish = "tool_calls"
 		}
-		out.Choices = append(out.Choices, openAIChoice{
-			Index:        cand.Index,
-			Message:      openAIMessage{Role: "assistant", Content: content},
-			FinishReason: mapFinishReason(cand.FinishReason),
+		choices = append(choices, map[string]any{
+			"index":         cand.Index,
+			"message":       message,
+			"finish_reason": finish,
 		})
 	}
 
@@ -520,31 +741,74 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 	// **non-empty array** — marshaling a nil slice produces "choices":null, which
 	// fails SDK deserialization. Synthesize a choice with empty content;
 	// finish_reason=content_filter when blocked.
-	if len(out.Choices) == 0 {
+	if len(choices) == 0 {
 		finish := "stop"
 		if in.PromptFeedback != nil && in.PromptFeedback.BlockReason != "" {
 			finish = "content_filter"
 		}
-		out.Choices = []openAIChoice{{
-			Index:        0,
-			Message:      openAIMessage{Role: "assistant", Content: ""},
-			FinishReason: finish,
+		choices = []map[string]any{{
+			"index":         0,
+			"message":       map[string]any{"role": "assistant", "content": ""},
+			"finish_reason": finish,
 		}}
 	}
+	out["choices"] = choices
 
+	usage := map[string]any{}
 	if in.UsageMetadata != nil {
-		out.Usage = openAIUsage{
-			PromptTokens:     in.UsageMetadata.PromptTokenCount,
-			CompletionTokens: in.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      in.UsageMetadata.TotalTokenCount,
+		usage = map[string]any{
+			"prompt_tokens":     in.UsageMetadata.PromptTokenCount,
+			"completion_tokens": in.UsageMetadata.CandidatesTokenCount,
+			"total_tokens":      in.UsageMetadata.TotalTokenCount,
 		}
 	}
+	out["usage"] = usage
 
 	body, err := json.Marshal(out)
 	if err != nil {
 		return nil, fmt.Errorf("openai response marshal: %w", err)
 	}
 	return body, nil
+}
+
+// buildAssistantMessage converts Gemini content parts into an OpenAI
+// assistant message. functionCall parts become tool_calls entries
+// (function.arguments serialized from Gemini's object args into the JSON
+// string OpenAI expects); content is null per OpenAI's own convention when
+// tool_calls carries the turn and there's no accompanying text.
+func buildAssistantMessage(parts []geminiPart) (message map[string]any, hasToolCalls bool) {
+	var text strings.Builder
+	var toolCalls []map[string]any
+	for _, p := range parts {
+		if p.FunctionCall != nil {
+			args := string(p.FunctionCall.Args)
+			if args == "" {
+				args = "{}"
+			}
+			toolCalls = append(toolCalls, map[string]any{
+				"id":   "call_" + randID(),
+				"type": "function",
+				"function": map[string]any{
+					"name":      p.FunctionCall.Name,
+					"arguments": args,
+				},
+			})
+			continue
+		}
+		text.WriteString(p.Text)
+	}
+	message = map[string]any{"role": "assistant"}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+		if text.Len() > 0 {
+			message["content"] = text.String()
+		} else {
+			message["content"] = nil
+		}
+		return message, true
+	}
+	message["content"] = text.String()
+	return message, false
 }
 
 // mapFinishReason converts Gemini's finishReason to an OpenAI finish_reason.

@@ -7,6 +7,177 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// TestTranslateRequest_ToolsToFunctionDeclarations: OpenAI tools -> Gemini's
+// tools[0].functionDeclarations (one Tool entry wrapping all declarations).
+func TestTranslateRequest_ToolsToFunctionDeclarations(t *testing.T) {
+	body := []byte(`{"model":"gemini-x","tools":[
+		{"type":"function","function":{"name":"get_weather","description":"gets weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}
+	],"messages":[{"role":"user","content":"weather in SF?"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	decl := gjson.GetBytes(out, "tools.0.functionDeclarations.0")
+	if decl.Get("name").String() != "get_weather" {
+		t.Errorf("functionDeclarations not built: %s", out)
+	}
+	if decl.Get("parameters.properties.city.type").String() != "string" {
+		t.Errorf("parameters schema lost: %s", out)
+	}
+}
+
+// TestTranslateRequest_ToolChoice covers OpenAI tool_choice -> Gemini
+// toolConfig.functionCallingConfig, including Gemini's native ability to
+// force one specific named function via allowedFunctionNames.
+func TestTranslateRequest_ToolChoice(t *testing.T) {
+	cases := []struct {
+		name      string
+		choice    string
+		wantMode  string
+		wantNames []string
+	}{
+		{"required", `"required"`, "ANY", nil},
+		{"none", `"none"`, "NONE", nil},
+		{"auto_omitted", `"auto"`, "", nil},
+		{"named_function", `{"type":"function","function":{"name":"get_weather"}}`, "ANY", []string{"get_weather"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"m","tool_choice":` + tc.choice + `,"messages":[{"role":"user","content":"hi"}]}`)
+			out, err := translateRequest(body)
+			if err != nil {
+				t.Fatalf("translateRequest: %v", err)
+			}
+			mode := gjson.GetBytes(out, "toolConfig.functionCallingConfig.mode")
+			if tc.wantMode == "" {
+				if gjson.GetBytes(out, "toolConfig").Exists() {
+					t.Errorf("want toolConfig omitted, got %s", out)
+				}
+				return
+			}
+			if mode.String() != tc.wantMode {
+				t.Errorf("mode = %q, want %q: %s", mode.String(), tc.wantMode, out)
+			}
+			names := gjson.GetBytes(out, "toolConfig.functionCallingConfig.allowedFunctionNames").Array()
+			if len(tc.wantNames) == 0 {
+				if len(names) != 0 {
+					t.Errorf("allowedFunctionNames should be empty, got %v", names)
+				}
+				return
+			}
+			if len(names) != 1 || names[0].String() != tc.wantNames[0] {
+				t.Errorf("allowedFunctionNames = %v, want %v", names, tc.wantNames)
+			}
+		})
+	}
+}
+
+// TestTranslateRequest_ToolCallHistory covers the full multi-turn round trip:
+// an assistant message with tool_calls -> functionCall part (arguments
+// parsed from a JSON string into Gemini's object args), and the matching
+// tool-role results -> a single "user" turn with functionResponse parts,
+// correlated back to the right function name via tool_call_id, with
+// consecutive tool messages merged into one turn (parallel calls).
+func TestTranslateRequest_ToolCallHistory(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"weather in SF and NYC?"},
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}},
+			{"id":"call_2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}
+		]},
+		{"role":"tool","tool_call_id":"call_1","content":"sunny"},
+		{"role":"tool","tool_call_id":"call_2","content":"{\"temp_f\":40,\"condition\":\"cloudy\"}"}
+	]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	// contents: [user, model(2 functionCall parts), user(2 functionResponse parts)]
+	contents := gjson.GetBytes(out, "contents").Array()
+	if len(contents) != 3 {
+		t.Fatalf("want 3 contents entries, got %d: %s", len(contents), out)
+	}
+	modelTurn := contents[1]
+	if modelTurn.Get("role").String() != "model" {
+		t.Fatalf("contents[1] role = %q, want model", modelTurn.Get("role").String())
+	}
+	fc0, fc1 := modelTurn.Get("parts.0.functionCall"), modelTurn.Get("parts.1.functionCall")
+	if fc0.Get("name").String() != "get_weather" || fc0.Get("args.city").String() != "SF" {
+		t.Errorf("functionCall[0] wrong: %s", fc0.Raw)
+	}
+	if fc1.Get("name").String() != "get_weather" || fc1.Get("args.city").String() != "NYC" {
+		t.Errorf("functionCall[1] wrong: %s", fc1.Raw)
+	}
+
+	resultTurn := contents[2]
+	// Gemini's Content.role is only ever "user" or "model" — a functionResponse
+	// turn is role:"user", not role:"function"/"tool".
+	if resultTurn.Get("role").String() != "user" {
+		t.Fatalf("functionResponse turn role = %q, want user", resultTurn.Get("role").String())
+	}
+	parts := resultTurn.Get("parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("want 2 merged functionResponse parts (consecutive tool messages), got %d: %s", len(parts), out)
+	}
+	fr0, fr1 := parts[0].Get("functionResponse"), parts[1].Get("functionResponse")
+	if fr0.Get("name").String() != "get_weather" || fr0.Get("response.content").String() != "sunny" {
+		t.Errorf("functionResponse[0] wrong (plain text should wrap as {content:...}): %s", fr0.Raw)
+	}
+	if fr1.Get("name").String() != "get_weather" || fr1.Get("response.temp_f").Int() != 40 {
+		t.Errorf("functionResponse[1] wrong (JSON object content should pass through as-is): %s", fr1.Raw)
+	}
+}
+
+// TestTranslateResponse_ToolCalls: a functionCall part -> OpenAI tool_calls,
+// content:null (no accompanying text), finish_reason overridden to
+// tool_calls even though Gemini's own finishReason says STOP.
+func TestTranslateResponse_ToolCalls(t *testing.T) {
+	gemini := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"get_weather","args":{"city":"SF"}}}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}`
+	out, err := translateResponse([]byte(gemini), "gemini-x")
+	if err != nil {
+		t.Fatalf("translateResponse error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "tool_calls" {
+		t.Errorf("finish_reason = %q, want tool_calls (override): %s", got, out)
+	}
+	content := gjson.GetBytes(out, "choices.0.message.content")
+	if content.Exists() && content.Type != gjson.Null {
+		t.Errorf("content should be null, got %s", content.Raw)
+	}
+	tc := gjson.GetBytes(out, "choices.0.message.tool_calls.0")
+	if tc.Get("type").String() != "function" || tc.Get("function.name").String() != "get_weather" {
+		t.Errorf("tool_calls mapping wrong: %s", out)
+	}
+	if got := tc.Get("function.arguments").String(); got != `{"city":"SF"}` {
+		t.Errorf("arguments = %q, want a JSON string %q", got, `{"city":"SF"}`)
+	}
+}
+
+// TestResponseHandler_SSE_ToolCalls: a streamed functionCall part -> one
+// complete OpenAI tool_calls delta chunk (Gemini doesn't stream partial
+// function arguments token-by-token), finish_reason overridden.
+func TestResponseHandler_SSE_ToolCalls(t *testing.T) {
+	h := openaiGemini{}.NewResponseHandler()
+	chunk := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"SF\"}}}]},\"finishReason\":\"STOP\",\"index\":0}]}\n\n"
+	out, err := h.Feed([]byte(chunk))
+	if err != nil {
+		t.Fatalf("Feed: %v", err)
+	}
+	final, _, _ := h.Flush()
+	all := string(out) + string(final)
+
+	tc := gjson.Get(strings.TrimPrefix(strings.Split(all, "\n\n")[1], "data: "), "choices.0.delta.tool_calls.0")
+	if tc.Get("function.name").String() != "get_weather" {
+		t.Errorf("tool_calls delta missing name: %s", all)
+	}
+	if got := tc.Get("function.arguments").String(); got != `{"city":"SF"}` {
+		t.Errorf("arguments = %q, want %q: %s", got, `{"city":"SF"}`, all)
+	}
+	if !strings.Contains(all, `"finish_reason":"tool_calls"`) {
+		t.Errorf("finish_reason not overridden to tool_calls: %s", all)
+	}
+}
+
 // TestTranslateRequest_MultipleSystemMessagesMerge regresses a bug where each
 // system message replaced systemInstruction wholesale, so a client (or an
 // injected middleware reminder) sending more than one system message silently
