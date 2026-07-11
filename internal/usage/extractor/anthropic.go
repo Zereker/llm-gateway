@@ -73,13 +73,21 @@ func (s *anthropicSession) Final() *domain.Usage {
 	if s.inputTokens == 0 && s.outputTokens == 0 {
 		return nil
 	}
-	// Total stays Input+Output — the TPM soft counter, not the cost model.
+	// Total mirrors what Anthropic's own ITPM/OTPM rate limits actually count,
+	// not the cost model: cache_creation_input_tokens counts toward ITPM (a
+	// cache write is billed at a premium, but it's still tokens Anthropic had
+	// to process), while cache_read_input_tokens does not (for all current
+	// models except Haiku 3.5) — so it stays excluded. Getting this wrong in
+	// either direction means our internal TPM bucket diverges from what
+	// actually throttles the account upstream, either double-guarding against
+	// throughput Anthropic already allows for free, or letting a cache-heavy
+	// account look "under quota" here while it isn't upstream.
 	// Raw is the verbatim upstream usage object (see rawUsage's doc comment).
 	raw, _ := json.Marshal(s.rawUsage)
 	return &domain.Usage{
 		Input:      s.inputTokens,
 		Output:     s.outputTokens,
-		Total:      s.inputTokens + s.outputTokens,
+		Total:      s.inputTokens + s.cacheCreationTokens + s.outputTokens,
 		Raw:        raw,
 		Source:     domain.UsageSourceUpstream,
 		Confidence: domain.UsageConfidenceExact,

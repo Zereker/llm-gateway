@@ -178,7 +178,9 @@ func TestGemini_UnmodeledUsageFieldsSurviveInRaw(t *testing.T) {
 }
 
 // Anthropic non-streaming: cache tokens must be preserved in Raw (billed
-// separately by Anthropic) even though Total stays input+output.
+// separately by Anthropic). Total includes cache_creation (Anthropic's own
+// ITPM counts cache writes) but excludes cache_read (ITPM doesn't count cache
+// hits, for all current models except Haiku 3.5).
 func TestAnthropic_CacheTokensPreservedInRaw(t *testing.T) {
 	s := NewAnthropic()
 	s.Feed([]byte(`{"usage":{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":40,"cache_read_input_tokens":8}}`))
@@ -187,8 +189,8 @@ func TestAnthropic_CacheTokensPreservedInRaw(t *testing.T) {
 	if u == nil {
 		t.Fatal("expected usage, got nil")
 	}
-	if u.Input != 100 || u.Output != 20 || u.Total != 120 {
-		t.Errorf("core usage = %+v, want in=100 out=20 total=120", u)
+	if u.Input != 100 || u.Output != 20 || u.Total != 160 {
+		t.Errorf("core usage = %+v, want in=100 out=20 total=160 (100+40 cache_creation+20)", u)
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(u.Raw, &raw); err != nil {
@@ -199,6 +201,30 @@ func TestAnthropic_CacheTokensPreservedInRaw(t *testing.T) {
 	}
 	if raw["cache_read_input_tokens"] != float64(8) {
 		t.Errorf("cache_read_input_tokens missing from Raw: %v", raw)
+	}
+}
+
+// TestAnthropic_TotalIncludesCacheCreationExcludesCacheRead pins the TPM
+// semantics: cache_creation_input_tokens counts toward Anthropic's own ITPM
+// (a cache write is still tokens Anthropic had to process, billed at a
+// premium), so it must be added into Total; cache_read_input_tokens does not
+// count toward ITPM for any current model except Haiku 3.5, so it must stay
+// excluded. Getting this backwards means our internal TPM bucket diverges
+// from what actually throttles the account upstream.
+func TestAnthropic_TotalIncludesCacheCreationExcludesCacheRead(t *testing.T) {
+	s := NewAnthropic()
+	s.Feed([]byte("event: message_start\n" +
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":50,"output_tokens":1,"cache_creation_input_tokens":25,"cache_read_input_tokens":30}}}` + "\n\n"))
+	s.Feed([]byte("event: message_delta\n" +
+		`data: {"type":"message_delta","usage":{"output_tokens":12}}` + "\n\n"))
+
+	u := s.Final()
+	if u == nil {
+		t.Fatal("expected usage, got nil")
+	}
+	// want: input(50) + cache_creation(25) + output(12) = 87 — cache_read(30) excluded
+	if u.Total != 87 {
+		t.Errorf("Total = %d, want 87 (50 input + 25 cache_creation + 12 output, cache_read excluded)", u.Total)
 	}
 }
 

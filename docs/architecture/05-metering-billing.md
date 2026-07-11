@@ -126,7 +126,7 @@ type Usage struct {
 
 Field semantics:
 
-- `Input` / `Output` / `Total` are the generic token fields the gateway extracts as best it can, used for basic statistics and TPM post-charge.
+- `Input` / `Output` / `Total` are the generic token fields the gateway extracts as best it can, used for basic statistics and TPM post-charge. `Total`'s exact composition targets **what the vendor's own token-based rate limit counts**, not the cost model — the two diverge per vendor (e.g. a vendor may bill a dimension at a discount while still counting it against its own rate limit, or vice versa). Anthropic is the concrete case: `Total = input_tokens + cache_creation_input_tokens + output_tokens`, mirroring Anthropic's own ITPM/OTPM (a cache write counts toward ITPM even though it's billed at a premium; a cache read does not count toward ITPM for any current model except Haiku 3.5, so it stays excluded despite being billed too). When adding a new vendor, check its rate-limit docs for this, not just its pricing docs.
 - `Truncated` indicates the response did not complete fully, e.g. the client disconnected or the streaming response stopped midway.
 - `Raw` is the upstream's original usage object, forwarded as-is to the billing platform.
 - `Source` / `Estimator` / `Confidence` identify the origin and trustworthiness of the usage, to avoid disguising an estimated value as genuine upstream data.
