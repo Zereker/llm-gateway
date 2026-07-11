@@ -46,6 +46,7 @@ func (openaiAnthropic) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiAnthropic) Target() domain.Protocol { return domain.ProtoAnthropic }
 
 func (openaiAnthropic) TranslateRequest(srcBody []byte) ([]byte, error) {
+	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoAnthropic, srcBody)
 	return translateRequest(srcBody)
 }
 
