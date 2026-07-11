@@ -15,17 +15,25 @@ import (
 // not one per request. The metric is still incremented on every call.
 var warnedLossy sync.Map
 
-// ReportLossyRequest inspects a client request body and, for each feature that a
-// text-only cross-protocol translator silently drops (tool definitions / tool
-// calls, non-text multimodal content), increments a metric and logs a one-time
-// warning. This makes lossy translation observable instead of silent — the same
+// ReportLossyRequest inspects a client request body and, for each feature that
+// this cross-protocol translator silently drops (tool definitions / tool calls,
+// non-text multimodal content), increments a metric and logs a one-time warning.
+// This makes lossy translation observable instead of silent — the same
 // discipline as the pivot-composition warning in pkg/protocol.
+//
+// only, if non-empty, restricts reporting to that set of feature labels: a pair
+// that has since implemented tool translation passes only="multimodal" so it no
+// longer warns about tools/tool_calls it now carries. With no filter, every
+// detected feature is reported.
 //
 // It never mutates the body and never fails; detection is best-effort via gjson.
 // Same-protocol (identity) translators carry everything through and must not
 // call this.
-func ReportLossyRequest(src, tgt domain.Protocol, clientBody []byte) {
+func ReportLossyRequest(src, tgt domain.Protocol, clientBody []byte, only ...string) {
 	for _, feature := range droppedRequestFeatures(src, clientBody) {
+		if len(only) > 0 && !containsString(only, feature) {
+			continue
+		}
 		metric.Inc(metric.TranslatorFeatureDroppedTotal,
 			"src", src.String(), "tgt", tgt.String(), "feature", feature)
 		key := src.String() + "|" + tgt.String() + "|" + feature
@@ -35,6 +43,15 @@ func ReportLossyRequest(src, tgt domain.Protocol, clientBody []byte) {
 		slog.Warn("translator: cross-protocol translation drops an unsupported request feature",
 			"src", src.String(), "tgt", tgt.String(), "feature", feature)
 	}
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 // droppedRequestFeatures returns the lossy feature labels present in the client
