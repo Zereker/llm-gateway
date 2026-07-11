@@ -67,7 +67,7 @@ func (s *openaiSession) detectStreaming(chunk []byte) {
 // and tries to extract usage from each data: line's payload.
 func (s *openaiSession) parseSSEBuffer() {
 	for {
-		event, rest, ok := nextSSEFrame(s.sseBuffer)
+		event, rest, ok := NextSSEFrame(s.sseBuffer)
 		if !ok {
 			return
 		}

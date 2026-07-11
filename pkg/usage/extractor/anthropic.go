@@ -99,7 +99,7 @@ func (s *anthropicSession) detectStreaming(chunk []byte) {
 
 func (s *anthropicSession) parseSSEBuffer() {
 	for {
-		event, rest, ok := nextSSEFrame(s.sseBuffer)
+		event, rest, ok := NextSSEFrame(s.sseBuffer)
 		if !ok {
 			return
 		}

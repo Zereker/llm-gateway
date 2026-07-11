@@ -191,8 +191,10 @@ func cacheKey(accountID string, proto domain.Protocol, modality domain.Modality,
 // deterministic = temperature is explicitly 0 (most vendors default temperature to 1 when
 // omitted, treated as non-deterministic).
 func analyzeBody(body []byte) (stream, deterministic bool) {
-	stream = gjson.GetBytes(body, "stream").Bool()
-	t := gjson.GetBytes(body, "temperature")
+	// One pass over the body for both fields instead of two GetBytes scans.
+	res := gjson.GetManyBytes(body, "stream", "temperature")
+	stream = res[0].Bool()
+	t := res[1]
 	deterministic = t.Exists() && t.Num == 0
 	return stream, deterministic
 }
