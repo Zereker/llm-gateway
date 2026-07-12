@@ -38,14 +38,10 @@ func blockMetadataDial(_, address string, _ syscall.RawConn) error {
 		host = address
 	}
 
-	ip, err := netip.ParseAddr(host)
-	if err != nil {
-		// At the Control stage, address should already be IP:port; if it
-		// can't be parsed, don't guess at a hostname — allow it through.
-		//nolint:nilerr // deliberate allow-through: an unparseable address is not a metadata-IP match (see comment above)
-		return nil
-	}
-
+	// At the Control stage, address should already be IP:port; if it can't be
+	// parsed, don't guess at a hostname — allow it through (ip.IsValid() is
+	// false and IsMetadataIP never matches an invalid address).
+	ip, _ := netip.ParseAddr(host)
 	if IsMetadataIP(ip) {
 		return fmt.Errorf("invoker: refusing to dial cloud metadata endpoint %s (SSRF guard)", ip)
 	}

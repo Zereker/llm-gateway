@@ -267,17 +267,21 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		return nil, h.ex.Final(), nil
 	}
 
+	if !json.Valid(h.buf) {
+		// The upstream body is SSE (the client requested streaming), not a
+		// single JSON object. Rather than hand the client raw OpenAI chat
+		// chunks — which a Responses client can't parse — aggregate the SSE
+		// into a single valid Responses object. Usage comes from the
+		// extractor side channel (which now sees the include_usage final
+		// chunk). This is a buffered (non-streamed) Responses reply; true
+		// incremental Responses events are not emitted.
+		content, model, id, created := aggregateChatSSE(h.buf)
+		return h.buildResponse(id, model, "assistant", content, created), h.ex.Final(), nil
+	}
+
 	var src openaiChatResponse
 	if err := json.Unmarshal(h.buf, &src); err != nil {
-		// The upstream body is SSE (the client requested streaming). Rather
-		// than hand the client raw OpenAI chat chunks — which a Responses
-		// client can't parse — aggregate the SSE into a single valid Responses
-		// object. Usage comes from the extractor side channel (which now sees
-		// the include_usage final chunk). This is a buffered (non-streamed)
-		// Responses reply; true incremental Responses events are not emitted.
-		content, model, id, created := aggregateChatSSE(h.buf)
-		//nolint:nilerr // deliberate: an unmarshal failure means "the body is SSE, not JSON" and is handled by aggregating, not surfaced
-		return h.buildResponse(id, model, "assistant", content, created), h.ex.Final(), nil
+		return nil, nil, fmt.Errorf("responses_openai: parse upstream body: %w", err)
 	}
 
 	role, content := "assistant", ""

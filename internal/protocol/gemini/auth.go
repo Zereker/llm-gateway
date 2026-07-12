@@ -69,12 +69,13 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 			return nil, fmt.Errorf("oauth2-sa: service_account_json empty")
 		}
 
-		// The deprecation is about accepting credential configs from untrusted
-		// sources without validation; this SA JSON comes from our own AES-GCM
-		// encrypted endpoints.auth column, written by the deployer.
-		//nolint:staticcheck // SA1019: see above — input is deployer-controlled, not untrusted
-		creds, err := google.CredentialsFromJSON(ctx,
+		// CredentialsFromJSON is deprecated in favor of the typed variant below,
+		// which also rejects a JSON blob whose "type" field isn't service_account
+		// (e.g. a user-credentials file pasted into the wrong config field) —
+		// stricter than what we had, not just a deprecation dodge.
+		creds, err := google.CredentialsFromJSONWithType(ctx,
 			[]byte(p.ServiceAccountJSON),
+			google.ServiceAccount,
 			"https://www.googleapis.com/auth/cloud-platform",
 		)
 		if err != nil {
