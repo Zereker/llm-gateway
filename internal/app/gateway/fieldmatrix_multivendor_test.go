@@ -56,7 +56,7 @@ type vendorScenario struct {
 	model       string // model_services.model / endpoints.model / request "model"
 	authType    string
 	apiKey      string // plaintext, before repo.EncodePayload
-	upstreamKey string // the credential the mock upstream would see (not asserted here)
+	authPayload any    // one of repo.BearerAuth / XAPIKeyAuth / GeminiAuth / AWSSigV4Auth / OAuth2SAAuth / VertexADCAuth — whatever authType requires
 	reply       []byte // real captured response body the mock upstream always returns
 }
 
@@ -138,18 +138,13 @@ func seedMultiVendorScenarios(t *testing.T, dsn string, scenarios []vendorScenar
 			t.Fatalf("seed pricing %s: %v", sc.vendor, err)
 		}
 
-		var authPayload any
-		switch sc.authType {
-		case repo.AuthTypeBearer:
-			authPayload = repo.BearerAuth{APIKey: sc.upstreamKey}
-		case repo.AuthTypeXAPIKey:
-			authPayload = repo.XAPIKeyAuth{APIKey: sc.upstreamKey}
-		case repo.AuthTypeGeminiKey:
-			authPayload = repo.GeminiAuth{APIKey: sc.upstreamKey}
-		default:
-			t.Fatalf("seedMultiVendorScenarios: unhandled auth type %q for vendor %q", sc.authType, sc.vendor)
-		}
-		auth, err := repo.EncodePayload(sc.authType, authPayload)
+		// authPayload is constructed by each scenario's own literal (see
+		// TestE2E_MultiVendor_AllProtocols below), not switched on here — that
+		// keeps this helper agnostic to which of the six repo.AuthType* shapes
+		// a given vendor happens to need, including the multi-field ones
+		// (AWSSigV4Auth / OAuth2SAAuth / VertexADCAuth) a single credential
+		// string could never represent.
+		auth, err := repo.EncodePayload(sc.authType, sc.authPayload)
 		if err != nil {
 			t.Fatalf("encode auth for %s: %v", sc.vendor, err)
 		}
@@ -209,23 +204,27 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 	scenarios := []vendorScenario{
 		{
 			vendor: "openai", protocol: "openai", model: "test-openai-model",
-			authType: repo.AuthTypeBearer, apiKey: "sk-e2e-openai", upstreamKey: "sk-upstream-openai",
-			reply: readFixtureFile(t, cassette.TestdataPath("fieldmatrix", "upstream", "chat-openai-compat.json")),
+			authType: repo.AuthTypeBearer, apiKey: "sk-e2e-openai",
+			authPayload: repo.BearerAuth{APIKey: "sk-upstream-openai"},
+			reply:       readFixtureFile(t, cassette.TestdataPath("fieldmatrix", "upstream", "chat-openai-compat.json")),
 		},
 		{
 			vendor: "anthropic", protocol: "anthropic", model: "test-anthropic-model",
-			authType: repo.AuthTypeXAPIKey, apiKey: "sk-e2e-anthropic", upstreamKey: "sk-upstream-anthropic",
-			reply: realCassetteResponse(t, "anthropic/simonw-llm-anthropic/test_tools.yaml", 0),
+			authType: repo.AuthTypeXAPIKey, apiKey: "sk-e2e-anthropic",
+			authPayload: repo.XAPIKeyAuth{APIKey: "sk-upstream-anthropic"},
+			reply:       realCassetteResponse(t, "anthropic/simonw-llm-anthropic/test_tools.yaml", 0),
 		},
 		{
 			vendor: "gemini", protocol: "gemini", model: "test-gemini-model",
-			authType: repo.AuthTypeGeminiKey, apiKey: "sk-e2e-gemini", upstreamKey: "sk-upstream-gemini",
-			reply: realCassetteResponse(t, "gemini/simonw-llm-gemini/test_tools.yaml", 0),
+			authType: repo.AuthTypeGeminiKey, apiKey: "sk-e2e-gemini",
+			authPayload: repo.GeminiAuth{APIKey: "sk-upstream-gemini"},
+			reply:       realCassetteResponse(t, "gemini/simonw-llm-gemini/test_tools.yaml", 0),
 		},
 		{
 			vendor: "cohere", protocol: "cohere", model: "test-cohere-model",
-			authType: repo.AuthTypeBearer, apiKey: "sk-e2e-cohere", upstreamKey: "sk-upstream-cohere",
-			reply: realCassetteResponse(t, "cohere/langchain-ai-langchain-cohere/test_invoke_tool_calls.yaml", 0),
+			authType: repo.AuthTypeBearer, apiKey: "sk-e2e-cohere",
+			authPayload: repo.BearerAuth{APIKey: "sk-upstream-cohere"},
+			reply:       realCassetteResponse(t, "cohere/langchain-ai-langchain-cohere/test_invoke_tool_calls.yaml", 0),
 		},
 	}
 

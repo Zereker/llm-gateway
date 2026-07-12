@@ -1,12 +1,9 @@
 package replay
 
 import (
-	"encoding/json"
-	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/translator/openai_cohere"
 )
 
@@ -35,45 +32,21 @@ func looksLikeCohereResponse(body []byte) bool {
 // (non-streaming and SSE) through openai_cohere's response handler and
 // asserts it doesn't error and produces well-formed OpenAI-shaped output.
 func TestReplayCohereResponses(t *testing.T) {
-	tr := openai_cohere.New()
-	for _, dir := range cohereDirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
-		if err != nil {
-			t.Fatalf("LoadDir %s: %v", dir, err)
-		}
-		for _, rel := range cassette.SortedKeys(files) {
-			path := dir + "/" + rel
-			interactions := files[rel]
-			examined := false
-			for i, it := range interactions {
-				if len(it.ResponseBody) == 0 || !looksLikeCohereResponse(it.ResponseBody) {
-					continue
-				}
-				examined = true
-				i, it := i, it
-				t.Run(path+"#"+strconv.Itoa(i), func(t *testing.T) {
-					h := tr.NewResponseHandler()
-					out, usage := feedResponse(t, h, it.ResponseBody, path)
-					assertValidOpenAIChatOutput(t, out, path)
-					if usage == nil {
-						t.Errorf("%s: expected non-nil usage", path)
-					}
-				})
-			}
-			switch {
-			case examined:
-				claim(path)
-			case strings.Contains(rel, "test_documents"):
+	runResponseReplay(t, vendorReplayConfig{
+		dirs:       cohereDirs,
+		classify:   looksLikeCohereResponse,
+		translator: openai_cohere.New(),
+		notApplicableReason: func(rel string) string {
+			if strings.Contains(rel, "test_documents") {
 				// documents.yaml only exercises the "documents" RAG request
 				// field, which OpenAI has no equivalent for and this pair
 				// doesn't translate (see package doc comment) — there is no
 				// chat response to replay here at all.
-				markNotApplicable(path, "RAG-only cassette (documents field); no chat/response content to translate")
-			default:
-				markNotApplicable(path, "no interaction response body classified as a Cohere v2/chat response")
+				return "RAG-only cassette (documents field); no chat/response content to translate"
 			}
-		}
-	}
+			return "no interaction response body classified as a Cohere v2/chat response"
+		},
+	})
 }
 
 // TestReplayCohereRequestsAreWellFormed mirrors
@@ -81,21 +54,5 @@ func TestReplayCohereResponses(t *testing.T) {
 // Cohere (upstream-only), so this just guards against a corrupted cassette
 // masquerading as "out of scope".
 func TestReplayCohereRequestsAreWellFormed(t *testing.T) {
-	for _, dir := range cohereDirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
-		if err != nil {
-			t.Fatalf("LoadDir %s: %v", dir, err)
-		}
-		for _, rel := range cassette.SortedKeys(files) {
-			path := dir + "/" + rel
-			for i, it := range files[rel] {
-				if len(it.RequestBody) == 0 {
-					continue
-				}
-				if !json.Valid(it.RequestBody) {
-					t.Errorf("%s#%d: request body is not valid JSON", path, i)
-				}
-			}
-		}
-	}
+	runRequestWellFormedCheck(t, cohereDirs)
 }
