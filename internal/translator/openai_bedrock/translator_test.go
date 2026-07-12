@@ -1,6 +1,7 @@
 package openai_bedrock
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -150,6 +151,41 @@ func TestTranslateResponse_Reasoning(t *testing.T) {
 	}
 	if r.Get("choices.0.message.content").String() != "the answer" {
 		t.Errorf("content wrong: %s", out)
+	}
+}
+
+// TestStreamToolCallIndexIsZeroBased: when a Converse stream emits a text
+// block (contentBlockIndex 0) before a tool-use block (contentBlockIndex 1),
+// the OpenAI tool_calls[].index sent to the client must be 0 (a 0-based
+// ordinal over tool calls), not the raw Converse contentBlockIndex of 1 --
+// otherwise a client that array-indexes tool_calls places the first call at
+// slot 1.
+func TestStreamToolCallIndexIsZeroBased(t *testing.T) {
+	h := New().NewResponseHandler()
+	stream := "event: messageStart\ndata: {\"role\":\"assistant\"}\n\n" +
+		"event: contentBlockStart\ndata: {\"contentBlockIndex\":0,\"start\":{}}\n\n" +
+		"event: contentBlockDelta\ndata: {\"contentBlockIndex\":0,\"delta\":{\"text\":\"checking\"}}\n\n" +
+		"event: contentBlockStart\ndata: {\"contentBlockIndex\":1,\"start\":{\"toolUse\":{\"toolUseId\":\"tu_1\",\"name\":\"get_weather\"}}}\n\n" +
+		"event: contentBlockDelta\ndata: {\"contentBlockIndex\":1,\"delta\":{\"toolUse\":{\"input\":\"{\\\"city\\\":\\\"SF\\\"}\"}}}\n\n"
+
+	out, _ := h.Feed([]byte(stream))
+	rest, _, _ := h.Flush()
+	all := string(out) + string(rest)
+
+	// Find the tool_calls chunk that carries the tool id (the "start" chunk).
+	var idx int64 = -1
+	for _, line := range strings.Split(all, "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		tc := gjson.Get(payload, "choices.0.delta.tool_calls.0")
+		if tc.Get("id").String() == "tu_1" {
+			idx = tc.Get("index").Int()
+		}
+	}
+	if idx != 0 {
+		t.Errorf("first tool call index = %d, want 0 (0-based over tool calls, not Converse block index)\nstream out:\n%s", idx, all)
 	}
 }
 

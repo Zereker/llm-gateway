@@ -404,6 +404,8 @@ type responseHandler struct {
 	blockKind   map[int64]string // contentBlockIndex -> "toolUse" (defaults to text otherwise)
 	toolNames   map[int64]string // contentBlockIndex -> tool name (from contentBlockStart)
 	toolIDs     map[int64]string // contentBlockIndex -> toolUseId (from contentBlockStart)
+	toolOrdinal map[int64]int    // contentBlockIndex -> 0-based tool_calls index (text blocks don't count)
+	nextToolOrd int              // next 0-based tool_calls ordinal to assign
 	pendingType string           // event-type of the "event:" line awaiting its "data:" line
 }
 
@@ -512,14 +514,22 @@ func (h *responseHandler) translateEvent(eventType string, data []byte) []byte {
 		if tu := ev.Get("start.toolUse"); tu.Exists() {
 			if h.blockKind == nil {
 				h.blockKind, h.toolNames, h.toolIDs = map[int64]string{}, map[int64]string{}, map[int64]string{}
+				h.toolOrdinal = map[int64]int{}
 			}
+
+			// The OpenAI tool_calls index is a 0-based ordinal over tool calls
+			// only; Converse's contentBlockIndex counts text blocks too, so a
+			// leading text block would push the first tool call to index 1.
+			ord := h.nextToolOrd
+			h.nextToolOrd++
+			h.toolOrdinal[idx] = ord
 
 			h.blockKind[idx] = "toolUse"
 			h.toolNames[idx] = tu.Get(keyName).String()
 			h.toolIDs[idx] = tu.Get("toolUseId").String()
 
 			return h.chunk(map[string]any{keyToolCalls: []any{map[string]any{
-				keyIndex: idx, "id": h.toolIDs[idx], keyType: keyFunction,
+				keyIndex: ord, "id": h.toolIDs[idx], keyType: keyFunction,
 				keyFunction: map[string]any{keyName: h.toolNames[idx], keyArguments: ""},
 			}}}, "")
 		}
@@ -534,7 +544,7 @@ func (h *responseHandler) translateEvent(eventType string, data []byte) []byte {
 			}
 
 			return h.chunk(map[string]any{keyToolCalls: []any{map[string]any{
-				keyIndex: idx, keyFunction: map[string]any{keyArguments: frag},
+				keyIndex: h.toolOrdinal[idx], keyFunction: map[string]any{keyArguments: frag},
 			}}}, "")
 		}
 
