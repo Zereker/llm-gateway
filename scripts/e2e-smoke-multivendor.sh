@@ -11,7 +11,7 @@
 #
 #   1. docker compose up -d                 (mysql + redis + redpanda)
 #   2. wait for the stack to become healthy
-#   3. go run cmd/mockupstream (bg)          fake upstream: openai/anthropic/gemini/cohere routes
+#   3. go run cmd/mockupstream (bg)          fake upstream: openai/anthropic/gemini/cohere/azure-openai routes
 #   4. go run cmd/gateway     (bg)            data plane (runs infra.Migrate at startup)
 #   5. go run scripts/seed-multivendor        one endpoint + one real api_key PER VENDOR (idempotent)
 #   6. curl /v1/chat/completions or /v1/messages, once per vendor -> expect 200 + content
@@ -28,7 +28,7 @@
 #                                                          # smoke-multivendor job
 #
 # Exit codes:
-#   0  all four vendors passed
+#   0  all vendors passed (see testdata/fieldmatrix/endpoints/*.json for the current list)
 #   1  some step failed (detailed logs left in /tmp/e2e-smoke-mv-{gateway,mockupstream}.log)
 
 set -euo pipefail
@@ -116,7 +116,7 @@ else
 fi
 
 # ============================================================================
-# 2) mockupstream (background) -- serves openai/anthropic/gemini/cohere routes
+# 2) mockupstream (background) -- serves openai/anthropic/gemini/cohere/azure-openai routes
 # ============================================================================
 echo "[smoke-mv] start mockupstream :$MOCK_PORT"
 MOCK_ADDR=":$MOCK_PORT" go run ./cmd/mockupstream >"$LOG_UP" 2>&1 &
@@ -197,10 +197,20 @@ RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/
 CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
 if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (cohere): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped cohere "$BODY"; fi
 
+# azure-openai is also upstream-only client-side (same client-facing OpenAI
+# endpoint; only the upstream URL shape + api-key header differ, both handled
+# entirely on the gateway side).
+echo "[smoke-mv] curl azure-openai (via /v1/chat/completions)"
+RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
+  -H "Authorization: Bearer sk-mv-azure-openai" -H "Content-Type: application/json" \
+  -d '{"model":"mock-azure-openai-model","messages":[{"role":"user","content":"hi"}]}')"
+CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
+if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (azure-openai): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped azure-openai "$BODY"; fi
+
 if [[ "$FAIL" != "0" ]]; then
   echo "[smoke-mv] one or more vendors FAILED; gateway log (last 30):" >&2
   tail -30 "$LOG_GW" >&2
   exit 1
 fi
 
-echo "[smoke-mv] PASS (openai, anthropic, gemini, cohere)"
+echo "[smoke-mv] PASS (openai, anthropic, gemini, cohere, azure-openai)"
