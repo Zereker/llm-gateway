@@ -1,0 +1,51 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_01Eg56TYRnKCEgWtZu2yjR1t","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":46,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"not_available"}}   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}      }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" two names for a pet pelican, and they want me to be brief. I'll suggest two names that would suit a pelican well."}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\nSome good options:\n- Pelé (play on pelican)\n- Pouch"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" (referencing their bill pouch)\n- Captain Beak\n- Squ"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"irt\n- Scoop\n- Wing\n\nLet me give two brief, catchy names:"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EuYDCmMIDBgCKkC05Zda4P+Cdk/LQKE+Aol4ZY3EY4wLDrf8XcApz2PiqrxiRjS7uY1kGtZ63vVlaVmtuIpdsHbkdfGHb9AsBYw+MhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOAASDAXGiw23anViCe75HBoMATySwgVJ0A405/0FIjDbVX0lAn7rEq/ejcuOZWDihLSbS9KGihD2QsWmXzp2Ly5ZD5vtKOcKvhEDQ0PCeVkqsALmnx7FhoJ7TQQyomwwFY+zA/Sft9n7u3lNE/RzbZMF4jmvo9i1vtNLETK18iSdCAhSy+NJLFRK/vcw6sVaDNrEMGgIadv5iZ0Jmx+iHyR8sXbasYDMbN07/ype7JGpKxHCdQOrNA7plS39Yy5l7hqJz4ueYoCpMxc+IkNY+TCyMpKwGxYqKSUdElyLr0Ko3vXtdLJBTJQuMtU+cz+UPHkpTbGRPntg/hBvNztCjlqqeM6PKoE8rsDJMx0+q1eOrFPC9SYgCZqSGHlSHoOexnfkrN2aTlZjcBcFblXq76bKF1YHINp3uL+jByhp91XFSkhF+b43BC9PDtRUYKw3wT+IZlEI6V3GppKBDSa8L0Sgm8m1Bb2PYvi3oIv+LDpUImrMckjemNZmBeGcEZQ4FjZiGAE="}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"1. **Pouch** - references their iconic bill pouch\n2. **Pelé** - play"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ful take on \"pelican\""}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1              }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":46,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":133}            }
+
+event: message_stop
+data: {"type":"message_stop"               }
+

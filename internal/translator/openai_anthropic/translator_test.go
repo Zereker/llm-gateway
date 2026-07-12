@@ -4,10 +4,116 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
+
+// TestMapStopReason_Completeness covers every documented Anthropic stop_reason
+// value (https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)
+// so a refusal or a mid-turn pause can't silently collapse into a generic
+// "stop" that looks like a normal completion.
+func TestMapStopReason_Completeness(t *testing.T) {
+	openAIValidFinishReasons := map[string]bool{
+		"stop": true, "length": true, "tool_calls": true, "content_filter": true,
+	}
+	for in, want := range map[string]string{
+		"end_turn":      "stop",
+		"stop_sequence": "stop",
+		"max_tokens":    "length",
+		"tool_use":      "tool_calls",
+		"refusal":       "content_filter",
+		"pause_turn":    "stop",
+		"":              "stop",
+	} {
+		got := mapStopReason(in)
+		if got != want {
+			t.Errorf("mapStopReason(%q) = %q, want %q", in, got, want)
+		}
+		if !openAIValidFinishReasons[got] {
+			t.Errorf("mapStopReason(%q) = %q, not a valid OpenAI finish_reason", in, got)
+		}
+	}
+}
 
 // OpenAI vision / multi-part requests send content as an array of parts.
 // translateRequest must accept it, not reject it with a parse error.
+// TestTranslateRequest_ImageURL covers OpenAI vision content -> Anthropic
+// image blocks, both the data: URI form (base64 decoded into
+// source.media_type/data) and a plain https URL (passed through as
+// source.type=url). The base64 payload is a real captured image (a tiny PNG)
+// from simonw/llm-anthropic's test_image_prompt.yaml cassette (Apache 2.0),
+// not a synthetic string, so the exact media_type/data split is exercised
+// against real vision-request field shapes.
+func TestTranslateRequest_ImageURL(t *testing.T) {
+	const realPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAKYAAAEaAgMAAADmmcReAAAACVBMVEX///8A/wD+AQASdAFKAAAAR0lEQVR42u3YMREAMAjAwC5d6q8mUYkEVuA+8yvIkVr0oghFURRFURRFURRFUdRCkSRJM7u/CEVRFEVRFEVRFEXRpdQXkcaVBRUPn8UJn6QAAAAASUVORK5CYII="
+
+	t.Run("data_uri", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-x","max_tokens":50,"messages":[
+			{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,` + realPNGBase64 + `"}},
+				{"type":"text","text":"Describe image in three words"}
+			]}
+		]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		var got struct {
+			Messages []struct {
+				Content []struct {
+					Type   string `json:"type"`
+					Text   string `json:"text"`
+					Source struct {
+						Type      string `json:"type"`
+						MediaType string `json:"media_type"`
+						Data      string `json:"data"`
+					} `json:"source"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("output not valid Anthropic request: %v\n%s", err, out)
+		}
+		if len(got.Messages) != 1 || len(got.Messages[0].Content) != 2 {
+			t.Fatalf("want 1 message with 2 blocks, got: %s", out)
+		}
+		img := got.Messages[0].Content[0]
+		if img.Type != "image" || img.Source.Type != "base64" || img.Source.MediaType != "image/png" || img.Source.Data != realPNGBase64 {
+			t.Errorf("image block wrong: %+v", img)
+		}
+		if txt := got.Messages[0].Content[1]; txt.Type != "text" || txt.Text != "Describe image in three words" {
+			t.Errorf("text block wrong: %+v", txt)
+		}
+	})
+
+	t.Run("https_url_passthrough", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-x","max_tokens":50,"messages":[
+			{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}]}
+		]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		var got struct {
+			Messages []struct {
+				Content []struct {
+					Source struct {
+						Type string `json:"type"`
+						URL  string `json:"url"`
+					} `json:"source"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("output not valid Anthropic request: %v\n%s", err, out)
+		}
+		src := got.Messages[0].Content[0].Source
+		if src.Type != "url" || src.URL != "https://example.com/cat.png" {
+			t.Errorf("url image block wrong: %+v", src)
+		}
+	})
+}
+
 func TestTranslateRequest_ArrayContent(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-x",
@@ -166,6 +272,29 @@ func TestTranslateRequest_Tools(t *testing.T) {
 	}
 }
 
+// TestTranslateRequest_ToolStrict: OpenAI's tool-level "strict" flag must
+// carry over to Anthropic's tool definition verbatim — Anthropic's schema
+// accepts the same field name, verified against a real captured request
+// (langchain-ai/langchain's official langchain-anthropic package, Apache 2.0,
+// tests/cassettes/test_strict_tool_use.yaml.gz).
+func TestTranslateRequest_ToolStrict(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"weather?"}],
+		"tools":[{"type":"function","function":{"name":"get_weather","description":"Get the weather at a location.",
+		"parameters":{"type":"object","properties":{"location":{"type":"string"},"unit":{"type":"string","enum":["C","F"]}},"required":["location","unit"],"additionalProperties":false},
+		"strict":true}}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	if !r.Get("tools.0.strict").Bool() {
+		t.Errorf("strict flag dropped: %s", out)
+	}
+	if !r.Get("tools.0.input_schema.additionalProperties").Exists() || r.Get("tools.0.input_schema.additionalProperties").Bool() {
+		t.Errorf("additionalProperties:false dropped from input_schema: %s", out)
+	}
+}
+
 // TestTranslateRequest_BadToolArgs: unparsable function.arguments → input:{}.
 func TestTranslateRequest_BadToolArgs(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[
@@ -202,7 +331,10 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 		{"auto", `"auto"`, `{"type":"auto"}`},
 		{"required", `"required"`, `{"type":"any"}`},
 		{"object", `{"type":"function","function":{"name":"foo"}}`, `{"type":"tool","name":"foo"}`},
-		{"none", `"none"`, ``},
+		// Anthropic has an explicit "none" tool_choice type; omitting it (the
+		// old behavior) meant a client's "force no more tool calls this turn"
+		// instruction silently became "auto" upstream.
+		{"none", `"none"`, `{"type":"none"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,6 +371,54 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 	}
 }
 
+// TestTranslateRequest_ParallelToolCallsFalse: OpenAI's parallel_tool_calls:false
+// must invert into Anthropic's tool_choice.disable_parallel_tool_use:true, even
+// when the client didn't send a tool_choice at all (a bare "type":"auto" object
+// is synthesized so the flag has somewhere to live).
+func TestTranslateRequest_ParallelToolCallsFalse(t *testing.T) {
+	body := []byte(`{"model":"m","parallel_tool_calls":false,` +
+		`"tools":[{"type":"function","function":{"name":"foo"}}],"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	var got struct {
+		ToolChoice struct {
+			Type                   string `json:"type"`
+			DisableParallelToolUse bool   `json:"disable_parallel_tool_use"`
+		} `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("bad body: %v", err)
+	}
+	if got.ToolChoice.Type != "auto" || !got.ToolChoice.DisableParallelToolUse {
+		t.Errorf("tool_choice = %+v, want {type:auto disable_parallel_tool_use:true}", got.ToolChoice)
+	}
+}
+
+// parallel_tool_calls:false must merge into an explicit tool_choice, not
+// clobber it.
+func TestTranslateRequest_ParallelToolCallsFalseWithExplicitChoice(t *testing.T) {
+	body := []byte(`{"model":"m","parallel_tool_calls":false,"tool_choice":"required",` +
+		`"tools":[{"type":"function","function":{"name":"foo"}}],"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	var got struct {
+		ToolChoice struct {
+			Type                   string `json:"type"`
+			DisableParallelToolUse bool   `json:"disable_parallel_tool_use"`
+		} `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("bad body: %v", err)
+	}
+	if got.ToolChoice.Type != "any" || !got.ToolChoice.DisableParallelToolUse {
+		t.Errorf("tool_choice = %+v, want {type:any disable_parallel_tool_use:true}", got.ToolChoice)
+	}
+}
+
 func mustCanon(s string) string {
 	var v any
 	_ = json.Unmarshal([]byte(s), &v)
@@ -247,6 +427,138 @@ func mustCanon(s string) string {
 }
 
 // TestTranslateResponse_TextAndTool: text + tool_use → content + tool_calls.
+// TestTranslateResponse_Thinking covers the non-streaming response side: a
+// thinking block surfaces as reasoning_content/reasoning_signature, not as
+// visible content, and finish_reason still reflects the real stop_reason.
+func TestTranslateResponse_Thinking(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_1","type":"message","role":"assistant","model":"claude-x","stop_reason":"end_turn",
+		"content":[
+			{"type":"thinking","thinking":"reasoning about pelicans","signature":"sig123"},
+			{"type":"text","text":"Pouch and Pelé"}
+		]
+	}`)
+	out, err := translateResponse(body, "claude-x")
+	if err != nil {
+		t.Fatalf("translateResponse error: %v", err)
+	}
+	var got struct {
+		Choices []struct {
+			Message struct {
+				Content            string `json:"content"`
+				ReasoningContent   string `json:"reasoning_content"`
+				ReasoningSignature string `json:"reasoning_signature"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output not valid OpenAI response: %v\n%s", err, out)
+	}
+	msg := got.Choices[0].Message
+	if msg.Content != "Pouch and Pelé" {
+		t.Errorf("content = %q, thinking text leaked into it?", msg.Content)
+	}
+	if msg.ReasoningContent != "reasoning about pelicans" || msg.ReasoningSignature != "sig123" {
+		t.Errorf("reasoning fields wrong: %+v", msg)
+	}
+	if got.Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", got.Choices[0].FinishReason)
+	}
+}
+
+// TestTranslateResponse_Citations uses the real web_search_result_location
+// citation shape (Claude docs' web search tool reference example, and
+// verified structurally against langchain-anthropic's real
+// test_citations.yaml.gz cassette) to check the url_citation mapping and
+// that document-grounded citations (no URL) are dropped, not guessed at.
+func TestTranslateResponse_Citations(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_1","type":"message","role":"assistant","model":"claude-x","stop_reason":"end_turn",
+		"content":[
+			{"type":"text","text":"Based on the search results, "},
+			{"type":"text","text":"Claude Shannon was born on April 30, 1916, in Petoskey, Michigan","citations":[
+				{"type":"web_search_result_location","url":"https://en.wikipedia.org/wiki/Claude_Shannon","title":"Claude Shannon - Wikipedia","encrypted_index":"Eo8B...","cited_text":"Claude Elwood Shannon..."}
+			]},
+			{"type":"text","text":". Also see the doc.","citations":[
+				{"type":"content_block_location","document_index":0,"document_title":"Some Doc","start_block_index":0,"end_block_index":1,"cited_text":"..."}
+			]}
+		]
+	}`)
+	out, err := translateResponse(body, "claude-x")
+	if err != nil {
+		t.Fatalf("translateResponse error: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	wantContent := "Based on the search results, Claude Shannon was born on April 30, 1916, in Petoskey, Michigan. Also see the doc."
+	if got := r.Get("choices.0.message.content").String(); got != wantContent {
+		t.Fatalf("content = %q, want %q", got, wantContent)
+	}
+	anns := r.Get("choices.0.message.annotations")
+	if len(anns.Array()) != 1 {
+		t.Fatalf("want exactly 1 annotation (document citation dropped), got: %s", anns.Raw)
+	}
+	ann := anns.Array()[0]
+	if ann.Get("type").String() != "url_citation" {
+		t.Errorf("annotation type = %q, want url_citation", ann.Get("type").String())
+	}
+	uc := ann.Get("url_citation")
+	if uc.Get("url").String() != "https://en.wikipedia.org/wiki/Claude_Shannon" {
+		t.Errorf("url = %q", uc.Get("url").String())
+	}
+	if uc.Get("title").String() != "Claude Shannon - Wikipedia" {
+		t.Errorf("title = %q", uc.Get("title").String())
+	}
+	start, end := int(uc.Get("start_index").Int()), int(uc.Get("end_index").Int())
+	if wantContent[start:end] != "Claude Shannon was born on April 30, 1916, in Petoskey, Michigan" {
+		t.Errorf("start/end index %d:%d span = %q", start, end, wantContent[start:end])
+	}
+}
+
+// TestTranslateRequest_ThinkingRoundTrip is the multi-turn regression this
+// whole feature exists for: a client echoing back an assistant message that
+// carries both reasoning_content/reasoning_signature AND tool_calls (a
+// thinking-enabled tool-use turn) must reconstruct the thinking block FIRST
+// in the Anthropic content array — Anthropic 400s with "Expected thinking or
+// redacted_thinking block, but found tool_use" otherwise.
+func TestTranslateRequest_ThinkingRoundTrip(t *testing.T) {
+	body := []byte(`{"model":"gpt-x","max_tokens":100,"messages":[
+		{"role":"user","content":"weather in SF?"},
+		{"role":"assistant","content":null,"reasoning_content":"I should check the weather","reasoning_signature":"sig-abc",
+		 "tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]}
+	]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	var got struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output not valid Anthropic request: %v\n%s", err, out)
+	}
+	var blocks []struct {
+		Type      string `json:"type"`
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+		Name      string `json:"name"`
+	}
+	if err := json.Unmarshal(got.Messages[1].Content, &blocks); err != nil {
+		t.Fatalf("assistant content not a block array: %v\n%s", err, out)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("want 2 blocks (thinking, tool_use), got %d: %s", len(blocks), out)
+	}
+	if blocks[0].Type != "thinking" || blocks[0].Thinking != "I should check the weather" || blocks[0].Signature != "sig-abc" {
+		t.Errorf("thinking block wrong or not first: %+v", blocks[0])
+	}
+	if blocks[1].Type != "tool_use" || blocks[1].Name != "get_weather" {
+		t.Errorf("tool_use block wrong: %+v", blocks[1])
+	}
+}
+
 func TestTranslateResponse_TextAndTool(t *testing.T) {
 	body := []byte(`{
 		"id":"msg_1","type":"message","role":"assistant","model":"claude-x",
@@ -335,6 +647,157 @@ func TestTranslateResponse_ToolOnly(t *testing.T) {
 
 // TestStreaming_ToolCalls feeds an Anthropic tool SSE sequence and checks the
 // emitted OpenAI stream reassembles the tool call.
+// TestStreaming_Thinking replays real captured extended-thinking SSE events
+// (from simonw/llm-anthropic's test_stream_events_thinking.yaml cassette,
+// Apache 2.0 — also saved sanitized at
+// internal/app/gateway/testdata/fieldmatrix/upstream/messages-anthropic-compat-thinking-stream.sse)
+// through the streaming handler: thinking_delta -> reasoning_content deltas,
+// signature_delta -> a reasoning_signature delta, and the final text block
+// still comes through as ordinary content.
+func TestStreaming_Thinking(t *testing.T) {
+	h := New().(openaiAnthropic).NewResponseHandler()
+	events := []string{
+		`data: {"type":"message_start","message":{"id":"msg_01Eg56TYRnKCEgWtZu2yjR1t","model":"claude-haiku-4-5-20251001"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" two names for a pet pelican."}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EuYDCmMIDBgC-real-signature-blob-truncated-for-test"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"1. Pouch 2. Pel"}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+		`data: {"type":"message_stop"}`,
+	}
+	var out strings.Builder
+	for _, e := range events {
+		b, err := h.Feed([]byte(e + "\n\n"))
+		if err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+		out.Write(b)
+	}
+	if _, _, err := h.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	events2 := parseSSEDataLines(t, out.String())
+	var reasoning strings.Builder
+	var signature string
+	var content strings.Builder
+	for _, ev := range events2 {
+		if rc, ok := ev["reasoning_content"].(string); ok {
+			reasoning.WriteString(rc)
+		}
+		if sig, ok := ev["reasoning_signature"].(string); ok {
+			signature = sig
+		}
+		if c, ok := ev["content"].(string); ok {
+			content.WriteString(c)
+		}
+	}
+	if reasoning.String() != "The user wants two names for a pet pelican." {
+		t.Errorf("reasoning_content = %q", reasoning.String())
+	}
+	if signature != "EuYDCmMIDBgC-real-signature-blob-truncated-for-test" {
+		t.Errorf("reasoning_signature = %q", signature)
+	}
+	if content.String() != "1. Pouch 2. Pel" {
+		t.Errorf("content = %q", content.String())
+	}
+}
+
+// TestStreaming_Citations replays a real captured citations_delta/text_delta
+// event sequence (langchain-ai/langchain's official langchain-anthropic
+// package, Apache 2.0, test_citations.yaml.gz — the document-grounded
+// content_block_location shape, which has no URL and must be dropped) plus
+// one block using the web_search_result_location shape (verified against
+// Claude's own web search tool doc page, which has a URL and must surface as
+// an annotations delta at content_block_stop).
+func TestStreaming_Citations(t *testing.T) {
+	h := New().(openaiAnthropic).NewResponseHandler()
+	events := []string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"claude-haiku-4-5-20251001"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"citations":[],"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"content_block_location","cited_text":"The grass is green","document_index":0,"start_block_index":0,"end_block_index":1}}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The grass is green"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"citations":[],"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://en.wikipedia.org/wiki/Claude_Shannon","title":"Claude Shannon - Wikipedia","cited_text":"Claude Shannon was born..."}}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Claude Shannon was born in 1916"}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+		`data: {"type":"message_stop"}`,
+	}
+	var out strings.Builder
+	for _, e := range events {
+		b, err := h.Feed([]byte(e + "\n\n"))
+		if err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+		out.Write(b)
+	}
+	if _, _, err := h.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	var allAnnotations []any
+	var content strings.Builder
+	for _, ev := range parseSSEDataLines(t, out.String()) {
+		if c, ok := ev["content"].(string); ok {
+			content.WriteString(c)
+		}
+		if anns, ok := ev["annotations"].([]any); ok {
+			allAnnotations = append(allAnnotations, anns...)
+		}
+	}
+	wantContent := "The grass is greenClaude Shannon was born in 1916"
+	if content.String() != wantContent {
+		t.Fatalf("content = %q, want %q", content.String(), wantContent)
+	}
+	if len(allAnnotations) != 1 {
+		t.Fatalf("want exactly 1 annotation (document citation dropped), got %d: %+v", len(allAnnotations), allAnnotations)
+	}
+	ann := allAnnotations[0].(map[string]any)
+	uc := ann["url_citation"].(map[string]any)
+	if uc["url"] != "https://en.wikipedia.org/wiki/Claude_Shannon" {
+		t.Errorf("url = %v", uc["url"])
+	}
+	start, end := int(uc["start_index"].(float64)), int(uc["end_index"].(float64))
+	if wantContent[start:end] != "Claude Shannon was born in 1916" {
+		t.Errorf("start/end index %d:%d span = %q", start, end, wantContent[start:end])
+	}
+}
+
+// parseSSEDataLines extracts every choices[0].delta object from an OpenAI SSE
+// stream's data: lines (skipping [DONE]).
+func parseSSEDataLines(t *testing.T, sse string) []map[string]any {
+	t.Helper()
+	var deltas []map[string]any
+	for _, line := range strings.Split(sse, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(line[len("data:"):])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var ev struct {
+			Choices []struct {
+				Delta map[string]any `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			t.Fatalf("invalid SSE data JSON %q: %v", payload, err)
+		}
+		if len(ev.Choices) > 0 {
+			deltas = append(deltas, ev.Choices[0].Delta)
+		}
+	}
+	return deltas
+}
+
 func TestStreaming_ToolCalls(t *testing.T) {
 	h := New().(openaiAnthropic).NewResponseHandler()
 	events := []string{
