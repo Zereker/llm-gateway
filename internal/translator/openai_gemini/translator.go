@@ -37,6 +37,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -807,7 +808,68 @@ func parseStopField(raw json.RawMessage) []string {
 // goes through the extractor.NewGemini side channel); this function is only responsible
 // for translating usageMetadata into the OpenAI body's usage field (the shape OpenAI
 // clients expect).
+// mergeGeminiArrayStream merges Gemini's raw (non-alt=sse) streamGenerateContent
+// wire format — a top-level JSON array of incremental geminiResponse objects,
+// one per streamed chunk — into a single object translateResponse can parse.
+// Each array element's candidates[].content.parts are concatenated in
+// recording order per candidate index; the last non-empty finishReason and
+// the last usageMetadata/promptFeedback seen win, matching how those fields
+// only ever appear complete on Gemini's final chunk.
+//
+// This gateway's own Gemini session always appends alt=sse when streaming
+// (see internal/protocol/gemini/session.go's geminiStreamURL), so a real
+// production response never actually arrives in this shape — this exists so
+// Flush's JSON-mode path (see Feed's doc comment: both '{' and '[' route
+// here) matches its own stated intent instead of panicking if that
+// invariant is ever broken (a custom endpoint URL, a quirks rewrite that
+// strips the query string, etc.). If rawBody isn't a top-level array, it is
+// returned unchanged.
+func mergeGeminiArrayStream(rawBody []byte) []byte {
+	trimmed := bytes.TrimLeft(rawBody, " \t\r\n")
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return rawBody
+	}
+	var chunks []geminiResponse
+	if err := json.Unmarshal(rawBody, &chunks); err != nil {
+		return rawBody // let the caller's own Unmarshal surface the real parse error
+	}
+	merged := geminiResponse{}
+	byIndex := map[int]*geminiCandidate{}
+	var order []int
+	for _, chunk := range chunks {
+		for _, cand := range chunk.Candidates {
+			existing, ok := byIndex[cand.Index]
+			if !ok {
+				c := geminiCandidate{Index: cand.Index, Content: geminiContent{Role: cand.Content.Role}}
+				byIndex[cand.Index] = &c
+				existing = &c
+				order = append(order, cand.Index)
+			}
+			existing.Content.Parts = append(existing.Content.Parts, cand.Content.Parts...)
+			if cand.FinishReason != "" {
+				existing.FinishReason = cand.FinishReason
+			}
+		}
+		if chunk.UsageMetadata != nil {
+			merged.UsageMetadata = chunk.UsageMetadata
+		}
+		if chunk.PromptFeedback != nil {
+			merged.PromptFeedback = chunk.PromptFeedback
+		}
+	}
+	sort.Ints(order)
+	for _, idx := range order {
+		merged.Candidates = append(merged.Candidates, *byIndex[idx])
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return rawBody
+	}
+	return out
+}
+
 func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
+	rawBody = mergeGeminiArrayStream(rawBody)
 	var in geminiResponse
 	if err := json.Unmarshal(rawBody, &in); err != nil {
 		return nil, fmt.Errorf("gemini response parse: %w", err)
