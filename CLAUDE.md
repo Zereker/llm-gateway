@@ -114,3 +114,4 @@ All external dependencies go through interfaces: `BudgetGate` / `Moderator` / `T
 
 - Commit messages **do not** include a `Co-Authored-By` line (per the user's global convention).
 - `git push --force` / `git reset --hard` / `git rebase` and other operations that rewrite remote history are strictly forbidden; fixing an already-pushed commit must be done via `git revert` + a new commit.
+- **Commit messages and code review comments must be written in English only** — no Chinese or other non-English text. CI (`guard-commit-language.yml`) rejects non-English commit messages and PR titles.
