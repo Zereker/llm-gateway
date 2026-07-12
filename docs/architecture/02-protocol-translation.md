@@ -343,7 +343,7 @@ Cross-protocol pairs do not all carry every request feature. Current coverage:
 | `openai_anthropic` | ✅ | ✅ | ✅ | extended thinking round-trip (via `reasoning_content`/`reasoning_signature`) |
 | `anthropic_openai` | ✅ | ✅ | ✅ | — |
 | `openai_gemini` | ✅ | ✅ | ✅ | `n`/`candidateCount`, `response_format`, Gemini 3 `thoughtSignature` round-trip |
-| `openai_cohere` | ✅ | ✅ | ✅ | citations still dropped (no OpenAI-compatible shape decided) |
+| `openai_cohere` | ✅ | ✅ | ✅ | `command-a-reasoning-*` `thinking` block → `reasoning_content`; citations still dropped (no OpenAI-compatible shape decided) |
 
 **Tool calling**: request-side maps `tools` / `tool_choice`, assistant tool
 calls, and tool results between OpenAI's flat `tool_calls` + `role:"tool"`
@@ -381,6 +381,21 @@ reconstructs the Anthropic `thinking` block **first** in that turn's content
 array — Anthropic rejects a `tool_use` block in history without a preceding
 signed thinking block once extended thinking was enabled, so replaying the
 signature verbatim (not regenerating it) is required, not cosmetic.
+
+**Cohere reasoning** (`openai_cohere` only): `command-a-reasoning-*` models
+emit a `{"type":"thinking","thinking":...}` content block ahead of the
+final text/tool_calls block — Cohere's analog of extended thinking, verified
+against a real captured `command-a-reasoning-08-2025` tool-call response
+(see `internal/app/gateway/testdata/fieldmatrix/upstream/README.md`). It
+surfaces the same way as Anthropic's, as `message.reasoning_content`
+(non-streaming) or `reasoning_content` delta chunks keyed by content index
+(streaming, since a `content-delta` event repeats only the changed field —
+`.thinking` or `.text` — not the type, which is tracked from that index's
+preceding `content-start` event). Unlike Anthropic, Cohere's thinking block
+carries no signature and the request side has no inbound field for it, so —
+matching Vercel AI SDK's own Cohere provider — it is not sent back on
+history replay; nothing is lost by dropping it, since there's no signed
+chain Cohere would reject a subsequent `tool_calls` message without.
 
 **Gemini 3 `thoughtSignature`** (`openai_gemini`): Gemini's per-call analogue
 of Anthropic's thinking signature — an opaque signed blob attached as a

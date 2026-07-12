@@ -266,6 +266,73 @@ func TestTranslateResponse_ToolCallsWithText(t *testing.T) {
 	}
 }
 
+// TestTranslateResponse_Thinking uses a real command-a-reasoning-08-2025 response
+// body (langchain-ai/langchain-cohere, MIT license, tests/integration_tests/cassettes/
+// test_command_a_reasoning_with_tool_call.yaml) to verify the "thinking" content
+// block surfaces as reasoning_content alongside its tool_calls.
+func TestTranslateResponse_Thinking(t *testing.T) {
+	cohere := `{"id":"1cd28534-75bf-43e0-b106-30f220a9aa25","message":{"role":"assistant",
+	           "content":[{"type":"thinking","thinking":"Okay, the user is asking for the weather in the second largest city of Japan. The largest city is Tokyo, the second largest is likely Osaka."}],
+	           "tool_calls":[{"id":"get_the_weather_r8d0r2e0kw9s","type":"function","function":{"name":"get_the_weather","arguments":"{\"location\":\"Osaka\"}"}}]},
+	           "finish_reason":"TOOL_CALL",
+	           "usage":{"billed_units":{"input_tokens":80,"output_tokens":301},"tokens":{"input_tokens":1494,"output_tokens":330},"cached_tokens":1008}}`
+	body, _ := translateResponse([]byte(cohere))
+	r := gjson.ParseBytes(body)
+	if got := r.Get("choices.0.message.reasoning_content").String(); !strings.Contains(got, "second largest") {
+		t.Errorf("reasoning_content = %q, want the real thinking text", got)
+	}
+	if r.Get("choices.0.message.tool_calls.0.function.name").String() != "get_the_weather" {
+		t.Errorf("tool_calls missing alongside reasoning_content: %s", body)
+	}
+	if r.Get("choices.0.message.content").Type != gjson.Null {
+		t.Errorf("content should be null (no text block), got %s", r.Get("choices.0.message.content").Raw)
+	}
+}
+
+// TestCohereStreamTranslate_Thinking: content-start announcing type:"thinking" ->
+// content-delta carrying .thinking (not .text) must surface as reasoning_content
+// deltas, distinct from ordinary text deltas on other indices. Event shapes verified
+// against the same real cassette's model family via Vercel AI SDK's Cohere provider
+// parser (packages/cohere/src/cohere-chat-language-model.ts).
+func TestCohereStreamTranslate_Thinking(t *testing.T) {
+	h := &responseHandler{}
+	sse := `data: {"type":"message-start"}
+
+data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"thinking","thinking":""}}}}
+
+data: {"type":"content-delta","index":0,"delta":{"message":{"content":{"thinking":"Okay, "}}}}
+
+data: {"type":"content-delta","index":0,"delta":{"message":{"content":{"thinking":"let me think."}}}}
+
+data: {"type":"content-start","index":1,"delta":{"message":{"content":{"type":"text","text":""}}}}
+
+data: {"type":"content-delta","index":1,"delta":{"message":{"content":{"text":"Osaka."}}}}
+
+data: {"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":5,"output_tokens":8}}}}
+
+`
+	out, _ := h.Feed([]byte(sse))
+	fin, _, _ := h.Flush()
+	all := string(out) + string(fin)
+
+	var reasoning, content strings.Builder
+	for _, line := range strings.Split(all, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		payload := line[len("data: "):]
+		reasoning.WriteString(gjson.Get(payload, "choices.0.delta.reasoning_content").String())
+		content.WriteString(gjson.Get(payload, "choices.0.delta.content").String())
+	}
+	if reasoning.String() != "Okay, let me think." {
+		t.Errorf("reasoning_content = %q, want %q", reasoning.String(), "Okay, let me think.")
+	}
+	if content.String() != "Osaka." {
+		t.Errorf("content = %q, want %q", content.String(), "Osaka.")
+	}
+}
+
 // TestCohereStreamTranslate_ToolCalls: tool-call-start -> tool-call-delta
 // (arguments streamed incrementally) -> tool-call-end must assemble into
 // OpenAI's streaming tool_calls delta chunk shape, indexed for parallel calls.
