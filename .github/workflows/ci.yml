@@ -11,14 +11,13 @@ permissions:
 jobs:
   go:
     runs-on: ubuntu-latest
-    # Mirrors `make test-integration` (mysql + redis from docker-compose.yml) so CI
-    # exercises the SQL (internal/repo, outbox) and Redis-backed (ratelimit, cachebus,
-    # semantic cache, selector affinity) suites instead of silently skipping them —
-    # those tests self-gate on MYSQL_DSN / REDIS_ADDR being unset (see e.g.
-    # internal/cachebus/cachebus_test.go), which is exactly what plain `go test ./...`
-    # without these services does. Kafka/outbox's live-broker test
-    # (internal/infra/kafka_test.go's TestKafkaProducer_WriteIntegration) stays
-    # skipped, matching that test's own "skipped by default in CI" doc comment.
+    # Mirrors `make test-integration` (mysql + redis + a Kafka broker) so CI exercises
+    # the SQL (internal/repo, outbox), Redis-backed (ratelimit, cachebus, semantic
+    # cache, selector affinity), and Kafka-backed (internal/infra's live-broker
+    # producer test) suites instead of silently skipping them — those tests self-gate
+    # on MYSQL_DSN / REDIS_ADDR / KAFKA_BROKERS being unset (see e.g.
+    # internal/cachebus/cachebus_test.go, internal/infra/kafka_test.go), which is
+    # exactly what plain `go test ./...` without these services does.
     services:
       mysql:
         image: mysql:8.0
@@ -41,15 +40,39 @@ jobs:
           --health-interval=5s
           --health-timeout=3s
           --health-retries=20
+      kafka:
+        # KRaft mode (no ZooKeeper); the image's default config already advertises
+        # localhost:9092, matching how a GitHub Actions service container is reached
+        # from the job (localhost + the mapped port, not a container hostname) — see
+        # internal/infra/kafka_test.go's own "docker run -p 9092:9092 apache/kafka"
+        # doc comment, which this mirrors exactly.
+        image: apache/kafka:latest
+        ports:
+          - 9092:9092
     env:
       MYSQL_DSN: root:@tcp(127.0.0.1:3306)/llm_gateway_test?parseTime=true&charset=utf8mb4
       REDIS_ADDR: 127.0.0.1:6379
+      KAFKA_BROKERS: 127.0.0.1:9092
+      KAFKA_TOPIC: llm-gateway-ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+      - name: Wait for Kafka
+        # The kafka service has no docker-level healthcheck (the image doesn't ship a
+        # lightweight CLI probe we could confidently name without risking a wrong
+        # binary path); poll the mapped port from the job container instead, which
+        # only needs bash — always present on ubuntu-latest.
+        run: |
+          for i in $(seq 1 30); do
+            if bash -c 'exec 3<>/dev/tcp/127.0.0.1/9092' 2>/dev/null; then
+              echo "Kafka port open after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Kafka never opened port 9092" >&2; exit 1
       - name: Vet
         run: go vet ./...
       - name: Test
