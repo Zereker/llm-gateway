@@ -14,6 +14,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/translator/anthropic_openai"
 	"github.com/zereker/llm-gateway/internal/translator/identity"
 	"github.com/zereker/llm-gateway/internal/translator/openai_anthropic"
+	"github.com/zereker/llm-gateway/internal/translator/openai_bedrock"
 	"github.com/zereker/llm-gateway/internal/translator/openai_cohere"
 	"github.com/zereker/llm-gateway/internal/translator/openai_gemini"
 	"github.com/zereker/llm-gateway/internal/translator/responses_openai"
@@ -34,7 +35,7 @@ func NewLookup() *protocol.DefaultLookup {
 	}
 	translators := identity.All()
 	translators = append(translators,
-		anthropic_openai.New(), openai_anthropic.New(), openai_cohere.New(),
+		anthropic_openai.New(), openai_anthropic.New(), openai_bedrock.New(), openai_cohere.New(),
 		openai_gemini.New(), responses_openai.New(),
 	)
 	return protocol.NewLookup(factories, translator.NewRegistry(translators...))

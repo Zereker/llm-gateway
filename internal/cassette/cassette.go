@@ -18,6 +18,12 @@
 // gzip-compressed or not), or — in pytest-recording's variant — nested one
 // level under a `string:` key. Load normalizes all of that into plain []byte,
 // transparently gunzipping where the gzip magic bytes are present.
+//
+// The **whole file** may also be gzip-compressed (langchain-ai/langchain-aws
+// stores its cassettes as `*.yaml.gz` to keep the repo small) — Load detects
+// the gzip magic bytes up front and transparently decompresses before
+// parsing, so a vendored source's on-disk compression choice doesn't need
+// normalizing at vendor-in time; LoadDir globs both `*.yaml` and `*.yaml.gz`.
 package cassette
 
 import (
@@ -29,6 +35,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -67,6 +74,7 @@ func Load(path string) ([]Interaction, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cassette: read %s: %w", path, err)
 	}
+	raw = gunzipIfNeeded(raw)
 	var doc map[string]any
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("cassette: parse %s: %w", path, err)
@@ -152,16 +160,16 @@ func gunzipIfNeeded(b []byte) []byte {
 	return out
 }
 
-// LoadDir walks dir recursively and loads every *.yaml file found. The
-// returned map is keyed by path relative to dir (forward-slash separated),
-// sorted access via Paths for deterministic iteration.
+// LoadDir walks dir recursively and loads every *.yaml / *.yaml.gz file
+// found. The returned map is keyed by path relative to dir (forward-slash
+// separated), sorted access via Paths for deterministic iteration.
 func LoadDir(dir string) (map[string][]Interaction, error) {
 	out := make(map[string][]Interaction)
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || filepath.Ext(path) != ".yaml" {
+		if d.IsDir() || !(strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yaml.gz")) {
 			return nil
 		}
 		rel, err := filepath.Rel(dir, path)
