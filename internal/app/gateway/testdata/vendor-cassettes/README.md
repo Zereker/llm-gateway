@@ -17,8 +17,10 @@ vendor-cassettes/
 │   └── langchain-ai-langchain/       # MIT License（langchain-anthropic 官方分包）
 ├── gemini/
 │   └── simonw-llm-gemini/            # Apache License 2.0
-└── cohere/
-    └── langchain-ai-langchain-cohere/ # MIT License
+├── cohere/
+│   └── langchain-ai-langchain-cohere/ # MIT License
+└── openai/
+    └── langchain-ai-langchain/       # MIT License（langchain-openai 官方分包）
 ```
 
 每个来源目录下有一份该项目的 `LICENSE`（按 Apache 2.0 / MIT 的要求，再分发时必须保留许可证全文）。
@@ -78,6 +80,10 @@ vendor-cassettes/
 | `test_documents.yaml` | `documents` 请求字段（RAG，OpenAI 协议没有对应概念,不在我们翻译范围内） |
 | `test_command_a_reasoning_with_tool_call.yaml` | `command-a-reasoning-08-2025` 的 `{"type":"thinking","thinking":...}` block（已支持，映射到 `reasoning_content`） |
 | `test_stream.yaml` | 基础流式文本（`content-start`/`content-delta`/`content-end`），用来确认 content block 的 `type` 只在 `content-start` 出现一次 |
+
+### `openai/langchain-ai-langchain/`（MIT License，99 个文件）
+
+来自 [langchain-ai/langchain](https://github.com/langchain-ai/langchain) 官方 `langchain-openai` 分包 `libs/partners/openai/tests/cassettes/`。文件数量大,分类索引和"大多数文件实际走 Responses API 而不是 Chat Completions"这个反直觉发现单独写在 `openai/langchain-ai-langchain/README.md` 里,这里不重复。一句话概括：真正的 Chat Completions（`"messages"` 形状）样本只有 2 个；剩下 97 个全是 Responses API 形状,覆盖工具调用、内置服务端工具（MCP/code interpreter/web search/file search/apply patch/tool search）、reasoning、结构化输出、多轮压缩、图像生成等，是目前语料库里覆盖面最广的一批。
 
 ## 怎么用
 
