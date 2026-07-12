@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-const vendorRoot = "../app/gateway/testdata/vendor-cassettes"
+var vendorRoot = TestdataPath("vendor-cassettes")
 
 func TestLoad_InteractionsFormat(t *testing.T) {
 	// simonw's pytest-recording format: top-level `interactions:`.

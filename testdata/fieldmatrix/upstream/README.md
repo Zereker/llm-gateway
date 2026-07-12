@@ -2,7 +2,7 @@
 
 用真实厂商上游实测抓取的响应体（已脱敏：去除供应商标识、密钥、签名 URL，model 名替换为中性占位），供 E2E / 单测回放，避免每次测试都要真实调用模型。样本的价值在于覆盖各厂商的**字段结构变体**，与具体是哪家供应商无关。
 
-> 这里的文件都是从下面这些第三方开源项目的真实 VCR cassette **精加工**出来的（截断/脱敏/改名，适配我们的 E2E 测试）。如果要查某个字段的**原始、未加工**真实形状,去 `internal/app/gateway/testdata/vendor-cassettes/`——那边存的是原始 cassette 全文,还有一批我们尚未实现的真实特征（citations、redacted_thinking、MCP、code execution 等），以后不用再重新上网找。
+> 这里的文件都是从下面这些第三方开源项目的真实 VCR cassette **精加工**出来的（截断/脱敏/改名，适配我们的 E2E 测试）。如果要查某个字段的**原始、未加工**真实形状,去 `testdata/vendor-cassettes/`（repo 根目录）——那边存的是原始 cassette 全文,还有一批我们尚未实现的真实特征（citations、redacted_thinking、MCP、code execution 等），以后不用再重新上网找。
 
 | 文件 | 协议 / 形态 | 结构要点 |
 |---|---|---|

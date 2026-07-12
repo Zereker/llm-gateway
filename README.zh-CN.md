@@ -57,7 +57,8 @@ cmd/gateway           ── 精简的数据面进程入口
 cmd/console           ── 可选控制面 Admin API
 cmd/migrate           ── 版本化数据库迁移命令
 cmd/mockupstream      ── dev/test 假上游
-scripts/{e2e-smoke,seed-e2e}  端到端烟测
+scripts/{e2e-smoke,seed-e2e}                       单 vendor 端到端烟测
+scripts/{e2e-smoke-multivendor,seed-multivendor}   多 vendor（openai/anthropic/gemini/cohere）端到端烟测
 docs/architecture/    设计文档（00-overview 至 08-observability）
 configs/              per-environment 配置（local / prod / docker）
 ```

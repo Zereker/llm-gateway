@@ -1,7 +1,10 @@
 // Package cassette loads real VCR cassette fixtures (recorded HTTP
-// request/response pairs) vendored under
-// internal/app/gateway/testdata/vendor-cassettes/ so translator/extractor
-// tests can replay real upstream traffic instead of hand-written literals.
+// request/response pairs) vendored under testdata/vendor-cassettes/ (repo
+// root) so unit tests (translator/extractor) and integration tests (the
+// gateway's own SQL-backed e2e suite) can both replay real upstream traffic
+// instead of hand-written literals, from a single shared, canonical
+// location — see TestdataPath for how any package finds it regardless of
+// its own nesting depth or the test runner's working directory.
 //
 // Two on-disk cassette formats are supported (both used across the vendored
 // sources — see that directory's README for provenance):
@@ -24,10 +27,30 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 
 	"gopkg.in/yaml.v3"
 )
+
+// repoRoot is computed once from this source file's own location —
+// internal/cassette/cassette.go is exactly two directories below the repo
+// root, so this is stable no matter which package imports it or what
+// directory `go test` happened to set as the working directory.
+var repoRoot = func() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	return filepath.Dir(filepath.Dir(filepath.Dir(thisFile))) // .../internal/cassette/cassette.go -> internal/cassette -> internal -> repo root
+}()
+
+// TestdataPath returns an absolute path to testdata/<elem...> at the repo
+// root (e.g. TestdataPath("vendor-cassettes", "anthropic") ->
+// "<repo>/testdata/vendor-cassettes/anthropic"). Safe to call from any
+// package's test file regardless of nesting depth — unlike a hand-counted
+// relative path ("../../testdata/..."), it doesn't silently break if either
+// the caller or testdata/ itself moves one level.
+func TestdataPath(elem ...string) string {
+	return filepath.Join(append([]string{repoRoot, "testdata"}, elem...)...)
+}
 
 // Interaction is one normalized request/response pair from a cassette.
 type Interaction struct {

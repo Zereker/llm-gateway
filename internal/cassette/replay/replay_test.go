@@ -1,5 +1,5 @@
 // Package replay replays every real cassette under
-// internal/app/gateway/testdata/vendor-cassettes/ through the actual
+// testdata/vendor-cassettes/ (repo root) through the actual
 // translator / usage-extractor implementations, so the whole vendored real
 // upstream traffic corpus is exercised — not just the hand-picked highlight
 // cases inline in each translator's own tests.
@@ -16,15 +16,17 @@ package replay
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/translator"
 )
 
-const vendorRoot = "../../app/gateway/testdata/vendor-cassettes"
+var vendorRoot = cassette.TestdataPath("vendor-cassettes")
 
 // claimed / notApplicable together must account for every file cassette.LoadDir
 // finds under vendorRoot. claimed = "a replay subtest fed at least one
@@ -116,4 +118,101 @@ func truncate(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + "...(truncated)"
+}
+
+// vendorReplayConfig is the shared skeleton every "upstream-only" vendor's
+// TestReplayXResponses follows (see gemini_test.go / cohere_test.go for the
+// two current instances). Adding a genuinely new vendor to this suite is:
+// one dirs list, one classify function, and a call to runResponseReplay —
+// nothing else in this package needs to change.
+type vendorReplayConfig struct {
+	dirs []string
+	// classify reports whether a response body is this vendor's real chat
+	// response shape (as opposed to a request-only interaction, or some
+	// other payload the corpus happens to contain).
+	classify func(body []byte) bool
+	// translator is the openai_<vendor> translator whose response handler
+	// gets fed every classified body.
+	translator translator.Translator
+	// notApplicableReason is called once per file with zero classified
+	// interactions, and must return a non-empty reason — an empty return is
+	// a bug (see markNotApplicable's doc comment: every out-of-scope file
+	// needs a stated reason, not a silent skip). Most vendors return the
+	// same string regardless of relPath; Cohere's is the one example that
+	// varies by file (see cohere_test.go).
+	notApplicableReason func(relPath string) string
+	// skipUsageCheck, if non-nil, reports whether this response body is
+	// expected to yield no usage (e.g. Anthropic error responses) — usage
+	// absence is only flagged as a bug when this is nil or returns false.
+	skipUsageCheck func(body []byte) bool
+}
+
+// runResponseReplay feeds every interaction under cfg.dirs whose response
+// body cfg.classify accepts through cfg.translator's response handler,
+// asserting it doesn't error and produces well-formed OpenAI-shaped output —
+// then accounts for every file via claim/markNotApplicable so
+// TestZZZ_Completeness can enforce that nothing was silently skipped.
+func runResponseReplay(t *testing.T, cfg vendorReplayConfig) {
+	t.Helper()
+	for _, dir := range cfg.dirs {
+		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
+		if err != nil {
+			t.Fatalf("LoadDir %s: %v", dir, err)
+		}
+		for _, rel := range cassette.SortedKeys(files) {
+			path := dir + "/" + rel
+			interactions := files[rel]
+			examined := false
+			for i, it := range interactions {
+				if len(it.ResponseBody) == 0 || !cfg.classify(it.ResponseBody) {
+					continue
+				}
+				examined = true
+				i, it := i, it
+				t.Run(path+"#"+strconv.Itoa(i), func(t *testing.T) {
+					h := cfg.translator.NewResponseHandler()
+					out, usage := feedResponse(t, h, it.ResponseBody, path)
+					assertValidOpenAIChatOutput(t, out, path)
+					skip := cfg.skipUsageCheck != nil && cfg.skipUsageCheck(it.ResponseBody)
+					if !skip && usage == nil {
+						t.Errorf("%s: expected non-nil usage", path)
+					}
+				})
+			}
+			if examined {
+				claim(path)
+			} else {
+				reason := cfg.notApplicableReason(rel)
+				if reason == "" {
+					t.Fatalf("%s: notApplicableReason returned an empty string — every out-of-scope file needs a stated reason", path)
+				}
+				markNotApplicable(path, reason)
+			}
+		}
+	}
+}
+
+// runRequestWellFormedCheck is the shared skeleton for a vendor with no
+// reverse-direction translator (upstream-only, like Gemini/Cohere): there's
+// nothing to translate on the request side, but this still guards against a
+// corrupted/truncated cassette silently masquerading as "out of scope".
+func runRequestWellFormedCheck(t *testing.T, dirs []string) {
+	t.Helper()
+	for _, dir := range dirs {
+		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
+		if err != nil {
+			t.Fatalf("LoadDir %s: %v", dir, err)
+		}
+		for _, rel := range cassette.SortedKeys(files) {
+			path := dir + "/" + rel
+			for i, it := range files[rel] {
+				if len(it.RequestBody) == 0 {
+					continue
+				}
+				if !json.Valid(it.RequestBody) {
+					t.Errorf("%s#%d: request body is not valid JSON", path, i)
+				}
+			}
+		}
+	}
 }
