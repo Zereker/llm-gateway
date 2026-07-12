@@ -38,6 +38,10 @@ import (
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
 )
 
+// roleUser is the OpenAI Chat Completions role this translator assigns to
+// input; factored out since this package's tests assert against it.
+const roleUser = "user"
+
 type responsesOpenAI struct{}
 
 // New returns the Responses-to-OpenAI translator.
@@ -131,7 +135,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	var inputStr string
 	if err := json.Unmarshal(req.Input, &inputStr); err == nil {
 		if inputStr != "" {
-			out.Messages = append(out.Messages, chatMessage{Role: "user", Content: inputStr})
+			out.Messages = append(out.Messages, chatMessage{Role: roleUser, Content: inputStr})
 		}
 	} else {
 		// try parsing as a message array (responses input messages shape)

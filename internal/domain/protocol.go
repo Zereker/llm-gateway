@@ -19,24 +19,36 @@ const (
 	ProtoCohere             // Cohere v2 /v2/chat (message.content array + nested usage.tokens)
 )
 
+// Wire names for each Protocol — shared between String() and ParseProtocol()
+// so the two can't drift out of sync with each other.
+const (
+	protoNameOpenAI    = "openai"
+	protoNameAnthropic = "anthropic"
+	protoNameGemini    = "gemini"
+	protoNameBedrock   = "bedrock"
+	protoNameCustom    = "custom"
+	protoNameResponses = "responses"
+	protoNameCohere    = "cohere"
+)
+
 func (p Protocol) String() string {
 	switch p {
 	case ProtoOpenAI:
-		return "openai"
+		return protoNameOpenAI
 	case ProtoAnthropic:
-		return "anthropic"
+		return protoNameAnthropic
 	case ProtoGemini:
-		return "gemini"
+		return protoNameGemini
 	case ProtoBedrock:
-		return "bedrock"
+		return protoNameBedrock
 	case ProtoCustom:
-		return "custom"
+		return protoNameCustom
 	case ProtoResponses:
-		return "responses"
+		return protoNameResponses
 	case ProtoCohere:
-		return "cohere"
+		return protoNameCohere
 	default:
-		return "unknown"
+		return unknownLabel
 	}
 }
 
@@ -45,19 +57,19 @@ func (p Protocol) String() string {
 // An unknown string returns ProtoUnknown (the caller decides how to handle it).
 func ParseProtocol(s string) Protocol {
 	switch s {
-	case "openai":
+	case protoNameOpenAI:
 		return ProtoOpenAI
-	case "anthropic":
+	case protoNameAnthropic:
 		return ProtoAnthropic
-	case "gemini":
+	case protoNameGemini:
 		return ProtoGemini
-	case "bedrock":
+	case protoNameBedrock:
 		return ProtoBedrock
-	case "custom":
+	case protoNameCustom:
 		return ProtoCustom
-	case "responses":
+	case protoNameResponses:
 		return ProtoResponses
-	case "cohere":
+	case protoNameCohere:
 		return ProtoCohere
 	default:
 		return ProtoUnknown
@@ -80,7 +92,7 @@ func (p *Protocol) UnmarshalJSON(data []byte) error {
 	}
 
 	parsed := ParseProtocol(s)
-	if parsed == ProtoUnknown && s != "" && s != "unknown" {
+	if parsed == ProtoUnknown && s != "" && s != unknownLabel {
 		return fmt.Errorf("domain: unknown protocol %q", s)
 	}
 

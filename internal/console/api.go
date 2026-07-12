@@ -8,6 +8,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// statusKey is the JSON field every mutation/health handler below reports its
+// outcome under.
+const statusKey = "status"
+
+// statusDeleted is the outcome value shared by every hard-delete handler.
+const statusDeleted = "deleted"
+
 // NewEngine assembles the control-plane gin.Engine: the ops route (/healthz) is
 // public, everything under /admin/* goes through adminAuth (authenticate +
 // resolve role). Write routes (POST/DELETE) additionally attach
@@ -17,7 +24,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
-	engine.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+	engine.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{statusKey: "ok"}) })
 
 	// Web UI (Phase 3): single-file admin console. The page itself carries no
 	// secrets; auth happens on the /admin/* API calls it issues (the browser
@@ -152,7 +159,7 @@ func (a *api) subscribe(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"status": "subscribed"})
+	c.JSON(http.StatusCreated, gin.H{statusKey: "subscribed"})
 }
 
 // =============================================================================
@@ -220,7 +227,7 @@ func (a *api) deleteEndpoint(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+	c.JSON(http.StatusOK, gin.H{statusKey: statusDeleted})
 }
 
 // =============================================================================
@@ -263,7 +270,7 @@ func (a *api) revokeAPIKey(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "revoked"})
+	c.JSON(http.StatusOK, gin.H{statusKey: "revoked"})
 }
 
 // =============================================================================
@@ -313,7 +320,7 @@ func (a *api) deleteQuotaPolicy(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+	c.JSON(http.StatusOK, gin.H{statusKey: statusDeleted})
 }
 
 // =============================================================================
@@ -400,7 +407,7 @@ func (a *api) deleteModelAlias(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+	c.JSON(http.StatusOK, gin.H{statusKey: statusDeleted})
 }
 
 // =============================================================================

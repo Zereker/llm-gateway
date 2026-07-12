@@ -28,14 +28,8 @@ linters:
     - whitespace    # trailing/leading blank lines in blocks
     - nolintlint    # malformed or unexplained //nolint directives
     - gocritic      # opinionated but high-signal checks (diagnostic+style defaults)
-    # not enabled: goconst — this codebase is protocol-translation code, where
-    # repeated string literals ("tool_calls", "assistant", "type", ...) ARE
-    # the wire format being spoken; extracting them into constants adds
-    # indirection without adding meaning. Verified against a real run: 49/49
-    # findings were JSON field names or protocol enum values.
-    # not enabled: contextcheck — its findings here are all deliberate
-    # detached-context patterns (async fire-and-forget reporting, shutdown
-    # paths), which is exactly the case the linter can't distinguish.
+    - goconst       # repeated string literals that should be named constants
+    - contextcheck  # contexts that should be propagated but aren't
     - revive        # golint successor; config below trims its noisiest rules
     - wsl_v5        # whitespace/cuddling rules (the "wsl" ruleset, v5 engine)
 
@@ -46,6 +40,8 @@ linters:
     gocritic:
       disabled-checks:
         - ifElseChain # matches this codebase's explicit if/else protocol-branching style
+    goconst:
+      min-occurrences: 3
     revive:
       rules:
         - name: blank-imports
@@ -79,11 +75,17 @@ linters:
       - std-error-handling
     rules:
       # Tests legitimately repeat literals, build long fixtures, and ignore
-      # errors on cleanup paths.
+      # errors on cleanup paths. goconst here specifically: every assertion
+      # re-states the wire value it's checking ("get_weather", "stop", "text",
+      # ...) against a different translator/direction/fixture; a shared
+      # constant would couple unrelated test functions to each other for no
+      # readability gain (checked: 0 of the remaining findings are the same
+      # literal reused for the same meaning across functions in one file).
       - path: _test\.go
         linters:
           - gocritic
           - wsl_v5
+          - goconst
       # Scripts are one-shot operator tools: log.Fatalf flow is idiomatic
       # there, so gocritic's exitAfterDefer (a leaked DB conn on a fatal
       # path, reclaimed by process exit a microsecond later) doesn't apply.
@@ -91,6 +93,14 @@ linters:
         linters:
           - gocritic
           - wsl_v5
+      # cmd/mockupstream is a fake upstream for E2E tests (see its own doc
+      # comment) — a test-fixture generator that happens to live outside
+      # _test.go because it needs to run as a standalone binary. Its literals
+      # are canned response bodies with no round-trip/drift risk (nothing
+      # reads them back for comparison), same rationale as the _test.go rule.
+      - path: ^cmd/mockupstream/
+        linters:
+          - goconst
 
 formatters:
   enable:

@@ -225,8 +225,13 @@ func flush(w http.ResponseWriter) {
 //   - hop-by-hop headers (RFC 9110 §7.6.1): meaningless to forward end-to-end.
 //   - upstream identity / quota disclosure: which vendor+org backs a model and
 //     the gateway's shared upstream rate-limit state are internal details.
+//
+// headerContentLength is the standard header name; the downstream server
+// always recomputes it itself, so it's blocked from relay below.
+const headerContentLength = "Content-Length"
+
 var blockedUpstreamHeaders = map[string]struct{}{
-	"Content-Length":      {},
+	headerContentLength:   {},
 	"Set-Cookie":          {},
 	"Set-Cookie2":         {},
 	"Connection":          {},

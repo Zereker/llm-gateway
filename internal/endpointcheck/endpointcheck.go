@@ -35,6 +35,11 @@ type Catalog interface {
 // Validator checks endpoint configuration against an explicit capability catalog.
 type Validator struct{ Catalog Catalog }
 
+// reasonMetadataEndpoint is the validation-failure reason shared by both
+// detection paths in validateRoutingURL (well-known hostname vs. resolved
+// metadata IP) — same classification either way.
+const reasonMetadataEndpoint = "metadata_endpoint"
+
 // Validate returns all misconfiguration reasons for one endpoint (empty slice = healthy).
 //
 // reason is a stable snake_case identifier, used both as a metric label and as the
@@ -113,11 +118,11 @@ func validateRoutingURL(raw string) string {
 	// Well-known metadata hostnames
 	switch host {
 	case "metadata.google.internal", "metadata", "instance-data":
-		return "metadata_endpoint"
+		return reasonMetadataEndpoint
 	}
 	// Metadata IP (shares invoker.IsMetadataIP with the dial-time SSRF defense — single source of truth)
 	if ip, err := netip.ParseAddr(host); err == nil && invoker.IsMetadataIP(ip) {
-		return "metadata_endpoint"
+		return reasonMetadataEndpoint
 	}
 
 	return ""

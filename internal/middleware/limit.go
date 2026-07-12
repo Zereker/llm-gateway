@@ -16,6 +16,13 @@ import (
 	"github.com/zereker/llm-gateway/internal/ratelimit"
 )
 
+// Rate-limit dimension names, shared between the metric labels below and
+// dimensionFromKey's bucket-key parsing.
+const (
+	dimensionRPM = "rpm"
+	dimensionTPM = "tpm"
+)
+
 // QuotaPolicies is the port through which M6 pulls the two quota-policy
 // layers (account + api-key).
 //
@@ -175,17 +182,17 @@ func chargeTPM(rc *requeststate.State, store ratelimit.Store, tpmBuckets []ratel
 
 	results, err := store.ChargeBatch(ctx, tpmBuckets)
 	if err != nil {
-		metric.Inc(metric.RateLimitChargeTotal, "dimension", "tpm", "result", "error")
+		metric.Inc(metric.RateLimitChargeTotal, "dimension", dimensionTPM, "result", "error")
 		return
 	}
 
-	metric.Inc(metric.RateLimitChargeTotal, "dimension", "tpm", "result", "ok")
+	metric.Inc(metric.RateLimitChargeTotal, "dimension", dimensionTPM, "result", "ok")
 
 	for _, r := range results {
 		if r.Overflow {
 			metric.Inc(metric.TPMOverflowTotal,
 				"layer", layerFromKey(r.Key),
-				"dimension", "tpm",
+				"dimension", dimensionTPM,
 			)
 		}
 	}
@@ -299,11 +306,11 @@ func layerFromKey(key string) string {
 func dimensionFromKey(key string) string {
 	switch {
 	case len(key) >= 4 && key[len(key)-4:] == ":rpm":
-		return "rpm"
+		return dimensionRPM
 	case len(key) >= 4 && key[len(key)-4:] == ":rps":
 		return "rps"
 	case len(key) >= 4 && key[len(key)-4:] == ":tpm":
-		return "tpm"
+		return dimensionTPM
 	}
 
 	return "unknown"

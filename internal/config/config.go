@@ -27,6 +27,25 @@ import (
 	"github.com/zereker/llm-gateway/internal/infra"
 )
 
+// DriverNone is the shared "no-op driver" value across the config's several
+// independent driver: fields (content_log, moderation, ...).
+const DriverNone = "none"
+
+// DriverFile is the shared "write locally" driver value across the config's
+// several independent driver: fields (usage_events, content_log).
+const DriverFile = "file"
+
+// DriverOpenAI is the shared "real OpenAI-compatible API" driver value across
+// the config's several independent driver: fields (moderation, embedder).
+// Exported so internal/app/gateway's wiring switch (which must construct the
+// matching implementation) can't drift from what Validate accepts here.
+const DriverOpenAI = "openai"
+
+// selectorFilterWeightedRandom is the default/always-available selector
+// filter name, referenced both in the driver switch and in the default
+// filter chain below.
+const selectorFilterWeightedRandom = "weighted_random"
+
 // Config is the root of gateway.yaml.
 //
 // Fields left unset get filled with sensible defaults by ApplyDefaults; the
@@ -467,7 +486,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.UsageEvents.Driver {
-	case "", "file":
+	case "", DriverFile:
 		// the file driver doesn't need the kafka section; file.path is backstopped by ApplyDefaults
 	case "kafka", "async_kafka":
 		if len(c.UsageEvents.Kafka.Brokers) == 0 {
@@ -495,7 +514,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.ContentLog.Driver {
-	case "", "none", "file":
+	case "", DriverNone, DriverFile:
 		// ok
 	default:
 		// kafka is deliberately no longer supported: Content Log is a
@@ -511,8 +530,8 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Moderation.Driver {
-	case "", "none":
-	case "openai":
+	case "", DriverNone:
+	case DriverOpenAI:
 		if c.Moderation.APIKey == "" {
 			return errors.New("moderation.driver=openai requires moderation.api_key or LLM_GATEWAY_MODERATION_API_KEY")
 		}
@@ -527,12 +546,12 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Selector.Picker {
-	case "", "weighted_random", "p2c":
+	case "", selectorFilterWeightedRandom, "p2c":
 	default:
 		return fmt.Errorf("selector.picker=%q not supported (use weighted_random|p2c)", c.Selector.Picker)
 	}
 
-	validFilters := map[string]bool{"cooldown": true, "limit_read": true, "weighted_random": true, "prefix_cache": true, "busy": true}
+	validFilters := map[string]bool{"cooldown": true, "limit_read": true, selectorFilterWeightedRandom: true, "prefix_cache": true, "busy": true}
 	for _, filter := range c.Selector.Filters {
 		if !validFilters[filter] {
 			return fmt.Errorf("selector.filters contains unsupported value %q", filter)
@@ -540,7 +559,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Cache.Semantic.Enabled {
-		if c.Cache.Semantic.Embedder.Driver != "openai" {
+		if c.Cache.Semantic.Embedder.Driver != DriverOpenAI {
 			return fmt.Errorf("cache.semantic.embedder.driver=%q not supported (use openai)", c.Cache.Semantic.Embedder.Driver)
 		}
 
@@ -549,7 +568,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.ContentLog.Driver == "file" && c.ContentLog.File.Path == "" {
+	if c.ContentLog.Driver == DriverFile && c.ContentLog.File.Path == "" {
 		return errors.New("content_log.driver=file requires file.path non-empty")
 	}
 
@@ -604,7 +623,7 @@ func (c *Config) ApplyDefaults() {
 	}
 
 	if c.UsageEvents.Driver == "" {
-		c.UsageEvents.Driver = "file"
+		c.UsageEvents.Driver = DriverFile
 	}
 
 	if c.UsageEvents.File.Path == "" {
@@ -614,7 +633,7 @@ func (c *Config) ApplyDefaults() {
 
 	// Scheduler defaults
 	if len(c.Selector.Filters) == 0 {
-		c.Selector.Filters = []string{"cooldown", "limit_read", "weighted_random"}
+		c.Selector.Filters = []string{"cooldown", "limit_read", selectorFilterWeightedRandom}
 	}
 
 	if c.Selector.MaxAttempts == 0 {
@@ -644,7 +663,7 @@ func (c *Config) ApplyDefaults() {
 	}
 	// Moderation defaults
 	if c.Moderation.Driver == "" {
-		c.Moderation.Driver = "none"
+		c.Moderation.Driver = DriverNone
 	}
 	// Trace defaults
 	if c.Trace.Driver == "" {

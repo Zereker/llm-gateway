@@ -26,6 +26,10 @@ const epColumns = `id, name, vendor, protocol, model, group_name, weight, enable
 	auth, routing, quota, capabilities, quirks, extra,
 	created_at, updated_at, deleted_at`
 
+// defaultGroup is the group_name endpoints fall back to when the caller
+// doesn't specify one.
+const defaultGroup = "default"
+
 // ListForModel implements EndpointReader.ListForModel.
 //
 // Returns all endpoints matching (model, group_name) that are enabled and not
@@ -40,7 +44,7 @@ func (r *SQLEndpointReader) ListForModel(ctx context.Context, model, group strin
 	}
 
 	if group == "" {
-		group = "default"
+		group = defaultGroup
 	}
 
 	var rows []Endpoint
@@ -74,7 +78,7 @@ func (r *SQLEndpointReader) PickForModel(ctx context.Context, model, group strin
 	}
 
 	if group == "" {
-		group = "default"
+		group = defaultGroup
 	}
 
 	var ep Endpoint

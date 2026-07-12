@@ -214,7 +214,7 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		p.recordResult(ep, Result{Class: failure.Permanent, Reason: "build_request: " + err.Error(), Latency: time.Since(start)})
+		p.recordResult(ctx, ep, Result{Class: failure.Permanent, Reason: "build_request: " + err.Error(), Latency: time.Since(start)})
 		return
 	}
 
@@ -222,13 +222,13 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 
 	latency := time.Since(start)
 	if err != nil {
-		p.recordResult(ep, Result{Class: failure.Transient, Reason: err.Error(), Latency: latency})
+		p.recordResult(ctx, ep, Result{Class: failure.Transient, Reason: err.Error(), Latency: latency})
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	cls := classify(resp.StatusCode)
-	p.recordResult(ep, Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
+	p.recordResult(ctx, ep, Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
 
 	// probe-gated recovery: a healthy probe releases an endpoint's cooldown
 	// early — but ClearIfRecoverable only touches Transient/Capacity cooldowns
@@ -251,9 +251,13 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	}
 }
 
-// recordResult writes stats + emits a metric.
-func (p *Prober) recordResult(ep *domain.Endpoint, r Result) {
-	p.cfg.Feedback.RecordHealth(context.Background(), ep.ID, r)
+// recordResult writes stats + emits a metric. It must still persist the
+// result when the probe itself timed out (that IS the result being
+// recorded), so it strips cancellation from ctx via context.WithoutCancel
+// rather than detaching to context.Background() — trace/value context
+// still propagates to Feedback.RecordHealth, only the deadline is dropped.
+func (p *Prober) recordResult(ctx context.Context, ep *domain.Endpoint, r Result) {
+	p.cfg.Feedback.RecordHealth(context.WithoutCancel(ctx), ep.ID, r)
 	metric.Inc("llm_gateway_health_probe_total",
 		"endpoint_id", strconv.FormatInt(ep.ID, 10),
 		"result", r.Class.String(),

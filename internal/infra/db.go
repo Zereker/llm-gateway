@@ -139,7 +139,7 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 
 	if !applied[2] {
 		if err := ensureColumn(ctx, db, columnMigration{
-			"endpoints", "quirks", "ALTER TABLE endpoints ADD COLUMN quirks JSON DEFAULT NULL",
+			tableEndpoints, "quirks", "ALTER TABLE " + tableEndpoints + " ADD COLUMN quirks JSON DEFAULT NULL",
 		}); err != nil {
 			return err
 		}
@@ -194,6 +194,11 @@ func CheckMigrationVersion(ctx context.Context, db *sqlx.DB) error {
 
 	return nil
 }
+
+// tableEndpoints names the endpoints table — shared between a columnMigration's
+// table field (used to probe information_schema.columns) and its embedded DDL
+// text, so the two can't silently name different tables.
+const tableEndpoints = "endpoints"
 
 // columnMigration is a single "add the column if the table is missing it" migration.
 type columnMigration struct {

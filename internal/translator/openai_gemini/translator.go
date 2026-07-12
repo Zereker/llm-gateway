@@ -48,6 +48,32 @@ import (
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
 )
 
+// Wire vocabulary this file both reads (switch/case on an upstream field) and
+// writes (as a literal in a constructed map[string]any) — named once per
+// value so a typo shows up as a compile error instead of a silently wrong
+// JSON key/value.
+const (
+	roleAssistant = "assistant"
+	roleUser      = "user"
+
+	keyType         = "type"
+	keyIndex        = "index"
+	keyFunction     = "function"
+	keyToolCalls    = "tool_calls"
+	keyContent      = "content"
+	keyModel        = "model"
+	keyRole         = "role"
+	keyFinishReason = "finish_reason"
+
+	finishLength = "length"
+
+	mimeApplicationJSON = "application/json"
+
+	functionCallingModeAny = "ANY"
+
+	finishContentFilter = "content_filter"
+)
+
 type openaiGemini struct{}
 
 // New returns the OpenAI-to-Gemini translator.
@@ -228,7 +254,7 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 
 			out = append(out, h.roleChunkIfNeeded(0)...)
 
-			return append(out, h.chunk(0, map[string]any{}, "content_filter")...)
+			return append(out, h.chunk(0, map[string]any{}, finishContentFilter)...)
 		}
 
 		return nil
@@ -255,10 +281,10 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 				}
 
 				tc := map[string]any{
-					"index": len(toolCalls),
-					"id":    "call_" + randID(),
-					"type":  "function",
-					"function": map[string]any{
+					keyIndex: len(toolCalls),
+					"id":     "call_" + randID(),
+					keyType:  keyFunction,
+					keyFunction: map[string]any{
 						"name":      fc.Get("name").String(),
 						"arguments": args,
 					},
@@ -280,11 +306,11 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 		})
 
 		if t := text.String(); t != "" {
-			out = append(out, h.chunk(idx, map[string]any{"content": t}, "")...)
+			out = append(out, h.chunk(idx, map[string]any{keyContent: t}, "")...)
 		}
 
 		if len(toolCalls) > 0 {
-			out = append(out, h.chunk(idx, map[string]any{"tool_calls": toolCalls}, "")...)
+			out = append(out, h.chunk(idx, map[string]any{keyToolCalls: toolCalls}, "")...)
 		}
 		// finishReason is only non-empty on this candidate's last chunk — only send a
 		// closing chunk with finish_reason when it's non-empty.
@@ -293,7 +319,7 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 			if len(toolCalls) > 0 {
 				// Trust the message content over Gemini's raw finishReason, same
 				// override as the non-streaming path.
-				finish = "tool_calls"
+				finish = keyToolCalls
 			}
 
 			out = append(out, h.chunk(idx, map[string]any{}, finish)...)
@@ -314,7 +340,7 @@ func (h *responseHandler) roleChunkIfNeeded(idx int) []byte {
 
 	h.roleSent[idx] = true
 
-	return h.chunk(idx, map[string]any{"role": "assistant"}, "")
+	return h.chunk(idx, map[string]any{keyRole: roleAssistant}, "")
 }
 
 // chunk builds one SSE line for an OpenAI chat.completion.chunk.
@@ -323,14 +349,14 @@ func (h *responseHandler) chunk(idx int, delta map[string]any, finish string) []
 		h.id = "chatcmpl-" + randID()
 	}
 
-	choice := map[string]any{"index": idx, "delta": delta, "finish_reason": nil}
+	choice := map[string]any{keyIndex: idx, "delta": delta, keyFinishReason: nil}
 	if finish != "" {
-		choice["finish_reason"] = finish
+		choice[keyFinishReason] = finish
 	}
 
 	b, _ := json.Marshal(map[string]any{
 		"id": h.id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
-		"model": h.requestModel, "choices": []any{choice},
+		keyModel: h.requestModel, "choices": []any{choice},
 	})
 
 	return append(append([]byte("data: "), b...), '\n', '\n')
@@ -643,7 +669,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 
 	flushToolParts := func() {
 		if len(pendingToolParts) > 0 {
-			out.Contents = append(out.Contents, geminiContent{Role: "user", Parts: pendingToolParts})
+			out.Contents = append(out.Contents, geminiContent{Role: roleUser, Parts: pendingToolParts})
 			pendingToolParts = nil
 		}
 	}
@@ -683,9 +709,9 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			}
 
 			out.Contents = append(out.Contents, geminiContent{Role: "model", Parts: parts})
-		case "user":
+		case roleUser:
 			out.Contents = append(out.Contents, geminiContent{
-				Role:  "user",
+				Role:  roleUser,
 				Parts: buildUserParts(m.Content),
 			})
 		case "tool":
@@ -788,13 +814,13 @@ func mapResponseFormat(raw json.RawMessage) (mimeType string, schema json.RawMes
 
 	switch rf.Type {
 	case "json_object":
-		return "application/json", nil
+		return mimeApplicationJSON, nil
 	case "json_schema":
 		if rf.JSONSchema != nil {
-			return "application/json", rf.JSONSchema.Schema
+			return mimeApplicationJSON, rf.JSONSchema.Schema
 		}
 
-		return "application/json", nil
+		return mimeApplicationJSON, nil
 	default: // "text" or unrecognized: no responseMimeType override
 		return "", nil
 	}
@@ -808,7 +834,7 @@ func mapToolChoice(raw json.RawMessage) *geminiToolConfig {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		switch s {
 		case "required":
-			return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "ANY"}}
+			return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{Mode: functionCallingModeAny}}
 		case "none":
 			return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "NONE"}}
 		default: // "auto" or unrecognized -> omit; AUTO is Gemini's default anyway
@@ -822,9 +848,9 @@ func mapToolChoice(raw json.RawMessage) *geminiToolConfig {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
-	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type == "function" && obj.Function.Name != "" {
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type == keyFunction && obj.Function.Name != "" {
 		return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{
-			Mode:                 "ANY",
+			Mode:                 functionCallingModeAny,
 			AllowedFunctionNames: []string{obj.Function.Name},
 		}}
 	}
@@ -966,7 +992,7 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 		"id":      "chatcmpl-" + randID(),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
-		"model":   requestModel,
+		keyModel:  requestModel,
 	}
 
 	var choices []map[string]any
@@ -978,13 +1004,13 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 			// Trust the message content over Gemini's raw finishReason (often
 			// just "STOP") — the same override LiteLLM's _check_finish_reason
 			// applies, so an OpenAI client's tool_calls branch actually fires.
-			finish = "tool_calls"
+			finish = keyToolCalls
 		}
 
 		choices = append(choices, map[string]any{
-			"index":         cand.Index,
+			keyIndex:        cand.Index,
 			"message":       message,
-			"finish_reason": finish,
+			keyFinishReason: finish,
 		})
 	}
 
@@ -994,15 +1020,15 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 	// fails SDK deserialization. Synthesize a choice with empty content;
 	// finish_reason=content_filter when blocked.
 	if len(choices) == 0 {
-		finish := "stop"
+		finish := finishReasonStop
 		if in.PromptFeedback != nil && in.PromptFeedback.BlockReason != "" {
-			finish = "content_filter"
+			finish = finishContentFilter
 		}
 
 		choices = []map[string]any{{
-			"index":         0,
-			"message":       map[string]any{"role": "assistant", "content": ""},
-			"finish_reason": finish,
+			keyIndex:        0,
+			"message":       map[string]any{keyRole: roleAssistant, keyContent: ""},
+			keyFinishReason: finish,
 		}}
 	}
 
@@ -1045,9 +1071,9 @@ func buildAssistantMessage(parts []geminiPart) (message map[string]any, hasToolC
 			}
 
 			tc := map[string]any{
-				"id":   "call_" + randID(),
-				"type": "function",
-				"function": map[string]any{
+				"id":    "call_" + randID(),
+				keyType: keyFunction,
+				keyFunction: map[string]any{
 					"name":      p.FunctionCall.Name,
 					"arguments": args,
 				},
@@ -1066,22 +1092,27 @@ func buildAssistantMessage(parts []geminiPart) (message map[string]any, hasToolC
 		text.WriteString(p.Text)
 	}
 
-	message = map[string]any{"role": "assistant"}
+	message = map[string]any{keyRole: roleAssistant}
 	if len(toolCalls) > 0 {
-		message["tool_calls"] = toolCalls
+		message[keyToolCalls] = toolCalls
 		if text.Len() > 0 {
-			message["content"] = text.String()
+			message[keyContent] = text.String()
 		} else {
-			message["content"] = nil
+			message[keyContent] = nil
 		}
 
 		return message, true
 	}
 
-	message["content"] = text.String()
+	message[keyContent] = text.String()
 
 	return message, false
 }
+
+// finishReasonStop is OpenAI's normal-completion finish_reason — the default
+// whenever Gemini's finishReason is absent, STOP, or an unrecognized/generic
+// value.
+const finishReasonStop = "stop"
 
 // mapFinishReason converts Gemini's finishReason to an OpenAI finish_reason.
 // Gemini's enum (Candidate.FinishReason) has more members than OpenAI's five;
@@ -1090,20 +1121,20 @@ func buildAssistantMessage(parts []geminiPart) (message map[string]any, hasToolC
 func mapFinishReason(g string) string {
 	switch strings.ToUpper(g) {
 	case "STOP", "":
-		return "stop"
+		return finishReasonStop
 	case "MAX_TOKENS":
-		return "length"
+		return finishLength
 	case "SAFETY", "RECITATION", "LANGUAGE", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
-		return "content_filter"
+		return finishContentFilter
 	case "MALFORMED_FUNCTION_CALL":
 		// The model attempted a tool call but produced invalid arguments; route
 		// through the tool_calls path so the client inspects the call instead of
 		// treating it as a clean stop.
-		return "tool_calls"
+		return keyToolCalls
 	case "OTHER", "FINISH_REASON_UNSPECIFIED":
-		return "stop"
+		return finishReasonStop
 	default:
-		return "stop"
+		return finishReasonStop
 	}
 }
 

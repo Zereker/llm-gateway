@@ -51,6 +51,26 @@ import (
 	"github.com/zereker/llm-gateway/internal/translator"
 )
 
+// Wire vocabulary this file both reads (switch/case on an upstream field) and
+// writes (as a literal in a constructed map[string]any) — named once per
+// value so a typo shows up as a compile error instead of a silently wrong
+// JSON key/value.
+const (
+	roleAssistant = "assistant"
+	roleTool      = "tool"
+
+	contentTypeText     = "text"
+	contentTypeImageURL = "image_url"
+
+	keyType      = "type"
+	keyIndex     = "index"
+	keyFunction  = "function"
+	keyToolCalls = "tool_calls"
+	keyArguments = "arguments"
+
+	finishStop = "stop"
+)
+
 type openaiCohere struct{}
 
 // New returns the OpenAI-to-Cohere translator.
@@ -177,8 +197,8 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	out.Messages = make([]cohereMsg, 0, len(in.Messages))
 	for _, m := range in.Messages {
 		switch m.Role {
-		case "assistant":
-			cm := cohereMsg{Role: "assistant"}
+		case roleAssistant:
+			cm := cohereMsg{Role: roleAssistant}
 			if text := contentToString(m.Content); text != "" {
 				cm.Content = text
 			}
@@ -186,7 +206,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 			for _, tc := range m.ToolCalls {
 				cm.ToolCalls = append(cm.ToolCalls, cohereToolCallOut{
 					ID:   tc.ID,
-					Type: "function",
+					Type: keyFunction,
 					Function: cohereToolCallFunc{
 						Name:      tc.Function.Name,
 						Arguments: tc.Function.Arguments,
@@ -195,13 +215,13 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 			}
 
 			out.Messages = append(out.Messages, cm)
-		case "tool":
+		case roleTool:
 			// ToolChatMessageV2 requires tool_call_id to associate the result
 			// with the call it answers — the old code sent {role:"tool",
 			// content} with no tool_call_id at all, so Cohere had no way to
 			// match it back to a pending call.
 			out.Messages = append(out.Messages, cohereMsg{
-				Role:       "tool",
+				Role:       roleTool,
 				ToolCallID: m.ToolCallID,
 				Content:    contentToString(m.Content),
 			})
@@ -230,7 +250,7 @@ func buildUserContent(raw json.RawMessage) any {
 
 	hasImage := false
 	r.ForEach(func(_, part gjson.Result) bool {
-		if part.Get("type").String() == "image_url" {
+		if part.Get(keyType).String() == contentTypeImageURL {
 			hasImage = true
 			return false
 		}
@@ -244,8 +264,8 @@ func buildUserContent(raw json.RawMessage) any {
 
 	var parts []json.RawMessage
 	r.ForEach(func(_, part gjson.Result) bool {
-		switch part.Get("type").String() {
-		case "image_url", "text":
+		switch part.Get(keyType).String() {
+		case contentTypeImageURL, contentTypeText:
 			parts = append(parts, json.RawMessage(part.Raw))
 		}
 
@@ -514,13 +534,13 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		// OpenAI's own streaming tool_calls[].index convention.
 		tc := ev.Get("delta.message.tool_calls")
 
-		return h.chunk(map[string]any{"tool_calls": []any{map[string]any{
-			"index": ev.Get("index").Int(),
-			"id":    tc.Get("id").String(),
-			"type":  "function",
-			"function": map[string]any{
-				"name":      tc.Get("function.name").String(),
-				"arguments": "",
+		return h.chunk(map[string]any{keyToolCalls: []any{map[string]any{
+			keyIndex: ev.Get(keyIndex).Int(),
+			"id":     tc.Get("id").String(),
+			keyType:  keyFunction,
+			keyFunction: map[string]any{
+				"name":       tc.Get("function.name").String(),
+				keyArguments: "",
 			},
 		}}}, "")
 	case "tool-call-delta":
@@ -529,9 +549,9 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 			return nil
 		}
 
-		return h.chunk(map[string]any{"tool_calls": []any{map[string]any{
-			"index":    ev.Get("index").Int(),
-			"function": map[string]any{"arguments": frag},
+		return h.chunk(map[string]any{keyToolCalls: []any{map[string]any{
+			keyIndex:    ev.Get(keyIndex).Int(),
+			keyFunction: map[string]any{keyArguments: frag},
 		}}}, "")
 	case "tool-call-end", "tool-plan-delta", "citation-start", "citation-end":
 		// tool-call-end carries no new content (index only). tool-plan-delta
@@ -654,11 +674,11 @@ func extractToolCalls(arr gjson.Result) []map[string]any {
 	var out []map[string]any
 	arr.ForEach(func(_, tc gjson.Result) bool {
 		out = append(out, map[string]any{
-			"id":   tc.Get("id").String(),
-			"type": "function",
-			"function": map[string]any{
-				"name":      tc.Get("function.name").String(),
-				"arguments": tc.Get("function.arguments").String(),
+			"id":    tc.Get("id").String(),
+			keyType: keyFunction,
+			keyFunction: map[string]any{
+				"name":       tc.Get("function.name").String(),
+				keyArguments: tc.Get("function.arguments").String(),
 			},
 		})
 
@@ -676,17 +696,17 @@ func extractToolCalls(arr gjson.Result) []map[string]any {
 func mapFinishReason(c string) string {
 	switch c {
 	case "COMPLETE", "STOP_SEQUENCE", "":
-		return "stop"
+		return finishStop
 	case "MAX_TOKENS":
 		return "length"
 	case "TOOL_CALL":
-		return "tool_calls"
+		return keyToolCalls
 	case "ERROR", "TIMEOUT":
 		// OpenAI's enum has no error/timeout member; "stop" is the closest safe
 		// default (callers should also check the HTTP status / error body).
-		return "stop"
+		return finishStop
 	default:
-		return "stop"
+		return finishStop
 	}
 }
 
