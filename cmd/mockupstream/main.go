@@ -9,6 +9,7 @@
 //	POST /v1/chat/completions  → OpenAI Chat (includes usage{prompt_tokens, completion_tokens, total_tokens})
 //	POST /v1/messages          → Anthropic Messages (includes usage{input_tokens, output_tokens})
 //	POST /v1beta/models/{model}:generateContent  → Gemini generateContent
+//	POST /v2/chat              → Cohere v2/chat (includes usage.tokens{input_tokens,output_tokens})
 //	GET  /health               → "ok"
 //
 // Streaming (when stream=true in the request body) emits chunks in each
@@ -40,6 +41,7 @@ func main() {
 	mux.HandleFunc("/v1/chat/completions", handleOpenAIChat)
 	mux.HandleFunc("/v1/messages", handleAnthropicMessages)
 	mux.HandleFunc("/v1beta/models/", handleGemini)
+	mux.HandleFunc("/v2/chat", handleCohereChat)
 
 	slog.Info("mockupstream listening", "addr", addr)
 	srv := &http.Server{
@@ -289,6 +291,76 @@ func handleGemini(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, body)
+}
+
+// =============================================================================
+// Cohere v2/chat
+// =============================================================================
+
+type cohereRequest struct {
+	Model    string `json:"model"`
+	Stream   bool   `json:"stream"`
+	Messages []struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	} `json:"messages"`
+}
+
+// handleCohereChat replies with the v2/chat response shape openai_cohere's
+// translator expects: message.content as an array of {type,text} blocks
+// (not a plain string, unlike OpenAI/Anthropic), usage.tokens.{input,output}
+// for billing, finish_reason "COMPLETE" (mapped to OpenAI's "stop").
+func handleCohereChat(w http.ResponseWriter, r *http.Request) {
+	var req cohereRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json: "+err.Error(), 400)
+		return
+	}
+	const (
+		input  = 11
+		output = 6
+	)
+
+	if req.Stream {
+		writeSSEHeaders(w)
+		flusher, _ := w.(http.Flusher)
+		write := func(payload any) {
+			b, _ := json.Marshal(payload)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		write(map[string]any{"type": "message-start", "delta": map[string]any{"message": map[string]any{"role": "assistant"}}})
+		write(map[string]any{"type": "content-start", "index": 0, "delta": map[string]any{"message": map[string]any{"content": map[string]any{"type": "text", "text": ""}}}})
+		write(map[string]any{"type": "content-delta", "index": 0, "delta": map[string]any{"message": map[string]any{"content": map[string]any{"text": "Hello from mock."}}}})
+		write(map[string]any{"type": "content-end", "index": 0})
+		write(map[string]any{
+			"type": "message-end",
+			"delta": map[string]any{
+				"finish_reason": "COMPLETE",
+				"usage": map[string]any{
+					"billed_units": map[string]any{"input_tokens": input, "output_tokens": output},
+					"tokens":       map[string]any{"input_tokens": input, "output_tokens": output},
+				},
+			},
+		})
+		return
+	}
+
+	resp := map[string]any{
+		"id": "mock-cohere-id",
+		"message": map[string]any{
+			"role":    "assistant",
+			"content": []map[string]any{{"type": "text", "text": "Hello from mock."}},
+		},
+		"finish_reason": "COMPLETE",
+		"usage": map[string]any{
+			"billed_units": map[string]any{"input_tokens": input, "output_tokens": output},
+			"tokens":       map[string]any{"input_tokens": input, "output_tokens": output},
+		},
+	}
+	writeJSON(w, resp)
 }
 
 // =============================================================================

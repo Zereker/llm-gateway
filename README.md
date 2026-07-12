@@ -58,7 +58,8 @@ cmd/gateway           ── thin data-plane process entry
 cmd/console           ── optional control-plane Admin API
 cmd/migrate           ── versioned database migration command
 cmd/mockupstream      ── dev/test fake upstream
-scripts/{e2e-smoke,seed-e2e}  end-to-end smoke tests
+scripts/{e2e-smoke,seed-e2e}                       single-vendor end-to-end smoke test
+scripts/{e2e-smoke-multivendor,seed-multivendor}   multi-vendor (openai/anthropic/gemini/cohere) end-to-end smoke test
 docs/architecture/    design docs (00-overview through 08-observability)
 configs/              per-environment config (local / prod / docker)
 ```

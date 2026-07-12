@@ -419,7 +419,7 @@ that decision.
 emit a `{"type":"thinking","thinking":...}` content block ahead of the
 final text/tool_calls block — Cohere's analog of extended thinking, verified
 against a real captured `command-a-reasoning-08-2025` tool-call response
-(see `internal/app/gateway/testdata/fieldmatrix/upstream/README.md`). It
+(see `testdata/fieldmatrix/upstream/README.md`). It
 surfaces the same way as Anthropic's, as `message.reasoning_content`
 (non-streaming) or `reasoning_content` delta chunks keyed by content index
 (streaming, since a `content-delta` event repeats only the changed field —
