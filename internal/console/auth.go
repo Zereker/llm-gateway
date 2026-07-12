@@ -123,8 +123,24 @@ func auditWrites(store *Store) gin.HandlerFunc {
 	}
 }
 
-// requireAdmin guards write operations: a non-admin role gets 403. It is
-// attached to POST/DELETE routes so that a viewer token can only read.
+// requireAdminForWrites is a group-level middleware that enforces the admin
+// role on every write method (POST/DELETE/PUT/PATCH), method-driven the same
+// way auditWrites is — so a newly added write route is protected structurally
+// and cannot silently ship reachable by a viewer token because someone forgot
+// a per-route guard. Reads (GET) pass through; a read that must still be
+// admin-only (e.g. GET /audit) attaches requireAdmin explicitly.
+func requireAdminForWrites(c *gin.Context) {
+	switch c.Request.Method {
+	case http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodPatch:
+		requireAdmin(c)
+	default:
+		c.Next()
+	}
+}
+
+// requireAdmin guards a single operation: a non-admin role gets 403. Attached
+// explicitly only to admin-only *reads* (GET /audit); writes are covered
+// group-wide by requireAdminForWrites.
 func requireAdmin(c *gin.Context) {
 	if c.GetString(ctxRoleKey) != string(RoleAdmin) {
 		abortError(c, 403, "forbidden", "admin role required for this operation")
