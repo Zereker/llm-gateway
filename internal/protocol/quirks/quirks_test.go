@@ -324,6 +324,27 @@ func TestCompileJSON_RejectsUnknownField(t *testing.T) {
 	}
 }
 
+// TestCompileJSON_RejectsRenameTargetCollision: two renames to the same
+// destination key resolve nondeterministically (Go map iteration order), so
+// the winner varies request-to-request. Reject such a spec at compile time
+// rather than shipping unstable rewrites.
+func TestCompileJSON_RejectsRenameTargetCollision(t *testing.T) {
+	cases := [][]byte{
+		[]byte(`{"body":{"rename":{"a":"z","b":"z"}}}`),            // body: a->z and b->z collide
+		[]byte(`{"headers":{"rename":{"X-A":"X-Z","X-B":"X-Z"}}}`), // headers collide
+	}
+	for _, c := range cases {
+		if _, err := CompileJSON(c); err == nil {
+			t.Errorf("CompileJSON(%s) should reject a rename target collision", c)
+		}
+	}
+
+	// A non-colliding rename spec must still compile fine.
+	if _, err := CompileJSON([]byte(`{"body":{"rename":{"a":"x","b":"y"}}}`)); err != nil {
+		t.Errorf("non-colliding rename should compile: %v", err)
+	}
+}
+
 func TestCompileJSON_RealWorldSpec(t *testing.T) {
 	spec := []byte(`{
 		"body": {
