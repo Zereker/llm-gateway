@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/translator"
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
@@ -55,6 +57,7 @@ const (
 
 	messageTypeMessage    = "message"
 	stopSequenceKey       = "stop_sequence"
+	stopReasonRefusal     = "refusal"
 	finishReasonMaxTokens = "max_tokens"
 )
 
@@ -1033,7 +1036,11 @@ func mapFinishReason(r string) string {
 	case "length":
 		return finishReasonMaxTokens
 	case "content_filter":
-		return stopSequenceKey
+		// Upstream moderation blocked the content; "refusal" is the Anthropic
+		// stop_reason for a declined generation (round-trip inverse of
+		// openai_anthropic's refusal -> content_filter). "stop_sequence" would
+		// wrongly signal a caller-configured stop string matched.
+		return stopReasonRefusal
 	case "tool_calls", "function_call":
 		// function_call is the deprecated single-function precursor to
 		// tool_calls; both signal the same "model wants to call a function"
@@ -1053,26 +1060,16 @@ func openAIIDOrGen(openaiID string) string {
 	return "msg_" + strings.TrimPrefix(openaiID, "chatcmpl-")
 }
 
-// isOpenAIError roughly determines whether the body is an error response (a top-level "error" key).
+// isOpenAIError reports whether body is an error response, keyed off a
+// **structural** top-level "error" object rather than scanning bytes for an
+// "error" substring. The substring approach misdetects a success response
+// whose content happens to contain "error" (e.g. the model's reply is
+// literally "error"), or an OpenAI-compatible backend that emits "error":null
+// on success for API parity — misdetection returns the raw untranslated body
+// to the client and drops usage (a billing under-count). Matches
+// openai_gemini.isGeminiError.
 func isOpenAIError(body []byte) bool {
-	for i := 0; i < len(body) && i < 30; i++ {
-		if body[i] == '{' {
-			rest := body[i:]
-			if len(rest) > 200 {
-				rest = rest[:200]
-			}
-
-			for j := 0; j+7 <= len(rest); j++ {
-				if string(rest[j:j+7]) == `"error"` {
-					return true
-				}
-			}
-
-			return false
-		}
-	}
-
-	return false
+	return gjson.GetBytes(body, "error").IsObject()
 }
 
 func randID() string {
