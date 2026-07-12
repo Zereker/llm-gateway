@@ -31,9 +31,9 @@ cover:                  ## Run unit tests with a coverage profile + print the to
 	# pure-types leaf only exercised transitively via another package's tests)
 	# makes `go test -coverprofile` require `go tool covdata` to attribute it,
 	# which some minimal Go toolchain installs don't ship.
-	go test -coverprofile=coverage.out $$(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./internal/...)
-	go tool cover -func=coverage.out | tail -1
-	@echo "Full HTML report: go tool cover -html=coverage.out"
+	go test -coverprofile=coverage.txt $$(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./internal/...)
+	go tool cover -func=coverage.txt | tail -1
+	@echo "Full HTML report: go tool cover -html=coverage.txt"
 
 build:                  ## Compile cmd/gateway / cmd/console / cmd/mockupstream into ./bin (static binaries, for containers)
 	mkdir -p bin

@@ -121,7 +121,7 @@ SQL/Redis 相关测试会被 skip，在这里算 0%）。`make cover` 只统计 
 | `internal/translator/*`（平均） | ~72% |
 | `internal/repo`、`internal/infra`、`internal/console` | 5-15%（主要靠 SQL 驱动的测试覆盖，见 `make test-integration`） |
 
-想要当前准确数字，本地跑一下 `make cover`；`go tool cover -html=coverage.out`
+想要当前准确数字，本地跑一下 `make cover`；`go tool cover -html=coverage.txt`
 能在浏览器里看逐行的覆盖情况。
 
 `gateway.yaml` 控制 server 设置（监听地址、超时、body 大小限制）、数据库连接、
