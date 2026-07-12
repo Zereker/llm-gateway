@@ -41,6 +41,7 @@ type anthropicSession struct {
 	outputTokens        int64
 	cacheCreationTokens int64 // cache_creation_input_tokens (billed separately)
 	cacheReadTokens     int64 // cache_read_input_tokens (billed separately)
+	sawUsage            bool  // a usage object was parsed (distinguishes a real 0/0 from "never seen")
 
 	// rawUsage accumulates the verbatim upstream usage fields (streaming:
 	// merged from message_start's usage + message_delta's usage; non-streaming:
@@ -73,7 +74,7 @@ func (s *anthropicSession) Final() *domain.Usage {
 		s.parseFullBody()
 	}
 
-	if s.inputTokens == 0 && s.outputTokens == 0 {
+	if !s.sawUsage {
 		return nil
 	}
 	// Total mirrors what Anthropic's own ITPM/OTPM rate limits actually count,
@@ -152,6 +153,7 @@ func (s *anthropicSession) parseFullBody() {
 	s.outputTokens = counts.OutputTokens
 	s.cacheCreationTokens = counts.CacheCreationTokens
 	s.cacheReadTokens = counts.CacheReadTokens
+	s.sawUsage = true
 
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(resp.Usage, &m); err == nil {
@@ -207,6 +209,8 @@ func (s *anthropicSession) tryExtract(payload []byte) {
 	if err := json.Unmarshal(usageRaw, &counts); err != nil {
 		return
 	}
+
+	s.sawUsage = true
 
 	switch ev.Type {
 	case "message_start":

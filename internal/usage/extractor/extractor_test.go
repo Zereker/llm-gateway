@@ -99,6 +99,32 @@ func TestOpenAI_LFFramedStreamUsage(t *testing.T) {
 // breakdown and service_tier affect Anthropic's actual price (1h cache writes
 // bill at a different multiplier than 5m) — downstream billing needs them in
 // Raw verbatim, not just the 4 fields the gateway happens to model itself.
+// TestAnthropic_ZeroUsageIsReportedNotDropped: a response that legitimately
+// reports 0 input + 0 output tokens (e.g. a fully cache-read prompt with an
+// empty completion) must yield a non-nil Usage of 0/0, not nil — nil is
+// reserved for "no usage object was ever seen". Conflating the two hides a
+// real (near-)zero from billing/observability.
+func TestAnthropic_ZeroUsageIsReportedNotDropped(t *testing.T) {
+	s := NewAnthropic()
+	s.Feed([]byte(`{"type":"message","role":"assistant","content":[],` +
+		`"usage":{"input_tokens":0,"output_tokens":0}}`))
+
+	u := s.Final()
+	if u == nil {
+		t.Fatal("usage reported as 0/0 must not be dropped to nil")
+	}
+	if u.Input != 0 || u.Output != 0 || u.Total != 0 {
+		t.Errorf("want 0/0/0, got input=%d output=%d total=%d", u.Input, u.Output, u.Total)
+	}
+
+	// A body with NO usage object still returns nil (the genuine "unseen" case).
+	s2 := NewAnthropic()
+	s2.Feed([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}`))
+	if u2 := s2.Final(); u2 != nil {
+		t.Errorf("no usage object present must return nil, got %+v", u2)
+	}
+}
+
 func TestAnthropic_UnmodeledUsageFieldsSurviveInRaw(t *testing.T) {
 	s := NewAnthropic()
 	s.Feed([]byte(`{"usage":{"input_tokens":100,"output_tokens":20,` +
