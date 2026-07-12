@@ -15,6 +15,7 @@
 | `images-openai-compat.json` | Images 生成 | usage 用 `output_tokens` 字段族 + `generated_images` 扩展（URL 已脱敏） |
 | `messages-anthropic-compat-thinking-stream.sse` | Anthropic Messages 流 | extended thinking：`thinking_delta` → `signature_delta`（真实签名），usage 含 `cache_creation`/`service_tier`/`inference_geo` |
 | `messages-anthropic-compat-server-tool-use-stream.sse` | Anthropic Messages 流 | server-side 工具（web search）：`server_tool_use` block + `web_search_tool_result`（结果数组截断到 1 条，`encrypted_content` 已替换为占位），usage 含 `server_tool_use.web_search_requests` 计费维度 |
+| `gemini-native-thought-signature.json` | Gemini generateContent 非流（JSON array 形态） | `functionCall` part 上的 `thoughtSignature`（Gemini 3 对单次函数调用推理链的签名，多轮历史里必须原样带回去）；usage 含 `promptTokensDetails`/`thoughtsTokenCount` |
 
 同目录上一级的 `chat-full.json` / `responses-full.json` / `responses-text.json` 是配套的满参数**请求** fixtures。
 
@@ -24,4 +25,6 @@
 
 `messages-anthropic-compat-thinking-stream.sse` 和 `messages-anthropic-compat-server-tool-use-stream.sse` 两个文件的数据来自 [simonw/llm-anthropic](https://github.com/simonw/llm-anthropic)（Apache License 2.0）的 `tests/cassettes/test_anthropic/test_stream_events_thinking.yaml` / `test_web_search.yaml` VCR cassette，经 gzip 解压 + 截断/脱敏后收录。原始 cassette 里没有 API key（pytest-recording 录制时已排除鉴权头），我们额外把 `web_search_tool_result` 里的 `encrypted_content` 不透明 blob 替换成占位字符串，并把结果数组截断到 1 条以控制文件体积。相关测试用例见 `internal/translator/openai_anthropic/translator_test.go` 里的 `TestStreaming_Thinking` / `TestTranslateResponse_Thinking` / `TestTranslateRequest_ThinkingRoundTrip`（用真实数据内联在测试里,不是从本文件读取）。
 
-同一个 cassette 仓库的 `test_image_prompt.yaml` 提供了一张真实的 base64 PNG，用在 `openai_anthropic`/`anthropic_openai` 两个包的 `TestTranslateRequest_Image*` 系列测试里验证多模态图片透传（内联在测试代码中，未单独存成 fixture 文件）。
+同一个 cassette 仓库的 `test_image_prompt.yaml` 提供了一张真实的 base64 PNG，用在 `openai_anthropic`/`anthropic_openai`/`openai_gemini`/`openai_cohere` 四个包的 `TestTranslateRequest_Image*` 系列测试里验证多模态图片透传（内联在测试代码中，未单独存成 fixture 文件——它是一张通用图片，不是某个厂商专属数据，跨包复用没问题）。
+
+`gemini-native-thought-signature.json` 的数据来自 [simonw/llm-gemini](https://github.com/simonw/llm-gemini)（Apache License 2.0）的 `tests/cassettes/test_gemini/test_tools_with_gemini_3_thought_signatures.yaml` VCR cassette，经 gzip 解压后原样收录（体积小，未截断；不含 API key）。相关测试见 `internal/translator/openai_gemini/translator_test.go` 里的 `TestTranslateResponse_ThoughtSignature` / `TestTranslateRequest_ThoughtSignatureRoundTrip` / `TestResponseHandler_SSE_ThoughtSignature`（真实签名值内联在测试里）。
