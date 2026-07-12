@@ -1,0 +1,14 @@
+{
+  "vendor": "anthropic",
+  "protocol": "anthropic",
+  "model": "mock-anthropic-model",
+  "auth_type": "x-api-key",
+  "client_api_key": "sk-mv-anthropic",
+  "upstream_auth": {"api_key": "sk-upstream-mock-anthropic"},
+  "upstream_path": "/v1/messages",
+  "reply": {
+    "kind": "cassette",
+    "path": "anthropic/simonw-llm-anthropic/test_tools.yaml",
+    "index": 0
+  }
+}

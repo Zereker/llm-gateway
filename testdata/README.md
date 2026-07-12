@@ -14,6 +14,7 @@ when a file moves.
 testdata/
 ├── vendor-cassettes/   real, raw, third-party-licensed VCR cassettes (reference corpus)
 └── fieldmatrix/        curated/sanitized fixtures for the gateway's own e2e suite
+    └── endpoints/      per-vendor endpoint-seed manifests (vendor/protocol/model/auth/reply)
 ```
 
 ## `vendor-cassettes/` — real upstream traffic, unmodified
@@ -55,3 +56,21 @@ suite (`fieldmatrix_test.go`, `fieldmatrix_multivendor_test.go`):
 If you're not sure whether a new fixture belongs here or in
 `vendor-cassettes/`: raw/unmodified real traffic goes in `vendor-cassettes/`;
 anything hand-shaped for one specific test scenario goes in `fieldmatrix/`.
+
+### `endpoints/` — per-vendor endpoint-seed manifests
+
+One JSON file per upstream vendor (see `internal/cassette/vendorfixture` for
+the loader and exact field shape): vendor / protocol / model / auth type /
+auth payload / which upstream path to route to / which real response
+(`vendor-cassettes/` or `fieldmatrix/upstream/`) to reply with.
+
+**Consumers**, both reading the *same* files so there is exactly one place
+that declares "these are the vendors this gateway supports end-to-end":
+- `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` — in-process e2e.
+- `scripts/seed-multivendor` — seeds a real MySQL instance for
+  `scripts/e2e-smoke-multivendor.sh`'s real-binary (`cmd/gateway` +
+  `cmd/mockupstream`) black-box run.
+
+Adding a vendor to *both* is one new JSON file here — see any existing file
+for the shape, and `cmd/mockupstream`'s doc comment for which
+`upstream_path` values it actually serves.

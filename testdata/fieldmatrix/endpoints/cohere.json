@@ -1,0 +1,14 @@
+{
+  "vendor": "cohere",
+  "protocol": "cohere",
+  "model": "mock-cohere-model",
+  "auth_type": "bearer",
+  "client_api_key": "sk-mv-cohere",
+  "upstream_auth": {"api_key": "sk-upstream-mock-cohere"},
+  "upstream_path": "/v2/chat",
+  "reply": {
+    "kind": "cassette",
+    "path": "cohere/langchain-ai-langchain-cohere/test_invoke_tool_calls.yaml",
+    "index": 0
+  }
+}

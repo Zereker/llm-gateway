@@ -9,6 +9,12 @@ package gateway
 // internal/cassette/replay already exercises at the translator layer, one
 // level up: full auth + routing + protocol translation + billing, through
 // the real middleware chain, for every vendor at once.
+//
+// Which vendors and how (protocol / auth type / which cassette to replay)
+// comes from testdata/fieldmatrix/endpoints/*.json — the same manifests
+// scripts/seed-multivendor reads to seed a real MySQL instance for a
+// real-binary black-box run (see internal/cassette/vendorfixture's doc
+// comment). Adding a vendor to both is one new JSON file, not a Go edit.
 
 import (
 	"context"
@@ -23,6 +29,7 @@ import (
 	"time"
 
 	"github.com/zereker/llm-gateway/internal/cassette"
+	"github.com/zereker/llm-gateway/internal/cassette/vendorfixture"
 	"github.com/zereker/llm-gateway/internal/config"
 	"github.com/zereker/llm-gateway/internal/infra"
 	"github.com/zereker/llm-gateway/internal/repo"
@@ -47,17 +54,29 @@ func realCassetteResponse(t *testing.T, relPath string, idx int) []byte {
 	return body
 }
 
-// vendorScenario describes one upstream vendor's slice of the multi-vendor
-// seed: its own model, its own mock upstream (replaying real data), and its
-// own endpoint auth.
+// vendorScenario is a vendorfixture.Scenario (vendor/protocol/model/auth —
+// loaded from testdata/fieldmatrix/endpoints/) plus its resolved reply body
+// (loaded per the manifest's "reply" field — see resolveReply).
 type vendorScenario struct {
-	vendor      string
-	protocol    string
-	model       string // model_services.model / endpoints.model / request "model"
-	authType    string
-	apiKey      string // plaintext, before repo.EncodePayload
-	authPayload any    // one of repo.BearerAuth / XAPIKeyAuth / GeminiAuth / AWSSigV4Auth / OAuth2SAAuth / VertexADCAuth — whatever authType requires
-	reply       []byte // real captured response body the mock upstream always returns
+	vendorfixture.Scenario
+	reply []byte // real captured response body the mock upstream always returns
+}
+
+// resolveReply loads the response body a scenario's manifest points at:
+// "fixture" reads testdata/fieldmatrix/upstream/<path> verbatim; "cassette"
+// reads response body #index from a real VCR file under
+// testdata/vendor-cassettes/<path>.
+func resolveReply(t *testing.T, r vendorfixture.Reply) []byte {
+	t.Helper()
+	switch r.Kind {
+	case "fixture":
+		return readFixtureFile(t, cassette.TestdataPath("fieldmatrix", "upstream", r.Path))
+	case "cassette":
+		return realCassetteResponse(t, r.Path, r.Index)
+	default:
+		t.Fatalf("resolveReply: unknown reply.kind %q", r.Kind)
+		return nil
+	}
 }
 
 // seedMultiVendorScenarios seeds one account, one quota-eligible subscription
@@ -116,16 +135,16 @@ func seedMultiVendorScenarios(t *testing.T, dsn string, scenarios []vendorScenar
 
 		res, err := db.ExecContext(ctx,
 			`INSERT INTO model_services (service_id, model) VALUES (?, ?)`,
-			sc.vendor+"/"+sc.model, sc.model)
+			sc.Vendor+"/"+sc.Model, sc.Model)
 		if err != nil {
-			t.Fatalf("seed model_service %s: %v", sc.vendor, err)
+			t.Fatalf("seed model_service %s: %v", sc.Vendor, err)
 		}
 		msID, _ := res.LastInsertId()
 
 		if _, err := db.ExecContext(ctx,
 			`INSERT INTO account_model_subscriptions (account_id, model_service_id, enabled) VALUES (?, ?, 1)`,
 			"default", msID); err != nil {
-			t.Fatalf("seed subscription %s: %v", sc.vendor, err)
+			t.Fatalf("seed subscription %s: %v", sc.Vendor, err)
 		}
 
 		if _, err := db.ExecContext(ctx,
@@ -135,25 +154,25 @@ func seedMultiVendorScenarios(t *testing.T, dsn string, scenarios []vendorScenar
 			"default", msID, "standard",
 			`{"unit":"tokens_per_1m","currency":"USD","rates":{"input":5.0,"output":15.0}}`,
 			"e2e-multivendor", "test fixture"); err != nil {
-			t.Fatalf("seed pricing %s: %v", sc.vendor, err)
+			t.Fatalf("seed pricing %s: %v", sc.Vendor, err)
 		}
 
-		// authPayload is constructed by each scenario's own literal (see
-		// TestE2E_MultiVendor_AllProtocols below), not switched on here — that
-		// keeps this helper agnostic to which of the six repo.AuthType* shapes
-		// a given vendor happens to need, including the multi-field ones
-		// (AWSSigV4Auth / OAuth2SAAuth / VertexADCAuth) a single credential
-		// string could never represent.
-		auth, err := repo.EncodePayload(sc.authType, sc.authPayload)
+		// UpstreamAuth is whatever JSON object the manifest declared for this
+		// vendor's auth_type — repo.EncodePayload just re-marshals it, so this
+		// stays agnostic to which of the six repo.AuthType* shapes a given
+		// vendor needs, including the multi-field ones (AWSSigV4Auth /
+		// OAuth2SAAuth / VertexADCAuth) a single credential string could never
+		// represent.
+		auth, err := repo.EncodePayload(sc.AuthType, sc.UpstreamAuth)
 		if err != nil {
-			t.Fatalf("encode auth for %s: %v", sc.vendor, err)
+			t.Fatalf("encode auth for %s: %v", sc.Vendor, err)
 		}
 
 		ep := &repo.Endpoint{
-			Name:     sc.vendor + "_e2e",
-			Vendor:   sc.vendor,
-			Protocol: sc.protocol,
-			Model:    sc.model,
+			Name:     sc.Vendor + "_e2e",
+			Vendor:   sc.Vendor,
+			Protocol: sc.Protocol,
+			Model:    sc.Model,
 			Group:    "default",
 			Weight:   100,
 			Enabled:  true,
@@ -165,16 +184,16 @@ func seedMultiVendorScenarios(t *testing.T, dsn string, scenarios []vendorScenar
 			 (name, vendor, protocol, model, group_name, weight, enabled, auth, routing, quota, capabilities, extra)
 			 VALUES (:name, :vendor, :protocol, :model, :group_name, :weight, :enabled, :auth, :routing, :quota, :capabilities, :extra)`,
 			ep); err != nil {
-			t.Fatalf("seed endpoint %s: %v", sc.vendor, err)
+			t.Fatalf("seed endpoint %s: %v", sc.Vendor, err)
 		}
 
 		if _, err := db.ExecContext(ctx,
 			`INSERT INTO api_keys
 			 (account_id, api_key_hash, api_key_prefix, api_key_id, sub_account_id, group_name, external_user, enabled)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			"default", repo.HashAPIKey(sc.apiKey), sc.apiKey[:min(12, len(sc.apiKey))],
-			"ak_"+sc.vendor+"_e2e", sc.vendor+"-user", "default", false, true); err != nil {
-			t.Fatalf("seed api_key %s: %v", sc.vendor, err)
+			"default", repo.HashAPIKey(sc.ClientAPIKey), sc.ClientAPIKey[:min(12, len(sc.ClientAPIKey))],
+			"ak_"+sc.Vendor+"_e2e", sc.Vendor+"-user", "default", false, true); err != nil {
+			t.Fatalf("seed api_key %s: %v", sc.Vendor, err)
 		}
 	}
 
@@ -201,31 +220,13 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 		t.Skip("MYSQL_DSN not set; skipping gateway e2e test")
 	}
 
-	scenarios := []vendorScenario{
-		{
-			vendor: "openai", protocol: "openai", model: "test-openai-model",
-			authType: repo.AuthTypeBearer, apiKey: "sk-e2e-openai",
-			authPayload: repo.BearerAuth{APIKey: "sk-upstream-openai"},
-			reply:       readFixtureFile(t, cassette.TestdataPath("fieldmatrix", "upstream", "chat-openai-compat.json")),
-		},
-		{
-			vendor: "anthropic", protocol: "anthropic", model: "test-anthropic-model",
-			authType: repo.AuthTypeXAPIKey, apiKey: "sk-e2e-anthropic",
-			authPayload: repo.XAPIKeyAuth{APIKey: "sk-upstream-anthropic"},
-			reply:       realCassetteResponse(t, "anthropic/simonw-llm-anthropic/test_tools.yaml", 0),
-		},
-		{
-			vendor: "gemini", protocol: "gemini", model: "test-gemini-model",
-			authType: repo.AuthTypeGeminiKey, apiKey: "sk-e2e-gemini",
-			authPayload: repo.GeminiAuth{APIKey: "sk-upstream-gemini"},
-			reply:       realCassetteResponse(t, "gemini/simonw-llm-gemini/test_tools.yaml", 0),
-		},
-		{
-			vendor: "cohere", protocol: "cohere", model: "test-cohere-model",
-			authType: repo.AuthTypeBearer, apiKey: "sk-e2e-cohere",
-			authPayload: repo.BearerAuth{APIKey: "sk-upstream-cohere"},
-			reply:       realCassetteResponse(t, "cohere/langchain-ai-langchain-cohere/test_invoke_tool_calls.yaml", 0),
-		},
+	manifest, err := vendorfixture.LoadDir(cassette.TestdataPath("fieldmatrix", "endpoints"))
+	if err != nil {
+		t.Fatalf("load vendor manifests: %v", err)
+	}
+	scenarios := make([]vendorScenario, len(manifest))
+	for i, sc := range manifest {
+		scenarios[i] = vendorScenario{Scenario: sc, reply: resolveReply(t, sc.Reply)}
 	}
 
 	servers := seedMultiVendorScenarios(t, dsn, scenarios)
@@ -242,17 +243,17 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 
 	for _, sc := range scenarios {
 		sc := sc
-		t.Run(sc.vendor, func(t *testing.T) {
-			reqBody := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]}`, sc.model)
+		t.Run(sc.Vendor, func(t *testing.T) {
+			reqBody := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]}`, sc.Model)
 			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+sc.apiKey)
+			req.Header.Set("Authorization", "Bearer "+sc.ClientAPIKey)
 
 			w := httptest.NewRecorder()
 			engine.ServeHTTP(w, req)
 
 			if w.Code != 200 {
-				t.Fatalf("%s: status = %d, body = %s", sc.vendor, w.Code, w.Body.String())
+				t.Fatalf("%s: status = %d, body = %s", sc.Vendor, w.Code, w.Body.String())
 			}
 
 			out := w.Body.String()
@@ -261,7 +262,7 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 				// streaming reply (gemini): every data: line except [DONE] must
 				// be valid JSON, and the stream must actually terminate.
 				if !strings.Contains(out, "data: [DONE]") {
-					t.Errorf("%s: streaming reply never sent [DONE]: %s", sc.vendor, truncateForLog(out))
+					t.Errorf("%s: streaming reply never sent [DONE]: %s", sc.Vendor, truncateForLog(out))
 				}
 				for _, line := range strings.Split(out, "\n") {
 					line = strings.TrimSpace(line)
@@ -273,7 +274,7 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 						continue
 					}
 					if !json.Valid([]byte(payload)) {
-						t.Errorf("%s: invalid SSE JSON: %s", sc.vendor, payload)
+						t.Errorf("%s: invalid SSE JSON: %s", sc.Vendor, payload)
 					}
 				}
 				choices = 1 // presence already checked structurally above
@@ -282,22 +283,22 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 					Choices []json.RawMessage `json:"choices"`
 				}
 				if err := json.Unmarshal([]byte(out), &resp); err != nil {
-					t.Fatalf("%s: response not valid chat.completion JSON: %v; body=%s", sc.vendor, err, out)
+					t.Fatalf("%s: response not valid chat.completion JSON: %v; body=%s", sc.Vendor, err, out)
 				}
 				choices = len(resp.Choices)
 			}
 			if choices == 0 {
-				t.Errorf("%s: 0 choices in translated response: %s", sc.vendor, truncateForLog(out))
+				t.Errorf("%s: 0 choices in translated response: %s", sc.Vendor, truncateForLog(out))
 			}
 
 			// billing: some usage must have been recorded for this vendor's call
 			// (each request went through M4 Budget / M7 Schedule / usage extraction
 			// for a distinct endpoint, so this also proves no cross-vendor leakage).
 			usageLog, _ := os.ReadFile(cfg.UsageEvents.File.Path)
-			if !strings.Contains(string(usageLog), `"vendor":"`+sc.vendor+`"`) &&
-				!strings.Contains(string(usageLog), sc.model) {
+			if !strings.Contains(string(usageLog), `"vendor":"`+sc.Vendor+`"`) &&
+				!strings.Contains(string(usageLog), sc.Model) {
 				t.Logf("%s: usage log doesn't obviously mention this vendor/model (informational; format may differ): %s",
-					sc.vendor, truncateForLog(string(usageLog)))
+					sc.Vendor, truncateForLog(string(usageLog)))
 			}
 		})
 	}
