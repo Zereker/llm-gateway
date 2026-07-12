@@ -467,6 +467,54 @@ func TestTranslateResponse_Thinking(t *testing.T) {
 	}
 }
 
+// TestTranslateResponse_Citations uses the real web_search_result_location
+// citation shape (Claude docs' web search tool reference example, and
+// verified structurally against langchain-anthropic's real
+// test_citations.yaml.gz cassette) to check the url_citation mapping and
+// that document-grounded citations (no URL) are dropped, not guessed at.
+func TestTranslateResponse_Citations(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_1","type":"message","role":"assistant","model":"claude-x","stop_reason":"end_turn",
+		"content":[
+			{"type":"text","text":"Based on the search results, "},
+			{"type":"text","text":"Claude Shannon was born on April 30, 1916, in Petoskey, Michigan","citations":[
+				{"type":"web_search_result_location","url":"https://en.wikipedia.org/wiki/Claude_Shannon","title":"Claude Shannon - Wikipedia","encrypted_index":"Eo8B...","cited_text":"Claude Elwood Shannon..."}
+			]},
+			{"type":"text","text":". Also see the doc.","citations":[
+				{"type":"content_block_location","document_index":0,"document_title":"Some Doc","start_block_index":0,"end_block_index":1,"cited_text":"..."}
+			]}
+		]
+	}`)
+	out, err := translateResponse(body, "claude-x")
+	if err != nil {
+		t.Fatalf("translateResponse error: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	wantContent := "Based on the search results, Claude Shannon was born on April 30, 1916, in Petoskey, Michigan. Also see the doc."
+	if got := r.Get("choices.0.message.content").String(); got != wantContent {
+		t.Fatalf("content = %q, want %q", got, wantContent)
+	}
+	anns := r.Get("choices.0.message.annotations")
+	if len(anns.Array()) != 1 {
+		t.Fatalf("want exactly 1 annotation (document citation dropped), got: %s", anns.Raw)
+	}
+	ann := anns.Array()[0]
+	if ann.Get("type").String() != "url_citation" {
+		t.Errorf("annotation type = %q, want url_citation", ann.Get("type").String())
+	}
+	uc := ann.Get("url_citation")
+	if uc.Get("url").String() != "https://en.wikipedia.org/wiki/Claude_Shannon" {
+		t.Errorf("url = %q", uc.Get("url").String())
+	}
+	if uc.Get("title").String() != "Claude Shannon - Wikipedia" {
+		t.Errorf("title = %q", uc.Get("title").String())
+	}
+	start, end := int(uc.Get("start_index").Int()), int(uc.Get("end_index").Int())
+	if wantContent[start:end] != "Claude Shannon was born on April 30, 1916, in Petoskey, Michigan" {
+		t.Errorf("start/end index %d:%d span = %q", start, end, wantContent[start:end])
+	}
+}
+
 // TestTranslateRequest_ThinkingRoundTrip is the multi-turn regression this
 // whole feature exists for: a client echoing back an assistant message that
 // carries both reasoning_content/reasoning_signature AND tool_calls (a
@@ -656,6 +704,68 @@ func TestStreaming_Thinking(t *testing.T) {
 	}
 	if content.String() != "1. Pouch 2. Pel" {
 		t.Errorf("content = %q", content.String())
+	}
+}
+
+// TestStreaming_Citations replays a real captured citations_delta/text_delta
+// event sequence (langchain-ai/langchain's official langchain-anthropic
+// package, Apache 2.0, test_citations.yaml.gz — the document-grounded
+// content_block_location shape, which has no URL and must be dropped) plus
+// one block using the web_search_result_location shape (verified against
+// Claude's own web search tool doc page, which has a URL and must surface as
+// an annotations delta at content_block_stop).
+func TestStreaming_Citations(t *testing.T) {
+	h := New().(openaiAnthropic).NewResponseHandler()
+	events := []string{
+		`data: {"type":"message_start","message":{"id":"msg_1","model":"claude-haiku-4-5-20251001"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"citations":[],"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"content_block_location","cited_text":"The grass is green","document_index":0,"start_block_index":0,"end_block_index":1}}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The grass is green"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"citations":[],"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://en.wikipedia.org/wiki/Claude_Shannon","title":"Claude Shannon - Wikipedia","cited_text":"Claude Shannon was born..."}}}`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Claude Shannon was born in 1916"}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+		`data: {"type":"message_stop"}`,
+	}
+	var out strings.Builder
+	for _, e := range events {
+		b, err := h.Feed([]byte(e + "\n\n"))
+		if err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+		out.Write(b)
+	}
+	if _, _, err := h.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	var allAnnotations []any
+	var content strings.Builder
+	for _, ev := range parseSSEDataLines(t, out.String()) {
+		if c, ok := ev["content"].(string); ok {
+			content.WriteString(c)
+		}
+		if anns, ok := ev["annotations"].([]any); ok {
+			allAnnotations = append(allAnnotations, anns...)
+		}
+	}
+	wantContent := "The grass is greenClaude Shannon was born in 1916"
+	if content.String() != wantContent {
+		t.Fatalf("content = %q, want %q", content.String(), wantContent)
+	}
+	if len(allAnnotations) != 1 {
+		t.Fatalf("want exactly 1 annotation (document citation dropped), got %d: %+v", len(allAnnotations), allAnnotations)
+	}
+	ann := allAnnotations[0].(map[string]any)
+	uc := ann["url_citation"].(map[string]any)
+	if uc["url"] != "https://en.wikipedia.org/wiki/Claude_Shannon" {
+		t.Errorf("url = %v", uc["url"])
+	}
+	start, end := int(uc["start_index"].(float64)), int(uc["end_index"].(float64))
+	if wantContent[start:end] != "Claude Shannon was born in 1916" {
+		t.Errorf("start/end index %d:%d span = %q", start, end, wantContent[start:end])
 	}
 }
 

@@ -84,6 +84,18 @@ type responseHandler struct {
 	toolBlocks  map[int]int
 	nextToolIdx int
 
+	// Streaming citation state: contentLen tracks the running length of the
+	// OpenAI-shaped "content" string built so far (across all text blocks,
+	// concatenated) so a citation's start_index/end_index can be computed the
+	// same way as the non-streaming path (see translateResponse). citeStarts
+	// records each text block's start offset (set on content_block_start);
+	// pendingCites buffers that block's web_search_result_location citations
+	// (the only citation type with a URL — see anthropicCitation) until
+	// content_block_stop, when the block's end offset is finally known.
+	contentLen   int
+	citeStarts   map[int]int
+	pendingCites map[int][]anthropicCitation
+
 	// usage side channel
 	ex extractor.Session
 }
@@ -168,11 +180,17 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 // Anthropic event types → OpenAI chunk mapping:
 //
 //	message_start       → 1 chunk: delta={role:"assistant"} (OpenAI SDK expects role first)
-//	content_block_start → text: no output; tool_use: 1 chunk with a tool_calls
-//	                      header delta (index/id/name, arguments:"")
+//	content_block_start → text: no output (records the block's start offset for
+//	                      citations); tool_use: 1 chunk with a tool_calls header
+//	                      delta (index/id/name, arguments:"")
 //	content_block_delta → text_delta: delta={content:"<text>"};
-//	                      input_json_delta: delta={tool_calls:[{index, function:{arguments}}]}
-//	content_block_stop  → no output
+//	                      input_json_delta: delta={tool_calls:[{index, function:{arguments}}]};
+//	                      citations_delta: buffered, no output yet (see content_block_stop)
+//	content_block_stop  → buffered web_search_result_location citations (if any):
+//	                      1 chunk with delta={annotations:[...]} (OpenAI's
+//	                      url_citation shape — no official streaming precedent,
+//	                      so emitted as one complete chunk per block rather than
+//	                      guessed-at partial deltas); otherwise no output
 //	message_delta       → 1 chunk: delta={}, finish_reason=<mapped> (when stop_reason is present)
 //	message_stop        → 1 sentinel: data: [DONE]
 //	ping                → no output
@@ -194,12 +212,13 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			Name string `json:"name,omitempty"`
 		} `json:"content_block,omitempty"`
 		Delta *struct {
-			Type        string `json:"type"`
-			Text        string `json:"text,omitempty"`
-			PartialJSON string `json:"partial_json,omitempty"`
-			StopReason  string `json:"stop_reason,omitempty"`
-			Thinking    string `json:"thinking,omitempty"`
-			Signature   string `json:"signature,omitempty"`
+			Type        string             `json:"type"`
+			Text        string             `json:"text,omitempty"`
+			PartialJSON string             `json:"partial_json,omitempty"`
+			StopReason  string             `json:"stop_reason,omitempty"`
+			Thinking    string             `json:"thinking,omitempty"`
+			Signature   string             `json:"signature,omitempty"`
+			Citation    *anthropicCitation `json:"citation,omitempty"`
 		} `json:"delta,omitempty"`
 	}
 	if err := json.Unmarshal(data, &ev); err != nil {
@@ -235,6 +254,16 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			}
 			h.writeChunk(out, delta, "")
 		}
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == "text" {
+			// Records this block's start offset into the running OpenAI
+			// "content" string, so any citations_delta buffered against it
+			// can compute start_index/end_index the same way the
+			// non-streaming path does (see translateResponse).
+			if h.citeStarts == nil {
+				h.citeStarts = make(map[int]int)
+			}
+			h.citeStarts[ev.Index] = h.contentLen
+		}
 
 	case "content_block_delta":
 		if ev.Delta == nil {
@@ -243,7 +272,17 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		switch ev.Delta.Type {
 		case "text_delta":
 			if ev.Delta.Text != "" {
+				h.contentLen += len(ev.Delta.Text)
 				h.writeChunk(out, map[string]any{"content": ev.Delta.Text}, "")
+			}
+		case "citations_delta":
+			// Buffered until content_block_stop, when the block's end offset
+			// into the running content string is finally known.
+			if ev.Delta.Citation != nil && ev.Delta.Citation.Type == "web_search_result_location" {
+				if h.pendingCites == nil {
+					h.pendingCites = make(map[int][]anthropicCitation)
+				}
+				h.pendingCites[ev.Index] = append(h.pendingCites[ev.Index], *ev.Delta.Citation)
 			}
 		case "thinking_delta":
 			// Streamed incrementally under reasoning_content, matching how
@@ -288,7 +327,24 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		h.writeUsageChunk(out)
 		out.WriteString("data: [DONE]\n\n")
 
-	case "ping", "content_block_stop":
+	case "content_block_stop":
+		if cites, ok := h.pendingCites[ev.Index]; ok {
+			start := h.citeStarts[ev.Index]
+			end := h.contentLen
+			annotations := make([]map[string]any, 0, len(cites))
+			for _, c := range cites {
+				annotations = append(annotations, map[string]any{
+					"type": "url_citation",
+					"url_citation": map[string]any{
+						"url": c.URL, "title": c.Title, "start_index": start, "end_index": end,
+					},
+				})
+			}
+			h.writeChunk(out, map[string]any{"annotations": annotations}, "")
+			delete(h.pendingCites, ev.Index)
+		}
+
+	case "ping":
 		// No output
 	}
 }
@@ -407,6 +463,24 @@ type openAIMessage struct {
 	// through the OpenAI wire shape — see openAIInboundMessage's doc comment.
 	ReasoningContent   string `json:"reasoning_content,omitempty"`
 	ReasoningSignature string `json:"reasoning_signature,omitempty"`
+	// Annotations carries web_search_result_location citations through as
+	// OpenAI's own web-search-citation shape (verified against the official
+	// openai-python SDK's ChatCompletionMessage/Annotation/AnnotationURLCitation
+	// type definitions) — see anthropicCitation's doc comment for why only
+	// this one citation type maps.
+	Annotations []openAIAnnotation `json:"annotations,omitempty"`
+}
+
+type openAIAnnotation struct {
+	Type        string               `json:"type"`
+	URLCitation openAIURLCitationOut `json:"url_citation"`
+}
+
+type openAIURLCitationOut struct {
+	URL        string `json:"url"`
+	Title      string `json:"title"`
+	StartIndex int    `json:"start_index"`
+	EndIndex   int    `json:"end_index"`
 }
 
 // openAIRespToolCall is one entry of an assistant response message's
@@ -595,13 +669,30 @@ type anthropicResponse struct {
 }
 
 type anthropicContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	Thinking  string          `json:"thinking,omitempty"`
-	Signature string          `json:"signature,omitempty"`
+	Type      string              `json:"type"`
+	Text      string              `json:"text,omitempty"`
+	ID        string              `json:"id,omitempty"`
+	Name      string              `json:"name,omitempty"`
+	Input     json.RawMessage     `json:"input,omitempty"`
+	Thinking  string              `json:"thinking,omitempty"`
+	Signature string              `json:"signature,omitempty"`
+	Citations []anthropicCitation `json:"citations,omitempty"`
+}
+
+// anthropicCitation is one entry of a text block's "citations" array. Anthropic
+// has several citation types (verified against a real captured citations
+// response, langchain-ai/langchain's official langchain-anthropic package,
+// Apache 2.0, tests/cassettes/test_citations.yaml.gz, and the Claude docs'
+// web search tool page): document-grounded ones (char_location/page_location/
+// content_block_location) and search_result_location only carry a
+// document_index with no URL, so they have no OpenAI-compatible
+// representation and are dropped. Only web_search_result_location carries a
+// URL, mapping cleanly to OpenAI's annotations[].url_citation (see
+// translateResponse / translateAnthropicEvent).
+type anthropicCitation struct {
+	Type  string `json:"type"`
+	URL   string `json:"url,omitempty"`
+	Title string `json:"title,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -880,11 +971,25 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 
 	var content strings.Builder
 	var toolCalls []openAIRespToolCall
+	var annotations []openAIAnnotation
 	var reasoningContent, reasoningSignature string
 	for _, blk := range in.Content {
 		switch blk.Type {
 		case "text":
+			start := content.Len()
 			content.WriteString(blk.Text)
+			end := content.Len()
+			for _, c := range blk.Citations {
+				if c.Type != "web_search_result_location" {
+					continue // no URL to cite — see anthropicCitation's doc comment
+				}
+				annotations = append(annotations, openAIAnnotation{
+					Type: "url_citation",
+					URLCitation: openAIURLCitationOut{
+						URL: c.URL, Title: c.Title, StartIndex: start, EndIndex: end,
+					},
+				})
+			}
 		case "tool_use":
 			args := "{}"
 			if len(blk.Input) > 0 {
@@ -904,7 +1009,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 		}
 	}
 
-	msg := openAIMessage{Role: "assistant", ReasoningContent: reasoningContent, ReasoningSignature: reasoningSignature}
+	msg := openAIMessage{Role: "assistant", ReasoningContent: reasoningContent, ReasoningSignature: reasoningSignature, Annotations: annotations}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 		// OpenAI allows content:null alongside tool_calls; use the text only if present.

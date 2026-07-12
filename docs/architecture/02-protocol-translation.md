@@ -340,8 +340,8 @@ Cross-protocol pairs do not all carry every request feature. Current coverage:
 
 | pair | text | tool calling | multimodal (images) | vendor-specific |
 |---|---|---|---|---|
-| `openai_anthropic` | ✅ | ✅ | ✅ | extended thinking round-trip (via `reasoning_content`/`reasoning_signature`) |
-| `anthropic_openai` | ✅ | ✅ | ✅ | — |
+| `openai_anthropic` | ✅ | ✅ (`tools[].strict` carried through) | ✅ | extended thinking round-trip (via `reasoning_content`/`reasoning_signature`); `web_search_result_location` citations → `annotations[].url_citation`; document/search_result citations and `redacted_thinking`/`server_tool_use`/`mcp_tool_use` blocks still dropped (see below) |
+| `anthropic_openai` | ✅ | ✅ (`tools[].strict` carried through) | ✅ | — |
 | `openai_gemini` | ✅ | ✅ | ✅ | `n`/`candidateCount`, `response_format`, Gemini 3 `thoughtSignature` round-trip |
 | `openai_cohere` | ✅ | ✅ | ✅ | `command-a-reasoning-*` `thinking` block → `reasoning_content`; citations still dropped (no OpenAI-compatible shape decided) |
 
@@ -381,6 +381,39 @@ reconstructs the Anthropic `thinking` block **first** in that turn's content
 array — Anthropic rejects a `tool_use` block in history without a preceding
 signed thinking block once extended thinking was enabled, so replaying the
 signature verbatim (not regenerating it) is required, not cosmetic.
+
+**Citations** (`openai_anthropic` only, response-side): a text content
+block's `citations` array is only translated for the
+`web_search_result_location` citation type, which — unlike every other
+Anthropic citation type — carries a `url`/`title` and therefore maps cleanly
+to OpenAI's own `message.annotations[].url_citation` shape (verified against
+the official openai-python SDK's type definitions). It surfaces on both the
+non-streaming response and the streaming path (as one `annotations` delta
+chunk per content block, emitted at `content_block_stop` once the block's
+character span into the running `content` string is known — OpenAI's own
+streaming API has no documented incremental-citation delta, so this is
+emitted whole rather than piecemeal). Every other citation type
+(`char_location`/`page_location`/`content_block_location` for documents,
+`search_result_location` for `search_result` tool blocks) only carries a
+`document_index` with no URL, so it has no OpenAI-compatible representation
+and is dropped — same treatment as Cohere's citations (§ above).
+
+**Known gaps, not yet implemented** (`openai_anthropic`, found via real
+captured traffic from langchain-ai/langchain's official langchain-anthropic
+package, Apache 2.0, `libs/partners/anthropic/tests/cassettes/`): a
+`redacted_thinking` block (an opaque, signature-less thinking variant that —
+like regular `thinking` — must round-trip through history verbatim) is
+silently dropped rather than surfaced via `reasoning_content`; and Anthropic's
+server-executed tool content blocks (`server_tool_use` /
+`web_search_tool_result` / `bash_code_execution_tool_result` / `mcp_tool_use`
+/ `mcp_tool_result` / `tool_search_tool_result`) are silently dropped on the
+response side, and their tool *definitions* (`{"type":"web_search_20250305",
+...}`, `mcp_servers`, `code_execution`, etc.) can't even be configured from
+an OpenAI-shaped request today (the tools loop in `translateRequest` skips
+any non-`"function"` tool type). Whether/how to expose Anthropic's
+server-side tools through the OpenAI client protocol is a product decision,
+not a field-mapping exercise, and is intentionally left unimplemented pending
+that decision.
 
 **Cohere reasoning** (`openai_cohere` only): `command-a-reasoning-*` models
 emit a `{"type":"thinking","thinking":...}` content block ahead of the
