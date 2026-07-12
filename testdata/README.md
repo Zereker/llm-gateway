@@ -14,7 +14,8 @@ when a file moves.
 testdata/
 ├── vendor-cassettes/   real, raw, third-party-licensed VCR cassettes (reference corpus)
 └── fieldmatrix/        curated/sanitized fixtures for the gateway's own e2e suite
-    └── endpoints/      per-vendor endpoint-seed manifests (vendor/protocol/model/auth/reply)
+    ├── endpoints/      per-vendor endpoint-seed manifests (vendor/protocol/model/auth/reply)
+    └── golden/         hand-reviewed exact-match fixtures for internal/cassette/replay's TestGolden* tests
 ```
 
 ## `vendor-cassettes/` — real upstream traffic, unmodified
@@ -74,3 +75,31 @@ that declares "these are the vendors this gateway supports end-to-end":
 Adding a vendor to *both* is one new JSON file here — see any existing file
 for the shape, and `cmd/mockupstream`'s doc comment for which
 `upstream_path` values it actually serves.
+
+### `golden/` — exact-match fixtures (a stricter companion to the replay suite)
+
+`internal/cassette/replay`'s ordinary tests (`TestReplay*`) only assert
+"this is a well-formed OpenAI response" — they'd miss a translator bug that
+swaps two fields but keeps the shape valid (e.g. mapping `stopReason:
+tool_use` to `finish_reason: "stop"` instead of `"tool_calls"` — a real
+regression a coverage number can't tell you is caught). The handful of
+`TestGolden*` tests in that package compare a translator's *exact* output
+against a fixture here, byte for byte (after normalizing the two fields
+every `openai_*` translator generates itself — a random `id`, a `created`
+timestamp — so the comparison isn't flaky by construction).
+
+**These fixtures are not self-verifying.** A new one is only trustworthy
+after a human reads the generated output next to the real cassette
+interaction it came from and confirms the translation is actually correct —
+regenerating a fixture from a translator that has a bug bakes the bug in as
+the new "expected" output. Workflow:
+
+```sh
+UPDATE_GOLDEN=1 go test ./internal/cassette/replay/... -run TestGolden -v
+git diff testdata/fieldmatrix/golden/   # read it by hand before committing
+```
+
+Use this sparingly — on scenarios worth pinning down precisely (a tool call,
+an extended-thinking turn) — not as a wholesale replacement for the
+shape-only checks across the full real-cassette corpus, which stay useful
+for "did this crash or produce garbage" on everything else.
