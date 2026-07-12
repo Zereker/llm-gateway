@@ -48,6 +48,25 @@ func TestReplayBedrockResponses(t *testing.T) {
 	})
 }
 
+// TestGoldenBedrockToolCall pins the exact translated output of a real
+// Converse tool-call turn against a hand-reviewed fixture -- a stricter
+// companion to TestReplayBedrockResponses, which only checks the shape is
+// valid and would not notice e.g. the tool name and arguments getting
+// swapped, or the finish_reason mapping regressing.
+func TestGoldenBedrockToolCall(t *testing.T) {
+	its, err := cassette.Load(vendorRoot + "/bedrock/langchain-ai-langchain-aws/test_agent_loop[v0].yaml.gz")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	h := openai_bedrock.New().NewResponseHandler()
+	out, usage := feedResponse(t, h, its[0].ResponseBody, "golden/bedrock-tool-call")
+	assertValidOpenAIChatOutput(t, out, "golden/bedrock-tool-call")
+	if usage == nil || usage.Input != 446 || usage.Output != 55 || usage.Total != 501 {
+		t.Fatalf("usage drifted from the real cassette's reported tokens: %+v", usage)
+	}
+	assertGolden(t, "bedrock-tool-call.json", out)
+}
+
 // TestReplayBedrockConverseStreaming covers the streaming half every mixed
 // (streaming-turn + non-streaming-turn) cassette file contains, which
 // TestReplayBedrockResponses's generic classify can't reach: a streaming
