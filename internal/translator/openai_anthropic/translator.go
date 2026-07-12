@@ -12,9 +12,8 @@
 //
 // **Limitations**:
 //   - Only chat is supported (system/user/assistant/tool messages)
-//   - Tool definitions and tool calls ARE carried across (see translateRequest)
-//   - Multi-part content arrays are accepted, but only their text parts are
-//     carried across; non-text image parts are dropped
+//   - Tool definitions, tool calls, and image_url content parts are all
+//     carried across (see translateRequest / buildUserContent)
 //
 // See translateRequest / translateResponse / parseAndEmitStreamEvent for field mapping details.
 package openai_anthropic
@@ -47,9 +46,6 @@ func (openaiAnthropic) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiAnthropic) Target() domain.Protocol { return domain.ProtoAnthropic }
 
 func (openaiAnthropic) TranslateRequest(srcBody []byte) ([]byte, error) {
-	// Tools / tool_calls are now translated; only image multimodal content is
-	// still dropped, so restrict the lossy report to that feature.
-	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoAnthropic, srcBody, "multimodal")
 	return translateRequest(srcBody)
 }
 
@@ -87,6 +83,18 @@ type responseHandler struct {
 	// the counter over tool_use blocks (independent of text blocks).
 	toolBlocks  map[int]int
 	nextToolIdx int
+
+	// Streaming citation state: contentLen tracks the running length of the
+	// OpenAI-shaped "content" string built so far (across all text blocks,
+	// concatenated) so a citation's start_index/end_index can be computed the
+	// same way as the non-streaming path (see translateResponse). citeStarts
+	// records each text block's start offset (set on content_block_start);
+	// pendingCites buffers that block's web_search_result_location citations
+	// (the only citation type with a URL — see anthropicCitation) until
+	// content_block_stop, when the block's end offset is finally known.
+	contentLen   int
+	citeStarts   map[int]int
+	pendingCites map[int][]anthropicCitation
 
 	// usage side channel
 	ex extractor.Session
@@ -172,11 +180,17 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 // Anthropic event types → OpenAI chunk mapping:
 //
 //	message_start       → 1 chunk: delta={role:"assistant"} (OpenAI SDK expects role first)
-//	content_block_start → text: no output; tool_use: 1 chunk with a tool_calls
-//	                      header delta (index/id/name, arguments:"")
+//	content_block_start → text: no output (records the block's start offset for
+//	                      citations); tool_use: 1 chunk with a tool_calls header
+//	                      delta (index/id/name, arguments:"")
 //	content_block_delta → text_delta: delta={content:"<text>"};
-//	                      input_json_delta: delta={tool_calls:[{index, function:{arguments}}]}
-//	content_block_stop  → no output
+//	                      input_json_delta: delta={tool_calls:[{index, function:{arguments}}]};
+//	                      citations_delta: buffered, no output yet (see content_block_stop)
+//	content_block_stop  → buffered web_search_result_location citations (if any):
+//	                      1 chunk with delta={annotations:[...]} (OpenAI's
+//	                      url_citation shape — no official streaming precedent,
+//	                      so emitted as one complete chunk per block rather than
+//	                      guessed-at partial deltas); otherwise no output
 //	message_delta       → 1 chunk: delta={}, finish_reason=<mapped> (when stop_reason is present)
 //	message_stop        → 1 sentinel: data: [DONE]
 //	ping                → no output
@@ -198,10 +212,13 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			Name string `json:"name,omitempty"`
 		} `json:"content_block,omitempty"`
 		Delta *struct {
-			Type        string `json:"type"`
-			Text        string `json:"text,omitempty"`
-			PartialJSON string `json:"partial_json,omitempty"`
-			StopReason  string `json:"stop_reason,omitempty"`
+			Type        string             `json:"type"`
+			Text        string             `json:"text,omitempty"`
+			PartialJSON string             `json:"partial_json,omitempty"`
+			StopReason  string             `json:"stop_reason,omitempty"`
+			Thinking    string             `json:"thinking,omitempty"`
+			Signature   string             `json:"signature,omitempty"`
+			Citation    *anthropicCitation `json:"citation,omitempty"`
 		} `json:"delta,omitempty"`
 	}
 	if err := json.Unmarshal(data, &ev); err != nil {
@@ -237,6 +254,16 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			}
 			h.writeChunk(out, delta, "")
 		}
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == "text" {
+			// Records this block's start offset into the running OpenAI
+			// "content" string, so any citations_delta buffered against it
+			// can compute start_index/end_index the same way the
+			// non-streaming path does (see translateResponse).
+			if h.citeStarts == nil {
+				h.citeStarts = make(map[int]int)
+			}
+			h.citeStarts[ev.Index] = h.contentLen
+		}
 
 	case "content_block_delta":
 		if ev.Delta == nil {
@@ -245,7 +272,31 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		switch ev.Delta.Type {
 		case "text_delta":
 			if ev.Delta.Text != "" {
+				h.contentLen += len(ev.Delta.Text)
 				h.writeChunk(out, map[string]any{"content": ev.Delta.Text}, "")
+			}
+		case "citations_delta":
+			// Buffered until content_block_stop, when the block's end offset
+			// into the running content string is finally known.
+			if ev.Delta.Citation != nil && ev.Delta.Citation.Type == "web_search_result_location" {
+				if h.pendingCites == nil {
+					h.pendingCites = make(map[int][]anthropicCitation)
+				}
+				h.pendingCites[ev.Index] = append(h.pendingCites[ev.Index], *ev.Delta.Citation)
+			}
+		case "thinking_delta":
+			// Streamed incrementally under reasoning_content, matching how
+			// OpenAI-compatible reasoning-model vendors already stream it
+			// (see testdata/fieldmatrix/upstream/chat-openai-compat-reasoning.json).
+			if ev.Delta.Thinking != "" {
+				h.writeChunk(out, map[string]any{"reasoning_content": ev.Delta.Thinking}, "")
+			}
+		case "signature_delta":
+			// Arrives once, complete, right before content_block_stop — the
+			// client must capture it to round-trip via buildAssistantMessage
+			// on its next turn, or a subsequent tool_use turn gets a 400.
+			if ev.Delta.Signature != "" {
+				h.writeChunk(out, map[string]any{"reasoning_signature": ev.Delta.Signature}, "")
 			}
 		case "input_json_delta":
 			toolIdx, ok := h.toolBlocks[ev.Index]
@@ -276,7 +327,24 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		h.writeUsageChunk(out)
 		out.WriteString("data: [DONE]\n\n")
 
-	case "ping", "content_block_stop":
+	case "content_block_stop":
+		if cites, ok := h.pendingCites[ev.Index]; ok {
+			start := h.citeStarts[ev.Index]
+			end := h.contentLen
+			annotations := make([]map[string]any, 0, len(cites))
+			for _, c := range cites {
+				annotations = append(annotations, map[string]any{
+					"type": "url_citation",
+					"url_citation": map[string]any{
+						"url": c.URL, "title": c.Title, "start_index": start, "end_index": end,
+					},
+				})
+			}
+			h.writeChunk(out, map[string]any{"annotations": annotations}, "")
+			delete(h.pendingCites, ev.Index)
+		}
+
+	case "ping":
 		// No output
 	}
 }
@@ -356,6 +424,9 @@ type openAIRequest struct {
 	Stream      bool                   `json:"stream,omitempty"`
 	Tools       []openAITool           `json:"tools,omitempty"`
 	ToolChoice  json.RawMessage        `json:"tool_choice,omitempty"`
+	// ParallelToolCalls, when explicitly false, maps to Anthropic's
+	// tool_choice.disable_parallel_tool_use (see applyDisableParallelToolUse).
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 }
 
 // openAITool is one entry of the OpenAI request "tools" array. Only function
@@ -366,6 +437,7 @@ type openAITool struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description,omitempty"`
 		Parameters  json.RawMessage `json:"parameters,omitempty"`
+		Strict      *bool           `json:"strict,omitempty"`
 	} `json:"function"`
 }
 
@@ -387,6 +459,28 @@ type openAIMessage struct {
 	Role      string               `json:"role"`
 	Content   any                  `json:"content"`
 	ToolCalls []openAIRespToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent/ReasoningSignature carry an Anthropic thinking block
+	// through the OpenAI wire shape — see openAIInboundMessage's doc comment.
+	ReasoningContent   string `json:"reasoning_content,omitempty"`
+	ReasoningSignature string `json:"reasoning_signature,omitempty"`
+	// Annotations carries web_search_result_location citations through as
+	// OpenAI's own web-search-citation shape (verified against the official
+	// openai-python SDK's ChatCompletionMessage/Annotation/AnnotationURLCitation
+	// type definitions) — see anthropicCitation's doc comment for why only
+	// this one citation type maps.
+	Annotations []openAIAnnotation `json:"annotations,omitempty"`
+}
+
+type openAIAnnotation struct {
+	Type        string               `json:"type"`
+	URLCitation openAIURLCitationOut `json:"url_citation"`
+}
+
+type openAIURLCitationOut struct {
+	URL        string `json:"url"`
+	Title      string `json:"title"`
+	StartIndex int    `json:"start_index"`
+	EndIndex   int    `json:"end_index"`
 }
 
 // openAIRespToolCall is one entry of an assistant response message's
@@ -407,6 +501,16 @@ type openAIInboundMessage struct {
 	Content    json.RawMessage  `json:"content"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
+	// ReasoningContent/ReasoningSignature round-trip an Anthropic extended-
+	// thinking block through the OpenAI wire shape (see buildAssistantMessage
+	// and translateResponse) — reasoning_content matches the field name real
+	// OpenAI-compatible vendors already expose (see
+	// testdata/fieldmatrix/upstream/chat-openai-compat-reasoning.json);
+	// reasoning_signature is Anthropic-specific, needed because Anthropic
+	// rejects a tool_use block in history without a preceding *signed*
+	// thinking block once extended thinking was enabled for that turn.
+	ReasoningContent   string `json:"reasoning_content,omitempty"`
+	ReasoningSignature string `json:"reasoning_signature,omitempty"`
 }
 
 // contentToString normalizes an OpenAI message content field that may be a JSON
@@ -438,6 +542,88 @@ func contentToString(raw json.RawMessage) string {
 	return ""
 }
 
+// buildUserContent converts an OpenAI user message's content into Anthropic
+// shape: a plain string when there's no image_url part, or a content block
+// array (text + image blocks) when one is present — contentToString would
+// silently drop the image otherwise.
+func buildUserContent(raw json.RawMessage) (json.RawMessage, error) {
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return json.Marshal(contentToString(raw))
+	}
+	hasImage := false
+	for _, p := range parts {
+		if p.Type == "image_url" {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		return json.Marshal(contentToString(raw))
+	}
+	var blocks []any
+	for _, p := range parts {
+		switch p.Type {
+		case "image_url":
+			if p.ImageURL != nil {
+				blocks = append(blocks, imageBlockFromURL(p.ImageURL.URL))
+			}
+		case "text", "":
+			if p.Text != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": p.Text})
+			}
+		}
+	}
+	return json.Marshal(blocks)
+}
+
+// imageBlockFromURL converts an OpenAI image_url.url into an Anthropic image
+// block: a data: URI decodes into source.type=base64 (media_type + data
+// split out); anything else passes through as source.type=url (Anthropic
+// fetches it directly — no need for the gateway to proxy the bytes).
+func imageBlockFromURL(url string) map[string]any {
+	if mediaType, data, ok := parseDataURI(url); ok {
+		return map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": mediaType,
+				"data":       data,
+			},
+		}
+	}
+	return map[string]any{
+		"type":   "image",
+		"source": map[string]any{"type": "url", "url": url},
+	}
+}
+
+// parseDataURI splits a "data:<mediaType>;base64,<data>" URI into its parts.
+func parseDataURI(url string) (mediaType, data string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(url, prefix) {
+		return "", "", false
+	}
+	rest := url[len(prefix):]
+	semi := strings.IndexByte(rest, ';')
+	comma := strings.IndexByte(rest, ',')
+	if semi < 0 || comma < 0 || comma < semi {
+		return "", "", false
+	}
+	mediaType = rest[:semi]
+	encoding := rest[semi+1 : comma]
+	if encoding != "base64" {
+		return "", "", false
+	}
+	return mediaType, rest[comma+1:], true
+}
+
 type anthropicRequest struct {
 	Model         string             `json:"model"`
 	Messages      []anthropicMessage `json:"messages"`
@@ -457,6 +643,11 @@ type anthropicTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	// Strict mirrors OpenAI's tool-level strict flag verbatim — Anthropic's
+	// tool schema accepts the same field name (verified against a real
+	// captured request/response pair, langchain-ai/langchain's official
+	// langchain-anthropic package, Apache 2.0, tests/cassettes/test_strict_tool_use.yaml.gz).
+	Strict *bool `json:"strict,omitempty"`
 }
 
 // anthropicMessage.Content is a raw message so it can hold either the simple
@@ -478,11 +669,30 @@ type anthropicResponse struct {
 }
 
 type anthropicContentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string              `json:"type"`
+	Text      string              `json:"text,omitempty"`
+	ID        string              `json:"id,omitempty"`
+	Name      string              `json:"name,omitempty"`
+	Input     json.RawMessage     `json:"input,omitempty"`
+	Thinking  string              `json:"thinking,omitempty"`
+	Signature string              `json:"signature,omitempty"`
+	Citations []anthropicCitation `json:"citations,omitempty"`
+}
+
+// anthropicCitation is one entry of a text block's "citations" array. Anthropic
+// has several citation types (verified against a real captured citations
+// response, langchain-ai/langchain's official langchain-anthropic package,
+// Apache 2.0, tests/cassettes/test_citations.yaml.gz, and the Claude docs'
+// web search tool page): document-grounded ones (char_location/page_location/
+// content_block_location) and search_result_location only carry a
+// document_index with no URL, so they have no OpenAI-compatible
+// representation and are dropped. Only web_search_result_location carries a
+// URL, mapping cleanly to OpenAI's annotations[].url_citation (see
+// translateResponse / translateAnthropicEvent).
+type anthropicCitation struct {
+	Type  string `json:"type"`
+	URL   string `json:"url,omitempty"`
+	Title string `json:"title,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -533,10 +743,14 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
 			InputSchema: normalizeToolSchema(t.Function.Parameters),
+			Strict:      t.Function.Strict,
 		})
 	}
 	if len(in.ToolChoice) > 0 {
 		out.ToolChoice = mapToolChoice(in.ToolChoice)
+	}
+	if in.ParallelToolCalls != nil && !*in.ParallelToolCalls {
+		out.ToolChoice = applyDisableParallelToolUse(out.ToolChoice)
 	}
 
 	var systemParts []string
@@ -548,7 +762,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 				systemParts = append(systemParts, s)
 			}
 		case "user":
-			c, err := json.Marshal(contentToString(m.Content))
+			c, err := buildUserContent(m.Content)
 			if err != nil {
 				return nil, fmt.Errorf("user content marshal: %w", err)
 			}
@@ -632,8 +846,9 @@ func normalizeToolSchema(raw json.RawMessage) json.RawMessage {
 //
 //	"auto"                                       → {"type":"auto"}
 //	"required"                                   → {"type":"any"}
+//	"none"                                        → {"type":"none"}
 //	{"type":"function","function":{"name":"X"}}  → {"type":"tool","name":"X"}
-//	"none" (and anything unrecognized)           → nil (omit; let the model decide)
+//	anything unrecognized                        → nil (omit; let the model decide)
 func mapToolChoice(raw json.RawMessage) json.RawMessage {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -642,7 +857,9 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 			return json.RawMessage(`{"type":"auto"}`)
 		case "required":
 			return json.RawMessage(`{"type":"any"}`)
-		default: // "none" or unknown → omit
+		case "none":
+			return json.RawMessage(`{"type":"none"}`)
+		default: // unknown → omit
 			return nil
 		}
 	}
@@ -661,12 +878,39 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 	return nil
 }
 
+// applyDisableParallelToolUse sets disable_parallel_tool_use:true on the
+// Anthropic tool_choice object, defaulting Type to "auto" (Anthropic's
+// implicit default) when the client didn't send a tool_choice at all —
+// Anthropic requires the flag to live on a tool_choice object, so
+// parallel_tool_calls:false with no other tool_choice still needs one
+// synthesized.
+func applyDisableParallelToolUse(toolChoice json.RawMessage) json.RawMessage {
+	m := map[string]any{"type": "auto"}
+	if len(toolChoice) > 0 {
+		_ = json.Unmarshal(toolChoice, &m)
+	}
+	m["disable_parallel_tool_use"] = true
+	b, err := json.Marshal(m)
+	if err != nil {
+		return toolChoice
+	}
+	return b
+}
+
 // buildAssistantMessage builds an Anthropic assistant message. When the OpenAI
-// message carries tool_calls, its content becomes a block array: an optional
-// leading text block (only if content is non-empty) followed by one tool_use
+// message carries tool_calls or a reasoning_content/reasoning_signature pair
+// (a round-tripped extended-thinking block, see translateResponse), its
+// content becomes a block array: an optional leading thinking block, then an
+// optional text block (only if content is non-empty), then one tool_use
 // block per tool_call. Otherwise it keeps the simple string content shape.
+//
+// The thinking block MUST come first when present: Anthropic rejects a
+// tool_use block in history with "Expected thinking or redacted_thinking
+// block, but found tool_use" once extended thinking was enabled for that
+// turn — the signature is what lets Anthropic verify the thinking block
+// wasn't tampered with, so it must be replayed verbatim, not regenerated.
 func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
-	if len(m.ToolCalls) == 0 {
+	if len(m.ToolCalls) == 0 && m.ReasoningContent == "" {
 		c, err := json.Marshal(contentToString(m.Content))
 		if err != nil {
 			return anthropicMessage{}, fmt.Errorf("assistant content marshal: %w", err)
@@ -675,6 +919,13 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 	}
 
 	var blocks []any
+	if m.ReasoningContent != "" {
+		blocks = append(blocks, map[string]any{
+			"type":      "thinking",
+			"thinking":  m.ReasoningContent,
+			"signature": m.ReasoningSignature,
+		})
+	}
 	if s := contentToString(m.Content); s != "" {
 		blocks = append(blocks, map[string]any{"type": "text", "text": s})
 	}
@@ -720,10 +971,25 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 
 	var content strings.Builder
 	var toolCalls []openAIRespToolCall
+	var annotations []openAIAnnotation
+	var reasoningContent, reasoningSignature string
 	for _, blk := range in.Content {
 		switch blk.Type {
 		case "text":
+			start := content.Len()
 			content.WriteString(blk.Text)
+			end := content.Len()
+			for _, c := range blk.Citations {
+				if c.Type != "web_search_result_location" {
+					continue // no URL to cite — see anthropicCitation's doc comment
+				}
+				annotations = append(annotations, openAIAnnotation{
+					Type: "url_citation",
+					URLCitation: openAIURLCitationOut{
+						URL: c.URL, Title: c.Title, StartIndex: start, EndIndex: end,
+					},
+				})
+			}
 		case "tool_use":
 			args := "{}"
 			if len(blk.Input) > 0 {
@@ -733,10 +999,17 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 			tc.Function.Name = blk.Name
 			tc.Function.Arguments = args
 			toolCalls = append(toolCalls, tc)
+		case "thinking":
+			// Surfaced via reasoning_content/reasoning_signature (not
+			// content) so it round-trips through buildAssistantMessage on
+			// the next turn instead of being silently dropped — see that
+			// function's doc comment for why the signature must survive.
+			reasoningContent = blk.Thinking
+			reasoningSignature = blk.Signature
 		}
 	}
 
-	msg := openAIMessage{Role: "assistant"}
+	msg := openAIMessage{Role: "assistant", ReasoningContent: reasoningContent, ReasoningSignature: reasoningSignature, Annotations: annotations}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 		// OpenAI allows content:null alongside tool_calls; use the text only if present.
@@ -778,7 +1051,11 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	return body, nil
 }
 
-// mapStopReason converts Anthropic stop_reason → OpenAI finish_reason.
+// mapStopReason converts Anthropic stop_reason → OpenAI finish_reason. Every
+// documented Anthropic value (end_turn/max_tokens/stop_sequence/tool_use/
+// refusal/pause_turn) is mapped explicitly, so a new stop_reason added
+// upstream fails a completeness test instead of silently collapsing into
+// "stop" and losing the refusal/pause signal.
 func mapStopReason(r string) string {
 	switch r {
 	case "end_turn", "stop_sequence", "":
@@ -787,6 +1064,14 @@ func mapStopReason(r string) string {
 		return "length"
 	case "tool_use":
 		return "tool_calls"
+	case "refusal":
+		// Claude declined to generate a response; content_filter is the
+		// closest OpenAI-compatible signal that this isn't a clean stop.
+		return "content_filter"
+	case "pause_turn":
+		// A server-tool-use turn paused mid-generation; OpenAI has no
+		// equivalent, so treat it like a normal stop.
+		return "stop"
 	default:
 		return "stop"
 	}

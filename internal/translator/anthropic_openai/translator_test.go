@@ -4,7 +4,35 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
+
+// TestMapFinishReason_Completeness covers every documented OpenAI
+// finish_reason value, including the deprecated function_call, so it can't
+// silently collapse into "end_turn" and hide a pending tool call.
+func TestMapFinishReason_Completeness(t *testing.T) {
+	anthropicValidStopReasons := map[string]bool{
+		"end_turn": true, "max_tokens": true, "stop_sequence": true,
+		"tool_use": true, "refusal": true, "pause_turn": true,
+	}
+	for in, want := range map[string]string{
+		"stop":           "end_turn",
+		"length":         "max_tokens",
+		"content_filter": "stop_sequence",
+		"tool_calls":     "tool_use",
+		"function_call":  "tool_use",
+		"":               "end_turn",
+	} {
+		got := mapFinishReason(in)
+		if got != want {
+			t.Errorf("mapFinishReason(%q) = %q, want %q", in, got, want)
+		}
+		if !anthropicValidStopReasons[got] {
+			t.Errorf("mapFinishReason(%q) = %q, not a valid Anthropic stop_reason", in, got)
+		}
+	}
+}
 
 // parseSSEData extracts the JSON payload of every `data:` line from an Anthropic
 // SSE stream, decoding each into a generic map for assertions.
@@ -32,6 +60,76 @@ func parseSSEData(t *testing.T, out string) []map[string]any {
 // A standard Anthropic SDK request sends content (and system) as an array of
 // content blocks. translateRequest must accept it, not reject it with a parse
 // error.
+// TestTranslateRequest_ImageBlock covers Anthropic image content -> OpenAI
+// image_url content parts, both base64 and url source forms. The base64
+// payload is a real captured image (a tiny PNG) from
+// simonw/llm-anthropic's test_image_prompt.yaml cassette (Apache 2.0).
+func TestTranslateRequest_ImageBlock(t *testing.T) {
+	const realPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAKYAAAEaAgMAAADmmcReAAAACVBMVEX///8A/wD+AQASdAFKAAAAR0lEQVR42u3YMREAMAjAwC5d6q8mUYkEVuA+8yvIkVr0oghFURRFURRFURRFUdRCkSRJM7u/CEVRFEVRFEVRFEXRpdQXkcaVBRUPn8UJn6QAAAAASUVORK5CYII="
+
+	t.Run("base64", func(t *testing.T) {
+		body := []byte(`{"model":"claude-x","max_tokens":100,"messages":[
+			{"role":"user","content":[
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + realPNGBase64 + `"}},
+				{"type":"text","text":"Describe image in three words"}
+			]}
+		]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		var got struct {
+			Messages []struct {
+				Content []struct {
+					Type     string `json:"type"`
+					Text     string `json:"text"`
+					ImageURL struct {
+						URL string `json:"url"`
+					} `json:"image_url"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("output not valid OpenAI request: %v\n%s", err, out)
+		}
+		if len(got.Messages) != 1 || len(got.Messages[0].Content) != 2 {
+			t.Fatalf("want 1 message with 2 parts, got: %s", out)
+		}
+		wantURL := "data:image/png;base64," + realPNGBase64
+		if img := got.Messages[0].Content[0]; img.Type != "image_url" || img.ImageURL.URL != wantURL {
+			t.Errorf("image_url part wrong: %+v", img)
+		}
+		if txt := got.Messages[0].Content[1]; txt.Type != "text" || txt.Text != "Describe image in three words" {
+			t.Errorf("text part wrong: %+v", txt)
+		}
+	})
+
+	t.Run("url", func(t *testing.T) {
+		body := []byte(`{"model":"claude-x","max_tokens":100,"messages":[
+			{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.com/cat.png"}}]}
+		]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		var got struct {
+			Messages []struct {
+				Content []struct {
+					ImageURL struct {
+						URL string `json:"url"`
+					} `json:"image_url"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("output not valid OpenAI request: %v\n%s", err, out)
+		}
+		if got := got.Messages[0].Content[0].ImageURL.URL; got != "https://example.com/cat.png" {
+			t.Errorf("image_url = %q, want passthrough URL", got)
+		}
+	})
+}
+
 func TestTranslateRequest_ArrayContentAndSystem(t *testing.T) {
 	body := []byte(`{
 		"model": "claude-x",
@@ -81,6 +179,27 @@ func TestTranslateRequest_StringContent(t *testing.T) {
 
 // Request translation: tools + assistant tool_use + user tool_result must map to
 // the OpenAI function-calling shapes.
+// TestTranslateRequest_ToolStrict: Anthropic's tool-level "strict" flag
+// (verified against a real captured request/response pair,
+// langchain-ai/langchain's official langchain-anthropic package, Apache 2.0,
+// tests/cassettes/test_strict_tool_use.yaml.gz) must carry over to OpenAI's
+// tool definition verbatim — same field name.
+func TestTranslateRequest_ToolStrict(t *testing.T) {
+	body := []byte(`{"model":"claude-x","max_tokens":100,
+		"tools":[{"name":"get_weather","description":"Get the weather at a location.",
+		"input_schema":{"type":"object","properties":{"location":{"type":"string"},"unit":{"type":"string","enum":["C","F"]}},"required":["location","unit"],"additionalProperties":false},
+		"strict":true}],
+		"messages":[{"role":"user","content":"weather in Boston, in Celsius?"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	if !r.Get("tools.0.function.strict").Bool() {
+		t.Errorf("strict flag dropped: %s", out)
+	}
+}
+
 func TestTranslateRequest_Tools(t *testing.T) {
 	body := []byte(`{
 		"model": "claude-x",
@@ -216,6 +335,7 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 	}{
 		{`{"type":"auto"}`, `"auto"`},
 		{`{"type":"any"}`, `"required"`},
+		{`{"type":"none"}`, `"none"`},
 		{`{"type":"tool","name":"foo"}`, `{"type":"function","function":{"name":"foo"}}`},
 	}
 	for _, c := range cases {
@@ -239,6 +359,47 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 		if string(wb) != string(hb) {
 			t.Errorf("tool_choice %s -> %s, want %s", c.in, hb, wb)
 		}
+	}
+}
+
+// disable_parallel_tool_use:true must invert into OpenAI's parallel_tool_calls:false,
+// regardless of what tool_choice.type it's attached to.
+func TestTranslateRequest_DisableParallelToolUse(t *testing.T) {
+	body := []byte(`{"model":"m","max_tokens":10,` +
+		`"tool_choice":{"type":"auto","disable_parallel_tool_use":true},` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	var got struct {
+		ParallelToolCalls *bool `json:"parallel_tool_calls"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ParallelToolCalls == nil || *got.ParallelToolCalls {
+		t.Errorf("parallel_tool_calls = %v, want false", got.ParallelToolCalls)
+	}
+}
+
+// Without disable_parallel_tool_use, parallel_tool_calls must stay omitted
+// (nil), not be forced to true — OpenAI's own default should apply.
+func TestTranslateRequest_ParallelToolCallsOmittedByDefault(t *testing.T) {
+	body := []byte(`{"model":"m","max_tokens":10,"tool_choice":{"type":"auto"},` +
+		`"messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	var got struct {
+		ParallelToolCalls *bool `json:"parallel_tool_calls"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ParallelToolCalls != nil {
+		t.Errorf("parallel_tool_calls = %v, want omitted", *got.ParallelToolCalls)
 	}
 }
 

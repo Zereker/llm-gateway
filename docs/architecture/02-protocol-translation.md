@@ -338,26 +338,117 @@ Layer 1 once real demand appears.
 
 Cross-protocol pairs do not all carry every request feature. Current coverage:
 
-| pair | text | tool calling | multimodal (images) |
-|---|---|---|---|
-| `openai_anthropic` | ✅ | ✅ | ❌ |
-| `anthropic_openai` | ✅ | ✅ | ❌ |
-| `openai_gemini` | ✅ | ❌ | ❌ |
-| `openai_cohere` | ✅ | ❌ | ❌ |
+| pair | text | tool calling | multimodal (images) | vendor-specific |
+|---|---|---|---|---|
+| `openai_anthropic` | ✅ | ✅ (`tools[].strict` carried through) | ✅ | extended thinking round-trip (via `reasoning_content`/`reasoning_signature`); `web_search_result_location` citations → `annotations[].url_citation`; document/search_result citations and `redacted_thinking`/`server_tool_use`/`mcp_tool_use` blocks still dropped (see below) |
+| `anthropic_openai` | ✅ | ✅ (`tools[].strict` carried through) | ✅ | — |
+| `openai_gemini` | ✅ | ✅ | ✅ | `n`/`candidateCount`, `response_format`, Gemini 3 `thoughtSignature` round-trip |
+| `openai_cohere` | ✅ | ✅ | ✅ | `command-a-reasoning-*` `thinking` block → `reasoning_content`; citations still dropped (no OpenAI-compatible shape decided) |
 
-**Tool calling** (`openai↔anthropic`): request-side maps `tools` /
-`tool_choice`, assistant tool calls, and tool results between OpenAI's flat
-`tool_calls` + `role:"tool"` model and Anthropic's `tool_use` / `tool_result`
-content blocks; response-side maps both non-streaming and streaming (Anthropic
-`content_block_start` + `input_json_delta` ↔ OpenAI indexed `tool_calls`
-argument deltas), including parallel tool calls.
+**Tool calling**: request-side maps `tools` / `tool_choice`, assistant tool
+calls, and tool results between OpenAI's flat `tool_calls` + `role:"tool"`
+model and each upstream's native shape (Anthropic `tool_use`/`tool_result`
+blocks; Gemini `functionCall`/`functionResponse` parts, where `args` is a
+JSON **object** rather than a string — the one field-shape asymmetry versus
+OpenAI/Anthropic/Cohere; Cohere v2's shape is close to identical to OpenAI's).
+Response-side maps both non-streaming and streaming, including parallel tool
+calls; Gemini's `finish_reason` is overridden to `tool_calls` when the message
+carries them since Gemini's own `finishReason` is typically just `STOP`.
+`tool_choice` fidelity varies: Anthropic and Gemini can force one specific
+named tool (`{"type":"tool",...}` / `allowedFunctionNames`); Cohere v2 only
+has `REQUIRED`/`NONE`, so a named-function choice falls back to `REQUIRED`
+(forces *some* call, not necessarily that one).
+
+**Multimodal (images)**: all four pairs convert OpenAI's `image_url` content
+part (`data:` URI or a plain URL). Anthropic's `image` block uses
+`source.type` = `base64`/`url`; Gemini's part uses `inlineData`
+(`mimeType`+`data`) for base64 or `fileData` (`fileUri`) for a URL — both
+vendors fetch a plain URL themselves, so the gateway never proxies image
+bytes. Cohere v2's `ImageContent`/`ImageUrl` types (verified against the
+official cohere-python SDK) are structurally identical to OpenAI's
+`image_url` part, so that pair is closer to a filtered passthrough than a
+reshape. Audio/video/document content remains unhandled on all four pairs.
+
+**Extended thinking** (`openai_anthropic` only — the other direction has no
+concept of it upstream, and same-protocol `identity/anthropic` already
+passes it through byte-for-byte with no translation needed): an Anthropic
+`thinking` block surfaces on the OpenAI-shaped response as
+`message.reasoning_content` (matching the field name real OpenAI-compatible
+reasoning-model vendors already use) plus `message.reasoning_signature`
+(Anthropic-specific). A client that echoes the assistant message back as
+history on its next turn round-trips both fields, and `buildAssistantMessage`
+reconstructs the Anthropic `thinking` block **first** in that turn's content
+array — Anthropic rejects a `tool_use` block in history without a preceding
+signed thinking block once extended thinking was enabled, so replaying the
+signature verbatim (not regenerating it) is required, not cosmetic.
+
+**Citations** (`openai_anthropic` only, response-side): a text content
+block's `citations` array is only translated for the
+`web_search_result_location` citation type, which — unlike every other
+Anthropic citation type — carries a `url`/`title` and therefore maps cleanly
+to OpenAI's own `message.annotations[].url_citation` shape (verified against
+the official openai-python SDK's type definitions). It surfaces on both the
+non-streaming response and the streaming path (as one `annotations` delta
+chunk per content block, emitted at `content_block_stop` once the block's
+character span into the running `content` string is known — OpenAI's own
+streaming API has no documented incremental-citation delta, so this is
+emitted whole rather than piecemeal). Every other citation type
+(`char_location`/`page_location`/`content_block_location` for documents,
+`search_result_location` for `search_result` tool blocks) only carries a
+`document_index` with no URL, so it has no OpenAI-compatible representation
+and is dropped — same treatment as Cohere's citations (§ above).
+
+**Known gaps, not yet implemented** (`openai_anthropic`, found via real
+captured traffic from langchain-ai/langchain's official langchain-anthropic
+package, Apache 2.0, `libs/partners/anthropic/tests/cassettes/`): a
+`redacted_thinking` block (an opaque, signature-less thinking variant that —
+like regular `thinking` — must round-trip through history verbatim) is
+silently dropped rather than surfaced via `reasoning_content`; and Anthropic's
+server-executed tool content blocks (`server_tool_use` /
+`web_search_tool_result` / `bash_code_execution_tool_result` / `mcp_tool_use`
+/ `mcp_tool_result` / `tool_search_tool_result`) are silently dropped on the
+response side, and their tool *definitions* (`{"type":"web_search_20250305",
+...}`, `mcp_servers`, `code_execution`, etc.) can't even be configured from
+an OpenAI-shaped request today (the tools loop in `translateRequest` skips
+any non-`"function"` tool type). Whether/how to expose Anthropic's
+server-side tools through the OpenAI client protocol is a product decision,
+not a field-mapping exercise, and is intentionally left unimplemented pending
+that decision.
+
+**Cohere reasoning** (`openai_cohere` only): `command-a-reasoning-*` models
+emit a `{"type":"thinking","thinking":...}` content block ahead of the
+final text/tool_calls block — Cohere's analog of extended thinking, verified
+against a real captured `command-a-reasoning-08-2025` tool-call response
+(see `internal/app/gateway/testdata/fieldmatrix/upstream/README.md`). It
+surfaces the same way as Anthropic's, as `message.reasoning_content`
+(non-streaming) or `reasoning_content` delta chunks keyed by content index
+(streaming, since a `content-delta` event repeats only the changed field —
+`.thinking` or `.text` — not the type, which is tracked from that index's
+preceding `content-start` event). Unlike Anthropic, Cohere's thinking block
+carries no signature and the request side has no inbound field for it, so —
+matching Vercel AI SDK's own Cohere provider — it is not sent back on
+history replay; nothing is lost by dropping it, since there's no signed
+chain Cohere would reject a subsequent `tool_calls` message without.
+
+**Gemini 3 `thoughtSignature`** (`openai_gemini`): Gemini's per-call analogue
+of Anthropic's thinking signature — an opaque signed blob attached as a
+sibling field on a `functionCall` part (verified against a real captured
+Gemini 3 response, not just the spec — see
+`testdata/fieldmatrix/upstream/gemini-native-thought-signature.json`).
+Surfaced as `tool_calls[].thought_signature` on the OpenAI-shaped response
+and replayed onto the same part when that tool call is echoed back in
+history. Unlike Anthropic's single thinking block, this is per-call, so it
+rides on each tool call individually rather than needing a message-level
+field — a request with parallel tool calls keeps each call's own signature.
 
 **Lossy observability**: whatever a pair still drops must not drop silently (the
 same discipline as the pivot-composition warning above). Each pair calls
 `translator.ReportLossyRequest(src, tgt, body, only...)` at the top of
 `TranslateRequest`; `only` restricts the report to the features that pair still
-drops (`openai↔anthropic` pass `"multimodal"` now that tools are carried; the
-text-only pairs pass nothing and report everything). It:
+drops (a pair that has since implemented a feature stops passing its label; a
+pair with nothing left to report simply doesn't call it at all — see
+`anthropic_openai`/`openai_anthropic`, both fully covered as of the table
+above). It:
 
 - increments `llm_gateway_translator_feature_dropped_total{src,tgt,feature}`
   (`feature` = `tools | tool_calls | multimodal`) on every dropping request, and
