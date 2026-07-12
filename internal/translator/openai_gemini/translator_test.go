@@ -78,6 +78,48 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 // tool-role results -> a single "user" turn with functionResponse parts,
 // correlated back to the right function name via tool_call_id, with
 // consecutive tool messages merged into one turn (parallel calls).
+// TestTranslateResponse_ThoughtSignature and TestTranslateRequest_ThoughtSignatureRoundTrip
+// cover Gemini 3's thoughtSignature (a functionCall part's signed reasoning
+// blob, analogous to Anthropic's thinking-block signature — real signature
+// value captured from simonw/llm-gemini's
+// test_tools_with_gemini_3_thought_signatures.yaml cassette, Apache 2.0):
+// it must surface on the response and be replayed verbatim if the client
+// echoes that tool call back in history.
+const realThoughtSignature = "Et0BCtoBAXLI2nwMB4momyXTj+K3OPELPDi5Mq6bA5ZHuiKVF9m94gyxd+zdlC+s73nWxHx1ImnA9wPRG1sKMAvENS5i0Bef0VxMS31QE4PbbJw81tSto0OCC+AJdHF0i7x3uHqBuj91gBPwmy3rhAQM+8kxmaF4FeJ0rvICgjIIjG7rBgCE8vOD9Glt/sy3WPKo//jOukERM0rVGAPpMogXNtQbJWUQ8469alaZN67hbYJNaL5XSNcsbsu4ub04B2aFPc6NJld2EWK/enYFPnarMNwobDsSstlzuMygTHQ="
+
+func TestTranslateResponse_ThoughtSignature(t *testing.T) {
+	gemini := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"multiply","args":{"x":5,"y":3}},"thoughtSignature":"` + realThoughtSignature + `"}]},"index":0}],"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":16,"totalTokenCount":108}}`
+	out, err := translateResponse([]byte(gemini), "gemini-3-flash-preview")
+	if err != nil {
+		t.Fatalf("translateResponse error: %v", err)
+	}
+	sig := gjson.GetBytes(out, "choices.0.message.tool_calls.0.thought_signature").String()
+	if sig != realThoughtSignature {
+		t.Errorf("thought_signature = %q, want the real captured signature", sig)
+	}
+}
+
+func TestTranslateRequest_ThoughtSignatureRoundTrip(t *testing.T) {
+	body := []byte(`{"model":"gpt-x","messages":[
+		{"role":"user","content":"What is 5 times 3?"},
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"multiply","arguments":"{\"x\":5,\"y\":3}"},"thought_signature":"` + realThoughtSignature + `"}
+		]},
+		{"role":"tool","tool_call_id":"call_1","content":"15"}
+	]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	sig := gjson.GetBytes(out, "contents.1.parts.0.thoughtSignature").String()
+	if sig != realThoughtSignature {
+		t.Errorf("thoughtSignature not replayed on the functionCall part: %q", sig)
+	}
+	if gjson.GetBytes(out, "contents.1.parts.0.functionCall.name").String() != "multiply" {
+		t.Errorf("functionCall lost alongside thoughtSignature: %s", out)
+	}
+}
+
 func TestTranslateRequest_ToolCallHistory(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[
 		{"role":"user","content":"weather in SF and NYC?"},
@@ -175,6 +217,24 @@ func TestResponseHandler_SSE_ToolCalls(t *testing.T) {
 	}
 	if !strings.Contains(all, `"finish_reason":"tool_calls"`) {
 		t.Errorf("finish_reason not overridden to tool_calls: %s", all)
+	}
+}
+
+// TestResponseHandler_SSE_ThoughtSignature covers the streaming path with
+// the real captured Gemini 3 thoughtSignature.
+func TestResponseHandler_SSE_ThoughtSignature(t *testing.T) {
+	h := openaiGemini{}.NewResponseHandler()
+	chunk := `data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"multiply","args":{"x":5,"y":3}},"thoughtSignature":"` + realThoughtSignature + `"}]},"index":0}]}` + "\n\n"
+	out, err := h.Feed([]byte(chunk))
+	if err != nil {
+		t.Fatalf("Feed: %v", err)
+	}
+	final, _, _ := h.Flush()
+	all := string(out) + string(final)
+
+	tc := gjson.Get(strings.TrimPrefix(strings.Split(all, "\n\n")[1], "data: "), "choices.0.delta.tool_calls.0")
+	if got := tc.Get("thought_signature").String(); got != realThoughtSignature {
+		t.Errorf("thought_signature = %q, want the real captured signature: %s", got, all)
 	}
 }
 

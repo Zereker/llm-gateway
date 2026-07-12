@@ -342,7 +342,7 @@ Cross-protocol pairs do not all carry every request feature. Current coverage:
 |---|---|---|---|---|
 | `openai_anthropic` | ✅ | ✅ | ✅ | extended thinking round-trip (via `reasoning_content`/`reasoning_signature`) |
 | `anthropic_openai` | ✅ | ✅ | ✅ | — |
-| `openai_gemini` | ✅ | ✅ | ✅ | `n`/`candidateCount`, `response_format` |
+| `openai_gemini` | ✅ | ✅ | ✅ | `n`/`candidateCount`, `response_format`, Gemini 3 `thoughtSignature` round-trip |
 | `openai_cohere` | ✅ | ✅ | ✅ | citations still dropped (no OpenAI-compatible shape decided) |
 
 **Tool calling**: request-side maps `tools` / `tool_choice`, assistant tool
@@ -381,6 +381,17 @@ reconstructs the Anthropic `thinking` block **first** in that turn's content
 array — Anthropic rejects a `tool_use` block in history without a preceding
 signed thinking block once extended thinking was enabled, so replaying the
 signature verbatim (not regenerating it) is required, not cosmetic.
+
+**Gemini 3 `thoughtSignature`** (`openai_gemini`): Gemini's per-call analogue
+of Anthropic's thinking signature — an opaque signed blob attached as a
+sibling field on a `functionCall` part (verified against a real captured
+Gemini 3 response, not just the spec — see
+`testdata/fieldmatrix/upstream/gemini-native-thought-signature.json`).
+Surfaced as `tool_calls[].thought_signature` on the OpenAI-shaped response
+and replayed onto the same part when that tool call is echoed back in
+history. Unlike Anthropic's single thinking block, this is per-call, so it
+rides on each tool call individually rather than needing a message-level
+field — a request with parallel tool calls keeps each call's own signature.
 
 **Lossy observability**: whatever a pair still drops must not drop silently (the
 same discipline as the pivot-composition warning above). Each pair calls

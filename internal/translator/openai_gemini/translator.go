@@ -227,7 +227,7 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 				if args == "" {
 					args = "{}"
 				}
-				toolCalls = append(toolCalls, map[string]any{
+				tc := map[string]any{
 					"index": len(toolCalls),
 					"id":    "call_" + randID(),
 					"type":  "function",
@@ -235,7 +235,13 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 						"name":      fc.Get("name").String(),
 						"arguments": args,
 					},
-				})
+				}
+				// thoughtSignature is a sibling of functionCall on the same
+				// part, not nested under it (see geminiPart's doc comment).
+				if sig := p.Get("thoughtSignature").String(); sig != "" {
+					tc["thought_signature"] = sig
+				}
+				toolCalls = append(toolCalls, tc)
 				return true
 			}
 			text.WriteString(p.Get("text").String())
@@ -338,6 +344,9 @@ type openAIToolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
+	// ThoughtSignature round-trips Gemini 3's per-call thoughtSignature (see
+	// geminiPart's doc comment) through the OpenAI tool_calls shape.
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 // contentToString extracts plain text from an OpenAI message's content field
@@ -435,6 +444,16 @@ type geminiPart struct {
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
 	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
 	FileData         *geminiFileData         `json:"fileData,omitempty"`
+	// ThoughtSignature is Gemini 3's per-functionCall equivalent of
+	// Anthropic's thinking-block signature: an opaque signed blob sibling to
+	// a functionCall part (verified against a real captured Gemini 3
+	// response — simonw/llm-gemini's
+	// test_tools_with_gemini_3_thought_signatures.yaml cassette, Apache
+	// 2.0) that must be replayed verbatim when that functionCall is echoed
+	// back in history, or the model loses its own signed reasoning chain
+	// for that call. Round-tripped via openAIToolCall/tool_calls'
+	// thought_signature field (see buildAssistantMessage / translateRequest).
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 }
 
 // geminiInlineData carries base64-inline media (verified against the
@@ -600,7 +619,10 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					args = json.RawMessage(`{}`)
 				}
-				parts = append(parts, geminiPart{FunctionCall: &geminiFunctionCall{Name: tc.Function.Name, Args: args}})
+				parts = append(parts, geminiPart{
+					FunctionCall:     &geminiFunctionCall{Name: tc.Function.Name, Args: args},
+					ThoughtSignature: tc.ThoughtSignature,
+				})
 				toolCallName[tc.ID] = tc.Function.Name
 			}
 			out.Contents = append(out.Contents, geminiContent{Role: "model", Parts: parts})
@@ -863,14 +885,20 @@ func buildAssistantMessage(parts []geminiPart) (message map[string]any, hasToolC
 			if args == "" {
 				args = "{}"
 			}
-			toolCalls = append(toolCalls, map[string]any{
+			tc := map[string]any{
 				"id":   "call_" + randID(),
 				"type": "function",
 				"function": map[string]any{
 					"name":      p.FunctionCall.Name,
 					"arguments": args,
 				},
-			})
+			}
+			if p.ThoughtSignature != "" {
+				// Must be replayed verbatim if this call is echoed back in
+				// history (see geminiPart.ThoughtSignature's doc comment).
+				tc["thought_signature"] = p.ThoughtSignature
+			}
+			toolCalls = append(toolCalls, tc)
 			continue
 		}
 		text.WriteString(p.Text)
