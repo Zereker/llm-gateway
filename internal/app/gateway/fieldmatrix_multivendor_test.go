@@ -243,7 +243,6 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 	defer srv.Close()
 
 	for _, sc := range scenarios {
-		sc := sc
 		t.Run(sc.Vendor, func(t *testing.T) {
 			reqBody := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]}`, sc.Model)
 			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))

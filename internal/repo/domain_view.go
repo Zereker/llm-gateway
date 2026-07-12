@@ -22,6 +22,7 @@ func (r domainModelReader) GetByModel(ctx context.Context, model string) (*domai
 	if err != nil {
 		return nil, err
 	}
+
 	return ToDomainModelService(row), nil
 }
 
@@ -42,6 +43,7 @@ func (r domainEndpointReader) ListForModel(ctx context.Context, model, group str
 	if err != nil {
 		return nil, err
 	}
+
 	return ToDomainEndpoints(rows), nil
 }
 
@@ -50,5 +52,6 @@ func (r domainEndpointReader) List(ctx context.Context) ([]*domain.Endpoint, err
 	if err != nil {
 		return nil, err
 	}
+
 	return ToDomainEndpoints(rows), nil
 }

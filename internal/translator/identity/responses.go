@@ -62,7 +62,9 @@ func (h *responsesResponseHandler) Feed(chunk []byte) ([]byte, error) {
 	if len(chunk) == 0 {
 		return nil, nil
 	}
+
 	h.ex.Feed(chunk)
+
 	return chunk, nil
 }
 

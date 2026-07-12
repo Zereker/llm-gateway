@@ -16,6 +16,13 @@ import (
 	"github.com/zereker/llm-gateway/internal/ratelimit"
 )
 
+// Rate-limit dimension names, shared between the metric labels below and
+// dimensionFromKey's bucket-key parsing.
+const (
+	dimensionRPM = "rpm"
+	dimensionTPM = "tpm"
+)
+
 // QuotaPolicies is the port through which M6 pulls the two quota-policy
 // layers (account + api-key).
 //
@@ -75,17 +82,20 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 	if cfg.store == nil || cfg.policies == nil {
 		return func(c *gin.Context) { c.Next() }
 	}
+
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		ctx, span := tracer.Start(c.Request.Context(), "ratelimit.reserve")
 		defer span.End()
+
 		c.Request = c.Request.WithContext(ctx)
 
 		rc := GetRequestContext(c)
 		if rc.Envelope == nil || rc.ModelService == nil {
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3/M5 did not run before M6")
+
 			return
 		}
 
@@ -96,6 +106,7 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 			slog.ErrorContext(ctx, "m6: rate-limit policy build failed", "err", err)
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"rate limit policy unavailable")
+
 			return
 		}
 
@@ -118,8 +129,10 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 				slog.ErrorContext(ctx, "ratelimit: reserve failed", "err", rerr)
 				abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
 					"rate limiter unavailable")
+
 				return
 			}
+
 			if !allowed {
 				metric.Inc(metric.RateLimitDecisionsTotal, "scope", "user", "dimension", dimensionFromKey(violated.Key), "result", "violated")
 				c.Header("Retry-After", strconv.Itoa(int(violated.RetryAfter.Seconds())))
@@ -133,8 +146,10 @@ func Limit(opts ...LimitOption) gin.HandlerFunc {
 						"retry_after_sec": int(violated.RetryAfter.Seconds()),
 					},
 				)
+
 				return
 			}
+
 			metric.Inc(metric.RateLimitDecisionsTotal, "scope", "user", "dimension", "rpm_rps", "result", "allowed")
 		}
 
@@ -161,19 +176,23 @@ func chargeTPM(rc *requeststate.State, store ratelimit.Store, tpmBuckets []ratel
 	for i := range tpmBuckets {
 		tpmBuckets[i].Cost = cost
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+
 	results, err := store.ChargeBatch(ctx, tpmBuckets)
 	if err != nil {
-		metric.Inc(metric.RateLimitChargeTotal, "dimension", "tpm", "result", "error")
+		metric.Inc(metric.RateLimitChargeTotal, "dimension", dimensionTPM, "result", "error")
 		return
 	}
-	metric.Inc(metric.RateLimitChargeTotal, "dimension", "tpm", "result", "ok")
+
+	metric.Inc(metric.RateLimitChargeTotal, "dimension", dimensionTPM, "result", "ok")
+
 	for _, r := range results {
 		if r.Overflow {
 			metric.Inc(metric.TPMOverflowTotal,
 				"layer", layerFromKey(r.Key),
-				"dimension", "tpm",
+				"dimension", dimensionTPM,
 			)
 		}
 	}
@@ -202,6 +221,7 @@ func buildUserBuckets(
 		if err != nil {
 			return nil, nil, fmt.Errorf("account policy: %w", err)
 		}
+
 		reserveBuckets, tpmBuckets = appendLayer(reserveBuckets, tpmBuckets, "account", id.AccountID, rule, model)
 	}
 	// Layer 2: apikey
@@ -210,8 +230,10 @@ func buildUserBuckets(
 		if err != nil {
 			return nil, nil, fmt.Errorf("apikey policy: %w", err)
 		}
+
 		reserveBuckets, tpmBuckets = appendLayer(reserveBuckets, tpmBuckets, "apikey", id.APIKeyID, rule, model)
 	}
+
 	return reserveBuckets, tpmBuckets, nil
 }
 
@@ -226,6 +248,7 @@ func appendLayer(
 	if rule == nil {
 		return reserve, tpm
 	}
+
 	for _, sr := range rule.PickRulesAdditive(model) {
 		if sr.Quota.RPM != nil && *sr.Quota.RPM > 0 {
 			reserve = append(reserve, ratelimit.Bucket{
@@ -235,6 +258,7 @@ func appendLayer(
 				Window: time.Minute,
 			})
 		}
+
 		if sr.Quota.RPS != nil && *sr.Quota.RPS > 0 {
 			reserve = append(reserve, ratelimit.Bucket{
 				Key:    fmt.Sprintf("rl:quota:%s:%s:%s:rps", layer, subject, sr.Scope),
@@ -243,6 +267,7 @@ func appendLayer(
 				Window: time.Second,
 			})
 		}
+
 		if sr.Quota.TPM != nil && *sr.Quota.TPM > 0 {
 			tpm = append(tpm, ratelimit.Bucket{
 				Key:    fmt.Sprintf("rl:quota:%s:%s:%s:tpm", layer, subject, sr.Scope),
@@ -252,6 +277,7 @@ func appendLayer(
 			})
 		}
 	}
+
 	return reserve, tpm
 }
 
@@ -263,13 +289,16 @@ func layerFromKey(key string) string {
 		if key[9:16] == "account" {
 			return "account"
 		}
+
 		if key[9:15] == "apikey" {
 			return "apikey"
 		}
 	}
+
 	if len(key) >= 12 && key[:12] == "rl:endpoint:" {
 		return "endpoint"
 	}
+
 	return "unknown"
 }
 
@@ -277,11 +306,12 @@ func layerFromKey(key string) string {
 func dimensionFromKey(key string) string {
 	switch {
 	case len(key) >= 4 && key[len(key)-4:] == ":rpm":
-		return "rpm"
+		return dimensionRPM
 	case len(key) >= 4 && key[len(key)-4:] == ":rps":
 		return "rps"
 	case len(key) >= 4 && key[len(key)-4:] == ":tpm":
-		return "tpm"
+		return dimensionTPM
 	}
+
 	return "unknown"
 }

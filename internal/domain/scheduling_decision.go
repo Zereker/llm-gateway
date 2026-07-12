@@ -71,6 +71,6 @@ func (o AttemptOutcome) String() string {
 	case AttemptFail:
 		return "fail"
 	default:
-		return "unknown"
+		return unknownLabel
 	}
 }

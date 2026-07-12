@@ -196,5 +196,6 @@ func (DefaultClassifier) Classify(httpStatus int, body []byte) *domain.AdapterEr
 	default:
 		e.Class = domain.ErrUnknown
 	}
+
 	return e
 }

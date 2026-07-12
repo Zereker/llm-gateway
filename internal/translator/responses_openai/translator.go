@@ -38,6 +38,10 @@ import (
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
 )
 
+// roleUser is the OpenAI Chat Completions role this translator assigns to
+// input; factored out since this package's tests assert against it.
+const roleUser = "user"
+
 type responsesOpenAI struct{}
 
 // New returns the Responses-to-OpenAI translator.
@@ -96,6 +100,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	if err := json.Unmarshal(srcBody, &req); err != nil {
 		return nil, fmt.Errorf("responses_openai: parse request: %w", err)
 	}
+
 	if req.Model == "" {
 		return nil, fmt.Errorf("responses_openai: model required")
 	}
@@ -121,6 +126,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		// the extractor's side channel sees no usage and the request bills zero.
 		out.StreamOptions = &chatStreamOpts{IncludeUsage: true}
 	}
+
 	if req.Instructions != "" {
 		out.Messages = append(out.Messages, chatMessage{Role: "system", Content: req.Instructions})
 	}
@@ -129,7 +135,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	var inputStr string
 	if err := json.Unmarshal(req.Input, &inputStr); err == nil {
 		if inputStr != "" {
-			out.Messages = append(out.Messages, chatMessage{Role: "user", Content: inputStr})
+			out.Messages = append(out.Messages, chatMessage{Role: roleUser, Content: inputStr})
 		}
 	} else {
 		// try parsing as a message array (responses input messages shape)
@@ -137,6 +143,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		if err := json.Unmarshal(req.Input, &inputMsgs); err != nil {
 			return nil, fmt.Errorf("responses_openai: input must be string or message array: %w", err)
 		}
+
 		for _, m := range inputMsgs {
 			content, err := m.contentText()
 			if err != nil {
@@ -205,8 +212,10 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	if len(chunk) == 0 {
 		return nil, nil
 	}
+
 	h.ex.Feed(chunk)
 	h.buf = append(h.buf, chunk...)
+
 	return nil, nil // buffer-then-translate
 }
 
@@ -238,7 +247,7 @@ type responsesOutput struct {
 	Status    string `json:"status"` // always "completed" (buffer-then-translate never returns partials)
 	CreatedAt int64  `json:"created_at"`
 	Model     string `json:"model"`
-	Output []struct {
+	Output    []struct {
 		Type    string `json:"type"` // "message"
 		Role    string `json:"role"`
 		Content []struct {
@@ -258,16 +267,21 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		return nil, h.ex.Final(), nil
 	}
 
-	var src openaiChatResponse
-	if err := json.Unmarshal(h.buf, &src); err != nil {
-		// The upstream body is SSE (the client requested streaming). Rather
-		// than hand the client raw OpenAI chat chunks — which a Responses
-		// client can't parse — aggregate the SSE into a single valid Responses
-		// object. Usage comes from the extractor side channel (which now sees
-		// the include_usage final chunk). This is a buffered (non-streamed)
-		// Responses reply; true incremental Responses events are not emitted.
+	if !json.Valid(h.buf) {
+		// The upstream body is SSE (the client requested streaming), not a
+		// single JSON object. Rather than hand the client raw OpenAI chat
+		// chunks — which a Responses client can't parse — aggregate the SSE
+		// into a single valid Responses object. Usage comes from the
+		// extractor side channel (which now sees the include_usage final
+		// chunk). This is a buffered (non-streamed) Responses reply; true
+		// incremental Responses events are not emitted.
 		content, model, id, created := aggregateChatSSE(h.buf)
 		return h.buildResponse(id, model, "assistant", content, created), h.ex.Final(), nil
+	}
+
+	var src openaiChatResponse
+	if err := json.Unmarshal(h.buf, &src); err != nil {
+		return nil, nil, fmt.Errorf("responses_openai: parse upstream body: %w", err)
 	}
 
 	role, content := "assistant", ""
@@ -275,6 +289,7 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		role = src.Choices[0].Message.Role
 		content = src.Choices[0].Message.Content
 	}
+
 	return h.buildResponse(src.ID, src.Model, role, content, src.Created), h.ex.Final(), nil
 }
 
@@ -282,9 +297,11 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 // is populated from the extractor's Final().
 func (h *responseHandler) buildResponse(id, model, role, content string, created int64) []byte {
 	u := h.ex.Final()
+
 	if created == 0 {
 		created = time.Now().Unix()
 	}
+
 	out := responsesOutput{
 		ID:        "resp_" + stripPrefix(id, "chatcmpl-"),
 		Object:    "response",
@@ -292,6 +309,7 @@ func (h *responseHandler) buildResponse(id, model, role, content string, created
 		CreatedAt: created,
 		Model:     model,
 	}
+
 	out.Output = append(out.Output, struct {
 		Type    string `json:"type"`
 		Role    string `json:"role"`
@@ -312,7 +330,9 @@ func (h *responseHandler) buildResponse(id, model, role, content string, created
 		out.Usage.OutputTokens = u.Output
 		out.Usage.TotalTokens = u.Total
 	}
+
 	body, _ := json.Marshal(out)
+
 	return body
 }
 
@@ -326,10 +346,12 @@ func aggregateChatSSE(buf []byte) (content, model, id string, created int64) {
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
+
 		payload := strings.TrimSpace(line[len("data:"):])
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
+
 		var chunk struct {
 			ID      string `json:"id"`
 			Model   string `json:"model"`
@@ -343,19 +365,24 @@ func aggregateChatSSE(buf []byte) (content, model, id string, created int64) {
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
 		}
+
 		if model == "" && chunk.Model != "" {
 			model = chunk.Model
 		}
+
 		if id == "" && chunk.ID != "" {
 			id = chunk.ID
 		}
+
 		if created == 0 && chunk.Created != 0 {
 			created = chunk.Created
 		}
+
 		if len(chunk.Choices) > 0 {
 			sb.WriteString(chunk.Choices[0].Delta.Content)
 		}
 	}
+
 	return sb.String(), model, id, created
 }
 
@@ -363,5 +390,6 @@ func stripPrefix(s, prefix string) string {
 	if len(s) > len(prefix) && s[:len(prefix)] == prefix {
 		return s[len(prefix):]
 	}
+
 	return s
 }

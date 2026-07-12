@@ -14,7 +14,7 @@
 //	  c.Next()
 //
 //	inside dispatch / invoker (when constructing the response stream):
-//	  stream := moderation.WrapStream(handler.NewResponseStream(), ctx)
+//	  stream := moderation.WrapStream(ctx, handler.NewResponseStream())
 //	  // the wrapped stream calls mod.CheckOutput on Feed/Flush; a violation → return error to cut off the stream
 //
 // See the M8 section of docs/architecture/01-request-pipeline.md for details.
@@ -59,6 +59,7 @@ func ContextWithModerator(ctx context.Context, mod Moderator) context.Context {
 	if mod == nil {
 		return ctx
 	}
+
 	return context.WithValue(ctx, ctxKey{}, mod)
 }
 
@@ -67,7 +68,9 @@ func FromContext(ctx context.Context) Moderator {
 	if ctx == nil {
 		return nil
 	}
+
 	v, _ := ctx.Value(ctxKey{}).(Moderator)
+
 	return v
 }
 
@@ -82,13 +85,14 @@ func FromContext(ctx context.Context) Moderator {
 //
 // **Usage convention**: the caller wraps immediately after constructing the stream:
 //
-//	stream := moderation.WrapStream(handler.NewResponseStream(), ctx)
+//	stream := moderation.WrapStream(ctx, handler.NewResponseStream())
 //	sender.Forward(ctx, w, ep, resp, stream)
-func WrapStream(inner protocol.ResponseStream, ctx context.Context) protocol.ResponseStream {
+func WrapStream(ctx context.Context, inner protocol.ResponseStream) protocol.ResponseStream {
 	mod := FromContext(ctx)
 	if mod == nil {
 		return inner
 	}
+
 	return &moderatedStream{inner: inner, mod: mod, ctx: ctx}
 }
 
@@ -125,16 +129,19 @@ func (h *moderatedStream) Feed(chunk []byte) ([]byte, error) {
 	if h.violated.Load() {
 		return nil, ErrViolated
 	}
+
 	out, err := h.inner.Feed(chunk)
 	if err != nil {
 		return out, err
 	}
+
 	if len(out) > 0 {
 		if mErr := h.mod.CheckOutput(h.ctx, out); mErr != nil {
 			h.violated.Store(true)
 			return nil, fmt.Errorf("moderation: output violated: %w", mErr)
 		}
 	}
+
 	return out, nil
 }
 
@@ -147,15 +154,18 @@ func (h *moderatedStream) Flush() ([]byte, *domain.Usage, error) {
 	if err != nil {
 		return finalOut, usage, err
 	}
+
 	if h.violated.Load() {
 		return nil, usage, ErrViolated
 	}
+
 	if len(finalOut) > 0 {
 		if mErr := h.mod.CheckOutput(h.ctx, finalOut); mErr != nil {
 			h.violated.Store(true)
 			return nil, usage, fmt.Errorf("moderation: output violated (flush): %w", mErr)
 		}
 	}
+
 	return finalOut, usage, nil
 }
 

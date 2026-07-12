@@ -40,22 +40,28 @@ func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold 
 			c.Next()
 			return
 		}
+
 		rc := GetRequestContext(c)
+
 		mode := strings.ToLower(strings.TrimSpace(c.GetHeader(HeaderGatewayCache)))
 		if mode == "off" || rc.Envelope == nil || rc.ModelService == nil {
 			c.Next()
 			return
 		}
+
 		stream, deterministic := analyzeBody(rc.Envelope.RawBytes)
 		if stream {
 			c.Next()
 			return
 		}
+
 		if mode != "on" && !deterministic {
 			metric.Inc(metric.ResponseCacheTotal, "result", "bypass")
 			c.Next()
+
 			return
 		}
+
 		prompt := extractPrompt(rc.Envelope.RawBytes)
 		if prompt == "" {
 			c.Next()
@@ -63,11 +69,13 @@ func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold 
 		}
 
 		ctx := c.Request.Context()
+
 		vec, err := embedder.Embed(ctx, prompt)
 		if err != nil {
 			// embedder hiccup → don't cache, pass through (don't block the request).
 			metric.Inc(metric.ResponseCacheTotal, "result", "embed_error")
 			c.Next()
+
 			return
 		}
 		// Namespace is tenant-scoped: a semantic (paraphrase) hit returns the
@@ -77,10 +85,12 @@ func SemanticCache(store SemanticCacheStore, embedder embed.Embedder, threshold 
 		if cached, ok := store.Lookup(ctx, ns, vec, threshold); ok {
 			metric.Inc(metric.ResponseCacheTotal, "result", "semantic_hit")
 			writeCacheHit(c, rc, cached)
+
 			return
 		}
 
 		metric.Inc(metric.ResponseCacheTotal, "result", "semantic_miss")
+
 		tw := &teeWriter{ResponseWriter: c.Writer, buf: &bytes.Buffer{}}
 		c.Writer = tw
 		c.Next()
@@ -109,8 +119,10 @@ func extractPrompt(body []byte) string {
 	gjson.GetBytes(body, "messages.#.content").ForEach(func(_, v gjson.Result) bool {
 		sb.WriteString(v.String())
 		sb.WriteByte('\n')
+
 		return true
 	})
+
 	if s := gjson.GetBytes(body, "system"); s.Exists() {
 		sb.WriteString(s.String())
 		sb.WriteByte('\n')
@@ -121,6 +133,7 @@ func extractPrompt(body []byte) string {
 			in.ForEach(func(_, v gjson.Result) bool {
 				sb.WriteString(v.String())
 				sb.WriteByte('\n')
+
 				return true
 			})
 		} else {
@@ -128,8 +141,10 @@ func extractPrompt(body []byte) string {
 			sb.WriteByte('\n')
 		}
 	}
+
 	if ins := gjson.GetBytes(body, "instructions"); ins.Exists() {
 		sb.WriteString(ins.String())
 	}
+
 	return strings.TrimSpace(sb.String())
 }

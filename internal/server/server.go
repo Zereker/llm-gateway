@@ -59,6 +59,7 @@ func New(log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
+
 	return &Server{log: log}
 }
 
@@ -71,6 +72,7 @@ func New(log *slog.Logger) *Server {
 func (s *Server) AddCloser(name string, fn func() error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.closers = append(s.closers, closeEntry{name: name, fn: fn})
 }
 
@@ -80,7 +82,9 @@ func (s *Server) OpenDB(cfg infra.DBConfig) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	s.AddCloser("db", db.Close)
+
 	return db, nil
 }
 
@@ -95,7 +99,9 @@ func (s *Server) NewKafkaProducer(cfg infra.KafkaConfig) (*infra.KafkaProducer, 
 	if err != nil {
 		return nil, err
 	}
+
 	s.AddCloser("kafka", p.Close)
+
 	return p, nil
 }
 
@@ -109,7 +115,9 @@ func (s *Server) OpenRedis(cfg infra.RedisConfig) (*redis.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	s.AddCloser("redis", rdb.Close)
+
 	return rdb, nil
 }
 
@@ -127,6 +135,7 @@ func (s *Server) Close() {
 		// startup error surfaces instead of being masked by a nil-deref panic.
 		return
 	}
+
 	s.mu.Lock()
 	closers := s.closers
 	s.closers = nil
@@ -149,6 +158,7 @@ func (s *Server) Close() {
 func (s *Server) Serve(addr string, handler http.Handler, readTimeout, shutdownTimeout time.Duration) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
 	return s.serveCtx(ctx, addr, handler, readTimeout, shutdownTimeout)
 }
 
@@ -171,6 +181,7 @@ func (s *Server) serveCtx(ctx context.Context, addr string, handler http.Handler
 	serverErr := make(chan error, 1)
 	go func() {
 		s.log.Info("server listening", "addr", addr)
+
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
@@ -186,11 +197,15 @@ func (s *Server) serveCtx(ctx context.Context, addr string, handler http.Handler
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+
+	//nolint:contextcheck // deliberate: ctx is already Done() by this point (see select above), so shutdown needs its own fresh, un-canceled context
 	if err := srv.Shutdown(shutCtx); err != nil {
 		// docs/08 §3: count of requests forcibly cut off by shutdown timeout (route dimension is unknown, unified as "*")
 		s.log.Warn("http shutdown", "err", err)
 		metric.Inc(metric.RequestAbortedByShutdown, "route", "*")
 	}
+
 	s.Close()
+
 	return serveErr
 }

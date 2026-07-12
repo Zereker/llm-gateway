@@ -67,6 +67,7 @@ func requestStartTime(ctx context.Context, fallback time.Time) time.Time {
 	if v, ok := ctx.Value(startTimeCtxKey{}).(time.Time); ok && !v.IsZero() {
 		return v
 	}
+
 	return fallback
 }
 
@@ -132,6 +133,7 @@ func (s *Sender) Forward(
 		if tw.ttftMs == 0 {
 			tw.ttftMs = time.Since(startTime).Milliseconds()
 		}
+
 		_, _ = w.Write(finalOut)
 		flush(w)
 		s.hooks.fireClientChunk(ctx, ep, finalOut)
@@ -182,18 +184,22 @@ func (tw *streamWriter) Write(chunk []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	if len(out) > 0 {
 		if _, werr := tw.inner.Write(out); werr != nil {
 			return 0, werr
 		}
+
 		flush(tw.inner)
 		// Record TTFT: elapsed time from startTime to the first non-empty
 		// chunk being written out (docs/05 §4).
 		if tw.ttftMs == 0 {
 			tw.ttftMs = time.Since(tw.startTime).Milliseconds()
 		}
+
 		tw.hooks.fireClientChunk(tw.ctx, tw.ep, out)
 	}
+
 	return len(chunk), nil
 }
 
@@ -219,8 +225,13 @@ func flush(w http.ResponseWriter) {
 //   - hop-by-hop headers (RFC 9110 §7.6.1): meaningless to forward end-to-end.
 //   - upstream identity / quota disclosure: which vendor+org backs a model and
 //     the gateway's shared upstream rate-limit state are internal details.
+//
+// headerContentLength is the standard header name; the downstream server
+// always recomputes it itself, so it's blocked from relay below.
+const headerContentLength = "Content-Length"
+
 var blockedUpstreamHeaders = map[string]struct{}{
-	"Content-Length":      {},
+	headerContentLength:   {},
 	"Set-Cookie":          {},
 	"Set-Cookie2":         {},
 	"Connection":          {},
@@ -244,9 +255,11 @@ func copyHeaders(dst, src http.Header) {
 		if _, blocked := blockedUpstreamHeaders[k]; blocked {
 			continue
 		}
+
 		if len(k) >= 12 && strings.EqualFold(k[:12], "X-Ratelimit-") {
 			continue
 		}
+
 		for _, v := range vs {
 			dst.Add(k, v)
 		}

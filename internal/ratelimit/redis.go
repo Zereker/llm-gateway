@@ -203,15 +203,19 @@ func (s *RedisStore) ReserveBatch(ctx context.Context, buckets []Bucket) (bool, 
 	if len(buckets) == 0 {
 		return true, nil, nil
 	}
+
 	keys := make([]string, len(buckets))
 	args := make([]any, 0, 1+len(buckets)*3)
+
 	args = append(args, time.Now().Unix())
 	for i, b := range buckets {
 		keys[i] = b.Key
+
 		windowSec := int64(b.Window.Seconds())
 		if windowSec <= 0 {
 			windowSec = 60
 		}
+
 		args = append(args, windowSec, b.Limit, b.Cost)
 	}
 
@@ -219,27 +223,33 @@ func (s *RedisStore) ReserveBatch(ctx context.Context, buckets []Bucket) (bool, 
 	if err != nil {
 		return false, nil, fmt.Errorf("ratelimit: reserve batch: %w", err)
 	}
+
 	arr, ok := res.([]any)
 	if !ok || len(arr) != 5 {
 		return false, nil, fmt.Errorf("ratelimit: unexpected reserve result %T %v", res, res)
 	}
+
 	allowed, _ := toInt(arr[0])
 	if allowed == 1 {
 		return true, nil, nil
 	}
+
 	idx, _ := toInt(arr[1])
 	cur, _ := toInt(arr[2])
 	lim, _ := toInt(arr[3])
 	retry, _ := toInt(arr[4])
+
 	if idx < 1 || int(idx) > len(buckets) {
 		return false, nil, fmt.Errorf("ratelimit: invalid violated index %d", idx)
 	}
+
 	violated := &BucketViolation{
 		Key:        buckets[idx-1].Key,
 		Limit:      uint32(lim),
 		Current:    uint32(cur),
 		RetryAfter: time.Duration(retry) * time.Second,
 	}
+
 	return false, violated, nil
 }
 
@@ -248,15 +258,19 @@ func (s *RedisStore) ChargeBatch(ctx context.Context, buckets []Bucket) ([]Bucke
 	if len(buckets) == 0 {
 		return nil, nil
 	}
+
 	keys := make([]string, len(buckets))
 	args := make([]any, 0, 1+len(buckets)*3)
+
 	args = append(args, time.Now().Unix())
 	for i, b := range buckets {
 		keys[i] = b.Key
+
 		windowSec := int64(b.Window.Seconds())
 		if windowSec <= 0 {
 			windowSec = 60
 		}
+
 		args = append(args, windowSec, b.Limit, b.Cost)
 	}
 
@@ -264,10 +278,12 @@ func (s *RedisStore) ChargeBatch(ctx context.Context, buckets []Bucket) ([]Bucke
 	if err != nil {
 		return nil, fmt.Errorf("ratelimit: charge batch: %w", err)
 	}
+
 	arr, ok := res.([]any)
 	if !ok || len(arr) != len(buckets)*3 {
 		return nil, fmt.Errorf("ratelimit: unexpected charge result len=%d want=%d", len(arr), len(buckets)*3)
 	}
+
 	out := make([]BucketChargeResult, len(buckets))
 	for i := range buckets {
 		used, _ := toInt(arr[i*3])
@@ -280,6 +296,7 @@ func (s *RedisStore) ChargeBatch(ctx context.Context, buckets []Bucket) ([]Bucke
 			Overflow: overflow == 1,
 		}
 	}
+
 	return out, nil
 }
 
@@ -288,20 +305,26 @@ func (s *RedisStore) ReleaseBatch(ctx context.Context, buckets []Bucket) error {
 	if len(buckets) == 0 {
 		return nil
 	}
+
 	keys := make([]string, len(buckets))
 	args := make([]any, 0, 1+len(buckets)*2)
+
 	args = append(args, time.Now().Unix())
 	for i, b := range buckets {
 		keys[i] = b.Key
+
 		windowSec := int64(b.Window.Seconds())
 		if windowSec <= 0 {
 			windowSec = 60
 		}
+
 		args = append(args, windowSec, b.Cost)
 	}
+
 	if err := s.scriptRelease.Run(ctx, s.rdb, keys, args...).Err(); err != nil {
 		return fmt.Errorf("ratelimit: release batch: %w", err)
 	}
+
 	return nil
 }
 
@@ -310,15 +333,19 @@ func (s *RedisStore) SnapshotBatch(ctx context.Context, buckets []Bucket) ([]Buc
 	if len(buckets) == 0 {
 		return nil, nil
 	}
+
 	keys := make([]string, len(buckets))
 	args := make([]any, 0, 1+len(buckets)*2)
+
 	args = append(args, time.Now().Unix())
 	for i, b := range buckets {
 		keys[i] = b.Key
+
 		windowSec := int64(b.Window.Seconds())
 		if windowSec <= 0 {
 			windowSec = 60
 		}
+
 		args = append(args, windowSec, b.Limit)
 	}
 
@@ -326,15 +353,18 @@ func (s *RedisStore) SnapshotBatch(ctx context.Context, buckets []Bucket) ([]Buc
 	if err != nil {
 		return nil, fmt.Errorf("ratelimit: snapshot batch: %w", err)
 	}
+
 	arr, ok := res.([]any)
 	if !ok || len(arr) != len(buckets)*3 {
 		return nil, fmt.Errorf("ratelimit: unexpected snapshot result len=%d want=%d", len(arr), len(buckets)*3)
 	}
+
 	out := make([]BucketState, len(buckets))
 	for i := range buckets {
 		used, _ := toInt(arr[i*3])
 		lim, _ := toInt(arr[i*3+1])
 		reset, _ := toInt(arr[i*3+2])
+
 		st := BucketState{
 			Key:     buckets[i].Key,
 			Used:    uint32(used),
@@ -344,8 +374,10 @@ func (s *RedisStore) SnapshotBatch(ctx context.Context, buckets []Bucket) ([]Buc
 		if st.Limit > st.Used {
 			st.Remaining = st.Limit - st.Used
 		}
+
 		out[i] = st
 	}
+
 	return out, nil
 }
 

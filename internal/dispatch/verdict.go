@@ -1,8 +1,10 @@
 package dispatch
 
-import "github.com/zereker/llm-gateway/internal/failure"
+import (
+	"time"
 
-import "time"
+	"github.com/zereker/llm-gateway/internal/failure"
+)
 
 // Verdict classifies the result of one Invoker.Invoke call.
 //

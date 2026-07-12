@@ -29,6 +29,7 @@ func GetRequestContext(c *gin.Context) *requeststate.State {
 	if rc == nil {
 		panic("RequestContext not set: M1 TraceContext middleware missing")
 	}
+
 	return rc
 }
 
@@ -49,11 +50,14 @@ func fromCtx(ctx context.Context) *requeststate.State {
 	if ctx == nil {
 		return nil
 	}
+
 	v := ctx.Value(requestContextKey)
 	if v == nil {
 		return nil
 	}
+
 	rc, _ := v.(*requeststate.State)
+
 	return rc
 }
 
@@ -73,15 +77,18 @@ func abort(c *gin.Context, status int, class domain.ErrorClass, message string) 
 // When code == "", it's derived from domain.DefaultCode by class.
 func abortWithCode(c *gin.Context, status int, class domain.ErrorClass, code, message string) {
 	rc := GetRequestContext(c)
+
 	if code == "" {
 		code = domain.DefaultCode(class)
 	}
+
 	rc.Error = &domain.AdapterError{
 		Class:      class,
 		Code:       code,
 		HTTPStatus: status,
 		Message:    message,
 	}
+
 	c.Abort()
 }
 
@@ -89,9 +96,11 @@ func abortWithCode(c *gin.Context, status int, class domain.ErrorClass, code, me
 // (rate-limit dimension / endpoint_id, etc.).
 func abortWithDetails(c *gin.Context, status int, class domain.ErrorClass, code, message string, details map[string]any) {
 	rc := GetRequestContext(c)
+
 	if code == "" {
 		code = domain.DefaultCode(class)
 	}
+
 	rc.Error = &domain.AdapterError{
 		Class:      class,
 		Code:       code,
@@ -99,5 +108,6 @@ func abortWithDetails(c *gin.Context, status int, class domain.ErrorClass, code,
 		Message:    message,
 		Details:    details,
 	}
+
 	c.Abort()
 }

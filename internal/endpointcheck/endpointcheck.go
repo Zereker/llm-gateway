@@ -35,6 +35,11 @@ type Catalog interface {
 // Validator checks endpoint configuration against an explicit capability catalog.
 type Validator struct{ Catalog Catalog }
 
+// reasonMetadataEndpoint is the validation-failure reason shared by both
+// detection paths in validateRoutingURL (well-known hostname vs. resolved
+// metadata IP) — same classification either way.
+const reasonMetadataEndpoint = "metadata_endpoint"
+
 // Validate returns all misconfiguration reasons for one endpoint (empty slice = healthy).
 //
 // reason is a stable snake_case identifier, used both as a metric label and as the
@@ -62,6 +67,7 @@ func (v Validator) Validate(ep *domain.Endpoint) []string {
 				break
 			}
 		}
+
 		if !reachable {
 			reasons = append(reasons, "no_translator_path")
 		}
@@ -95,13 +101,16 @@ func validateRoutingURL(raw string) string {
 	if raw == "" {
 		return "empty_routing_url"
 	}
+
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "invalid_routing_url"
 	}
+
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return "invalid_routing_scheme"
 	}
+
 	host := strings.ToLower(u.Hostname())
 	if host == "" {
 		return "invalid_routing_url"
@@ -109,11 +118,12 @@ func validateRoutingURL(raw string) string {
 	// Well-known metadata hostnames
 	switch host {
 	case "metadata.google.internal", "metadata", "instance-data":
-		return "metadata_endpoint"
+		return reasonMetadataEndpoint
 	}
 	// Metadata IP (shares invoker.IsMetadataIP with the dial-time SSRF defense — single source of truth)
 	if ip, err := netip.ParseAddr(host); err == nil && invoker.IsMetadataIP(ip) {
-		return "metadata_endpoint"
+		return reasonMetadataEndpoint
 	}
+
 	return ""
 }

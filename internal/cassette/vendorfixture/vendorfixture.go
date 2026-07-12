@@ -7,7 +7,7 @@
 //
 // This is the single source of truth both consumers seed from:
 //   - scripts/seed-multivendor: seeds real MySQL rows for a real cmd/gateway
-//     + cmd/mockupstream black-box run.
+//   - cmd/mockupstream black-box run.
 //   - internal/app/gateway's TestE2E_MultiVendor_AllProtocols: seeds the same
 //     shape in-process against an httptest mock.
 //
@@ -56,30 +56,37 @@ func LoadDir(dir string) ([]Scenario, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vendorfixture: read %s: %w", dir, err)
 	}
+
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
 			names = append(names, e.Name())
 		}
 	}
+
 	sort.Strings(names)
 
 	scenarios := make([]Scenario, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
+
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("vendorfixture: read %s: %w", path, err)
 		}
+
 		var sc Scenario
 		if err := json.Unmarshal(b, &sc); err != nil {
 			return nil, fmt.Errorf("vendorfixture: unmarshal %s: %w", path, err)
 		}
+
 		if err := sc.validate(); err != nil {
 			return nil, fmt.Errorf("vendorfixture: %s: %w", path, err)
 		}
+
 		scenarios = append(scenarios, sc)
 	}
+
 	return scenarios, nil
 }
 
@@ -92,16 +99,20 @@ func (sc Scenario) validate() error {
 			return fmt.Errorf("missing required field %q", field)
 		}
 	}
+
 	if len(sc.UpstreamAuth) == 0 {
 		return fmt.Errorf("missing required field %q", "upstream_auth")
 	}
+
 	switch sc.Reply.Kind {
 	case "cassette", "fixture":
 	default:
 		return fmt.Errorf("reply.kind must be %q or %q, got %q", "cassette", "fixture", sc.Reply.Kind)
 	}
+
 	if sc.Reply.Path == "" {
 		return fmt.Errorf("missing required field %q", "reply.path")
 	}
+
 	return nil
 }

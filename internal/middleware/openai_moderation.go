@@ -56,7 +56,9 @@ func NewOpenAIModerator(apiKey, baseURL string) *OpenAIModerator {
 	if baseURL == "" {
 		baseURL = openaiModerationDefaultBaseURL
 	}
+
 	baseURL = strings.TrimRight(baseURL, "/")
+
 	return &OpenAIModerator{
 		apiKey:  apiKey,
 		baseURL: baseURL,
@@ -110,6 +112,7 @@ func (m *OpenAIModerator) CheckInput(ctx context.Context, env *domain.RequestEnv
 	if err != nil {
 		return fmt.Errorf("openai moderation: build request: %w", err)
 	}
+
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+m.apiKey)
 
@@ -123,6 +126,7 @@ func (m *OpenAIModerator) CheckInput(ctx context.Context, env *domain.RequestEnv
 	if err != nil {
 		return fmt.Errorf("openai moderation: read response: %w", err)
 	}
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("openai moderation: HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
@@ -131,12 +135,15 @@ func (m *OpenAIModerator) CheckInput(ctx context.Context, env *domain.RequestEnv
 	if err := json.Unmarshal(body, &modResp); err != nil {
 		return fmt.Errorf("openai moderation: parse response: %w", err)
 	}
+
 	if modResp.Error != nil {
 		return fmt.Errorf("openai moderation: %s (%s)", modResp.Error.Message, modResp.Error.Type)
 	}
+
 	if len(modResp.Results) == 0 {
 		return nil
 	}
+
 	r := modResp.Results[0]
 	if !r.Flagged {
 		return nil
@@ -148,9 +155,11 @@ func (m *OpenAIModerator) CheckInput(ctx context.Context, env *domain.RequestEnv
 			hits = append(hits, cat)
 		}
 	}
+
 	if len(hits) == 0 {
 		return fmt.Errorf("flagged by moderation")
 	}
+
 	return fmt.Errorf("flagged by moderation: %s", strings.Join(hits, ","))
 }
 
@@ -179,6 +188,7 @@ func extractTextForModeration(env *domain.RequestEnvelope) string {
 	if env == nil || len(env.RawBytes) == 0 {
 		return ""
 	}
+
 	var probe struct {
 		System            json.RawMessage   `json:"system"`
 		SystemInstruction json.RawMessage   `json:"systemInstruction"`
@@ -193,10 +203,12 @@ func extractTextForModeration(env *domain.RequestEnvelope) string {
 		b.WriteString(s)
 		b.WriteByte('\n')
 	}
+
 	if s := decodeStringField(probe.SystemInstruction); s != "" {
 		b.WriteString(s)
 		b.WriteByte('\n')
 	}
+
 	for _, m := range probe.Messages {
 		var msg struct {
 			Content json.RawMessage `json:"content"`
@@ -204,11 +216,13 @@ func extractTextForModeration(env *domain.RequestEnvelope) string {
 		if err := json.Unmarshal(m, &msg); err != nil {
 			continue
 		}
+
 		if s := decodeContentField(msg.Content); s != "" {
 			b.WriteString(s)
 			b.WriteByte('\n')
 		}
 	}
+
 	return strings.TrimSpace(b.String())
 }
 
@@ -218,6 +232,7 @@ func decodeStringField(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
+
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
@@ -233,8 +248,10 @@ func decodeStringField(raw json.RawMessage) string {
 		for _, p := range parts.Parts {
 			b.WriteString(p.Text)
 		}
+
 		return b.String()
 	}
+
 	return ""
 }
 
@@ -244,6 +261,7 @@ func decodeContentField(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
+
 	if s := decodeStringField(raw); s != "" {
 		return s
 	}
@@ -259,8 +277,10 @@ func decodeContentField(raw json.RawMessage) string {
 				b.WriteString(blk.Text)
 			}
 		}
+
 		return b.String()
 	}
+
 	return ""
 }
 
@@ -270,6 +290,7 @@ func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
+
 	return s[:max] + "..."
 }
 

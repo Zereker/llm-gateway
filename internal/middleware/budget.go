@@ -53,24 +53,29 @@ func Budget(opts ...BudgetOption) gin.HandlerFunc {
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
+
 	if cfg.gate == nil {
 		// pass-through fast path: doesn't even open a tracer.
 		return func(c *gin.Context) { c.Next() }
 	}
+
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		ctx, span := tracer.Start(c.Request.Context(), "budget.check")
 		defer span.End()
+
 		c.Request = c.Request.WithContext(ctx)
 
 		rc := GetRequestContext(c)
+
 		status, err := cfg.gate.Check(ctx, rc.Identity.SubAccountID)
 		if err != nil {
 			metric.Inc(metric.BudgetCheckTotal, "result", "error")
 			slog.ErrorContext(ctx, "m4: budget check failed", "err", err)
 			abortWithCode(c, 502, domain.ErrUnknown, domain.ErrCodeUpstreamError,
 				"budget check unavailable")
+
 			return
 		}
 
@@ -78,6 +83,7 @@ func Budget(opts ...BudgetOption) gin.HandlerFunc {
 			metric.Inc(metric.BudgetCheckTotal, "result", "inactive")
 			abortWithCode(c, 402, domain.ErrPermanent, domain.ErrCodeBudgetInactive,
 				"budget inactive: "+status.String())
+
 			return
 		}
 

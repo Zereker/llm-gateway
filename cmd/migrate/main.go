@@ -14,11 +14,14 @@ import (
 
 func main() {
 	configPath := flag.String("config", "./configs/local/gateway.yaml", "path to gateway YAML config")
+
 	flag.Parse()
+
 	if err := run(*configPath); err != nil {
 		slog.Error("migration failed", "err", err)
 		os.Exit(1)
 	}
+
 	slog.Info("database schema is current")
 }
 
@@ -27,13 +30,16 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
+
 	db, err := infra.Open(database)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+
 	if err := infra.Migrate(context.Background(), db); err != nil {
 		return err
 	}
+
 	return infra.CheckMigrationVersion(context.Background(), db)
 }

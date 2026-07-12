@@ -58,6 +58,8 @@ func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.Re
 	if err != nil {
 		return nil, err
 	}
+
 	streaming := env != nil && gjson.GetBytes(env.RawBytes, "stream").Bool()
+
 	return newSession(c, ep, tp, streaming), nil
 }

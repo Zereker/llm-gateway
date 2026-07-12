@@ -352,8 +352,12 @@ func TestTranslateRequest_ToolChoice(t *testing.T) {
 		}
 		// compact both sides for comparison
 		var want, have any
-		json.Unmarshal([]byte(c.want), &want)
-		json.Unmarshal(got.ToolChoice, &have)
+		if err := json.Unmarshal([]byte(c.want), &want); err != nil {
+			t.Fatalf("unmarshal want: %v", err)
+		}
+		if err := json.Unmarshal(got.ToolChoice, &have); err != nil {
+			t.Fatalf("unmarshal tool_choice: %v", err)
+		}
 		wb, _ := json.Marshal(want)
 		hb, _ := json.Marshal(have)
 		if string(wb) != string(hb) {
@@ -464,7 +468,9 @@ func TestTranslateResponse_ToolCallsNoContent(t *testing.T) {
 			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 	}
-	json.Unmarshal(out, &got)
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if len(got.Content) != 1 || got.Content[0].Type != "tool_use" {
 		t.Fatalf("want single tool_use block, got %s", out)
 	}

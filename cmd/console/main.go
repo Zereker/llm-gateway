@@ -33,6 +33,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "./configs/local/console.yaml", "path to console YAML config")
+
 	flag.Parse()
 
 	slog.SetDefault(slog.New(trace.NewCtxHandler(slog.NewJSONHandler(os.Stderr, nil))))
@@ -56,6 +57,7 @@ func run(configPath string) error {
 	}
 
 	srv := appRuntime.New(slog.Default())
+
 	sqldb, err := srv.OpenDB(cfg.Database)
 	if err != nil {
 		srv.Close()
@@ -72,7 +74,9 @@ func run(configPath string) error {
 			srv.Close()
 			return fmt.Errorf("open redis: %w", rerr)
 		}
+
 		store = store.WithPublisher(cachebus.NewPublisher(rdb, ""))
+
 		slog.Info("cachebus enabled: revocations invalidate data-plane cache")
 	} else {
 		slog.Info("cachebus disabled (no redis.addr); revocations rely on data-plane TTL")
@@ -81,5 +85,6 @@ func run(configPath string) error {
 	engine := console.NewEngine(store, cfg.Admin.Tokens)
 
 	slog.Info("console starting", "addr", cfg.Server.Addr)
+
 	return srv.Serve(cfg.Server.Addr, engine, cfg.Server.ReadHeaderTimeout, cfg.Server.ShutdownTimeout)
 }

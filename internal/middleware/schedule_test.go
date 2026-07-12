@@ -53,7 +53,7 @@ func (s stubCandidates) ListForModel(_ context.Context, _, _ string) ([]*domain.
 type stubInvokerFactory struct{ res dispatch.Result }
 
 func (s stubInvokerFactory) For(_ *domain.Endpoint, _ protocol.Handler, _ *domain.RequestEnvelope) dispatch.Invoker {
-	return stubInvoker{res: s.res}
+	return stubInvoker(s)
 }
 
 type stubInvoker struct{ res dispatch.Result }

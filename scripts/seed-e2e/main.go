@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -207,7 +208,7 @@ func apiKeyPrefix(plain string) string {
 func isDuplicateErr(err error) bool {
 	// MySQL duplicate entry: error 1062; do a rough string match here to
 	// avoid pulling in a mysql-specific error type.
-	if err == nil || err == sql.ErrNoRows {
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
 		return false
 	}
 	msg := err.Error()

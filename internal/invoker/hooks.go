@@ -141,19 +141,24 @@ func classifyHooks(hooks []Hook) hookSet {
 		if o, ok := h.(ClientRequestObserver); ok {
 			hs.clientReq = append(hs.clientReq, o)
 		}
+
 		if o, ok := h.(UpstreamRequestObserver); ok {
 			hs.upstreamReq = append(hs.upstreamReq, o)
 		}
+
 		if o, ok := h.(UpstreamChunkObserver); ok {
 			hs.upstreamChk = append(hs.upstreamChk, o)
 		}
+
 		if o, ok := h.(ClientChunkObserver); ok {
 			hs.clientChk = append(hs.clientChk, o)
 		}
+
 		if o, ok := h.(AttemptCompleteObserver); ok {
 			hs.complete = append(hs.complete, o)
 		}
 	}
+
 	return hs
 }
 

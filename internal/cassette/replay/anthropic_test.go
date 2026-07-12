@@ -102,7 +102,6 @@ func TestReplayAnthropicRequests(t *testing.T) {
 					continue
 				}
 				examined = true
-				i, it := i, it
 				t.Run(path+"#"+strconv.Itoa(i), func(t *testing.T) {
 					out, err := tr.TranslateRequest(it.RequestBody)
 					if err != nil {

@@ -102,19 +102,24 @@ func New(cfg Config) *Prober {
 	if cfg.Interval <= 0 {
 		cfg.Interval = 30 * time.Second
 	}
+
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
+
 	if cfg.Concurrent <= 0 {
 		cfg.Concurrent = 8
 	}
+
 	if cfg.Client == nil {
 		cfg.Client = http.DefaultClient
 	}
+
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
+
 	return &Prober{
 		cfg:    cfg,
 		stop:   make(chan struct{}),
@@ -130,12 +135,16 @@ func (p *Prober) Run(ctx context.Context) {
 		p.logger.Warn("health.Prober: missing Source or Feedback; not running")
 		return
 	}
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+
 		p.cycle(ctx) // run one round immediately at startup
+
 		t := time.NewTicker(p.cfg.Interval)
 		defer t.Stop()
+
 		for {
 			select {
 			case <-p.stop:
@@ -162,21 +171,26 @@ func (p *Prober) cycle(parentCtx context.Context) {
 		p.logger.WarnContext(parentCtx, "health.Prober: ListProbeTargets failed", "err", err.Error())
 		return
 	}
+
 	if len(targets) == 0 {
 		return
 	}
 
 	sem := make(chan struct{}, p.cfg.Concurrent)
+
 	var wg sync.WaitGroup
 	for _, ep := range targets {
 		wg.Add(1)
+
 		sem <- struct{}{}
 		go func(ep *domain.Endpoint) {
 			defer wg.Done()
 			defer func() { <-sem }()
+
 			p.probeOne(parentCtx, ep)
 		}(ep)
 	}
+
 	wg.Wait()
 }
 
@@ -187,6 +201,7 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	if ep == nil {
 		return
 	}
+
 	url := ep.Capabilities.HealthProbeEndpoint
 	if url == "" {
 		return // no probe URL configured, skip
@@ -196,21 +211,24 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	defer cancel()
 
 	start := time.Now()
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		p.recordResult(ep, Result{Class: failure.Permanent, Reason: "build_request: " + err.Error(), Latency: time.Since(start)})
+		p.recordResult(ctx, ep, Result{Class: failure.Permanent, Reason: "build_request: " + err.Error(), Latency: time.Since(start)})
 		return
 	}
+
 	resp, err := p.cfg.Client.Do(req)
+
 	latency := time.Since(start)
 	if err != nil {
-		p.recordResult(ep, Result{Class: failure.Transient, Reason: err.Error(), Latency: latency})
+		p.recordResult(ctx, ep, Result{Class: failure.Transient, Reason: err.Error(), Latency: latency})
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	cls := classify(resp.StatusCode)
-	p.recordResult(ep, Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
+	p.recordResult(ctx, ep, Result{Class: cls, HTTPCode: resp.StatusCode, Latency: latency})
 
 	// probe-gated recovery: a healthy probe releases an endpoint's cooldown
 	// early — but ClearIfRecoverable only touches Transient/Capacity cooldowns
@@ -221,8 +239,10 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 		if cerr != nil {
 			p.logger.WarnContext(parentCtx, "health.Prober: cooldown clear failed",
 				"endpoint_id", ep.ID, "err", cerr.Error())
+
 			return
 		}
+
 		if cleared {
 			metric.Inc("llm_gateway_health_recover_total",
 				"endpoint_id", strconv.FormatInt(ep.ID, 10),
@@ -231,9 +251,13 @@ func (p *Prober) probeOne(parentCtx context.Context, ep *domain.Endpoint) {
 	}
 }
 
-// recordResult writes stats + emits a metric.
-func (p *Prober) recordResult(ep *domain.Endpoint, r Result) {
-	p.cfg.Feedback.RecordHealth(context.Background(), ep.ID, r)
+// recordResult writes stats + emits a metric. It must still persist the
+// result when the probe itself timed out (that IS the result being
+// recorded), so it strips cancellation from ctx via context.WithoutCancel
+// rather than detaching to context.Background() — trace/value context
+// still propagates to Feedback.RecordHealth, only the deadline is dropped.
+func (p *Prober) recordResult(ctx context.Context, ep *domain.Endpoint, r Result) {
+	p.cfg.Feedback.RecordHealth(context.WithoutCancel(ctx), ep.ID, r)
 	metric.Inc("llm_gateway_health_probe_total",
 		"endpoint_id", strconv.FormatInt(ep.ID, 10),
 		"result", r.Class.String(),
@@ -278,22 +302,28 @@ func (s FilteredSource) ListProbeTargets(ctx context.Context) ([]*domain.Endpoin
 	if s.Lister == nil {
 		return nil, errors.New("health.FilteredSource: nil Lister")
 	}
+
 	all, err := s.Lister.List(ctx)
 	if err != nil {
 		return nil, err
 	}
+
 	out := make([]*domain.Endpoint, 0, len(all))
 	for _, ep := range all {
 		if ep == nil {
 			continue
 		}
+
 		if !ep.Capabilities.SelfHosted {
 			continue
 		}
+
 		if ep.Capabilities.HealthProbeEndpoint == "" {
 			continue
 		}
+
 		out = append(out, ep)
 	}
+
 	return out, nil
 }

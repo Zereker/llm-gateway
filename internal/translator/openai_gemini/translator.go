@@ -48,6 +48,32 @@ import (
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
 )
 
+// Wire vocabulary this file both reads (switch/case on an upstream field) and
+// writes (as a literal in a constructed map[string]any) — named once per
+// value so a typo shows up as a compile error instead of a silently wrong
+// JSON key/value.
+const (
+	roleAssistant = "assistant"
+	roleUser      = "user"
+
+	keyType         = "type"
+	keyIndex        = "index"
+	keyFunction     = "function"
+	keyToolCalls    = "tool_calls"
+	keyContent      = "content"
+	keyModel        = "model"
+	keyRole         = "role"
+	keyFinishReason = "finish_reason"
+
+	finishLength = "length"
+
+	mimeApplicationJSON = "application/json"
+
+	functionCallingModeAny = "ANY"
+
+	finishContentFilter = "content_filter"
+)
+
 type openaiGemini struct{}
 
 // New returns the OpenAI-to-Gemini translator.
@@ -99,12 +125,14 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	case modeJSON:
 		h.buf = append(h.buf, chunk...)
 		h.ex.Feed(chunk)
+
 		return nil, nil
 	case modeSSE:
 		h.lineBuf = append(h.lineBuf, chunk...)
 		return h.drainSSE(), nil
 	default: // undetermined: sniff the first non-whitespace byte
 		h.buf = append(h.buf, chunk...)
+
 		t := bytes.TrimLeft(h.buf, " \t\r\n")
 		if len(t) == 0 {
 			return nil, nil // no non-whitespace byte yet
@@ -116,11 +144,14 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 		if t[0] == '{' || t[0] == '[' {
 			h.mode = modeJSON
 			h.ex.Feed(h.buf) // feed what's already staged to the extractor
+
 			return nil, nil
 		}
+
 		h.mode = modeSSE
 		h.lineBuf = h.buf
 		h.buf = nil
+
 		return h.drainSSE(), nil
 	}
 }
@@ -138,7 +169,9 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 				}
 			}
 		}
+
 		out = append(out, "data: [DONE]\n\n"...) // OpenAI stream terminator
+
 		return out, h.usage, nil
 	}
 	// JSON / empty
@@ -147,6 +180,7 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		// to pass through; don't error so M7 stays silent.
 		return nil, nil, nil
 	}
+
 	if isGeminiError(h.buf) {
 		// **error path**: the upstream returned a 4xx/5xx with an error JSON body.
 		// Don't translate (the error schema differs from the success response); pass
@@ -157,7 +191,9 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		// be added later if needed.
 		return h.buf, nil, nil
 	}
+
 	body, err := translateResponse(h.buf, h.requestModel)
+
 	return body, h.ex.Final(), err
 }
 
@@ -170,17 +206,22 @@ func (h *responseHandler) drainSSE() []byte {
 		if i < 0 {
 			break // half a line, keep it for next time
 		}
+
 		line := bytes.TrimRight(h.lineBuf[:i], "\r")
 		h.lineBuf = h.lineBuf[i+1:]
+
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
+
 		data := bytes.TrimSpace(line[len("data:"):])
 		if len(data) == 0 {
 			continue
 		}
+
 		out = append(out, h.translateChunk(data)...)
 	}
+
 	return out
 }
 
@@ -194,12 +235,15 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 	if um := ev.Get("usageMetadata"); um.Exists() {
 		in := um.Get("promptTokenCount").Int()
 		outTok := um.Get("candidatesTokenCount").Int()
+
 		total := um.Get("totalTokenCount").Int()
 		if total == 0 {
 			total = in + outTok
 		}
+
 		h.usage = &domain.Usage{Input: in, Output: outTok, Total: total, Source: domain.UsageSourceUpstream, Confidence: domain.UsageConfidenceExact}
 	}
+
 	candidates := ev.Get("candidates")
 	if !candidates.IsArray() || len(candidates.Array()) == 0 {
 		// No candidate: if the prompt was blocked (blockReason non-empty), synthesize a
@@ -207,17 +251,24 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 		// stream (no content, no finish_reason).
 		if br := ev.Get("promptFeedback.blockReason").String(); br != "" {
 			var out []byte
+
 			out = append(out, h.roleChunkIfNeeded(0)...)
-			return append(out, h.chunk(0, map[string]any{}, "content_filter")...)
+
+			return append(out, h.chunk(0, map[string]any{}, finishContentFilter)...)
 		}
+
 		return nil
 	}
+
 	var out []byte
 	candidates.ForEach(func(_, cand gjson.Result) bool {
 		idx := int(cand.Get("index").Int())
 		out = append(out, h.roleChunkIfNeeded(idx)...)
-		var text strings.Builder
-		var toolCalls []any
+
+		var (
+			text      strings.Builder
+			toolCalls []any
+		)
 		// Gemini emits a functionCall as one complete part (name+args
 		// together), not incremental argument tokens the way OpenAI/Cohere
 		// stream tool calls — so each one becomes a single, fully-formed
@@ -228,11 +279,12 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 				if args == "" {
 					args = "{}"
 				}
+
 				tc := map[string]any{
-					"index": len(toolCalls),
-					"id":    "call_" + randID(),
-					"type":  "function",
-					"function": map[string]any{
+					keyIndex: len(toolCalls),
+					"id":     "call_" + randID(),
+					keyType:  keyFunction,
+					keyFunction: map[string]any{
 						"name":      fc.Get("name").String(),
 						"arguments": args,
 					},
@@ -242,17 +294,23 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 				if sig := p.Get("thoughtSignature").String(); sig != "" {
 					tc["thought_signature"] = sig
 				}
+
 				toolCalls = append(toolCalls, tc)
+
 				return true
 			}
+
 			text.WriteString(p.Get("text").String())
+
 			return true
 		})
+
 		if t := text.String(); t != "" {
-			out = append(out, h.chunk(idx, map[string]any{"content": t}, "")...)
+			out = append(out, h.chunk(idx, map[string]any{keyContent: t}, "")...)
 		}
+
 		if len(toolCalls) > 0 {
-			out = append(out, h.chunk(idx, map[string]any{"tool_calls": toolCalls}, "")...)
+			out = append(out, h.chunk(idx, map[string]any{keyToolCalls: toolCalls}, "")...)
 		}
 		// finishReason is only non-empty on this candidate's last chunk — only send a
 		// closing chunk with finish_reason when it's non-empty.
@@ -261,12 +319,15 @@ func (h *responseHandler) translateChunk(data []byte) []byte {
 			if len(toolCalls) > 0 {
 				// Trust the message content over Gemini's raw finishReason, same
 				// override as the non-streaming path.
-				finish = "tool_calls"
+				finish = keyToolCalls
 			}
+
 			out = append(out, h.chunk(idx, map[string]any{}, finish)...)
 		}
+
 		return true
 	})
+
 	return out
 }
 
@@ -276,8 +337,10 @@ func (h *responseHandler) roleChunkIfNeeded(idx int) []byte {
 	if h.roleSent[idx] {
 		return nil
 	}
+
 	h.roleSent[idx] = true
-	return h.chunk(idx, map[string]any{"role": "assistant"}, "")
+
+	return h.chunk(idx, map[string]any{keyRole: roleAssistant}, "")
 }
 
 // chunk builds one SSE line for an OpenAI chat.completion.chunk.
@@ -285,14 +348,17 @@ func (h *responseHandler) chunk(idx int, delta map[string]any, finish string) []
 	if h.id == "" {
 		h.id = "chatcmpl-" + randID()
 	}
-	choice := map[string]any{"index": idx, "delta": delta, "finish_reason": nil}
+
+	choice := map[string]any{keyIndex: idx, "delta": delta, keyFinishReason: nil}
 	if finish != "" {
-		choice["finish_reason"] = finish
+		choice[keyFinishReason] = finish
 	}
+
 	b, _ := json.Marshal(map[string]any{
 		"id": h.id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
-		"model": h.requestModel, "choices": []any{choice},
+		keyModel: h.requestModel, "choices": []any{choice},
 	})
+
 	return append(append([]byte("data: "), b...), '\n', '\n')
 }
 
@@ -355,7 +421,9 @@ type openAIToolCall struct {
 // anything else normalize to "".
 func contentToString(raw json.RawMessage) string {
 	var s string
+
 	_ = json.Unmarshal(raw, &s)
+
 	return s
 }
 
@@ -374,6 +442,7 @@ func buildUserParts(raw json.RawMessage) []geminiPart {
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		return []geminiPart{{Text: contentToString(raw)}}
 	}
+
 	var parts []geminiPart
 	for _, p := range arr {
 		switch p.Type {
@@ -387,6 +456,7 @@ func buildUserParts(raw json.RawMessage) []geminiPart {
 			}
 		}
 	}
+
 	return parts
 }
 
@@ -397,6 +467,7 @@ func imagePartFromURL(url string) geminiPart {
 	if mimeType, data, ok := parseDataURI(url); ok {
 		return geminiPart{InlineData: &geminiInlineData{MimeType: mimeType, Data: data}}
 	}
+
 	return geminiPart{FileData: &geminiFileData{FileURI: url}}
 }
 
@@ -406,17 +477,22 @@ func parseDataURI(url string) (mimeType, data string, ok bool) {
 	if !strings.HasPrefix(url, prefix) {
 		return "", "", false
 	}
+
 	rest := url[len(prefix):]
 	semi := strings.IndexByte(rest, ';')
+
 	comma := strings.IndexByte(rest, ',')
 	if semi < 0 || comma < 0 || comma < semi {
 		return "", "", false
 	}
+
 	mimeType = rest[:semi]
+
 	encoding := rest[semi+1 : comma]
 	if encoding != "base64" {
 		return "", "", false
 	}
+
 	return mimeType, rest[comma+1:], true
 }
 
@@ -590,9 +666,10 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	// messages, and Gemini expects all of one turn's parallel-call results
 	// together rather than as separate turns.
 	var pendingToolParts []geminiPart
+
 	flushToolParts := func() {
 		if len(pendingToolParts) > 0 {
-			out.Contents = append(out.Contents, geminiContent{Role: "user", Parts: pendingToolParts})
+			out.Contents = append(out.Contents, geminiContent{Role: roleUser, Parts: pendingToolParts})
 			pendingToolParts = nil
 		}
 	}
@@ -601,6 +678,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 		if m.Role != "tool" {
 			flushToolParts()
 		}
+
 		switch m.Role {
 		case "system":
 			// Merge every system message into one systemInstruction — a client
@@ -609,27 +687,31 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			if out.SystemInstruction == nil {
 				out.SystemInstruction = &geminiContent{}
 			}
+
 			out.SystemInstruction.Parts = append(out.SystemInstruction.Parts, geminiPart{Text: contentToString(m.Content)})
 		case "assistant":
 			var parts []geminiPart
 			if text := contentToString(m.Content); text != "" {
 				parts = append(parts, geminiPart{Text: text})
 			}
+
 			for _, tc := range m.ToolCalls {
 				var args json.RawMessage
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					args = json.RawMessage(`{}`)
 				}
+
 				parts = append(parts, geminiPart{
 					FunctionCall:     &geminiFunctionCall{Name: tc.Function.Name, Args: args},
 					ThoughtSignature: tc.ThoughtSignature,
 				})
 				toolCallName[tc.ID] = tc.Function.Name
 			}
+
 			out.Contents = append(out.Contents, geminiContent{Role: "model", Parts: parts})
-		case "user":
+		case roleUser:
 			out.Contents = append(out.Contents, geminiContent{
-				Role:  "user",
+				Role:  roleUser,
 				Parts: buildUserParts(m.Content),
 			})
 		case "tool":
@@ -641,6 +723,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			return nil, fmt.Errorf("unsupported message role %q (v0.5 openai_gemini handles system/user/assistant/tool only)", m.Role)
 		}
 	}
+
 	flushToolParts()
 
 	if len(in.Tools) > 0 {
@@ -649,44 +732,53 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			if t.Type != "" && t.Type != "function" {
 				continue
 			}
+
 			decls = append(decls, geminiFunctionDeclaration{
 				Name:        t.Function.Name,
 				Description: t.Function.Description,
 				Parameters:  t.Function.Parameters,
 			})
 		}
+
 		if len(decls) > 0 {
 			out.Tools = []geminiTool{{FunctionDeclarations: decls}}
 		}
 	}
+
 	if len(in.ToolChoice) > 0 {
 		out.ToolConfig = mapToolChoice(in.ToolChoice)
 	}
 
 	hasCfg := false
+
 	cfg := geminiGenConfig{}
 	if in.MaxTokens != nil {
 		cfg.MaxOutputTokens = in.MaxTokens
 		hasCfg = true
 	}
+
 	if in.Temperature != nil {
 		cfg.Temperature = in.Temperature
 		hasCfg = true
 	}
+
 	if in.TopP != nil {
 		cfg.TopP = in.TopP
 		hasCfg = true
 	}
+
 	if len(in.Stop) > 0 {
 		cfg.StopSequences = parseStopField(in.Stop)
 		if len(cfg.StopSequences) > 0 {
 			hasCfg = true
 		}
 	}
+
 	if in.N != nil {
 		cfg.CandidateCount = in.N
 		hasCfg = true
 	}
+
 	if len(in.ResponseFormat) > 0 {
 		if mime, schema := mapResponseFormat(in.ResponseFormat); mime != "" {
 			cfg.ResponseMimeType = mime
@@ -694,6 +786,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			hasCfg = true
 		}
 	}
+
 	if hasCfg {
 		out.GenerationConfig = &cfg
 	}
@@ -718,14 +811,16 @@ func mapResponseFormat(raw json.RawMessage) (mimeType string, schema json.RawMes
 	if err := json.Unmarshal(raw, &rf); err != nil {
 		return "", nil
 	}
+
 	switch rf.Type {
 	case "json_object":
-		return "application/json", nil
+		return mimeApplicationJSON, nil
 	case "json_schema":
 		if rf.JSONSchema != nil {
-			return "application/json", rf.JSONSchema.Schema
+			return mimeApplicationJSON, rf.JSONSchema.Schema
 		}
-		return "application/json", nil
+
+		return mimeApplicationJSON, nil
 	default: // "text" or unrecognized: no responseMimeType override
 		return "", nil
 	}
@@ -739,25 +834,27 @@ func mapToolChoice(raw json.RawMessage) *geminiToolConfig {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		switch s {
 		case "required":
-			return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "ANY"}}
+			return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{Mode: functionCallingModeAny}}
 		case "none":
 			return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{Mode: "NONE"}}
 		default: // "auto" or unrecognized -> omit; AUTO is Gemini's default anyway
 			return nil
 		}
 	}
+
 	var obj struct {
 		Type     string `json:"type"`
 		Function struct {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
-	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type == "function" && obj.Function.Name != "" {
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type == keyFunction && obj.Function.Name != "" {
 		return &geminiToolConfig{FunctionCallingConfig: geminiFunctionCallingConfig{
-			Mode:                 "ANY",
+			Mode:                 functionCallingModeAny,
 			AllowedFunctionNames: []string{obj.Function.Name},
 		}}
 	}
+
 	return nil
 }
 
@@ -774,7 +871,9 @@ func wrapToolResultAsResponse(content string) json.RawMessage {
 			return json.RawMessage(trimmed)
 		}
 	}
+
 	b, _ := json.Marshal(map[string]string{"content": content})
+
 	return b
 }
 
@@ -785,10 +884,12 @@ func parseStopField(raw json.RawMessage) []string {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return []string{s}
 	}
+
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err == nil {
 		return arr
 	}
+
 	return nil
 }
 
@@ -829,12 +930,15 @@ func mergeGeminiArrayStream(rawBody []byte) []byte {
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return rawBody
 	}
+
 	var chunks []geminiResponse
 	if err := json.Unmarshal(rawBody, &chunks); err != nil {
 		return rawBody // let the caller's own Unmarshal surface the real parse error
 	}
+
 	merged := geminiResponse{}
 	byIndex := map[int]*geminiCandidate{}
+
 	var order []int
 	for _, chunk := range chunks {
 		for _, cand := range chunk.Candidates {
@@ -843,33 +947,42 @@ func mergeGeminiArrayStream(rawBody []byte) []byte {
 				c := geminiCandidate{Index: cand.Index, Content: geminiContent{Role: cand.Content.Role}}
 				byIndex[cand.Index] = &c
 				existing = &c
+
 				order = append(order, cand.Index)
 			}
+
 			existing.Content.Parts = append(existing.Content.Parts, cand.Content.Parts...)
 			if cand.FinishReason != "" {
 				existing.FinishReason = cand.FinishReason
 			}
 		}
+
 		if chunk.UsageMetadata != nil {
 			merged.UsageMetadata = chunk.UsageMetadata
 		}
+
 		if chunk.PromptFeedback != nil {
 			merged.PromptFeedback = chunk.PromptFeedback
 		}
 	}
+
 	sort.Ints(order)
+
 	for _, idx := range order {
 		merged.Candidates = append(merged.Candidates, *byIndex[idx])
 	}
+
 	out, err := json.Marshal(merged)
 	if err != nil {
 		return rawBody
 	}
+
 	return out
 }
 
 func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 	rawBody = mergeGeminiArrayStream(rawBody)
+
 	var in geminiResponse
 	if err := json.Unmarshal(rawBody, &in); err != nil {
 		return nil, fmt.Errorf("gemini response parse: %w", err)
@@ -879,22 +992,25 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 		"id":      "chatcmpl-" + randID(),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
-		"model":   requestModel,
+		keyModel:  requestModel,
 	}
+
 	var choices []map[string]any
 	for _, cand := range in.Candidates {
 		message, hasToolCalls := buildAssistantMessage(cand.Content.Parts)
+
 		finish := mapFinishReason(cand.FinishReason)
 		if hasToolCalls {
 			// Trust the message content over Gemini's raw finishReason (often
 			// just "STOP") — the same override LiteLLM's _check_finish_reason
 			// applies, so an OpenAI client's tool_calls branch actually fires.
-			finish = "tool_calls"
+			finish = keyToolCalls
 		}
+
 		choices = append(choices, map[string]any{
-			"index":         cand.Index,
+			keyIndex:        cand.Index,
 			"message":       message,
-			"finish_reason": finish,
+			keyFinishReason: finish,
 		})
 	}
 
@@ -904,16 +1020,18 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 	// fails SDK deserialization. Synthesize a choice with empty content;
 	// finish_reason=content_filter when blocked.
 	if len(choices) == 0 {
-		finish := "stop"
+		finish := finishReasonStop
 		if in.PromptFeedback != nil && in.PromptFeedback.BlockReason != "" {
-			finish = "content_filter"
+			finish = finishContentFilter
 		}
+
 		choices = []map[string]any{{
-			"index":         0,
-			"message":       map[string]any{"role": "assistant", "content": ""},
-			"finish_reason": finish,
+			keyIndex:        0,
+			"message":       map[string]any{keyRole: roleAssistant, keyContent: ""},
+			keyFinishReason: finish,
 		}}
 	}
+
 	out["choices"] = choices
 
 	usage := map[string]any{}
@@ -924,12 +1042,14 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 			"total_tokens":      in.UsageMetadata.TotalTokenCount,
 		}
 	}
+
 	out["usage"] = usage
 
 	body, err := json.Marshal(out)
 	if err != nil {
 		return nil, fmt.Errorf("openai response marshal: %w", err)
 	}
+
 	return body, nil
 }
 
@@ -939,18 +1059,21 @@ func translateResponse(rawBody []byte, requestModel string) ([]byte, error) {
 // string OpenAI expects); content is null per OpenAI's own convention when
 // tool_calls carries the turn and there's no accompanying text.
 func buildAssistantMessage(parts []geminiPart) (message map[string]any, hasToolCalls bool) {
-	var text strings.Builder
-	var toolCalls []map[string]any
+	var (
+		text      strings.Builder
+		toolCalls []map[string]any
+	)
 	for _, p := range parts {
 		if p.FunctionCall != nil {
 			args := string(p.FunctionCall.Args)
 			if args == "" {
 				args = "{}"
 			}
+
 			tc := map[string]any{
-				"id":   "call_" + randID(),
-				"type": "function",
-				"function": map[string]any{
+				"id":    "call_" + randID(),
+				keyType: keyFunction,
+				keyFunction: map[string]any{
 					"name":      p.FunctionCall.Name,
 					"arguments": args,
 				},
@@ -960,24 +1083,36 @@ func buildAssistantMessage(parts []geminiPart) (message map[string]any, hasToolC
 				// history (see geminiPart.ThoughtSignature's doc comment).
 				tc["thought_signature"] = p.ThoughtSignature
 			}
+
 			toolCalls = append(toolCalls, tc)
+
 			continue
 		}
+
 		text.WriteString(p.Text)
 	}
-	message = map[string]any{"role": "assistant"}
+
+	message = map[string]any{keyRole: roleAssistant}
 	if len(toolCalls) > 0 {
-		message["tool_calls"] = toolCalls
+		message[keyToolCalls] = toolCalls
 		if text.Len() > 0 {
-			message["content"] = text.String()
+			message[keyContent] = text.String()
 		} else {
-			message["content"] = nil
+			message[keyContent] = nil
 		}
+
 		return message, true
 	}
-	message["content"] = text.String()
+
+	message[keyContent] = text.String()
+
 	return message, false
 }
+
+// finishReasonStop is OpenAI's normal-completion finish_reason — the default
+// whenever Gemini's finishReason is absent, STOP, or an unrecognized/generic
+// value.
+const finishReasonStop = "stop"
 
 // mapFinishReason converts Gemini's finishReason to an OpenAI finish_reason.
 // Gemini's enum (Candidate.FinishReason) has more members than OpenAI's five;
@@ -986,20 +1121,20 @@ func buildAssistantMessage(parts []geminiPart) (message map[string]any, hasToolC
 func mapFinishReason(g string) string {
 	switch strings.ToUpper(g) {
 	case "STOP", "":
-		return "stop"
+		return finishReasonStop
 	case "MAX_TOKENS":
-		return "length"
+		return finishLength
 	case "SAFETY", "RECITATION", "LANGUAGE", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
-		return "content_filter"
+		return finishContentFilter
 	case "MALFORMED_FUNCTION_CALL":
 		// The model attempted a tool call but produced invalid arguments; route
 		// through the tool_calls path so the client inspects the call instead of
 		// treating it as a clean stop.
-		return "tool_calls"
+		return keyToolCalls
 	case "OTHER", "FINISH_REASON_UNSPECIFIED":
-		return "stop"
+		return finishReasonStop
 	default:
-		return "stop"
+		return finishReasonStop
 	}
 }
 
@@ -1017,5 +1152,6 @@ func isGeminiError(body []byte) bool {
 func randID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
+
 	return hex.EncodeToString(b)
 }

@@ -34,6 +34,30 @@ import (
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
 )
 
+// Wire vocabulary this file both reads (switch/case on an upstream field) and
+// writes (as a literal in a constructed map[string]any) — named once per
+// value so a typo shows up as a compile error instead of a silently wrong
+// JSON key/value.
+const (
+	roleAssistant = "assistant"
+	roleUser      = "user"
+	roleTool      = "tool"
+
+	blockTypeText    = "text"
+	blockTypeToolUse = "tool_use"
+
+	contentTypeImageURL = "image_url"
+
+	keyType     = "type"
+	keyIndex    = "index"
+	keyDelta    = "delta"
+	keyFunction = "function"
+
+	messageTypeMessage    = "message"
+	stopSequenceKey       = "stop_sequence"
+	finishReasonMaxTokens = "max_tokens"
+)
+
 type anthropicOpenAI struct{}
 
 // New returns the Anthropic-to-OpenAI translator.
@@ -96,18 +120,24 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	if len(chunk) == 0 {
 		return nil, nil
 	}
+
 	h.ex.Feed(chunk)
+
 	if !h.streamingDecided {
 		h.detectStreaming(chunk)
+
 		if h.isStreaming {
 			h.messageID = "msg_" + randID()
 		}
 	}
+
 	if h.isStreaming {
 		h.sseBuffer = append(h.sseBuffer, chunk...)
 		return h.parseAndEmitStream(), nil
 	}
+
 	h.bodyBuffer = append(h.bodyBuffer, chunk...)
+
 	return nil, nil
 }
 
@@ -116,10 +146,12 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		// streaming: emit the closing events if the upstream hit EOF unexpectedly without sending [DONE]
 		var out bytes.Buffer
 		h.emitClosing(&out)
+
 		usage := h.ex.Final()
 		if out.Len() == 0 {
 			return nil, usage, nil
 		}
+
 		return out.Bytes(), usage, nil
 	}
 
@@ -127,10 +159,13 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	if len(h.bodyBuffer) == 0 {
 		return nil, nil, nil
 	}
+
 	if isOpenAIError(h.bodyBuffer) {
 		return h.bodyBuffer, nil, nil
 	}
+
 	body, err := translateResponse(h.bodyBuffer, h.requestModel)
+
 	return body, h.ex.Final(), err
 }
 
@@ -162,6 +197,7 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 		if !ok {
 			return out.Bytes()
 		}
+
 		h.sseBuffer = rest
 
 		// extract the data: line
@@ -172,13 +208,16 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 				break
 			}
 		}
+
 		if dataPayload == nil {
 			continue
 		}
+
 		if bytes.Equal(dataPayload, []byte("[DONE]")) {
 			h.emitClosing(&out)
 			continue
 		}
+
 		h.translateOpenAIChunk(&out, dataPayload)
 	}
 }
@@ -212,6 +251,7 @@ func (h *responseHandler) translateOpenAIChunk(out *bytes.Buffer, data []byte) {
 	if err := json.Unmarshal(data, &ev); err != nil {
 		return
 	}
+
 	if ev.Model != "" && h.upstreamModel == "" {
 		h.upstreamModel = ev.Model
 	}
@@ -220,15 +260,14 @@ func (h *responseHandler) translateOpenAIChunk(out *bytes.Buffer, data []byte) {
 	if !h.emittedMessageStart {
 		h.emittedMessageStart = true
 		writeEvent(out, "message_start", map[string]any{
-			"type": "message_start",
-			"message": map[string]any{
+			messageTypeMessage: map[string]any{
 				"id":            h.messageID,
-				"type":          "message",
-				"role":          "assistant",
+				keyType:         messageTypeMessage,
+				"role":          roleAssistant,
 				"content":       []any{},
 				"model":         h.upstreamModel,
 				"stop_reason":   nil,
-				"stop_sequence": nil,
+				stopSequenceKey: nil,
 				"usage": map[string]any{
 					"input_tokens":  0, // see package comment: OpenAI only sends usage at the end
 					"output_tokens": 1,
@@ -242,40 +281,43 @@ func (h *responseHandler) translateOpenAIChunk(out *bytes.Buffer, data []byte) {
 		if ch.FinishReason != "" {
 			h.pendingStopReason = mapFinishReason(ch.FinishReason)
 		}
+
 		if ch.Delta == nil {
 			continue
 		}
+
 		if ch.Delta.Content != "" {
 			if !h.textStarted {
 				h.textStarted = true
 				h.textBlockIndex = h.nextAnthIndex
 				h.nextAnthIndex++
 				writeEvent(out, "content_block_start", map[string]any{
-					"type":  "content_block_start",
-					"index": h.textBlockIndex,
+					keyIndex: h.textBlockIndex,
 					"content_block": map[string]any{
-						"type": "text",
-						"text": "",
+						keyType:       blockTypeText,
+						blockTypeText: "",
 					},
 				})
 				h.hasOpenBlock = true
 				h.openBlockIndex = h.textBlockIndex
 			}
+
 			writeEvent(out, "content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": h.textBlockIndex,
-				"delta": map[string]any{
-					"type": "text_delta",
-					"text": ch.Delta.Content,
+				keyIndex: h.textBlockIndex,
+				keyDelta: map[string]any{
+					keyType:       "text_delta",
+					blockTypeText: ch.Delta.Content,
 				},
 			})
 		}
+
 		for _, tc := range ch.Delta.ToolCalls {
 			var name, args string
 			if tc.Function != nil {
 				name = tc.Function.Name
 				args = tc.Function.Arguments
 			}
+
 			h.emitToolCallDelta(out, tc.Index, tc.ID, name, args)
 		}
 		// delta.role appears in OpenAI's first chunk; Anthropic doesn't need a separate event for it (already covered by message_start)
@@ -297,38 +339,39 @@ func (h *responseHandler) emitToolCallDelta(out *bytes.Buffer, oaIndex int, id, 
 	if h.toolBlocks == nil {
 		h.toolBlocks = make(map[int]int)
 	}
+
 	anthIdx, seen := h.toolBlocks[oaIndex]
 	if !seen {
 		// A new tool block starts: close the currently open block first.
 		if h.hasOpenBlock {
 			writeEvent(out, "content_block_stop", map[string]any{
-				"type":  "content_block_stop",
-				"index": h.openBlockIndex,
+				keyIndex: h.openBlockIndex,
 			})
 			h.hasOpenBlock = false
 		}
+
 		anthIdx = h.nextAnthIndex
 		h.nextAnthIndex++
 		h.toolBlocks[oaIndex] = anthIdx
 		writeEvent(out, "content_block_start", map[string]any{
-			"type":  "content_block_start",
-			"index": anthIdx,
+			keyIndex: anthIdx,
 			"content_block": map[string]any{
-				"type":  "tool_use",
+				keyType: blockTypeToolUse,
 				"id":    id,
 				"name":  name,
 				"input": map[string]any{},
 			},
 		})
+
 		h.hasOpenBlock = true
 		h.openBlockIndex = anthIdx
 	}
+
 	if args != "" {
 		writeEvent(out, "content_block_delta", map[string]any{
-			"type":  "content_block_delta",
-			"index": anthIdx,
-			"delta": map[string]any{
-				"type":         "input_json_delta",
+			keyIndex: anthIdx,
+			keyDelta: map[string]any{
+				keyType:        "input_json_delta",
 				"partial_json": args,
 			},
 		})
@@ -343,49 +386,57 @@ func (h *responseHandler) emitClosing(out *bytes.Buffer) {
 	if h.emittedClosing {
 		return
 	}
+
 	if !h.emittedMessageStart {
 		// upstream sent nothing at all -- message_start was never emitted, so skip the closing sequence
 		return
 	}
+
 	h.emittedClosing = true
 
 	// Close whatever block is still open (the text block, or the last tool_use
 	// block). Earlier blocks were already stopped when the next block opened.
 	if h.hasOpenBlock {
 		writeEvent(out, "content_block_stop", map[string]any{
-			"type":  "content_block_stop",
-			"index": h.openBlockIndex,
+			keyIndex: h.openBlockIndex,
 		})
 		h.hasOpenBlock = false
 	}
 
 	stopReason := h.pendingStopReason
 	if stopReason == "" {
-		stopReason = "end_turn"
+		stopReason = stopReasonEndTurn
 	}
+
 	delta := map[string]any{
-		"type": "message_delta",
-		"delta": map[string]any{
+		keyDelta: map[string]any{
 			"stop_reason":   stopReason,
-			"stop_sequence": nil,
+			stopSequenceKey: nil,
 		},
 	}
 	if h.outputTokens > 0 {
 		delta["usage"] = map[string]any{"output_tokens": h.outputTokens}
 	}
+
 	writeEvent(out, "message_delta", delta)
 
-	writeEvent(out, "message_stop", map[string]any{
-		"type": "message_stop",
-	})
+	writeEvent(out, "message_stop", map[string]any{})
 }
 
 // writeEvent writes a single SSE event: `event: <type>\ndata: <json>\n\n`.
+//
+// Sets payload["type"] = eventType itself (overwriting any caller-supplied
+// value) so the SSE "event:" line and the JSON body's "type" field — which
+// Anthropic's wire format requires to always agree — can't drift apart by a
+// caller passing one without the other.
 func writeEvent(out *bytes.Buffer, eventType string, payload map[string]any) {
+	payload["type"] = eventType
+
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
+
 	out.WriteString("event: ")
 	out.WriteString(eventType)
 	out.WriteString("\ndata: ")
@@ -455,10 +506,12 @@ func contentToString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
+
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
 	}
+
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -466,12 +519,14 @@ func contentToString(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &blocks); err == nil {
 		var sb strings.Builder
 		for _, b := range blocks {
-			if b.Type == "text" || b.Type == "" {
+			if b.Type == blockTypeText || b.Type == "" {
 				sb.WriteString(b.Text)
 			}
 		}
+
 		return sb.String()
 	}
+
 	return ""
 }
 
@@ -601,39 +656,48 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			Content: sys,
 		})
 	}
+
 	for _, m := range in.Messages {
 		switch m.Role {
-		case "assistant":
+		case roleAssistant:
 			out.Messages = append(out.Messages, translateAssistantMessage(m.Content))
-		case "user":
+		case roleUser:
 			out.Messages = append(out.Messages, translateUserMessage(m.Content)...)
 		default:
 			return nil, fmt.Errorf("unsupported message role %q (handles user/assistant only; system goes through the top-level system field)", m.Role)
 		}
 	}
+
 	if len(in.Tools) > 0 {
 		out.Tools = translateTools(in.Tools)
 	}
+
 	if tc := translateToolChoice(in.ToolChoice); tc != nil {
 		out.ToolChoice = tc
 	}
+
 	if anthropicDisablesParallelToolUse(in.ToolChoice) {
 		f := false
 		out.ParallelToolCalls = &f
 	}
+
 	if in.MaxTokens > 0 {
 		mt := in.MaxTokens
 		out.MaxTokens = &mt
 	}
+
 	if in.Temperature != nil {
 		out.Temperature = in.Temperature
 	}
+
 	if in.TopP != nil {
 		out.TopP = in.TopP
 	}
+
 	if len(in.StopSequences) > 0 {
 		out.Stop = in.StopSequences
 	}
+
 	if in.Stream {
 		out.StreamOptions = &openAIStreamOp{IncludeUsage: true}
 	}
@@ -650,8 +714,9 @@ func translateTools(tools []anthropicTool) []openAITool {
 		if len(bytes.TrimSpace(params)) == 0 {
 			params = json.RawMessage(`{"type":"object"}`)
 		}
+
 		out = append(out, openAITool{
-			Type: "function",
+			Type: keyFunction,
 			Function: openAIToolFunction{
 				Name:        t.Name,
 				Description: t.Description,
@@ -660,6 +725,7 @@ func translateTools(tools []anthropicTool) []openAITool {
 			},
 		})
 	}
+
 	return out
 }
 
@@ -675,6 +741,7 @@ func translateToolChoice(raw json.RawMessage) any {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
+
 	var tc struct {
 		Type string `json:"type"`
 		Name string `json:"name"`
@@ -682,6 +749,7 @@ func translateToolChoice(raw json.RawMessage) any {
 	if err := json.Unmarshal(raw, &tc); err != nil {
 		return nil
 	}
+
 	switch tc.Type {
 	case "auto":
 		return "auto"
@@ -689,10 +757,10 @@ func translateToolChoice(raw json.RawMessage) any {
 		return "required"
 	case "none":
 		return "none"
-	case "tool":
+	case roleTool:
 		return map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": tc.Name},
+			keyType:     keyFunction,
+			keyFunction: map[string]any{"name": tc.Name},
 		}
 	default:
 		return nil
@@ -706,12 +774,14 @@ func anthropicDisablesParallelToolUse(raw json.RawMessage) bool {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return false
 	}
+
 	var tc struct {
 		DisableParallelToolUse bool `json:"disable_parallel_tool_use"`
 	}
 	if err := json.Unmarshal(raw, &tc); err != nil {
 		return false
 	}
+
 	return tc.DisableParallelToolUse
 }
 
@@ -721,18 +791,21 @@ func anthropicDisablesParallelToolUse(raw json.RawMessage) bool {
 func translateAssistantMessage(raw json.RawMessage) openAIMessage {
 	blocks, ok := parseBlocks(raw)
 	if !ok {
-		return openAIMessage{Role: "assistant", Content: contentToString(raw)}
+		return openAIMessage{Role: roleAssistant, Content: contentToString(raw)}
 	}
-	var text strings.Builder
-	var toolCalls []openAIToolCall
+
+	var (
+		text      strings.Builder
+		toolCalls []openAIToolCall
+	)
 	for _, b := range blocks {
 		switch b.Type {
-		case "text", "":
+		case blockTypeText, "":
 			text.WriteString(b.Text)
-		case "tool_use":
+		case blockTypeToolUse:
 			toolCalls = append(toolCalls, openAIToolCall{
 				ID:   b.ID,
-				Type: "function",
+				Type: keyFunction,
 				Function: openAIToolCallFunc{
 					Name:      b.Name,
 					Arguments: rawToJSONString(b.Input),
@@ -740,10 +813,12 @@ func translateAssistantMessage(raw json.RawMessage) openAIMessage {
 			})
 		}
 	}
-	msg := openAIMessage{Role: "assistant", Content: text.String()}
+
+	msg := openAIMessage{Role: roleAssistant, Content: text.String()}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 	}
+
 	return msg
 }
 
@@ -757,8 +832,9 @@ func translateAssistantMessage(raw json.RawMessage) openAIMessage {
 func translateUserMessage(raw json.RawMessage) []openAIMessage {
 	blocks, ok := parseBlocks(raw)
 	if !ok {
-		return []openAIMessage{{Role: "user", Content: contentToString(raw)}}
+		return []openAIMessage{{Role: roleUser, Content: contentToString(raw)}}
 	}
+
 	hasToolResult, hasImage := false, false
 	for _, b := range blocks {
 		switch b.Type {
@@ -768,6 +844,7 @@ func translateUserMessage(raw json.RawMessage) []openAIMessage {
 			hasImage = true
 		}
 	}
+
 	if hasImage && !hasToolResult {
 		var parts []any
 		for _, b := range blocks {
@@ -776,35 +853,41 @@ func translateUserMessage(raw json.RawMessage) []openAIMessage {
 				if b.Source != nil {
 					parts = append(parts, imageURLPartFromSource(*b.Source))
 				}
-			case "text", "":
+			case blockTypeText, "":
 				if b.Text != "" {
-					parts = append(parts, map[string]any{"type": "text", "text": b.Text})
+					parts = append(parts, map[string]any{keyType: blockTypeText, blockTypeText: b.Text})
 				}
 			}
 		}
-		return []openAIMessage{{Role: "user", Content: parts}}
-	}
-	if !hasToolResult {
-		return []openAIMessage{{Role: "user", Content: contentToString(raw)}}
+
+		return []openAIMessage{{Role: roleUser, Content: parts}}
 	}
 
-	var msgs []openAIMessage
-	var text strings.Builder
+	if !hasToolResult {
+		return []openAIMessage{{Role: roleUser, Content: contentToString(raw)}}
+	}
+
+	var (
+		msgs []openAIMessage
+		text strings.Builder
+	)
 	for _, b := range blocks {
 		switch b.Type {
 		case "tool_result":
 			msgs = append(msgs, openAIMessage{
-				Role:       "tool",
+				Role:       roleTool,
 				ToolCallID: b.ToolUseID,
 				Content:    contentToString(b.Content),
 			})
-		case "text", "":
+		case blockTypeText, "":
 			text.WriteString(b.Text)
 		}
 	}
+
 	if text.Len() > 0 {
-		msgs = append(msgs, openAIMessage{Role: "user", Content: text.String()})
+		msgs = append(msgs, openAIMessage{Role: roleUser, Content: text.String()})
 	}
+
 	return msgs
 }
 
@@ -816,7 +899,8 @@ func imageURLPartFromSource(src anthropicImageSource) map[string]any {
 	if src.Type == "base64" {
 		url = "data:" + src.MediaType + ";base64," + src.Data
 	}
-	return map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}}
+
+	return map[string]any{keyType: contentTypeImageURL, contentTypeImageURL: map[string]any{"url": url}}
 }
 
 // parseBlocks parses a message content field as an array of content blocks.
@@ -828,10 +912,12 @@ func parseBlocks(raw json.RawMessage) ([]anthropicBlock, bool) {
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return nil, false
 	}
+
 	var blocks []anthropicBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return nil, false
 	}
+
 	return blocks, true
 }
 
@@ -841,14 +927,17 @@ func rawToJSONString(raw json.RawMessage) string {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return "{}"
 	}
+
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return "{}"
 	}
+
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "{}"
 	}
+
 	return string(b)
 }
 
@@ -868,41 +957,47 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 		model = fallbackModel
 	}
 
-	var blocks []anthropicContentBlock
-	var stopReason string
+	var (
+		blocks     []anthropicContentBlock
+		stopReason string
+	)
 	if len(in.Choices) > 0 {
 		msg := in.Choices[0].Message
 		// OpenAI's own chat-completion response never returns array content —
 		// only a string or null — so a plain type assertion is safe here
 		// (unlike the request-building side, which must also accept arrays).
 		if s, ok := msg.Content.(string); ok && s != "" {
-			blocks = append(blocks, anthropicContentBlock{Type: "text", Text: s})
+			blocks = append(blocks, anthropicContentBlock{Type: blockTypeText, Text: s})
 		}
+
 		for _, tc := range msg.ToolCalls {
 			input := json.RawMessage("{}")
 			if tc.Function.Arguments != "" && json.Valid([]byte(tc.Function.Arguments)) {
 				input = json.RawMessage(tc.Function.Arguments)
 			}
+
 			blocks = append(blocks, anthropicContentBlock{
-				Type:  "tool_use",
+				Type:  blockTypeToolUse,
 				ID:    tc.ID,
 				Name:  tc.Function.Name,
 				Input: input,
 			})
 		}
+
 		stopReason = mapFinishReason(in.Choices[0].FinishReason)
 	} else {
-		stopReason = "end_turn"
+		stopReason = stopReasonEndTurn
 	}
+
 	if len(blocks) == 0 {
 		// No content and no tool calls: keep a single empty text block (existing behavior).
-		blocks = append(blocks, anthropicContentBlock{Type: "text", Text: ""})
+		blocks = append(blocks, anthropicContentBlock{Type: blockTypeText, Text: ""})
 	}
 
 	out := anthropicResponse{
 		ID:         openAIIDOrGen(in.ID),
 		Type:       "message",
-		Role:       "assistant",
+		Role:       roleAssistant,
 		Model:      model,
 		Content:    blocks,
 		StopReason: stopReason,
@@ -919,8 +1014,14 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("anthropic response marshal: %w", err)
 	}
+
 	return body, nil
 }
+
+// stopReasonEndTurn is Anthropic's normal-completion stop_reason — the
+// default whenever OpenAI's finish_reason is absent, "stop", or anything
+// this translator doesn't otherwise recognize.
+const stopReasonEndTurn = "end_turn"
 
 // mapFinishReason converts an OpenAI finish_reason to an Anthropic stop_reason.
 // Every documented OpenAI value (stop/length/tool_calls/content_filter, plus
@@ -928,18 +1029,18 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 func mapFinishReason(r string) string {
 	switch r {
 	case "stop", "":
-		return "end_turn"
+		return stopReasonEndTurn
 	case "length":
-		return "max_tokens"
+		return finishReasonMaxTokens
 	case "content_filter":
-		return "stop_sequence"
+		return stopSequenceKey
 	case "tool_calls", "function_call":
 		// function_call is the deprecated single-function precursor to
 		// tool_calls; both signal the same "model wants to call a function"
 		// condition, so route both to tool_use.
-		return "tool_use"
+		return blockTypeToolUse
 	default:
-		return "end_turn"
+		return stopReasonEndTurn
 	}
 }
 
@@ -948,6 +1049,7 @@ func openAIIDOrGen(openaiID string) string {
 	if openaiID == "" {
 		return "msg_" + randID()
 	}
+
 	return "msg_" + strings.TrimPrefix(openaiID, "chatcmpl-")
 }
 
@@ -959,19 +1061,23 @@ func isOpenAIError(body []byte) bool {
 			if len(rest) > 200 {
 				rest = rest[:200]
 			}
+
 			for j := 0; j+7 <= len(rest); j++ {
 				if string(rest[j:j+7]) == `"error"` {
 					return true
 				}
 			}
+
 			return false
 		}
 	}
+
 	return false
 }
 
 func randID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
+
 	return hex.EncodeToString(b)
 }

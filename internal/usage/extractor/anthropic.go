@@ -55,9 +55,11 @@ func (s *anthropicSession) Feed(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
+
 	if !s.streamingDecided {
 		s.detectStreaming(chunk)
 	}
+
 	if s.isStreaming {
 		s.sseBuffer = append(s.sseBuffer, chunk...)
 		s.parseSSEBuffer()
@@ -70,6 +72,7 @@ func (s *anthropicSession) Final() *domain.Usage {
 	if !s.isStreaming && s.inputTokens == 0 && s.outputTokens == 0 && len(s.bodyBuffer) > 0 {
 		s.parseFullBody()
 	}
+
 	if s.inputTokens == 0 && s.outputTokens == 0 {
 		return nil
 	}
@@ -84,6 +87,7 @@ func (s *anthropicSession) Final() *domain.Usage {
 	// account look "under quota" here while it isn't upstream.
 	// Raw is the verbatim upstream usage object (see rawUsage's doc comment).
 	raw, _ := json.Marshal(s.rawUsage)
+
 	return &domain.Usage{
 		Input:      s.inputTokens,
 		Output:     s.outputTokens,
@@ -108,6 +112,7 @@ func (s *anthropicSession) parseSSEBuffer() {
 		if !ok {
 			return
 		}
+
 		s.sseBuffer = rest
 
 		for _, line := range bytes.Split(event, []byte("\n")) {
@@ -115,6 +120,7 @@ func (s *anthropicSession) parseSSEBuffer() {
 			if payload == nil {
 				continue
 			}
+
 			s.tryExtract(payload)
 		}
 	}
@@ -127,9 +133,11 @@ func (s *anthropicSession) parseFullBody() {
 	if err := json.Unmarshal(s.bodyBuffer, &resp); err != nil {
 		return
 	}
+
 	if len(resp.Usage) == 0 {
 		return
 	}
+
 	var counts struct {
 		InputTokens         int64 `json:"input_tokens"`
 		OutputTokens        int64 `json:"output_tokens"`
@@ -139,6 +147,7 @@ func (s *anthropicSession) parseFullBody() {
 	if err := json.Unmarshal(resp.Usage, &counts); err != nil {
 		return
 	}
+
 	s.inputTokens = counts.InputTokens
 	s.outputTokens = counts.OutputTokens
 	s.cacheCreationTokens = counts.CacheCreationTokens
@@ -184,6 +193,7 @@ func (s *anthropicSession) tryExtract(payload []byte) {
 	default:
 		return
 	}
+
 	if len(usageRaw) == 0 {
 		return
 	}
@@ -204,6 +214,7 @@ func (s *anthropicSession) tryExtract(payload []byte) {
 		// Cache tokens are reported once, in message_start.
 		s.cacheCreationTokens = counts.CacheCreationTokens
 		s.cacheReadTokens = counts.CacheReadTokens
+
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(usageRaw, &m); err == nil {
 			s.rawUsage = m
@@ -215,15 +226,18 @@ func (s *anthropicSession) tryExtract(payload []byte) {
 		if counts.OutputTokens > 0 {
 			s.outputTokens = counts.OutputTokens
 		}
+
 		if counts.InputTokens > 0 {
 			s.inputTokens = counts.InputTokens
 		}
+
 		if counts.OutputTokens > 0 || counts.InputTokens > 0 {
 			var m map[string]json.RawMessage
 			if err := json.Unmarshal(usageRaw, &m); err == nil {
 				if s.rawUsage == nil {
 					s.rawUsage = map[string]json.RawMessage{}
 				}
+
 				for k, v := range m {
 					s.rawUsage[k] = v
 				}

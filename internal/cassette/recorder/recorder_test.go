@@ -56,9 +56,11 @@ func TestRecordAndLoadRoundTrip(t *testing.T) {
 
 	req2, _ := http.NewRequest("POST", srv.URL+"/chat/stream", strings.NewReader(reqBody))
 	req2.Header.Set("Authorization", "Bearer "+testSecret)
-	if _, err := client.Do(req2); err != nil {
+	resp2, err := client.Do(req2)
+	if err != nil {
 		t.Fatalf("request 2: %v", err)
 	}
+	_ = resp2.Body.Close()
 
 	path := filepath.Join(t.TempDir(), "nested", "recorded.yaml")
 	if err := rec.WriteFile(path); err != nil {
@@ -117,9 +119,11 @@ func TestAppendAcrossRuns(t *testing.T) {
 
 	rec1 := New(nil)
 	client1 := &http.Client{Transport: rec1}
-	if _, err := client1.Post(srv.URL, "application/json", strings.NewReader(`{"n":1}`)); err != nil {
+	resp1, err := client1.Post(srv.URL, "application/json", strings.NewReader(`{"n":1}`))
+	if err != nil {
 		t.Fatal(err)
 	}
+	_ = resp1.Body.Close()
 	if err := rec1.WriteFile(path); err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +133,11 @@ func TestAppendAcrossRuns(t *testing.T) {
 		t.Fatalf("PrependFromFile: %v", err)
 	}
 	client2 := &http.Client{Transport: rec2}
-	if _, err := client2.Post(srv.URL, "application/json", strings.NewReader(`{"n":2}`)); err != nil {
+	resp2, err := client2.Post(srv.URL, "application/json", strings.NewReader(`{"n":2}`))
+	if err != nil {
 		t.Fatal(err)
 	}
+	_ = resp2.Body.Close()
 	if err := rec2.WriteFile(path); err != nil {
 		t.Fatal(err)
 	}
@@ -166,9 +172,11 @@ func TestBinaryBodyRoundTrip(t *testing.T) {
 
 	rec := New(nil)
 	client := &http.Client{Transport: rec}
-	if _, err := client.Post(srv.URL, "application/json", strings.NewReader(`{}`)); err != nil {
+	respBin, err := client.Post(srv.URL, "application/json", strings.NewReader(`{}`))
+	if err != nil {
 		t.Fatal(err)
 	}
+	_ = respBin.Body.Close()
 	path := filepath.Join(t.TempDir(), "bin.yaml")
 	if err := rec.WriteFile(path); err != nil {
 		t.Fatal(err)

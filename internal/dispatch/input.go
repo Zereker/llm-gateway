@@ -40,6 +40,7 @@ func (in Input) PrimaryModel() *domain.ModelService {
 	if len(in.ModelChain) == 0 {
 		return nil
 	}
+
 	return in.ModelChain[0]
 }
 
@@ -49,5 +50,6 @@ func (in Input) SourceProtocol() domain.Protocol {
 	if in.Envelope == nil {
 		return domain.ProtoUnknown
 	}
+
 	return in.Envelope.SourceProtocol
 }

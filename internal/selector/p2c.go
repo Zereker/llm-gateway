@@ -40,6 +40,7 @@ func (f *Inflight) Dec(endpointID int64) {
 		if cur <= 0 {
 			return
 		}
+
 		if c.CompareAndSwap(cur, cur-1) {
 			return
 		}
@@ -51,9 +52,11 @@ func (f *Inflight) Get(endpointID int64) int64 {
 	f.mu.RLock()
 	c := f.m[endpointID]
 	f.mu.RUnlock()
+
 	if c == nil {
 		return 0
 	}
+
 	return c.Load()
 }
 
@@ -61,15 +64,19 @@ func (f *Inflight) counter(endpointID int64) *atomic.Int64 {
 	f.mu.RLock()
 	c := f.m[endpointID]
 	f.mu.RUnlock()
+
 	if c != nil {
 		return c
 	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	if c = f.m[endpointID]; c == nil {
 		c = &atomic.Int64{}
 		f.m[endpointID] = c
 	}
+
 	return c
 }
 
@@ -98,14 +105,17 @@ func NewP2CPicker(inflight *Inflight) *P2CPicker {
 // Select implements Picker.
 func (p *P2CPicker) Select(_ context.Context, candidates []Candidate) *Candidate {
 	live := make([]Candidate, 0, len(candidates))
+
 	var total float64
 	for _, c := range candidates {
 		if c.EffectiveWeight <= 0 {
 			continue
 		}
+
 		total += c.EffectiveWeight
 		live = append(live, c)
 	}
+
 	switch len(live) {
 	case 0:
 		return nil
@@ -115,6 +125,7 @@ func (p *P2CPicker) Select(_ context.Context, candidates []Candidate) *Candidate
 
 	i := p.sample(live, total, -1)
 	j := p.sample(live, total, i)
+
 	return p.less(&live[i], &live[j])
 }
 
@@ -124,19 +135,25 @@ func (p *P2CPicker) sample(live []Candidate, total float64, skip int) int {
 	if skip >= 0 {
 		total -= live[skip].EffectiveWeight
 	}
+
 	target := p.randFloat() * total
+
 	var acc float64
+
 	last := -1
 	for i := range live {
 		if i == skip {
 			continue
 		}
+
 		acc += live[i].EffectiveWeight
+
 		last = i
 		if target < acc {
 			return i
 		}
 	}
+
 	return last // float rounding fallback
 }
 
@@ -147,12 +164,15 @@ func (p *P2CPicker) less(a, b *Candidate) *Candidate {
 	if lb < la {
 		return b
 	}
+
 	if la < lb {
 		return a
 	}
+
 	if b.EffectiveWeight > a.EffectiveWeight {
 		return b
 	}
+
 	return a
 }
 
@@ -160,6 +180,7 @@ func (p *P2CPicker) randFloat() float64 {
 	if p.rng != nil {
 		return p.rng.Float64()
 	}
+
 	return rand.Float64()
 }
 

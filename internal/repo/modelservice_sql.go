@@ -35,7 +35,9 @@ func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*
 	if model == "" {
 		return nil, errors.New("model_service: empty model name")
 	}
+
 	var ms ModelService
+
 	err := r.db.GetContext(ctx, &ms, r.db.Rebind(
 		`SELECT `+msColumns+` FROM model_services
 		 WHERE model = ? AND deleted_at IS NULL`),
@@ -43,12 +45,14 @@ func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*
 	if err == nil {
 		return &ms, nil
 	}
+
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("model_service: get by model: %w", err)
 	}
 
 	// Direct query missed -- try alias redirection (alias -> canonical model -> model_services).
 	var aliased ModelService
+
 	aerr := r.db.GetContext(ctx, &aliased, r.db.Rebind(
 		`SELECT `+prefixCols("ms", msColumns)+`
 		 FROM model_aliases a
@@ -61,8 +65,10 @@ func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*
 		if errors.Is(aerr, sql.ErrNoRows) {
 			return nil, nil
 		}
+
 		return nil, fmt.Errorf("model_service: alias resolve: %w", aerr)
 	}
+
 	return &aliased, nil
 }
 
@@ -70,17 +76,21 @@ func (r *SQLModelServiceReader) GetByModel(ctx context.Context, model string) (*
 // ("id, model" -> "ms.id, ms.model") — used to disambiguate JOIN queries.
 func prefixCols(prefix, cols string) string {
 	var b []byte
+
 	field := make([]byte, 0, 16)
+
 	flush := func() {
 		f := trimSpace(string(field))
 		if f != "" {
 			if len(b) > 0 {
 				b = append(b, ',', ' ')
 			}
+
 			b = append(b, prefix...)
 			b = append(b, '.')
 			b = append(b, f...)
 		}
+
 		field = field[:0]
 	}
 	for i := 0; i < len(cols); i++ {
@@ -88,9 +98,12 @@ func prefixCols(prefix, cols string) string {
 			flush()
 			continue
 		}
+
 		field = append(field, cols[i])
 	}
+
 	flush()
+
 	return string(b)
 }
 
@@ -99,9 +112,11 @@ func trimSpace(s string) string {
 	for start < end && (s[start] == ' ' || s[start] == '\n' || s[start] == '\t') {
 		start++
 	}
+
 	for end > start && (s[end-1] == ' ' || s[end-1] == '\n' || s[end-1] == '\t') {
 		end--
 	}
+
 	return s[start:end]
 }
 
@@ -114,10 +129,12 @@ func (r *SQLModelServiceReader) List(ctx context.Context) ([]*ModelService, erro
 	); err != nil {
 		return nil, fmt.Errorf("model_service: list: %w", err)
 	}
+
 	out := make([]*ModelService, len(rows))
 	for i := range rows {
 		out[i] = &rows[i]
 	}
+
 	return out, nil
 }
 

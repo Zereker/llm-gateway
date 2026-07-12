@@ -78,6 +78,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	// startup error. The defer only refers to s, so any early return can
 	// cleanly Close whatever infra is already open.
 	s := appRuntime.New(slog.Default())
+
 	srv = s
 	defer func() {
 		if err != nil {
@@ -89,15 +90,19 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	if err != nil {
 		return nil, nil, fmt.Errorf("infra.Open: %w", err)
 	}
+
 	if cfg.Database.AutoMigrate {
 		slog.Warn("database.auto_migrate is enabled; use cmd/migrate in production")
+
 		if err = infra.Migrate(context.Background(), sqldb); err != nil {
 			return nil, nil, fmt.Errorf("infra.Migrate: %w", err)
 		}
 	}
+
 	if err = infra.CheckMigrationVersion(context.Background(), sqldb); err != nil {
 		return nil, nil, err
 	}
+
 	if err = repo.CheckSchema(context.Background(), sqldb); err != nil {
 		return nil, nil, err
 	}
@@ -149,6 +154,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	if contentLogger != nil {
 		senderOpts = append(senderOpts, invoker.WithHooks(contentLogger))
 	}
+
 	sender := invoker.New(senderOpts...)
 
 	// In-process TTL LRU cache — the repo's only caching strategy.

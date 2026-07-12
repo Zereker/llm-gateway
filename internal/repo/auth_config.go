@@ -107,23 +107,29 @@ func (a *AuthConfig) Scan(value any) error {
 		*a = AuthConfig{}
 		return nil
 	}
+
 	b, err := bytesFromScan(value, "AuthConfig")
 	if err != nil {
 		return err
 	}
+
 	if len(b) == 0 {
 		*a = AuthConfig{}
 		return nil
 	}
+
 	plain, err := decryptBlob(b)
 	if err != nil {
 		return fmt.Errorf("AuthConfig: decrypt: %w", err)
 	}
+
 	var raw authConfigJSON
 	if err := json.Unmarshal(plain, &raw); err != nil {
 		return fmt.Errorf("AuthConfig: unmarshal: %w", err)
 	}
-	*a = AuthConfig{Type: raw.Type, Payload: raw.Payload}
+
+	*a = AuthConfig(raw)
+
 	return nil
 }
 
@@ -135,10 +141,12 @@ func (a AuthConfig) Value() (driver.Value, error) {
 	if a.Type == "" {
 		return nil, nil
 	}
-	plain, err := json.Marshal(authConfigJSON{Type: a.Type, Payload: a.Payload})
+
+	plain, err := json.Marshal(authConfigJSON(a))
 	if err != nil {
 		return nil, fmt.Errorf("AuthConfig: marshal: %w", err)
 	}
+
 	enc, err := encryptBlob(plain)
 	if err != nil {
 		return nil, fmt.Errorf("AuthConfig: encrypt: %w", err)
@@ -174,9 +182,11 @@ func DecodePayload[T any](a AuthConfig) (T, error) {
 	if len(a.Payload) == 0 {
 		return t, errors.New("AuthConfig: empty payload")
 	}
+
 	if err := json.Unmarshal(a.Payload, &t); err != nil {
 		return t, fmt.Errorf("AuthConfig: decode %T: %w", t, err)
 	}
+
 	return t, nil
 }
 
@@ -186,12 +196,15 @@ func EncodePayload(authType string, payload any) (AuthConfig, error) {
 	if authType == "" {
 		return AuthConfig{}, errors.New("AuthConfig: empty type")
 	}
+
 	if payload == nil {
 		return AuthConfig{Type: authType}, nil
 	}
+
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return AuthConfig{}, fmt.Errorf("AuthConfig: encode %T: %w", payload, err)
 	}
+
 	return AuthConfig{Type: authType, Payload: b}, nil
 }

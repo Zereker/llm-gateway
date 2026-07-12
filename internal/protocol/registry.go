@@ -69,11 +69,14 @@ func NewLookup(factories map[string]Factory, translators *translator.Registry) *
 		if vendor == "" || factory == nil {
 			panic("protocol: invalid factory registration")
 		}
+
 		if _, exists := copyFactories[vendor]; exists {
 			panic("protocol: duplicate factory " + vendor)
 		}
+
 		copyFactories[vendor] = factory
 	}
+
 	return &DefaultLookup{factories: copyFactories, translators: translators, cache: &sync.Map{}}
 }
 
@@ -91,10 +94,12 @@ func (l DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handle
 	if ep == nil || ep.Protocol == domain.ProtoUnknown {
 		return nil
 	}
+
 	key := ep.Vendor + "|" + srcProto.String() + "|" + ep.Protocol.String()
 	if h, ok := l.cache.Load(key); ok {
 		return h.(Handler)
 	}
+
 	ad := l.factories[ep.Vendor]
 	if ad == nil {
 		return nil
@@ -108,14 +113,17 @@ func (l DefaultLookup) Get(ep *domain.Endpoint, srcProto domain.Protocol) Handle
 	if tr == nil {
 		return nil
 	}
+
 	if translator.IsComposed(tr) {
 		// the cache ensures the same (vendor, src, tgt) only warns once
 		slog.Warn("protocol: no direct translator, using lossy pivot composition",
 			"src", srcProto.String(), "tgt", ep.Protocol.String(),
 			"pivot", pivotProtocol.String(), "vendor", ep.Vendor)
 	}
+
 	h := Combine(ad, tr)
 	actual, _ := l.cache.LoadOrStore(key, h)
+
 	return actual.(Handler)
 }
 

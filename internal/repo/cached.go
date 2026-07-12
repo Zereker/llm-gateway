@@ -69,10 +69,12 @@ func (p *CachedAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) 
 	if creds == nil || creds.APIKey == "" {
 		return p.inner.Resolve(ctx, creds)
 	}
+
 	key := HashAPIKey(creds.APIKey)
 	if _, invalid := p.negative.Get(key); invalid {
 		return nil, fmt.Errorf("apikey: %w", domain.ErrInvalidCredentials)
 	}
+
 	v, err := p.cache.GetOrLoad(ctx, key, func(ctx context.Context) (*UserIdentity, bool, error) {
 		u, err := p.inner.Resolve(ctx, creds)
 		return u, err == nil && u != nil, err
@@ -80,6 +82,7 @@ func (p *CachedAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) 
 	if err != nil && errors.Is(err, domain.ErrInvalidCredentials) {
 		p.negative.Set(key, struct{}{})
 	}
+
 	return v, err
 }
 
@@ -153,9 +156,11 @@ func NewCachedEndpointReader(inner *SQLEndpointReader, listCap, idCap int, ttl t
 
 func (r *CachedEndpointReader) ListForModel(ctx context.Context, model, group string) ([]*Endpoint, error) {
 	if group == "" {
-		group = "default"
+		group = defaultGroup
 	}
+
 	key := model + "\x00" + group
+
 	return r.listCache.GetOrLoad(ctx, key, func(ctx context.Context) ([]*Endpoint, bool, error) {
 		v, err := r.inner.ListForModel(ctx, model, group)
 		return v, err == nil && len(v) > 0, err
@@ -168,11 +173,13 @@ func (r *CachedEndpointReader) PickForModel(ctx context.Context, model, group st
 	if err != nil {
 		return nil, err
 	}
+
 	if len(list) == 0 {
 		// Keep the error style consistent with the SQL implementation — not
 		// found returns an error.
 		return r.inner.PickForModel(ctx, model, group)
 	}
+
 	return list[0], nil
 }
 
@@ -254,17 +261,21 @@ func (p *CachedSubscriptionProvider) Has(ctx context.Context, accountID string, 
 	if _, ok := p.trueCache.Get(key); ok {
 		return true, nil
 	}
+
 	if _, ok := p.falseCache.Get(key); ok {
 		return false, nil
 	}
+
 	v, err := p.inner.Has(ctx, accountID, modelServiceID)
 	if err != nil {
 		return false, err
 	}
+
 	if v {
 		p.trueCache.Set(key, struct{}{})
 	} else {
 		p.falseCache.Set(key, struct{}{})
 	}
+
 	return v, nil
 }

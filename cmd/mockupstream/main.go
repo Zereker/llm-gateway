@@ -55,6 +55,7 @@ func main() {
 	mux.HandleFunc("/model/", handleBedrockConverse)
 
 	slog.Info("mockupstream listening", "addr", addr)
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -85,10 +86,12 @@ func handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json: "+err.Error(), 400)
 		return
 	}
+
 	model := req.Model
 	if model == "" {
 		model = "gpt-4o"
 	}
+
 	const (
 		prompt     = 12
 		completion = 8
@@ -100,6 +103,7 @@ func handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		writeChunk := func(payload any) {
 			b, _ := json.Marshal(payload)
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -137,10 +141,13 @@ func handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 				"total_tokens":      prompt + completion,
 			},
 		})
+
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+
 		if flusher != nil {
 			flusher.Flush()
 		}
+
 		return
 	}
 
@@ -182,10 +189,12 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json: "+err.Error(), 400)
 		return
 	}
+
 	model := req.Model
 	if model == "" {
 		model = "claude-3-5-sonnet-20241022"
 	}
+
 	const (
 		input  = 14
 		output = 7
@@ -197,6 +206,7 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		write := func(eventType string, payload any) {
 			b, _ := json.Marshal(payload)
 			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, b)
+
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -231,6 +241,7 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			"usage": map[string]any{"output_tokens": output},
 		})
 		write("message_stop", map[string]any{"type": "message_stop"})
+
 		return
 	}
 
@@ -260,6 +271,7 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 func handleGemini(w http.ResponseWriter, r *http.Request) {
 	// path looks like /v1beta/models/gemini-1.5-pro:generateContent or :streamGenerateContent
 	streaming := strings.Contains(r.URL.Path, ":streamGenerateContent")
+
 	model := "gemini-1.5-pro"
 	if i := strings.LastIndex(r.URL.Path, "/"); i >= 0 {
 		rest := r.URL.Path[i+1:]
@@ -267,6 +279,7 @@ func handleGemini(w http.ResponseWriter, r *http.Request) {
 			model = rest[:j]
 		}
 	}
+
 	const (
 		prompt     = 10
 		candidates = 6
@@ -296,11 +309,14 @@ func handleGemini(w http.ResponseWriter, r *http.Request) {
 		flusher, _ := w.(http.Flusher)
 		b, _ := json.Marshal(body)
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+
 		if flusher != nil {
 			flusher.Flush()
 		}
+
 		return
 	}
+
 	writeJSON(w, body)
 }
 
@@ -327,6 +343,7 @@ func handleCohereChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json: "+err.Error(), 400)
 		return
 	}
+
 	const (
 		input  = 11
 		output = 6
@@ -338,6 +355,7 @@ func handleCohereChat(w http.ResponseWriter, r *http.Request) {
 		write := func(payload any) {
 			b, _ := json.Marshal(payload)
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -356,6 +374,7 @@ func handleCohereChat(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 		})
+
 		return
 	}
 
@@ -398,10 +417,12 @@ func handleBedrockConverse(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json: "+err.Error(), 400)
 		return
 	}
+
 	const (
 		input  = 9
 		output = 5
 	)
+
 	resp := map[string]any{
 		"output": map[string]any{
 			"message": map[string]any{

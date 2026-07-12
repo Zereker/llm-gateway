@@ -39,9 +39,11 @@ func defaultSpanNameFormatter(c *gin.Context) string {
 	}, method) {
 		method = "HTTP"
 	}
+
 	if path := c.FullPath(); path != "" {
 		return method + " " + path
 	}
+
 	return method
 }
 
@@ -155,33 +157,41 @@ func TraceContext() gin.HandlerFunc {
 			attribute.Int("http.response.status_code", statusCode),
 			attribute.Int64("llm_gateway.duration_ms", elapsedMs),
 		)
+
 		if rc.ModelService != nil {
 			span.SetAttributes(attribute.String("gen_ai.request.model", rc.ModelService.Model))
 		}
+
 		if rc.RoutedModelService != nil {
 			span.SetAttributes(attribute.String("gen_ai.response.model", rc.RoutedModelService.Model))
 		}
+
 		if rc.Endpoint != nil {
 			span.SetAttributes(
 				attribute.String("gen_ai.system", rc.Endpoint.Vendor),
 				attribute.Int64("llm_gateway.endpoint.id", rc.Endpoint.ID),
 			)
 		}
+
 		if rc.Identity.AccountID != "" {
 			span.SetAttributes(attribute.String("llm_gateway.account.id", rc.Identity.AccountID))
 		}
+
 		if rc.Identity.SubAccountID != "" {
 			span.SetAttributes(attribute.String("llm_gateway.sub_account.id", rc.Identity.SubAccountID))
 		}
+
 		if rc.Identity.APIKeyID != "" {
 			span.SetAttributes(attribute.String("llm_gateway.api_key.id", rc.Identity.APIKeyID))
 		}
+
 		if rc.Usage != nil {
 			span.SetAttributes(
 				attribute.Int64("gen_ai.usage.input_tokens", rc.Usage.Input),
 				attribute.Int64("gen_ai.usage.output_tokens", rc.Usage.Output),
 				attribute.Int64("gen_ai.usage.total_tokens", rc.Usage.Total),
 			)
+
 			if rc.Usage.Meta.TTFTMs > 0 {
 				span.SetAttributes(attribute.Int64("gen_ai.response.ttft_ms", rc.Usage.Meta.TTFTMs))
 			}
@@ -214,6 +224,7 @@ func TraceContext() gin.HandlerFunc {
 		case statusCode >= 400:
 			level = slog.LevelWarn
 		}
+
 		slog.Log(ctx, level, "request.end",
 			"request_id", requestID,
 			"method", c.Request.Method,
@@ -229,6 +240,7 @@ func schemeOf(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
 	}
+
 	return "http"
 }
 
@@ -250,8 +262,10 @@ func defaultPropagator() propagation.TextMapPropagator {
 		if p == nil || len(p.Fields()) == 0 {
 			p = propagation.TraceContext{}
 		}
+
 		defaultPropagatorVal = p
 	})
+
 	return defaultPropagatorVal
 }
 
@@ -281,5 +295,6 @@ func randHex(byteLen int) string {
 	if _, err := rand.Read(b); err != nil {
 		return fmt.Sprintf("%016x", time.Now().UnixNano())
 	}
+
 	return hex.EncodeToString(b)
 }
