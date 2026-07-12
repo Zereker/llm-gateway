@@ -7,13 +7,26 @@ import (
 	"syscall"
 )
 
-// awsIMDSv6 is AWS's Instance Metadata Service (IMDS) IPv6 address
-// fd00:ec2::254. It belongs to ULA (fc00::/7), which is **not** link-local,
-// so netip.Addr.IsLinkLocalUnicast can't catch it — hence the separate
-// hardcoded entry. Every other cloud vendor's (GCP / Azure / Oracle / DO)
-// IMDS is IPv4 169.254.169.254, which falls under link-local and is covered
-// by IsLinkLocalUnicast.
-var awsIMDSv6 = netip.MustParseAddr("fd00:ec2::254")
+// nonLinkLocalMetadataIPs are the known cloud metadata endpoints that do NOT
+// fall in an IPv4/IPv6 link-local range, so IsLinkLocalUnicast can't catch
+// them and they must be listed explicitly. Every *other* vendor's metadata
+// service (AWS/GCP/Azure/Oracle-modern/DigitalOcean/Tencent/Huawei/IBM/
+// OpenStack/k8s) is IPv4 169.254.169.254 (or another 169.254.0.0/16 address,
+// e.g. Tencent's 169.254.0.23), already covered by the link-local check.
+//
+// Each is matched as an exact /32 (or single /128), not its enclosing range,
+// so a self-hosted upstream that legitimately sits in shared address space
+// (e.g. RFC 6598 CGNAT 100.64.0.0/10) is not false-positived — only the one
+// metadata IP is refused.
+//
+// NOTE: this only covers metadata services addressed by a fixed IP. A vendor
+// whose metadata is reached via a hostname that resolves to a *public* IP
+// cannot be blocked at the IP layer; that boundary is documented for deployers.
+var nonLinkLocalMetadataIPs = []netip.Addr{
+	netip.MustParseAddr("fd00:ec2::254"),   // AWS IMDSv6 (ULA, fc00::/7)
+	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud ECS (RFC 6598 CGNAT)
+	netip.MustParseAddr("192.0.0.192"),     // Oracle Cloud classic (IETF-reserved 192.0.0.0/24)
+}
 
 // blockMetadataDial is the net.Dialer.Control hook: before the connection
 // is actually established, it blocks cloud metadata endpoints based on the
@@ -30,8 +43,10 @@ var awsIMDSv6 = netip.MustParseAddr("fd00:ec2::254")
 // **Only blocks metadata, not private networks**: self-hosted upstreams
 // commonly live in 10/172.16/192.168 private ranges, which docs/07 §5 +
 // MED#12 explicitly allow; this only blocks link-local (including all cloud
-// IMDS v4 addresses at 169.254.169.254), IPv6 link-local, and AWS IMDSv6 —
-// it never mistakenly blocks a self-hosted private-network endpoint.
+// IMDS v4 addresses at 169.254.169.254), IPv6 link-local, and the specific
+// non-link-local metadata IPs in nonLinkLocalMetadataIPs (AWS IMDSv6 /
+// Alibaba / Oracle-classic) — it never mistakenly blocks a self-hosted
+// private-network endpoint.
 func blockMetadataDial(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -53,14 +68,21 @@ func blockMetadataDial(_, address string, _ syscall.RawConn) error {
 // dial-time guard and the startup-time endpoint scan share this function,
 // so "what counts as metadata" has exactly one definition.
 //
-//	169.254.0.0/16 (IPv4 link-local) ── AWS/GCP/Azure/Oracle/DigitalOcean IMDS
+//	169.254.0.0/16 (IPv4 link-local) ── AWS/GCP/Azure/Oracle-modern/DO/Tencent/... IMDS
 //	fe80::/10      (IPv6 link-local)
-//	fd00:ec2::254  (AWS IMDSv6, ULA, not caught by the link-local check)
+//	plus the non-link-local exceptions in nonLinkLocalMetadataIPs
+//	               (AWS IMDSv6 / Alibaba / Oracle-classic)
 func IsMetadataIP(ip netip.Addr) bool {
 	ip = ip.Unmap() // ::ffff:169.254.169.254 → 169.254.169.254
 	if ip.IsLinkLocalUnicast() {
 		return true
 	}
 
-	return ip == awsIMDSv6
+	for _, m := range nonLinkLocalMetadataIPs {
+		if ip == m {
+			return true
+		}
+	}
+
+	return false
 }
