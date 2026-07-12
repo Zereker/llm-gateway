@@ -344,6 +344,7 @@ Cross-protocol pairs do not all carry every request feature. Current coverage:
 | `anthropic_openai` | ✅ | ✅ (`tools[].strict` carried through) | ✅ | — |
 | `openai_gemini` | ✅ | ✅ | ✅ | `n`/`candidateCount`, `response_format`, Gemini 3 `thoughtSignature` round-trip |
 | `openai_cohere` | ✅ | ✅ | ✅ | `command-a-reasoning-*` `thinking` block → `reasoning_content`; citations still dropped (no OpenAI-compatible shape decided) |
+| `openai_bedrock` | ✅ | ✅ | ❌ | Bedrock **Converse** API (model-agnostic; distinct from the older InvokeModel path, which stays on `openai_anthropic` since InvokeModel's body already is Anthropic Messages JSON). Verified only against Claude-on-Bedrock traffic. `reasoningContent` → `reasoning_content` (response-side only — the signature isn't round-tripped back on the next turn's request yet); `citationsContent` still dropped (no OpenAI-compatible shape decided, same as Cohere's citations) |
 
 **Tool calling**: request-side maps `tools` / `tool_choice`, assistant tool
 calls, and tool results between OpenAI's flat `tool_calls` + `role:"tool"`
@@ -497,6 +498,9 @@ Vendor sub-packages:
 - `internal/protocol/openai/` — vendor=openai + alias=ark
 - `internal/protocol/anthropic/`
 - `internal/protocol/gemini/`
+- `internal/protocol/cohere/`
+- `internal/protocol/azureopenai/` — vendor=azure-openai; wire protocol is OpenAI's own (`ep.Protocol: openai`), only the HTTP layer (URL shape + `api-key` header) differs
+- `internal/protocol/bedrock/` — vendor=bedrock; one Factory, two sessions selected by `ep.Protocol`: `anthropic` (InvokeModel, Claude-on-Bedrock only) or `bedrock` (Converse, model-agnostic — see §6b)
 
 Each vendor sub-package only defines its `Factory` type; `internal/builtin.NewLookup`
 assembles the factory map (keyed by vendor name) at startup, and the Handler is
@@ -535,6 +539,8 @@ Built-in translators:
 | OpenAI → Anthropic | `translator/openai_anthropic` | client OpenAI SDK → Anthropic upstream |
 | Anthropic → OpenAI | `translator/anthropic_openai` | client Anthropic SDK → OpenAI upstream |
 | OpenAI → Gemini | `translator/openai_gemini` | client OpenAI SDK → Gemini upstream |
+| OpenAI → Cohere | `translator/openai_cohere` | client OpenAI SDK → Cohere v2/chat upstream |
+| OpenAI → Bedrock | `translator/openai_bedrock` | client OpenAI SDK → Bedrock **Converse** upstream (`ep.Protocol: bedrock`; distinct from the `ep.Protocol: anthropic` InvokeModel path, which reuses `openai_anthropic`) |
 | Responses → OpenAI | `translator/responses_openai` | Responses entry point wired to a Chat Completions endpoint |
 
 **We do not require every combination to be filled in**. Priority:

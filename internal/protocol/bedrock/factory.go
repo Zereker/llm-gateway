@@ -1,36 +1,44 @@
-// Package bedrock is the vendor implementation for AWS Bedrock (Anthropic Claude
-// on Bedrock, supporting non-streaming InvokeModel + streaming
-// InvokeModelWithResponseStream).
+// Package bedrock is the vendor implementation for AWS Bedrock. Two wire
+// protocols are supported on the same vendor, selected by `ep.Protocol`:
 //
-// **Wire protocol = Anthropic Messages**: the endpoint's `protocol` is set to
-// `anthropic`, reusing the Anthropic translator + response handler (Bedrock's
-// Claude response body is already Anthropic Messages JSON). What's Bedrock-specific
-// is confined to the HTTP layer:
+//   - `protocol: anthropic` — InvokeModel / InvokeModelWithResponseStream,
+//     Claude-on-Bedrock only, body is Anthropic Messages JSON as-is (reuses
+//     openai_anthropic's translator + response handler). This is the
+//     original, still-default path — see invokeSession below.
+//   - `protocol: bedrock` — the Converse / ConverseStream API, a
+//     model-agnostic wire shape AWS designed to work the same across
+//     Claude/Titan/Nova/Llama/... (reuses internal/translator/openai_bedrock,
+//     verified so far only against Claude traffic — see that package's doc
+//     comment). Added because real-world recorded traffic
+//     (langchain-ai/langchain-aws) for Bedrock overwhelmingly uses Converse,
+//     not InvokeModel — see converseSession below.
+//
+// Both share:
 //
 //	Auth: AWS SigV4 (service=bedrock), credentials go through AWSSigV4Auth
 //	      (access/secret/region).
-//	URL:  the deployer fills routing.url with the full invoke endpoint, including
+//	URL:  the deployer fills routing.url with the full endpoint, including
 //	      modelId + region host, e.g.
 //	      https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20240620-v1:0/invoke
-//	Body: Anthropic Messages with the top-level model field stripped (modelId is
-//	      already in the URL) and anthropic_version filled in.
+//	      https://bedrock-runtime.us-west-2.amazonaws.com/model/us.anthropic.claude-sonnet-5/converse
 //
 // **SigV4 uses the official aws-sdk-go-v2 signer**: edge cases in SigV4's
 // canonical-URI encoding (Bedrock paths contain `:`) are extremely easy to get
 // wrong by hand and impossible to verify offline against a real endpoint, so we
 // rely on the official signer for correctness.
 //
-// **Streaming**: when the client sends stream:true, the
-// InvokeModelWithResponseStream endpoint is used and the response is an AWS
-// event-stream binary framing — Factory.DecodeTransport (protocol.TransportDecoder,
-// see stream.go) decodes it into Anthropic SSE, which the openai_anthropic handler
-// then translates into OpenAI SSE. The transport layer (frame decoding) is kept
-// separate from the protocol layer (shape translation), reusing the existing
-// Anthropic streaming translation.
+// **Streaming**: both paths use AWS event-stream binary framing for their
+// streaming response, decoded by Factory.DecodeTransport (protocol.TransportDecoder,
+// see stream.go / converse_stream.go) — which of the two frame shapes applies
+// is sniffed from the actual request path Go's http.Client recorded on
+// resp.Request (Factory.DecodeTransport has no other way to know which
+// session produced this response, since it's dispatched by Factory type
+// alone, not per-request state).
 //
 // Integration: the deployer configures the endpoint with `vendor: bedrock` +
-// `protocol: anthropic` + `auth.type: aws-sigv4`. internal/builtin.NewLookup
-// wires this package into the built-in lookup.
+// `protocol: anthropic` (InvokeModel) or `protocol: bedrock` (Converse) +
+// `auth.type: aws-sigv4`. internal/builtin.NewLookup wires this package into
+// the built-in lookup.
 package bedrock
 
 import (
@@ -53,7 +61,10 @@ func (Factory) Metadata() protocol.Metadata {
 	}
 }
 
-// NewSession constructs a Bedrock session for this request.
+// NewSession picks the InvokeModel or Converse session based on ep.Protocol.
 func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.RequestEnvelope) (protocol.Session, error) {
+	if ep.Protocol == domain.ProtoBedrock {
+		return newConverseSession(c, ep, env), nil
+	}
 	return newSession(c, ep, env), nil
 }

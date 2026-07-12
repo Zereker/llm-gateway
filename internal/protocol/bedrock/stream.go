@@ -13,18 +13,24 @@ import (
 	"github.com/zereker/llm-gateway/internal/protocol"
 )
 
-// DecodeTransport implements protocol.TransportDecoder: Bedrock's streaming response
-// is AWS event-stream binary framing (Content-Type vnd.amazon.eventstream); this
-// function decodes it into an **Anthropic SSE** byte stream, which is then handed to
-// openai_anthropic's ResponseStream for shape translation — the transport layer
-// (frame decoding) is cleanly separated from the protocol layer (Anthropic→OpenAI),
-// reusing the existing Anthropic streaming translation.
+// DecodeTransport implements protocol.TransportDecoder: both of Bedrock's
+// streaming responses (InvokeModelWithResponseStream and ConverseStream) use
+// AWS event-stream binary framing (Content-Type vnd.amazon.eventstream), but
+// the frame *payload* shape differs between the two APIs -- see
+// eventStreamReader (InvokeModel) vs converseEventStreamReader (Converse)'s
+// doc comments. DecodeTransport is dispatched by Factory type alone (no
+// per-request state — see this package's doc comment), so which one applies
+// is sniffed from resp.Request's URL path suffix: Go's http.Client always
+// populates Response.Request with the request that produced it.
 //
 // For non-streaming (JSON) responses this returns nil: no decoding is needed, the
 // bytes go straight to the handler.
 func (Factory) DecodeTransport(resp *http.Response) io.Reader {
 	if !strings.Contains(resp.Header.Get("Content-Type"), "vnd.amazon.eventstream") {
 		return nil
+	}
+	if resp.Request != nil && strings.HasSuffix(resp.Request.URL.Path, "/converse-stream") {
+		return &converseEventStreamReader{dec: eventstream.NewDecoder(), src: resp.Body}
 	}
 	return &eventStreamReader{dec: eventstream.NewDecoder(), src: resp.Body}
 }
