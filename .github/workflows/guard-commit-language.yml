@@ -27,7 +27,7 @@ jobs:
             head="${{ github.sha }}"
             if [ "$base" = "0000000000000000000000000000000000000000" ] \
                || ! git cat-file -e "$base" 2>/dev/null; then
-              base="$(git rev-parse HEAD~1 2>/dev/null || echo "$head")"
+              base="$(git rev-parse --verify -q HEAD~1 2>/dev/null || echo "$head")"
             fi
           fi
           echo "base=$base" >> "$GITHUB_OUTPUT"
