@@ -13,7 +13,7 @@ const (
 	ProtoOpenAI             // /v1/chat/completions, /v1/embeddings, /v1/images, ...
 	ProtoAnthropic          // /v1/messages
 	ProtoGemini             // /v1beta/models/.../generateContent
-	ProtoBedrock            // AWS Bedrock format
+	ProtoBedrock            // AWS Bedrock's Converse API (model-agnostic wire shape; NOT InvokeModel, which reuses ProtoAnthropic since its body already is Anthropic Messages JSON — see internal/protocol/bedrock's doc comment)
 	ProtoCustom             // vendor-custom; the Adapter interprets it itself
 	ProtoResponses          // OpenAI Responses API (/v1/responses; a new protocol introduced in 2024 H2)
 	ProtoCohere             // Cohere v2 /v2/chat (message.content array + nested usage.tokens)

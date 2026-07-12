@@ -13,10 +13,16 @@
 //	POST /openai/deployments/{deployment}/chat/completions  → Azure OpenAI (identical wire shape to
 //	     plain OpenAI Chat -- reuses handleOpenAIChat; Azure-specific bits are the URL shape and the
 //	     api-key header, both handled entirely on the gateway side by internal/protocol/azureopenai)
+//	POST /model/{modelId}/converse  → Bedrock Converse (includes usage{inputTokens,outputTokens,totalTokens})
 //	GET  /health               → "ok"
 //
 // Streaming (when stream=true in the request body) emits chunks in each
-// protocol's SSE format, followed by a trailing usage chunk.
+// protocol's SSE format, followed by a trailing usage chunk. Bedrock
+// Converse is the one exception -- no /converse-stream handler is
+// implemented since nothing in this repo's smoke tests sends stream:true to
+// it yet (a real Converse stream is AWS event-stream binary framing, not
+// SSE, so a mock for it isn't a small addition -- add it if/when a test
+// actually needs it).
 //
 // Listen address: MOCK_ADDR (default :9090).
 package main
@@ -46,6 +52,7 @@ func main() {
 	mux.HandleFunc("/v1beta/models/", handleGemini)
 	mux.HandleFunc("/v2/chat", handleCohereChat)
 	mux.HandleFunc("/openai/deployments/", handleOpenAIChat)
+	mux.HandleFunc("/model/", handleBedrockConverse)
 
 	slog.Info("mockupstream listening", "addr", addr)
 	srv := &http.Server{
@@ -362,6 +369,49 @@ func handleCohereChat(w http.ResponseWriter, r *http.Request) {
 		"usage": map[string]any{
 			"billed_units": map[string]any{"input_tokens": input, "output_tokens": output},
 			"tokens":       map[string]any{"input_tokens": input, "output_tokens": output},
+		},
+	}
+	writeJSON(w, resp)
+}
+
+// =============================================================================
+// Bedrock Converse
+// =============================================================================
+
+type converseRequest struct {
+	Messages []struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"messages"`
+}
+
+// handleBedrockConverse replies with the non-streaming Converse response
+// shape internal/translator/openai_bedrock expects: output.message.content
+// as an array of {text} blocks, usage.{inputTokens,outputTokens,totalTokens}.
+// No signature verification (SigV4) -- the mock accepts any request that
+// parses as JSON.
+func handleBedrockConverse(w http.ResponseWriter, r *http.Request) {
+	var req converseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json: "+err.Error(), 400)
+		return
+	}
+	const (
+		input  = 9
+		output = 5
+	)
+	resp := map[string]any{
+		"output": map[string]any{
+			"message": map[string]any{
+				"role":    "assistant",
+				"content": []map[string]any{{"text": "Hello from mock."}},
+			},
+		},
+		"stopReason": "end_turn",
+		"usage": map[string]any{
+			"inputTokens": input, "outputTokens": output, "totalTokens": input + output,
 		},
 	}
 	writeJSON(w, resp)
