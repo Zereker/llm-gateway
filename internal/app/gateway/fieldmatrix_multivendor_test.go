@@ -1,11 +1,12 @@
 package gateway
 
 // Multi-vendor field-matrix e2e: unlike fieldmatrix_test.go's single seeded
-// endpoint (mutated in place per test), this seeds all four upstream vendors
-// as **distinct, simultaneously-configured endpoints** with **distinct real
-// API keys**, each routed to its own mock upstream server replaying a real
-// captured response body from testdata/vendor-cassettes/ (see that
-// directory's README for provenance/licenses) — the same real-data corpus
+// endpoint (mutated in place per test), this seeds every upstream vendor
+// declared in testdata/fieldmatrix/endpoints/ as **distinct,
+// simultaneously-configured endpoints** with **distinct real API keys**,
+// each routed to its own mock upstream server replaying a real captured
+// response body from testdata/vendor-cassettes/ (see that directory's
+// README for provenance/licenses) — the same real-data corpus
 // internal/cassette/replay already exercises at the translator layer, one
 // level up: full auth + routing + protocol translation + billing, through
 // the real middleware chain, for every vendor at once.
@@ -208,8 +209,8 @@ func min(a, b int) int {
 }
 
 // TestE2E_MultiVendor_AllProtocols is the "full system" check the real
-// vendor-cassette corpus exists for: four distinct endpoints (openai /
-// anthropic / gemini / cohere), four distinct real API keys, all seeded and
+// vendor-cassette corpus exists for: one distinct endpoint + one distinct
+// real API key per vendor in testdata/fieldmatrix/endpoints/, all seeded and
 // live at once, each routed to its own mock upstream replaying a real
 // captured response — proving auth, model-based routing, protocol
 // translation, and billing all work correctly per-vendor without one
