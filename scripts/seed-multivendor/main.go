@@ -1,11 +1,14 @@
 // Command seed-multivendor seeds one endpoint + one real API key **per
-// upstream vendor** (openai / anthropic / gemini / cohere) against a single
-// mockupstream instance, so a freshly started local stack (make stack +
-// make run-mockupstream + make run-gateway) has, in one step, the same
-// multi-vendor business data shape internal/app/gateway's
-// TestE2E_MultiVendor_AllProtocols already exercises in-process — letting a
-// human (or scripts/e2e-smoke.sh) drive a real compiled gateway binary
-// through every client-facing protocol with one seed run.
+// upstream vendor** against a single mockupstream instance, driven entirely
+// by the manifests under testdata/fieldmatrix/endpoints/ (repo root) — see
+// internal/cassette/vendorfixture's doc comment for the file shape. A
+// freshly started local stack (make stack + make run-mockupstream + make
+// run-gateway) gets, in one step, the same multi-vendor business data shape
+// internal/app/gateway's TestE2E_MultiVendor_AllProtocols exercises
+// in-process — letting a human (or scripts/e2e-smoke-multivendor.sh) drive a
+// real compiled gateway binary through every client-facing protocol with one
+// seed run. Adding a vendor here is a new JSON file in that directory, not a
+// code change.
 //
 // Idempotent: every insert is ON DUPLICATE KEY UPDATE, so re-running this on
 // every stack startup is safe and just leaves the same rows in place.
@@ -32,55 +35,11 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 
+	"github.com/zereker/llm-gateway/internal/cassette"
+	"github.com/zereker/llm-gateway/internal/cassette/vendorfixture"
 	"github.com/zereker/llm-gateway/internal/infra"
 	"github.com/zereker/llm-gateway/internal/repo"
 )
-
-// scenario mirrors internal/app/gateway/fieldmatrix_multivendor_test.go's
-// vendorScenario: adding a fifth vendor here is one more literal in
-// scenarios(), nothing else changes.
-type scenario struct {
-	vendor      string
-	protocol    string
-	model       string
-	authType    string
-	authPayload any // repo.BearerAuth / XAPIKeyAuth / GeminiAuth / ... — whatever authType requires
-	apiKey      string
-	upstreamURL string // full URL on the mockupstream instance this vendor's route lives at
-}
-
-func scenarios(mockBase string) []scenario {
-	return []scenario{
-		{
-			vendor: "openai", protocol: "openai", model: "mock-openai-model",
-			authType: repo.AuthTypeBearer, authPayload: repo.BearerAuth{APIKey: "sk-upstream-mock-openai"},
-			apiKey:      "sk-mv-openai",
-			upstreamURL: mockBase + "/v1/chat/completions",
-		},
-		{
-			vendor: "anthropic", protocol: "anthropic", model: "mock-anthropic-model",
-			authType: repo.AuthTypeXAPIKey, authPayload: repo.XAPIKeyAuth{APIKey: "sk-upstream-mock-anthropic"},
-			apiKey:      "sk-mv-anthropic",
-			upstreamURL: mockBase + "/v1/messages",
-		},
-		{
-			vendor: "gemini", protocol: "gemini", model: "mock-gemini-model",
-			authType: repo.AuthTypeGeminiKey, authPayload: repo.GeminiAuth{APIKey: "sk-upstream-mock-gemini"},
-			apiKey: "sk-mv-gemini",
-			// gemini's session.BuildRequest forwards Routing.URL verbatim (no
-			// {model} templating) -- the segment here only has to look like a
-			// real generateContent URL to mockupstream's handleGemini, which
-			// only parses it for the echoed modelVersion field.
-			upstreamURL: mockBase + "/v1beta/models/mock-gemini-model:generateContent",
-		},
-		{
-			vendor: "cohere", protocol: "cohere", model: "mock-cohere-model",
-			authType: repo.AuthTypeBearer, authPayload: repo.BearerAuth{APIKey: "sk-upstream-mock-cohere"},
-			apiKey:      "sk-mv-cohere",
-			upstreamURL: mockBase + "/v2/chat",
-		},
-	}
-}
 
 func main() {
 	dsn := flag.String("dsn", "", "MySQL DSN")
@@ -93,6 +52,11 @@ func main() {
 	}
 	if err := repo.SetDataKey(*dataKey); err != nil {
 		log.Fatalf("set data key: %v", err)
+	}
+
+	scenarios, err := vendorfixture.LoadDir(cassette.TestdataPath("fieldmatrix", "endpoints"))
+	if err != nil {
+		log.Fatalf("load vendor manifests: %v", err)
 	}
 
 	db, err := sqlx.Connect("mysql", *dsn)
@@ -113,26 +77,26 @@ func main() {
 		log.Fatalf("accounts: %v", err)
 	}
 
-	for _, sc := range scenarios(*mockBase) {
-		if err := seedOne(ctx, db, sc); err != nil {
-			log.Fatalf("seed %s: %v", sc.vendor, err)
+	for _, sc := range scenarios {
+		if err := seedOne(ctx, db, sc, *mockBase); err != nil {
+			log.Fatalf("seed %s: %v", sc.Vendor, err)
 		}
-		fmt.Fprintf(os.Stdout, "%s model=%s api_key=%s\n", sc.vendor, sc.model, sc.apiKey)
+		fmt.Fprintf(os.Stdout, "%s model=%s api_key=%s\n", sc.Vendor, sc.Model, sc.ClientAPIKey)
 	}
 }
 
-func seedOne(ctx context.Context, db *sqlx.DB, sc scenario) error {
+func seedOne(ctx context.Context, db *sqlx.DB, sc vendorfixture.Scenario, mockBase string) error {
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO model_services (service_id, model)
 		VALUES (?, ?)
 		ON DUPLICATE KEY UPDATE service_id=service_id`,
-		sc.vendor+"/"+sc.model, sc.model)
+		sc.Vendor+"/"+sc.Model, sc.Model)
 	if err != nil {
 		return fmt.Errorf("model_services: %w", err)
 	}
 	msID, _ := res.LastInsertId()
 	if msID == 0 {
-		if err := db.GetContext(ctx, &msID, `SELECT id FROM model_services WHERE model=?`, sc.model); err != nil {
+		if err := db.GetContext(ctx, &msID, `SELECT id FROM model_services WHERE model=?`, sc.Model); err != nil {
 			return fmt.Errorf("re-fetch model_service: %w", err)
 		}
 	}
@@ -144,20 +108,20 @@ func seedOne(ctx context.Context, db *sqlx.DB, sc scenario) error {
 		return fmt.Errorf("subscriptions: %w", err)
 	}
 
-	auth, err := repo.EncodePayload(sc.authType, sc.authPayload)
+	auth, err := repo.EncodePayload(sc.AuthType, sc.UpstreamAuth)
 	if err != nil {
 		return fmt.Errorf("encode auth: %w", err)
 	}
 	ep := &repo.Endpoint{
-		Name:     "mv_" + sc.vendor,
-		Vendor:   sc.vendor,
-		Protocol: sc.protocol,
-		Model:    sc.model,
+		Name:     "mv_" + sc.Vendor,
+		Vendor:   sc.Vendor,
+		Protocol: sc.Protocol,
+		Model:    sc.Model,
 		Group:    "default",
 		Weight:   100,
 		Enabled:  true,
 		Auth:     auth,
-		Routing:  repo.RoutingConfig{URL: sc.upstreamURL},
+		Routing:  repo.RoutingConfig{URL: mockBase + sc.UpstreamPath},
 	}
 	if _, err := db.NamedExecContext(ctx, `
 		INSERT INTO endpoints
@@ -172,7 +136,7 @@ func seedOne(ctx context.Context, db *sqlx.DB, sc scenario) error {
 		return fmt.Errorf("endpoints: %w", err)
 	}
 
-	hash := repo.HashAPIKey(sc.apiKey)
+	hash := repo.HashAPIKey(sc.ClientAPIKey)
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO api_keys
 		  (account_id, api_key_hash, api_key_prefix, api_key_id,
@@ -180,7 +144,7 @@ func seedOne(ctx context.Context, db *sqlx.DB, sc scenario) error {
 		VALUES
 		  ('e2e-multivendor', ?, ?, ?, ?, 'default', 1)
 		ON DUPLICATE KEY UPDATE account_id=account_id`,
-		hash, apiKeyPrefix(sc.apiKey), "ak_mv_"+sc.vendor, sc.vendor+"@e2e-multivendor"); err != nil {
+		hash, apiKeyPrefix(sc.ClientAPIKey), "ak_mv_"+sc.Vendor, sc.Vendor+"@e2e-multivendor"); err != nil {
 		if !isDuplicateErr(err) {
 			return fmt.Errorf("api_keys: %w", err)
 		}

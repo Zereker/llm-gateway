@@ -1,0 +1,14 @@
+{
+  "vendor": "gemini",
+  "protocol": "gemini",
+  "model": "mock-gemini-model",
+  "auth_type": "gemini-key",
+  "client_api_key": "sk-mv-gemini",
+  "upstream_auth": {"api_key": "sk-upstream-mock-gemini"},
+  "upstream_path": "/v1beta/models/mock-gemini-model:generateContent",
+  "reply": {
+    "kind": "cassette",
+    "path": "gemini/simonw-llm-gemini/test_tools.yaml",
+    "index": 0
+  }
+}
