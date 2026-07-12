@@ -11,6 +11,39 @@ permissions:
 jobs:
   go:
     runs-on: ubuntu-latest
+    # Mirrors `make test-integration` (mysql + redis from docker-compose.yml) so CI
+    # exercises the SQL (internal/repo, outbox) and Redis-backed (ratelimit, cachebus,
+    # semantic cache, selector affinity) suites instead of silently skipping them —
+    # those tests self-gate on MYSQL_DSN / REDIS_ADDR being unset (see e.g.
+    # internal/cachebus/cachebus_test.go), which is exactly what plain `go test ./...`
+    # without these services does. Kafka/outbox's live-broker test
+    # (internal/infra/kafka_test.go's TestKafkaProducer_WriteIntegration) stays
+    # skipped, matching that test's own "skipped by default in CI" doc comment.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: llm_gateway_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+    env:
+      MYSQL_DSN: root:@tcp(127.0.0.1:3306)/llm_gateway_test?parseTime=true&charset=utf8mb4
+      REDIS_ADDR: 127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,7 +53,9 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        # -p 1: the SQL suite TRUNCATEs shared tables between cases (see CLAUDE.md),
+        # so packages must not run concurrently against the same database.
+        run: go test -p 1 ./...
       - name: Build commands
         run: go build ./cmd/...
 
