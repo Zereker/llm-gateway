@@ -105,7 +105,12 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		ak := req.Group + "|" + req.SessionKey
 		if id, ok := s.cfg.Affinity.Get(ctx, ak); ok {
 			for _, c := range survived {
-				if c.Endpoint.ID == id {
+				// Match by ID *and* EffectiveWeight > 0: a soft-offlined
+				// endpoint (admin sets weight=0 to drain it) still survives the
+				// filter chain, but the pickers exclude weight<=0 — the sticky
+				// path must honor the same rule, or drained sessions never
+				// migrate off. Falls through to normal selection + re-pin.
+				if c.Endpoint.ID == id && c.EffectiveWeight > 0 {
 					s.cfg.Affinity.Set(ctx, ak, id)  // refresh TTL — steady-state hits must also renew, otherwise an active session loses its pin after the TTL expires
 					return s.chosen(c.Endpoint), nil // sticky hit
 				}

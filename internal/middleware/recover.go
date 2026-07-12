@@ -26,12 +26,19 @@ func Recover() gin.HandlerFunc {
 					"recover", r,
 					"stack", string(debug.Stack()),
 				)
-				writeError(c, &domain.AdapterError{
-					Class:      domain.ErrUnknown,
-					Code:       domain.ErrCodeInternalError,
-					HTTPStatus: 500,
-					Message:    "internal server error",
-				})
+				// Only synthesize a 500 body if nothing has been sent yet. A
+				// panic mid-stream (bytes already flushed to the client) must
+				// not have a JSON error appended onto the in-flight response —
+				// that corrupts it. Same guard as the rc.Error path below; the
+				// panic is already logged + metered above.
+				if !c.Writer.Written() {
+					writeError(c, &domain.AdapterError{
+						Class:      domain.ErrUnknown,
+						Code:       domain.ErrCodeInternalError,
+						HTTPStatus: 500,
+						Message:    "internal server error",
+					})
+				}
 			}
 		}()
 
