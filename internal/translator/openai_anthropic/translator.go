@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/translator"
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
@@ -1189,26 +1191,14 @@ func anthropicIDOrGen(anthropicID string) string {
 	return "chatcmpl-" + strings.TrimPrefix(anthropicID, "msg_")
 }
 
-// isAnthropicError roughly determines whether body is an error response (top-level "error" key).
+// isAnthropicError reports whether body is an error response, keyed off a
+// **structural** top-level "error" object rather than scanning bytes for an
+// "error" substring. The substring approach misdetects a success response
+// whose content happens to contain "error" — misdetection returns the raw
+// untranslated body to the client and drops usage (a billing under-count).
+// Matches openai_gemini.isGeminiError.
 func isAnthropicError(body []byte) bool {
-	for i := 0; i < len(body) && i < 30; i++ {
-		if body[i] == '{' {
-			rest := body[i:]
-			if len(rest) > 200 {
-				rest = rest[:200]
-			}
-
-			for j := 0; j+7 <= len(rest); j++ {
-				if string(rest[j:j+7]) == `"error"` {
-					return true
-				}
-			}
-
-			return false
-		}
-	}
-
-	return false
+	return gjson.GetBytes(body, "error").IsObject()
 }
 
 func randID() string {
