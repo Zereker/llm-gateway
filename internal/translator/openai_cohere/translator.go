@@ -24,6 +24,16 @@
 // image_url content part, so a user message's image_url parts pass through
 // almost unchanged (see buildUserContent) — no reshaping needed.
 //
+// **Reasoning**: command-a-reasoning-08-2025 (verified against a real captured
+// cassette, langchain-ai/langchain-cohere MIT) emits a "thinking" content block
+// ahead of its final text/tool_calls block; unlike Anthropic's extended
+// thinking it carries no signature. It's surfaced on the response as
+// reasoning_content (matching the openai_anthropic convention), but — like
+// Vercel AI SDK's own Cohere provider — is not sent back on history replay:
+// Cohere's request schema has no equivalent inbound field, and dropping it
+// costs nothing since there's no signature Cohere would reject a tool_use
+// without.
+//
 // Other client protocols (Anthropic / Responses) reach this via the OpenAI pivot composition
 // (see translator.compose).
 package openai_cohere
@@ -324,6 +334,12 @@ type responseHandler struct {
 	lineBuf []byte // line buffer for SSE mode (retains a partial line across Feed calls)
 	id      string
 	usage   *domain.Usage
+	// contentType tracks each content block's type (as announced by its content-start
+	// event) by index, since content-delta only repeats the changed field (text or
+	// thinking), not the type — verified against a real command-a-reasoning-08-2025
+	// cassette (langchain-ai/langchain-cohere, MIT) and cross-checked against Vercel AI
+	// SDK's Cohere provider parser (packages/cohere/src/cohere-chat-language-model.ts).
+	contentType map[int64]string
 }
 
 func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
@@ -411,7 +427,24 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 	switch ev.Get("type").String() {
 	case "message-start":
 		return h.chunk(map[string]any{"role": "assistant"}, "")
+	case "content-start":
+		if h.contentType == nil {
+			h.contentType = make(map[int64]string)
+		}
+		h.contentType[ev.Get("index").Int()] = ev.Get("delta.message.content.type").String()
+		return nil
 	case "content-delta":
+		idx := ev.Get("index").Int()
+		// command-a-reasoning-08-2025 emits a "thinking" content block (Cohere's
+		// analog of Anthropic extended thinking) ahead of the final text/tool_calls;
+		// unlike Anthropic it carries no signature to replay back in history.
+		if h.contentType[idx] == "thinking" {
+			thinking := ev.Get("delta.message.content.thinking").String()
+			if thinking == "" {
+				return nil
+			}
+			return h.chunk(map[string]any{"reasoning_content": thinking}, "")
+		}
 		text := ev.Get("delta.message.content.text").String()
 		if text == "" {
 			return nil
@@ -463,7 +496,7 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		// has an OpenAI-compatible equivalent, so both are intentionally
 		// dropped rather than guessed at.
 		return nil
-	default: // content-start / content-end etc.: skip
+	default: // content-end etc.: skip
 		return nil
 	}
 }
@@ -486,11 +519,16 @@ func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
 func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	root := gjson.ParseBytes(buf)
 
-	// concatenate message.content[].text
-	var text strings.Builder
+	// concatenate message.content[].text / .thinking (command-a-reasoning-08-2025 emits a
+	// "thinking" block ahead of the text/tool_calls block; see translateEvent for the
+	// streaming equivalent and its real-data provenance).
+	var text, reasoning strings.Builder
 	root.Get("message.content").ForEach(func(_, part gjson.Result) bool {
-		if part.Get("type").String() == "text" {
+		switch part.Get("type").String() {
+		case "text":
 			text.WriteString(part.Get("text").String())
+		case "thinking":
+			reasoning.WriteString(part.Get("thinking").String())
 		}
 		return true
 	})
@@ -528,6 +566,9 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 		}
 	} else {
 		message["content"] = text.String()
+	}
+	if reasoning.Len() > 0 {
+		message["reasoning_content"] = reasoning.String()
 	}
 
 	resp := map[string]any{
