@@ -73,6 +73,41 @@ jobs:
             sleep 1
           done
           echo "Kafka never opened port 9092" >&2; exit 1
+      - name: Create Kafka test topic
+        # apache/kafka:latest defaults to auto.create.topics.enable=false, so
+        # TestKafkaProducer_WriteIntegration's Write fails with "Unknown Topic Or
+        # Partition" unless the topic exists first (confirmed by an actual failed
+        # CI run — this isn't a guess). Rather than guess at this image's server.properties
+        # override env vars or the kafka-topics.sh binary's path inside the container,
+        # create it with the kafka-go client already vendored for internal/infra.
+        run: |
+          cat > /tmp/create_kafka_topic.go << 'EOF'
+          package main
+
+          import (
+                  "log"
+                  "os"
+
+                  "github.com/segmentio/kafka-go"
+          )
+
+          func main() {
+                  conn, err := kafka.Dial("tcp", os.Getenv("KAFKA_BROKERS"))
+                  if err != nil {
+                          log.Fatalf("dial: %v", err)
+                  }
+                  defer conn.Close()
+                  if err := conn.CreateTopics(kafka.TopicConfig{
+                          Topic:             os.Getenv("KAFKA_TOPIC"),
+                          NumPartitions:     1,
+                          ReplicationFactor: 1,
+                  }); err != nil {
+                          log.Fatalf("create topic: %v", err)
+                  }
+                  log.Printf("topic %q ready", os.Getenv("KAFKA_TOPIC"))
+          }
+          EOF
+          go run /tmp/create_kafka_topic.go
       - name: Vet
         run: go vet ./...
       - name: Test
