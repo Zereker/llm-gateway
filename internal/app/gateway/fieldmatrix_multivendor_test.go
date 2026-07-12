@@ -29,10 +29,11 @@ import (
 )
 
 // realCassetteResponse loads interaction index idx's response body from a
-// vendor-cassettes file (relative to internal/app/gateway/testdata/).
+// vendor-cassettes file (relative to testdata/vendor-cassettes/ at the repo
+// root — see cassette.TestdataPath).
 func realCassetteResponse(t *testing.T, relPath string, idx int) []byte {
 	t.Helper()
-	interactions, err := cassette.Load("testdata/vendor-cassettes/" + relPath)
+	interactions, err := cassette.Load(cassette.TestdataPath("vendor-cassettes", relPath))
 	if err != nil {
 		t.Fatalf("cassette.Load %s: %v", relPath, err)
 	}
@@ -209,7 +210,7 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 		{
 			vendor: "openai", protocol: "openai", model: "test-openai-model",
 			authType: repo.AuthTypeBearer, apiKey: "sk-e2e-openai", upstreamKey: "sk-upstream-openai",
-			reply: readFixtureFile(t, "testdata/fieldmatrix/upstream/chat-openai-compat.json"),
+			reply: readFixtureFile(t, cassette.TestdataPath("fieldmatrix", "upstream", "chat-openai-compat.json")),
 		},
 		{
 			vendor: "anthropic", protocol: "anthropic", model: "test-anthropic-model",

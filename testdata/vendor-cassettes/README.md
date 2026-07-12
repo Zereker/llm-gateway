@@ -6,7 +6,7 @@
 
 验证 `internal/translator/*` 的协议转换是否正确，最有说服力的证据是真实厂商的请求/响应，而不是我们自己拍的假数据，也不是转述文档。这几个开源项目的测试套件里恰好有,而且用的都是允许再分发的宽松许可证（Apache 2.0 / MIT）。把它们存到仓库里,以后再核对某个字段的真实形状,直接翻这个目录,不用每次都重新上网找。
 
-`internal/app/gateway/testdata/fieldmatrix/upstream/` 那批文件是**精加工**的——针对某个具体 E2E 测试场景做过截断/脱敏/改名；这里的是**原始语料**，未经加工，覆盖面更广，供以后翻查、抽取、验证用。两者不是同一个东西，互不替代。
+`testdata/fieldmatrix/upstream/` 那批文件是**精加工**的——针对某个具体 E2E 测试场景做过截断/脱敏/改名；这里的是**原始语料**，未经加工，覆盖面更广，供以后翻查、抽取、验证用。两者不是同一个东西，互不替代。
 
 ## 目录结构
 
@@ -104,6 +104,6 @@ body = req["body"]  # bytes，可能需要 gzip.decompress
 
 ## 注意
 
-- 这些 cassette 是第三方项目公开发布、允许再分发的测试固件（Apache 2.0 / MIT），不是我们调用真实 API 录制的——`internal/app/gateway/testdata/fieldmatrix/upstream/` 里经过脱敏/裁剪的衍生 fixture 才是我们主动整理过的。
+- 这些 cassette 是第三方项目公开发布、允许再分发的测试固件（Apache 2.0 / MIT），不是我们调用真实 API 录制的——`testdata/fieldmatrix/upstream/` 里经过脱敏/裁剪的衍生 fixture 才是我们主动整理过的。
 - pytest-recording 录制时已经把鉴权头（`x-api-key`/`authorization`）替换成 `**REDACTED**`，我们额外核对过一遍全部文件，没有发现任何真实密钥、token 或签名 URL。
 - 后续如果又找到新的真实数据源，照这个模式加：新开一个 `<vendor>/<source-repo>/` 目录，把原始 cassette 原样存进去,附上 LICENSE，在这份 README 里补一行说明覆盖了什么、以及我们的实现现状。

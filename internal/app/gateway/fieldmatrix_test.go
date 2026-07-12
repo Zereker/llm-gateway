@@ -15,12 +15,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/infra"
 	"github.com/zereker/llm-gateway/internal/repo"
 )
@@ -29,7 +29,7 @@ import (
 func loadFixture(t *testing.T, name string) ([]byte, map[string]any) {
 	t.Helper()
 
-	body, err := os.ReadFile(filepath.Join("testdata", "fieldmatrix", name))
+	body, err := os.ReadFile(cassette.TestdataPath("fieldmatrix", name))
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", name, err)
 	}
@@ -47,7 +47,7 @@ func loadFixture(t *testing.T, name string) ([]byte, map[string]any) {
 func upstreamFixture(t *testing.T, name string) []byte {
 	t.Helper()
 
-	body, err := os.ReadFile(filepath.Join("testdata", "fieldmatrix", "upstream", name))
+	body, err := os.ReadFile(cassette.TestdataPath("fieldmatrix", "upstream", name))
 	if err != nil {
 		t.Fatalf("read upstream fixture %s: %v", name, err)
 	}
