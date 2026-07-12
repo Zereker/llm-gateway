@@ -40,11 +40,13 @@ func scanEndpoints(ctx context.Context, reader repo.DomainEndpointReader, valida
 	for _, ep := range eps {
 		for _, reason := range validator.Validate(ep) {
 			bad++
+
 			log.Warn("endpoint misconfigured",
 				"endpoint_id", ep.ID, "name", ep.Name, "vendor", ep.Vendor,
 				"protocol", ep.Protocol.String(), "reason", reason)
 			metric.Inc(metric.EndpointMisconfiguredTotal, "vendor", ep.Vendor, "reason", reason)
 		}
 	}
+
 	log.Info("endpoint scan complete", "total", len(eps), "misconfigured_findings", bad)
 }

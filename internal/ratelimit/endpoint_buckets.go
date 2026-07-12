@@ -26,10 +26,12 @@ func EndpointTPMChargeBucket(ep *domain.Endpoint, cost uint32) *Bucket {
 	if ep == nil {
 		return nil
 	}
+
 	q := ep.Quota
 	if q.TPM == nil || *q.TPM == 0 || cost == 0 {
 		return nil
 	}
+
 	return &Bucket{
 		Key:    fmt.Sprintf("rl:endpoint:%d:tpm", ep.ID),
 		Limit:  *q.TPM,
@@ -44,7 +46,9 @@ func buildEndpointReserveBuckets(ep *domain.Endpoint, rpsCost uint32) []Bucket {
 	if ep == nil {
 		return nil
 	}
+
 	q := ep.Quota
+
 	var buckets []Bucket
 	if q.RPM != nil && *q.RPM > 0 {
 		buckets = append(buckets, Bucket{
@@ -54,6 +58,7 @@ func buildEndpointReserveBuckets(ep *domain.Endpoint, rpsCost uint32) []Bucket {
 			Window: time.Minute,
 		})
 	}
+
 	if q.RPS != nil && *q.RPS > 0 {
 		buckets = append(buckets, Bucket{
 			Key:    fmt.Sprintf("rl:endpoint:%d:rps", ep.ID),
@@ -62,5 +67,6 @@ func buildEndpointReserveBuckets(ep *domain.Endpoint, rpsCost uint32) []Bucket {
 			Window: time.Second,
 		})
 	}
+
 	return buckets
 }

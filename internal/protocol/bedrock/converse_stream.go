@@ -27,10 +27,12 @@ func (r *converseEventStreamReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+
 	for len(r.pending) == 0 {
 		if r.err != nil {
 			return 0, r.err
 		}
+
 		msg, err := r.dec.Decode(r.src, nil)
 		if err != nil {
 			r.err = err
@@ -38,6 +40,7 @@ func (r *converseEventStreamReader) Read(p []byte) (int, error) {
 				r.pending = sse
 				break
 			}
+
 			return 0, err
 		}
 		// Same exception-frame handling as InvokeModel's reader (see
@@ -47,12 +50,15 @@ func (r *converseEventStreamReader) Read(p []byte) (int, error) {
 			r.err = exErr
 			return 0, exErr
 		}
+
 		if sse := converseFrameToSSE(msg); sse != nil {
 			r.pending = sse
 		}
 	}
+
 	n := copy(p, r.pending)
 	r.pending = r.pending[n:]
+
 	return n, nil
 }
 
@@ -63,10 +69,12 @@ func converseFrameToSSE(msg eventstream.Message) []byte {
 	if len(msg.Payload) == 0 {
 		return nil
 	}
+
 	et := msg.Headers.Get(":event-type")
 	if et == nil {
 		return nil
 	}
+
 	out := make([]byte, 0, len(msg.Payload)+len(et.String())+16)
 	out = append(out, "event: "...)
 	out = append(out, et.String()...)
@@ -74,5 +82,6 @@ func converseFrameToSSE(msg eventstream.Message) []byte {
 	out = append(out, "data: "...)
 	out = append(out, msg.Payload...)
 	out = append(out, '\n', '\n')
+
 	return out
 }

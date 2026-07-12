@@ -20,6 +20,7 @@ func ToDomainEndpoint(e *Endpoint) *domain.Endpoint {
 	if e == nil {
 		return nil
 	}
+
 	return &domain.Endpoint{
 		ID:           e.ID,
 		Name:         e.Name,
@@ -46,10 +47,12 @@ func ToDomainEndpoints(rows []*Endpoint) []*domain.Endpoint {
 	if rows == nil {
 		return nil
 	}
+
 	out := make([]*domain.Endpoint, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, ToDomainEndpoint(r))
 	}
+
 	return out
 }
 
@@ -58,6 +61,7 @@ func ToDomainModelService(m *ModelService) *domain.ModelService {
 	if m == nil {
 		return nil
 	}
+
 	return &domain.ModelService{
 		ID:        m.ID,
 		ServiceID: m.ServiceID,

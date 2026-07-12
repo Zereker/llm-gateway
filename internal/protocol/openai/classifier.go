@@ -34,6 +34,7 @@ func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	if len(body) == 0 {
 		return base
 	}
+
 	var probe struct {
 		Error *struct {
 			Type    string `json:"type"`
@@ -63,6 +64,7 @@ func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 			base.Class = domain.ErrInvalid
 		}
 	}
+
 	return base
 }
 

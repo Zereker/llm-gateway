@@ -26,6 +26,10 @@ const epColumns = `id, name, vendor, protocol, model, group_name, weight, enable
 	auth, routing, quota, capabilities, quirks, extra,
 	created_at, updated_at, deleted_at`
 
+// defaultGroup is the group_name endpoints fall back to when the caller
+// doesn't specify one.
+const defaultGroup = "default"
+
 // ListForModel implements EndpointReader.ListForModel.
 //
 // Returns all endpoints matching (model, group_name) that are enabled and not
@@ -38,9 +42,11 @@ func (r *SQLEndpointReader) ListForModel(ctx context.Context, model, group strin
 	if model == "" {
 		return nil, errors.New("endpoint: empty model name")
 	}
+
 	if group == "" {
-		group = "default"
+		group = defaultGroup
 	}
+
 	var rows []Endpoint
 	if err := r.db.SelectContext(ctx, &rows, r.db.Rebind(
 		`SELECT `+epColumns+`
@@ -52,10 +58,12 @@ func (r *SQLEndpointReader) ListForModel(ctx context.Context, model, group strin
 	); err != nil {
 		return nil, fmt.Errorf("endpoint: list for model: %w", err)
 	}
+
 	out := make([]*Endpoint, len(rows))
 	for i := range rows {
 		out[i] = &rows[i]
 	}
+
 	return out, nil
 }
 
@@ -68,10 +76,13 @@ func (r *SQLEndpointReader) PickForModel(ctx context.Context, model, group strin
 	if model == "" {
 		return nil, errors.New("endpoint: empty model name")
 	}
+
 	if group == "" {
-		group = "default"
+		group = defaultGroup
 	}
+
 	var ep Endpoint
+
 	err := r.db.GetContext(ctx, &ep, r.db.Rebind(
 		`SELECT `+epColumns+`
 		 FROM endpoints
@@ -83,8 +94,10 @@ func (r *SQLEndpointReader) PickForModel(ctx context.Context, model, group strin
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("endpoint: no endpoint for model=%q group=%q", model, group)
 		}
+
 		return nil, fmt.Errorf("endpoint: pick: %w", err)
 	}
+
 	return &ep, nil
 }
 
@@ -93,7 +106,9 @@ func (r *SQLEndpointReader) GetByID(ctx context.Context, id int64) (*Endpoint, e
 	if id == 0 {
 		return nil, errors.New("endpoint: empty id")
 	}
+
 	var ep Endpoint
+
 	err := r.db.GetContext(ctx, &ep, r.db.Rebind(
 		`SELECT `+epColumns+` FROM endpoints
 		 WHERE id = ? AND deleted_at IS NULL`),
@@ -102,8 +117,10 @@ func (r *SQLEndpointReader) GetByID(ctx context.Context, id int64) (*Endpoint, e
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("endpoint: not found: id=%d", id)
 		}
+
 		return nil, fmt.Errorf("endpoint: get by id: %w", err)
 	}
+
 	return &ep, nil
 }
 
@@ -116,10 +133,12 @@ func (r *SQLEndpointReader) List(ctx context.Context) ([]*Endpoint, error) {
 	); err != nil {
 		return nil, fmt.Errorf("endpoint: list: %w", err)
 	}
+
 	out := make([]*Endpoint, len(rows))
 	for i := range rows {
 		out[i] = &rows[i]
 	}
+
 	return out, nil
 }
 

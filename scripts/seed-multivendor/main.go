@@ -27,6 +27,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -161,7 +162,7 @@ func apiKeyPrefix(plain string) string {
 }
 
 func isDuplicateErr(err error) bool {
-	if err == nil || err == sql.ErrNoRows {
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
 		return false
 	}
 	msg := err.Error()

@@ -33,8 +33,10 @@ func WithSourceProtocol(proto domain.Protocol, mod domain.Modality) gin.HandlerF
 		if rc.Envelope == nil {
 			rc.Envelope = &domain.RequestEnvelope{}
 		}
+
 		rc.Envelope.SourceProtocol = proto
 		rc.Envelope.Modality = mod
+
 		c.Next()
 	}
 }
@@ -66,11 +68,13 @@ func Envelope(lookup protocol.Lookup) gin.HandlerFunc {
 	if lookup == nil {
 		panic("middleware: Envelope requires a non-nil protocol.Lookup")
 	}
+
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		ctx, span := tracer.Start(c.Request.Context(), "envelope.parse")
 		defer span.End()
+
 		c.Request = c.Request.WithContext(ctx)
 
 		rc := GetRequestContext(c)
@@ -91,8 +95,10 @@ func Envelope(lookup protocol.Lookup) gin.HandlerFunc {
 			}
 
 			abort(c, 400, domain.ErrInvalid, "envelope: read body: "+err.Error())
+
 			return
 		}
+
 		_ = c.Request.Body.Close()
 
 		model, err := extractModel(raw)
@@ -130,13 +136,16 @@ func extractModel(raw []byte) (string, error) {
 	if len(raw) == 0 {
 		return "", errors.New("empty body")
 	}
+
 	res := gjson.GetBytes(raw, "model")
 	if !res.Exists() {
 		return "", errors.New("missing 'model' field")
 	}
+
 	model := res.String()
 	if model == "" {
 		return "", errors.New("'model' field is empty")
 	}
+
 	return model, nil
 }

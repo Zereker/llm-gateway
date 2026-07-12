@@ -27,15 +27,18 @@ func Cosine(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
 	}
+
 	var dot, na, nb float64
 	for i := range a {
 		dot += float64(a[i]) * float64(b[i])
 		na += float64(a[i]) * float64(a[i])
 		nb += float64(b[i]) * float64(b[i])
 	}
+
 	if na == 0 || nb == 0 {
 		return 0
 	}
+
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
@@ -57,9 +60,11 @@ func NewOpenAIEmbedder(apiKey, baseURL, model string) *OpenAIEmbedder {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
+
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
+
 	return &OpenAIEmbedder{
 		client:  &http.Client{Timeout: 5 * time.Second},
 		baseURL: baseURL,
@@ -71,22 +76,28 @@ func NewOpenAIEmbedder(apiKey, baseURL, model string) *OpenAIEmbedder {
 func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	body, _ := json.Marshal(map[string]any{"model": e.model, "input": text})
 	url := embeddingsURL(e.baseURL)
+
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header.Set("Content-Type", "application/json")
+
 	if e.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+e.apiKey)
 	}
+
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("embed: %w", err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("embed: upstream status %d", resp.StatusCode)
 	}
+
 	var out struct {
 		Data []struct {
 			Embedding []float32 `json:"embedding"`
@@ -95,9 +106,11 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("embed: decode: %w", err)
 	}
+
 	if len(out.Data) == 0 || len(out.Data[0].Embedding) == 0 {
 		return nil, errors.New("embed: empty embedding")
 	}
+
 	return out.Data[0].Embedding, nil
 }
 

@@ -37,6 +37,7 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 	if len(candidates) == 0 || f.reader == nil {
 		return candidates
 	}
+
 	hasQuota := false
 	for _, candidate := range candidates {
 		if candidate != nil && ((candidate.Quota.RPM != nil && *candidate.Quota.RPM > 0) ||
@@ -45,6 +46,7 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 			break
 		}
 	}
+
 	if !hasQuota {
 		return candidates
 	}
@@ -62,6 +64,7 @@ func (f *LimitReadFilter) Apply(ctx context.Context, candidates []*domain.Endpoi
 			out = append(out, ep)
 		}
 	}
+
 	return out
 }
 

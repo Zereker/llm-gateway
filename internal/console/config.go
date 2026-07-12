@@ -72,17 +72,22 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("console: read config: %w", err)
 		}
+
 		decoder := yaml.NewDecoder(bytes.NewReader(b))
 		decoder.KnownFields(true)
+
 		if err := decoder.Decode(&cfg); err != nil {
 			return nil, fmt.Errorf("console: parse config: %w", err)
 		}
 	}
+
 	cfg.applyEnv()
 	cfg.applyDefaults()
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+
 	return &cfg, nil
 }
 
@@ -90,21 +95,26 @@ func (c *Config) applyEnv() {
 	if v := os.Getenv("LLM_GATEWAY_DATABASE_DSN"); v != "" {
 		c.Database.DSN = v
 	}
+
 	if v := os.Getenv("LLM_GATEWAY_DATA_KEY"); v != "" {
 		c.DataKey = v
 	}
+
 	if v := os.Getenv("LLM_GATEWAY_REDIS_ADDR"); v != "" {
 		c.Redis.Addr = v
 	}
+
 	if v := os.Getenv("LLM_GATEWAY_REDIS_PASSWORD"); v != "" {
 		c.Redis.Password = v
 	}
+
 	if v := os.Getenv("LLM_GATEWAY_CONSOLE_TOKENS"); v != "" {
 		// Env shorthand form: comma-separated bare tokens, all assigned the admin role.
 		var toks []Token
 		for _, t := range splitComma(v) {
 			toks = append(toks, Token{Value: t, Role: RoleAdmin})
 		}
+
 		c.Admin.Tokens = toks
 	}
 }
@@ -113,12 +123,15 @@ func (c *Config) applyDefaults() {
 	if c.Server.Addr == "" {
 		c.Server.Addr = ":8081"
 	}
+
 	if c.Server.ReadHeaderTimeout == 0 {
 		c.Server.ReadHeaderTimeout = 10 * time.Second
 	}
+
 	if c.Server.ShutdownTimeout == 0 {
 		c.Server.ShutdownTimeout = 15 * time.Second
 	}
+
 	if c.Database.Driver == "" {
 		c.Database.Driver = infra.DriverMySQL
 	}
@@ -128,27 +141,33 @@ func (c *Config) validate() error {
 	if c.Database.DSN == "" {
 		return fmt.Errorf("console: database.dsn required (set LLM_GATEWAY_DATABASE_DSN or config)")
 	}
+
 	if c.DataKey == "" {
 		return fmt.Errorf("console: data_key required (must match gateway's KEK)")
 	}
+
 	if len(c.Admin.Tokens) == 0 {
 		return fmt.Errorf("console: admin.tokens required (at least one bearer token; set LLM_GATEWAY_CONSOLE_TOKENS)")
 	}
+
 	for i, t := range c.Admin.Tokens {
 		if t.Value == "" {
 			return fmt.Errorf("console: admin.tokens[%d].token is empty", i)
 		}
+
 		if t.Role == "" {
 			c.Admin.Tokens[i].Role = RoleAdmin // default to admin
 		} else if t.Role != RoleAdmin && t.Role != RoleViewer {
 			return fmt.Errorf("console: admin.tokens[%d].role %q invalid (want admin|viewer)", i, t.Role)
 		}
 	}
+
 	return nil
 }
 
 func splitComma(s string) []string {
 	var out []string
+
 	start := 0
 	for i := 0; i <= len(s); i++ {
 		if i == len(s) || s[i] == ',' {
@@ -157,14 +176,18 @@ func splitComma(s string) []string {
 			for len(tok) > 0 && tok[0] == ' ' {
 				tok = tok[1:]
 			}
+
 			for len(tok) > 0 && tok[len(tok)-1] == ' ' {
 				tok = tok[:len(tok)-1]
 			}
+
 			if tok != "" {
 				out = append(out, tok)
 			}
+
 			start = i + 1
 		}
 	}
+
 	return out
 }

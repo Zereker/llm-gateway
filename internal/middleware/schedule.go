@@ -40,6 +40,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 	if d == nil {
 		panic("middleware.Schedule: dispatch.Dispatcher required")
 	}
+
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
@@ -51,6 +52,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 			c.Request = c.Request.WithContext(ctx)
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3/M5 did not run before M7")
+
 			return
 		}
 
@@ -85,6 +87,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 		if out.Decision != nil {
 			attempts = len(out.Decision.Attempts)
 		}
+
 		metric.Observe(metric.SchedulingDurationSeconds, time.Since(start).Seconds(),
 			"model", rc.ModelService.Model,
 			"attempts", strconv.Itoa(attempts),
@@ -98,6 +101,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 		if out.Result == dispatch.OutcomeStreamed {
 			return
 		}
+
 		abortByOutcome(c, out)
 	}
 }
@@ -108,12 +112,15 @@ func applyOutcomeToRC(rc *requeststate.State, out dispatch.Outcome) {
 	if out.RoutedModel != nil {
 		rc.RoutedModelService = out.RoutedModel
 	}
+
 	if out.Usage != nil {
 		rc.Usage = out.Usage
 	}
+
 	if out.Error != nil {
 		rc.Error = out.Error
 	}
+
 	if out.Decision != nil {
 		rc.SchedulingDecision = out.Decision
 	}
@@ -159,6 +166,7 @@ func errCodeFromDispatchClass(c dispatch.Class, r dispatch.OutcomeResult) string
 	case dispatch.OutcomeClientAbort:
 		return domain.ErrCodeClientClosedRequest
 	}
+
 	switch c {
 	case dispatch.ClassCapacity:
 		return domain.ErrCodeRateLimitExceeded
@@ -169,5 +177,6 @@ func errCodeFromDispatchClass(c dispatch.Class, r dispatch.OutcomeResult) string
 	case dispatch.ClassTransient:
 		return domain.ErrCodeUpstreamError
 	}
+
 	return domain.ErrCodeInternalError
 }

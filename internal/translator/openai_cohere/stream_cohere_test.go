@@ -1,9 +1,10 @@
 package openai_cohere
 
 import (
-	"github.com/tidwall/gjson"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestCohereStreamTranslate(t *testing.T) {

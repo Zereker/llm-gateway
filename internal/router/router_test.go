@@ -2,7 +2,6 @@ package router
 
 import (
 	"context"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -70,21 +69,6 @@ type panicInvokerFactory struct{}
 func (panicInvokerFactory) For(_ *domain.Endpoint, _ protocol.Handler, _ *domain.RequestEnvelope) dispatch.Invoker {
 	panic("router test: InvokerFactory.For should not be reached")
 }
-
-type panicInvoker struct{}
-
-func (panicInvoker) Invoke(_ context.Context) (dispatch.Result, error) {
-	panic("router test: Invoker.Invoke should not be reached")
-}
-
-type panicResult struct{}
-
-func (panicResult) Verdict() dispatch.Verdict  { panic("not reached") }
-func (panicResult) Endpoint() *domain.Endpoint { panic("not reached") }
-func (panicResult) StreamTo(context.Context, http.ResponseWriter) dispatch.StreamReport {
-	panic("not reached")
-}
-func (panicResult) Close() error { return nil }
 
 // stubLookup is a no-op protocol.Lookup; these router tests short-circuit at M2
 // Auth (401) and never dispatch, so Get is never actually called.

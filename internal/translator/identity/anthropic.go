@@ -39,6 +39,7 @@ func (h *anthropicResponseHandler) Feed(chunk []byte) ([]byte, error) {
 	if len(chunk) == 0 {
 		return nil, nil
 	}
+
 	h.ex.Feed(chunk)
 	// Same-protocol pass-through: return the chunk to the client unchanged
 	return chunk, nil

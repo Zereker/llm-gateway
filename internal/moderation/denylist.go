@@ -53,8 +53,10 @@ func NewDenylistGuard(patterns []string, checkOutput bool) (*DenylistGuard, erro
 		if err != nil {
 			return nil, fmt.Errorf("denylist: invalid pattern %q: %w", p, err)
 		}
+
 		compiled = append(compiled, re)
 	}
+
 	return &DenylistGuard{patterns: compiled, checkOutput: checkOutput}, nil
 }
 
@@ -69,14 +71,17 @@ func (g *DenylistGuard) CheckInput(_ context.Context, env *domain.RequestEnvelop
 	if env == nil {
 		return nil
 	}
+
 	if err := g.scan(env.RawBytes); err != nil {
 		return err
 	}
+
 	for _, s := range decodeJSONStrings(env.RawBytes) {
 		if err := g.scan([]byte(s)); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -89,8 +94,12 @@ func decodeJSONStrings(b []byte) []string {
 	if err := json.Unmarshal(b, &v); err != nil {
 		return nil
 	}
-	var out []string
-	var walk func(any)
+
+	var (
+		out  []string
+		walk func(any)
+	)
+
 	walk = func(node any) {
 		switch t := node.(type) {
 		case string:
@@ -102,11 +111,13 @@ func decodeJSONStrings(b []byte) []string {
 		case map[string]any:
 			for k, e := range t {
 				out = append(out, k)
+
 				walk(e)
 			}
 		}
 	}
 	walk(v)
+
 	return out
 }
 
@@ -120,6 +131,7 @@ func (g *DenylistGuard) CheckOutput(_ context.Context, chunk []byte) error {
 	if !g.checkOutput {
 		return nil
 	}
+
 	return g.scan(chunk)
 }
 
@@ -129,6 +141,7 @@ func (g *DenylistGuard) scan(b []byte) error {
 			return ErrDenied
 		}
 	}
+
 	return nil
 }
 

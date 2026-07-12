@@ -65,6 +65,7 @@ func (s *Sender) Send(
 			Reason:  "no handler for endpoint+srcProto",
 			Latency: time.Since(start),
 		}
+
 		return out, nil
 	}
 
@@ -82,6 +83,7 @@ func (s *Sender) Send(
 	s.hooks.fireUpstreamRequest(ctx, ep, call.UpstreamBody)
 
 	req := call.Request.WithContext(ctx)
+
 	resp, err := s.client.Do(req)
 	if err != nil {
 		out = Outcome{
@@ -89,6 +91,7 @@ func (s *Sender) Send(
 			Reason:  "upstream call: " + err.Error(),
 			Latency: time.Since(start),
 		}
+
 		return out, nil
 	}
 
@@ -119,6 +122,7 @@ func (s *Sender) Send(
 			// scheduler decides whether the class cools down at all.
 			RetryAfter: parseRetryAfter(resp.Header, time.Now()),
 		}
+
 		return out, nil
 	}
 
@@ -129,6 +133,7 @@ func (s *Sender) Send(
 		Latency:  time.Since(start),
 		Handler:  handler, // used by the Forward stage to obtain a ResponseStream
 	}
+
 	return out, nil
 }
 
@@ -145,7 +150,7 @@ func handlePrepareError(err error, start time.Time) (Outcome, error) {
 				Class:   ClassInvalid,
 				Reason:  "translate request: " + pe.Err.Error(),
 				Latency: time.Since(start),
-			}, fmt.Errorf("%w: %v", ErrInvalidRequest, pe.Err)
+			}, fmt.Errorf("%w: %w", ErrInvalidRequest, pe.Err)
 		case protocol.PhaseBuild:
 			return Outcome{
 				Stage:   StagePrepare,
@@ -155,6 +160,7 @@ func handlePrepareError(err error, start time.Time) (Outcome, error) {
 			}, nil
 		}
 	}
+
 	return Outcome{
 		Stage:   StagePrepare,
 		Class:   ClassPermanent,
@@ -168,15 +174,18 @@ func emitUpstreamMetrics(ep *domain.Endpoint, out Outcome) {
 	if ep == nil {
 		return
 	}
+
 	vendor := ep.Vendor
 	endpointID := strconv.FormatInt(ep.ID, 10)
 	model := ep.Model
 	result := "ok"
+
 	errClass := ""
 	if out.Class != ClassSuccess {
 		result = "error"
 		errClass = out.Class.String()
 	}
+
 	metric.Inc(metric.InvokerRequestsTotal,
 		"vendor", vendor,
 		"endpoint_id", endpointID,
@@ -201,14 +210,19 @@ func peekBodyForClassify(resp *http.Response) []byte {
 	if resp == nil || resp.Body == nil {
 		return nil
 	}
+
 	const peekMax = 4 * 1024
+
 	buf := make([]byte, peekMax)
+
 	n, _ := io.ReadFull(io.LimitReader(resp.Body, peekMax), buf)
 	if n == 0 {
 		return nil
 	}
+
 	peeked := buf[:n]
 	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peeked), resp.Body))
+
 	return peeked
 }
 

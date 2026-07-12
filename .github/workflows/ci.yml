@@ -9,6 +9,19 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          # Keep in sync with the version .golangci.yml was verified against.
+          version: v2.12.2
+
   go:
     runs-on: ubuntu-latest
     # Mirrors `make test-integration` (mysql + redis + a Kafka broker) so CI exercises

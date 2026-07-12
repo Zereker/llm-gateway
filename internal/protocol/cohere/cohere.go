@@ -20,6 +20,10 @@ import (
 	"github.com/zereker/llm-gateway/internal/protocol"
 )
 
+// VendorName is the key internal/builtin.NewLookup registers this Factory
+// under — shared with Metadata().Vendor below so the two can't drift apart.
+const VendorName = "cohere"
+
 // Factory implements protocol.Factory. No custom Classify — Cohere errors fall back
 // to DefaultClassifier's status-based classification.
 type Factory struct{}
@@ -27,7 +31,7 @@ type Factory struct{}
 // Metadata returns static metadata.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
-		Vendor:              "cohere",
+		Vendor:              VendorName,
 		SupportedModalities: []domain.Modality{domain.ModalityChat},
 	}
 }
@@ -47,9 +51,11 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("cohere: ep.routing.url empty")
 	}
+
 	if s.ep.Auth.Type != domain.AuthTypeBearer {
 		return nil, fmt.Errorf("cohere: unsupported auth type %q (want %q)", s.ep.Auth.Type, domain.AuthTypeBearer)
 	}
+
 	bearer, err := domain.DecodePayload[domain.BearerAuth](s.ep.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("cohere: decode bearer: %w", err)
@@ -59,15 +65,19 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
+
 	for k, vs := range extraHeaders { // quirks first
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
+
 	req.Header.Set("Content-Type", "application/json") // then protocol-required (overrides)
+
 	if bearer.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer.APIKey)
 	}
+
 	return req, nil
 }
 

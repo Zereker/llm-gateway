@@ -23,6 +23,17 @@ import (
 //
 // The caller clamps the returned value (see selector cooldown), so this
 // function only parses — it doesn't bound.
+// headerOpenAIRatelimitResetRequests and its sibling below name the two
+// OpenAI-style rate-limit headers this file reads; factored out since the
+// package's tests assert the parser reacts to these exact header names.
+const (
+	headerOpenAIRatelimitResetRequests = "x-ratelimit-reset-requests"
+	headerOpenAIRatelimitResetTokens   = "x-ratelimit-reset-tokens"
+
+	headerAnthropicRatelimitRequestsReset = "anthropic-ratelimit-requests-reset"
+	headerAnthropicRatelimitTokensReset   = "anthropic-ratelimit-tokens-reset"
+)
+
 func parseRetryAfter(h http.Header, now time.Time) time.Duration {
 	if d := parseRetryAfterValue(h.Get("Retry-After"), now); d > 0 {
 		return d
@@ -30,24 +41,26 @@ func parseRetryAfter(h http.Header, now time.Time) time.Duration {
 
 	// OpenAI-style duration pair: both buckets must clear → take the max.
 	var openai time.Duration
-	for _, k := range [...]string{"x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"} {
+	for _, k := range [...]string{headerOpenAIRatelimitResetRequests, headerOpenAIRatelimitResetTokens} {
 		if d, err := time.ParseDuration(h.Get(k)); err == nil && d > openai {
 			openai = d
 		}
 	}
+
 	if openai > 0 {
 		return openai
 	}
 
 	// Anthropic-style RFC 3339 pair: same max rule.
 	var anthropic time.Duration
-	for _, k := range [...]string{"anthropic-ratelimit-requests-reset", "anthropic-ratelimit-tokens-reset"} {
+	for _, k := range [...]string{headerAnthropicRatelimitRequestsReset, headerAnthropicRatelimitTokensReset} {
 		if t, err := time.Parse(time.RFC3339, h.Get(k)); err == nil {
 			if d := t.Sub(now); d > anthropic {
 				anthropic = d
 			}
 		}
 	}
+
 	return anthropic
 }
 
@@ -57,16 +70,20 @@ func parseRetryAfterValue(v string, now time.Time) time.Duration {
 	if v == "" {
 		return 0
 	}
+
 	if secs, err := strconv.Atoi(v); err == nil {
 		if secs <= 0 {
 			return 0
 		}
+
 		return time.Duration(secs) * time.Second
 	}
+
 	if t, err := http.ParseTime(v); err == nil {
 		if d := t.Sub(now); d > 0 {
 			return d
 		}
 	}
+
 	return 0
 }

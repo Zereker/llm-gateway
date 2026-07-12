@@ -103,6 +103,7 @@ func NewRegistry(translators ...Translator) *Registry {
 	for _, t := range translators {
 		r.Register(t)
 	}
+
 	return r
 }
 
@@ -111,12 +112,15 @@ func (r *Registry) Register(t Translator) {
 	if t == nil {
 		panic("translator: nil registration")
 	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	k := key{src: t.Source(), tgt: t.Target()}
 	if _, dup := r.m[k]; dup {
 		panic("translator: duplicate registration for " + t.Source().String() + " → " + t.Target().String())
 	}
+
 	r.m[k] = t
 }
 
@@ -125,7 +129,9 @@ func (r *Registry) Find(source, target domain.Protocol) Translator {
 	if r == nil {
 		return nil
 	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
 	return r.m[key{src: source, tgt: target}]
 }

@@ -103,6 +103,7 @@ func (f EndpointForm) String() string {
 	if f == FormSelfHosted {
 		return "self_hosted"
 	}
+
 	return "vendor"
 }
 
@@ -111,6 +112,7 @@ func (e *Endpoint) Form() EndpointForm {
 	if e.Capabilities.SelfHosted {
 		return FormSelfHosted
 	}
+
 	return FormVendor
 }
 
@@ -180,9 +182,11 @@ func DecodePayload[T any](a AuthConfig) (T, error) {
 	if len(a.Payload) == 0 {
 		return t, errEmptyAuthPayload
 	}
+
 	if err := json.Unmarshal(a.Payload, &t); err != nil {
 		return t, err
 	}
+
 	return t, nil
 }
 
@@ -192,13 +196,16 @@ func EncodePayload(authType string, payload any) (AuthConfig, error) {
 	if authType == "" {
 		return AuthConfig{}, errEmptyAuthType
 	}
+
 	if payload == nil {
 		return AuthConfig{Type: authType}, nil
 	}
+
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return AuthConfig{}, err
 	}
+
 	return AuthConfig{Type: authType, Payload: b}, nil
 }
 

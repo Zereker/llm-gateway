@@ -15,6 +15,7 @@ import "bytes"
 // rather than each re-implementing (and re-breaking on CRLF) their own.
 func NextSSEFrame(buf []byte) (event, rest []byte, ok bool) {
 	lf := bytes.Index(buf, []byte("\n\n"))
+
 	crlf := bytes.Index(buf, []byte("\r\n\r\n"))
 	switch {
 	case lf < 0 && crlf < 0:
@@ -36,9 +37,11 @@ func extractDataPayload(line []byte) []byte {
 	if !bytes.HasPrefix(line, []byte(prefix)) {
 		return nil
 	}
+
 	rest := line[len(prefix):]
 	if len(rest) > 0 && rest[0] == ' ' {
 		rest = rest[1:]
 	}
+
 	return bytes.TrimSpace(rest)
 }

@@ -38,6 +38,7 @@ func (s *geminiSession) Feed(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
+
 	s.buf = append(s.buf, chunk...)
 }
 
@@ -45,13 +46,16 @@ func (s *geminiSession) Final() *domain.Usage {
 	if s.usage != nil {
 		return s.usage
 	}
+
 	if len(s.buf) == 0 {
 		return nil
 	}
+
 	usageMetadata := extractUsageMetadata(s.buf)
 	if len(usageMetadata) == 0 {
 		return nil
 	}
+
 	var counts struct {
 		PromptTokenCount     int64 `json:"promptTokenCount"`
 		CandidatesTokenCount int64 `json:"candidatesTokenCount"`
@@ -72,6 +76,7 @@ func (s *geminiSession) Final() *domain.Usage {
 		Source:     domain.UsageSourceUpstream,
 		Confidence: domain.UsageConfidenceExact,
 	}
+
 	return s.usage
 }
 
@@ -90,6 +95,7 @@ func extractUsageMetadata(buf []byte) json.RawMessage {
 	if len(trimmed) == 0 {
 		return nil
 	}
+
 	if trimmed[0] != '[' {
 		var resp struct {
 			UsageMetadata json.RawMessage `json:"usageMetadata"`
@@ -97,18 +103,22 @@ func extractUsageMetadata(buf []byte) json.RawMessage {
 		if err := json.Unmarshal(buf, &resp); err != nil {
 			return nil
 		}
+
 		return resp.UsageMetadata
 	}
+
 	var chunks []struct {
 		UsageMetadata json.RawMessage `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(buf, &chunks); err != nil {
 		return nil
 	}
+
 	for i := len(chunks) - 1; i >= 0; i-- {
 		if len(chunks[i].UsageMetadata) > 0 {
 			return chunks[i].UsageMetadata
 		}
 	}
+
 	return nil
 }

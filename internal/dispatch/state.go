@@ -92,6 +92,7 @@ func (s *state) currentModel() *domain.ModelService {
 	if s.curIdx >= len(s.modelChain) {
 		return nil
 	}
+
 	return s.modelChain[s.curIdx]
 }
 
@@ -100,7 +101,9 @@ func (s *state) CurrentModel() *domain.ModelService {
 	if model == nil {
 		return nil
 	}
+
 	copy := *model
+
 	return &copy
 }
 
@@ -109,7 +112,9 @@ func (s *state) NextFallback() (*domain.ModelService, bool) {
 	if next >= len(s.modelChain) {
 		return nil, false
 	}
+
 	copy := *s.modelChain[next]
+
 	return &copy, true
 }
 
@@ -125,10 +130,12 @@ func (s *state) Exhausted() bool { return s.attempts >= s.attemptsCap }
 // PickQuery builds the input for Selector.Pick (model / group / exclude).
 func (s *state) PickQuery() PickQuery {
 	cur := s.currentModel()
+
 	model := ""
 	if cur != nil {
 		model = cur.Model
 	}
+
 	return PickQuery{
 		Model:      model,
 		Group:      s.in.Identity.Group,
@@ -144,6 +151,7 @@ func (s *state) CurrentModelName() string {
 	if cur == nil {
 		return ""
 	}
+
 	return cur.Model
 }
 
@@ -180,6 +188,7 @@ func (s *state) Record(ep *domain.Endpoint, v Verdict) {
 	if v.Class != ClassUnknown {
 		s.excluded[ep.ID] = struct{}{}
 	}
+
 	s.lastVerdict = v
 
 	role := domain.AttemptRolePrimary
@@ -214,6 +223,7 @@ func (s *state) SetModel(ms *domain.ModelService) {
 			return
 		}
 	}
+
 	s.modelChain = append(s.modelChain, ms)
 	s.curIdx = len(s.modelChain) - 1
 }
@@ -223,10 +233,12 @@ func (s *state) SetModel(ms *domain.ModelService) {
 // directly (dispatch is decoupled from RC).
 func (s *state) ApplyStream(rep StreamReport) {
 	routed := s.currentModel()
+
 	usage := rep.Usage
 	if usage != nil && rep.TTFTMs > 0 {
 		usage.Meta.TTFTMs = rep.TTFTMs
 	}
+
 	var streamErr *domain.AdapterError
 	if rep.Err != nil {
 		streamErr = &domain.AdapterError{
@@ -235,6 +247,7 @@ func (s *state) ApplyStream(rep StreamReport) {
 			Message: "stream: " + rep.Err.Error(),
 		}
 	}
+
 	s.outcome = Outcome{
 		Result:      OutcomeStreamed,
 		Usage:       usage,
@@ -250,9 +263,11 @@ func sameModelService(a, b *domain.ModelService) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
+
 	if a.ID != 0 || b.ID != 0 {
 		return a.ID == b.ID
 	}
+
 	return a.ServiceID == b.ServiceID && a.Model == b.Model
 }
 
@@ -264,6 +279,7 @@ func (s *state) SetAbort(a Abort) {
 		// (kept for compatibility; ideally every Policy fills it explicitly)
 		result = inferResultFromHTTPCode(a.HTTPCode)
 	}
+
 	s.outcome = Outcome{
 		Result:   result,
 		HTTPCode: a.HTTPCode,
@@ -300,10 +316,12 @@ func (s *state) finalize() {
 	}
 
 	primary := s.in.PrimaryModel()
+
 	model := ""
 	if primary != nil {
 		model = primary.Model
 	}
+
 	routedName := ""
 	if s.outcome.RoutedModel != nil {
 		routedName = s.outcome.RoutedModel.Model

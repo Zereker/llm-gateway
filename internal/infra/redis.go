@@ -39,6 +39,7 @@ func OpenRedis(cfg RedisConfig) (*redis.Client, error) {
 	if cfg.Addr == "" {
 		return nil, fmt.Errorf("infra: redis addr required")
 	}
+
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
 		DB:       cfg.DB,
@@ -49,9 +50,11 @@ func OpenRedis(cfg RedisConfig) (*redis.Client, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		_ = rdb.Close()
 		return nil, fmt.Errorf("infra: redis ping %s: %w", cfg.Addr, err)
 	}
+
 	return rdb, nil
 }

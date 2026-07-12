@@ -41,20 +41,25 @@ func filterEligible(candidates []*domain.Endpoint, env *domain.RequestEnvelope, 
 	if env == nil {
 		return candidates
 	}
+
 	if handlers == nil {
 		return nil
 	}
+
 	out := make([]*domain.Endpoint, 0, len(candidates))
 	for _, ep := range candidates {
 		h := handlers.Get(ep, env.SourceProtocol)
 		if h == nil {
 			continue
 		}
+
 		if !endpointSupportsModality(ep, h, env.Modality) {
 			continue
 		}
+
 		out = append(out, ep)
 	}
+
 	return out
 }
 
@@ -81,12 +86,15 @@ func endpointSupportsModality(ep *domain.Endpoint, h protocol.Handler, want doma
 	if len(epMods) == 0 && len(vendorMods) == 0 {
 		return true
 	}
+
 	if len(epMods) > 0 && !containsModality(epMods, want) {
 		return false
 	}
+
 	if len(vendorMods) > 0 && !containsModality(vendorMods, want) {
 		return false
 	}
+
 	return true
 }
 
@@ -96,5 +104,6 @@ func containsModality(set []domain.Modality, want domain.Modality) bool {
 			return true
 		}
 	}
+
 	return false
 }

@@ -31,14 +31,17 @@ func (r *RoutingConfig) Scan(value any) error {
 		*r = RoutingConfig{}
 		return nil
 	}
+
 	b, err := bytesFromScan(value, "RoutingConfig")
 	if err != nil {
 		return err
 	}
+
 	if len(b) == 0 {
 		*r = RoutingConfig{}
 		return nil
 	}
+
 	return json.Unmarshal(b, r)
 }
 
@@ -52,5 +55,6 @@ func (r RoutingConfig) Value() (driver.Value, error) {
 	if (r == RoutingConfig{}) {
 		return nil, nil
 	}
+
 	return json.Marshal(r)
 }

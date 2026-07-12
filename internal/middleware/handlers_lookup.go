@@ -18,5 +18,6 @@ func HandlersFrom(rc *requeststate.State) protocol.Lookup {
 	if rc == nil || rc.Handlers == nil {
 		panic("middleware: request state has no protocol.Lookup; Envelope must run before schedule")
 	}
+
 	return rc.Handlers
 }

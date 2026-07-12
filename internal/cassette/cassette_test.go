@@ -40,10 +40,6 @@ func TestLoad_RequestsResponsesFormat(t *testing.T) {
 	if !strings.Contains(string(interactions[0].RequestBody), `"citations":{"enabled":true}`) {
 		t.Errorf("request body not decoded correctly: %q", interactions[0].RequestBody)
 	}
-	if !strings.Contains(string(interactions[0].ResponseBody), `"web_search_result_location"`) == false {
-		// interaction 0's citation type is content_block_location, not web_search;
-		// just check it decoded to valid-looking JSON at all.
-	}
 	if !strings.HasPrefix(string(interactions[0].ResponseBody), "{") {
 		t.Errorf("response body not decoded to JSON: %q", interactions[0].ResponseBody[:min(50, len(interactions[0].ResponseBody))])
 	}

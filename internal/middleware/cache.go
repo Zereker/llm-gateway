@@ -58,7 +58,9 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 			c.Next()
 			return
 		}
+
 		rc := GetRequestContext(c)
+
 		mode := strings.ToLower(strings.TrimSpace(c.GetHeader(HeaderGatewayCache)))
 		if mode == "off" || rc.Envelope == nil || rc.ModelService == nil {
 			c.Next()
@@ -77,9 +79,11 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 		if rc.Envelope.Modality == domain.ModalityEmbedding {
 			deterministic = true
 		}
+
 		if mode != "on" && !deterministic {
 			metric.Inc(metric.ResponseCacheTotal, "result", "bypass")
 			c.Next() // by default only deterministic requests are cached
+
 			return
 		}
 
@@ -91,11 +95,13 @@ func ResponseCache(store ResponseCacheStore, ttl time.Duration) gin.HandlerFunc 
 		if cached, ok := store.Get(ctx, key); ok {
 			metric.Inc(metric.ResponseCacheTotal, "result", "hit")
 			writeCacheHit(c, rc, cached)
+
 			return
 		}
 
 		// Miss: tee the response, write it back to the cache on success.
 		metric.Inc(metric.ResponseCacheTotal, "result", "miss")
+
 		tw := &teeWriter{ResponseWriter: c.Writer, buf: &bytes.Buffer{}}
 		c.Writer = tw
 		c.Next()
@@ -114,13 +120,16 @@ func writeCacheHit(c *gin.Context, rc *requeststate.State, cached CachedResponse
 	if ct == "" {
 		ct = "application/json; charset=utf-8"
 	}
+
 	c.Header(HeaderGatewayCache, "hit")
 	c.Data(cached.StatusCode, ct, cached.Body)
+
 	if cached.Usage != nil {
 		u := *cached.Usage
 		u.Source = domain.UsageSourceCache
 		rc.Usage = &u
 	}
+
 	c.Abort()
 }
 
@@ -138,6 +147,7 @@ func cacheableResponse(tw *teeWriter, rc *requeststate.State) (CachedResponse, b
 	if tw.Status() == 200 && tw.buf.Len() > 0 && rc.Error == nil && !isEventStream(ct) {
 		return CachedResponse{StatusCode: 200, ContentType: ct, Body: tw.buf.Bytes(), Usage: rc.Usage}, true
 	}
+
 	return CachedResponse{}, false
 }
 
@@ -170,6 +180,7 @@ func cacheKey(accountID string, proto domain.Protocol, modality domain.Modality,
 	h.Write([]byte(model))
 	h.Write([]byte{0})
 	h.Write(body)
+
 	return "resp:" + hex.EncodeToString(h.Sum(nil))
 }
 
@@ -189,6 +200,7 @@ func analyzeBody(body []byte) (stream, deterministic bool) {
 	stream = res[0].Bool()
 	t := res[1]
 	deterministic = t.Exists() && t.Num == 0
+
 	return stream, deterministic
 }
 

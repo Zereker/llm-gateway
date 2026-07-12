@@ -23,20 +23,22 @@ import (
 // NewLookup returns the complete built-in handler catalog.
 func NewLookup() *protocol.DefaultLookup {
 	factories := map[string]protocol.Factory{
-		"openai":       openai.Factory{},
-		"anthropic":    anthropic.Factory{},
-		"azure-openai": azureopenai.Factory{},
-		"bedrock":      bedrock.Factory{},
-		"cohere":       cohere.Factory{},
-		"gemini":       gemini.Factory{},
+		openai.VendorName:      openai.Factory{},
+		anthropic.VendorName:   anthropic.Factory{},
+		azureopenai.VendorName: azureopenai.Factory{},
+		bedrock.VendorName:     bedrock.Factory{},
+		cohere.VendorName:      cohere.Factory{},
+		"gemini":               gemini.Factory{},
 	}
 	for _, alias := range openai.Aliases() {
 		factories[alias] = openai.Factory{}
 	}
+
 	translators := identity.All()
 	translators = append(translators,
 		anthropic_openai.New(), openai_anthropic.New(), openai_bedrock.New(), openai_cohere.New(),
 		openai_gemini.New(), responses_openai.New(),
 	)
+
 	return protocol.NewLookup(factories, translator.NewRegistry(translators...))
 }

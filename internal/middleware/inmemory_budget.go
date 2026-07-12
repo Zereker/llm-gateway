@@ -58,12 +58,15 @@ func (g *InMemoryBudgetGate) Check(_ context.Context, subAccountID string) (doma
 	g.mu.RLock()
 	balance, ok := g.balances[subAccountID]
 	g.mu.RUnlock()
+
 	if !ok {
 		balance = g.defaultBalance
 	}
+
 	if balance > 0 {
 		return domain.BudgetActive, nil
 	}
+
 	return domain.BudgetInactive, nil
 }
 
@@ -87,12 +90,15 @@ func (g *InMemoryBudgetGate) SetBalance(subAccountID string, balance float64) {
 func (g *InMemoryBudgetGate) Deduct(subAccountID string, cost float64) float64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
 	balance, ok := g.balances[subAccountID]
 	if !ok {
 		balance = g.defaultBalance
 	}
+
 	balance -= cost
 	g.balances[subAccountID] = balance
+
 	return balance
 }
 
@@ -100,10 +106,12 @@ func (g *InMemoryBudgetGate) Deduct(subAccountID string, cost float64) float64 {
 func (g *InMemoryBudgetGate) GetBalance(subAccountID string) float64 {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
+
 	balance, ok := g.balances[subAccountID]
 	if !ok {
 		return g.defaultBalance
 	}
+
 	return balance
 }
 

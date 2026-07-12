@@ -25,5 +25,6 @@ func (ModelChainFallback) OnExhausted(s State) Action {
 			Reason:   "no endpoint available across all models",
 		}
 	}
+
 	return Switch{Next: next}
 }

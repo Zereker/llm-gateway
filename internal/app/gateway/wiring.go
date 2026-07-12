@@ -70,6 +70,7 @@ func buildSchedulerFilters(names []string, store ratelimit.Store, cd selector.Co
 			panic("unknown scheduler filter: " + n)
 		}
 	}
+
 	return out
 }
 
@@ -88,9 +89,11 @@ func buildTracer(srv *appRuntime.Runtime, cfg config.TraceConfig) trace.Tracer {
 		if err != nil {
 			panic(fmt.Sprintf("init otel tracer: %v", err))
 		}
+
 		srv.AddCloser("otel-tracer", func() error {
 			return tp.Shutdown(context.Background())
 		})
+
 		return trace.NewOtelTracer(tp)
 	default:
 		panic("unknown trace driver: " + cfg.Driver)
@@ -112,10 +115,12 @@ func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.Endpoin
 	if !cfg.Enabled {
 		return nil, nil
 	}
+
 	decay := cfg.EMADecay
 	if decay <= 0 {
 		decay = 0.2
 	}
+
 	var store selector.EndpointStatsStore
 	switch cfg.Driver {
 	case "", "inmemory":
@@ -125,11 +130,14 @@ func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.Endpoin
 	default:
 		panic("buildScoring: unknown scoring.driver " + cfg.Driver + " (want inmemory|redis)")
 	}
+
 	baselineMs := float64(200)
 	if cfg.LatencyBaseline > 0 {
 		baselineMs = float64(cfg.LatencyBaseline.Milliseconds())
 	}
+
 	scorer := selector.NewDefaultScorer(store, cfg.MinSamples, baselineMs)
+
 	return store, scorer
 }
 
@@ -146,10 +154,12 @@ func buildCacheMiddleware(cfg config.CacheConfig, rdb *redis.Client) gin.Handler
 	case cfg.Semantic.Enabled:
 		embedder := buildEmbedder(cfg.Semantic.Embedder)
 		store := respcache.NewRedisSemanticStore(rdb, "llm-gateway:respcache", cfg.Semantic.MaxEntries)
+
 		threshold := cfg.Semantic.Threshold
 		if threshold <= 0 {
 			threshold = 0.9
 		}
+
 		return middleware.SemanticCache(store, embedder, threshold, cfg.TTL)
 	case cfg.Enabled:
 		return middleware.ResponseCache(respcache.NewRedisStore(rdb, "llm-gateway:respcache"), cfg.TTL)
@@ -172,16 +182,18 @@ func buildEmbeddingCache(cfg config.CacheConfig, rdb *redis.Client) gin.HandlerF
 	if cfg.Enabled || cfg.Semantic.Enabled {
 		return middleware.ResponseCache(respcache.NewRedisStore(rdb, "llm-gateway:respcache"), cfg.TTL)
 	}
+
 	return func(c *gin.Context) { c.Next() } // no-op
 }
 
 // buildEmbedder assembles the text embedding backend (P5 fail-fast: unknown driver panics).
 func buildEmbedder(cfg config.EmbedderConfig) embed.Embedder {
 	switch cfg.Driver {
-	case "openai":
+	case config.DriverOpenAI:
 		if cfg.APIKey == "" {
 			panic("cache.semantic.embedder.driver=openai requires api_key")
 		}
+
 		return embed.NewOpenAIEmbedder(cfg.APIKey, cfg.BaseURL, cfg.Model)
 	default:
 		panic("cache.semantic enabled but embedder.driver unknown: " + cfg.Driver + " (want openai)")
@@ -198,6 +210,7 @@ func buildAffinity(cfg config.SessionAffinityConfig, rdb *redis.Client) selector
 	if !cfg.Enabled {
 		return nil
 	}
+
 	return selector.NewRedisAffinityStore(rdb, "llm-gateway:sched", cfg.TTL)
 }
 
@@ -211,10 +224,12 @@ func startHealthProber(srv *appRuntime.Runtime, cfg config.HealthConfig, lister 
 	if !cfg.Enabled || stats == nil {
 		return
 	}
+
 	var recover health.Recovery
 	if cfg.RecoverCooldown {
 		recover = cooldown
 	}
+
 	prober := health.New(health.Config{
 		Source:     health.FilteredSource{Lister: lister},
 		Feedback:   healthFeedbackAdapter{stats: stats},
@@ -228,6 +243,7 @@ func startHealthProber(srv *appRuntime.Runtime, cfg config.HealthConfig, lister 
 	srv.AddCloser("health-prober", func() error {
 		cancel()
 		prober.Stop()
+
 		return nil
 	})
 }
@@ -245,13 +261,14 @@ func startHealthProber(srv *appRuntime.Runtime, cfg config.HealthConfig, lister 
 func buildContentLogger(srv *appRuntime.Runtime, cfg config.ContentLogConfig) *contentlog.Logger {
 	var pub contentlog.Publisher
 	switch cfg.Driver {
-	case "", "none":
+	case "", config.DriverNone:
 		return nil
-	case "file":
+	case config.DriverFile:
 		fp, err := contentlog.NewFilePublisher(cfg.File.Path)
 		if err != nil {
 			panic(fmt.Sprintf("content_log: open file %s: %v", cfg.File.Path, err))
 		}
+
 		srv.AddCloser("content-log-file", fp.Close)
 		pub = fp
 	default:
@@ -265,6 +282,7 @@ func buildContentLogger(srv *appRuntime.Runtime, cfg config.ContentLogConfig) *c
 	case "block":
 		bp = contentlog.BackpressureBlock
 	}
+
 	logger := contentlog.New(contentlog.Config{
 		Publisher:    pub,
 		SampleRate:   cfg.SampleRate,
@@ -276,8 +294,10 @@ func buildContentLogger(srv *appRuntime.Runtime, cfg config.ContentLogConfig) *c
 	srv.AddCloser("content-log-logger", func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+
 		return logger.Close(ctx)
 	})
+
 	return logger
 }
 
@@ -316,14 +336,15 @@ func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 	var guards []moderation.NamedGuard
 
 	switch cfg.Driver {
-	case "", "none":
+	case "", config.DriverNone:
 		// no driver-side moderator
-	case "openai":
+	case config.DriverOpenAI:
 		if cfg.APIKey == "" {
 			panic("moderation.driver=openai requires moderation.api_key")
 		}
+
 		guards = append(guards, moderation.NamedGuard{
-			Name: "openai", Guard: middleware.NewOpenAIModerator(cfg.APIKey, cfg.BaseURL),
+			Name: config.DriverOpenAI, Guard: middleware.NewOpenAIModerator(cfg.APIKey, cfg.BaseURL),
 		})
 	default:
 		panic("unknown moderation driver: " + cfg.Driver)
@@ -334,6 +355,7 @@ func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 		if err != nil {
 			panic("moderation.denylist: " + err.Error()) // startup fail-fast: bad regex
 		}
+
 		guards = append(guards, moderation.NamedGuard{Name: "denylist", Guard: g})
 	}
 
@@ -356,18 +378,21 @@ func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 //     AddCloser (to avoid closing it twice).
 func buildOutbox(srv *appRuntime.Runtime, cfg config.UsageEventsConfig) (usage.OutboxPublisher, error) {
 	switch cfg.Driver {
-	case "file":
+	case config.DriverFile:
 		ob, err := usage.NewFileOutbox(cfg.File.Path)
 		if err != nil {
 			return nil, err
 		}
+
 		srv.AddCloser("file-outbox", ob.Close)
+
 		return ob, nil
 	case "kafka":
 		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
 		if err != nil {
 			return nil, err
 		}
+
 		if cfg.Kafka.Async {
 			ob := usage.NewAsyncKafkaOutbox(producer, cfg.Kafka.Topic, usage.AsyncOptions{
 				BufferSize:  cfg.Kafka.BufferSize,
@@ -377,8 +402,10 @@ func buildOutbox(srv *appRuntime.Runtime, cfg config.UsageEventsConfig) (usage.O
 				Logger:      slog.Default(),
 			})
 			srv.AddCloser("async-kafka-outbox", ob.Close)
+
 			return ob, nil
 		}
+
 		return usage.NewKafkaOutbox(producer, cfg.Kafka.Topic), nil
 	case "file_and_kafka":
 		// dual-write: file is the source of truth (sync commit), Kafka is a
@@ -388,6 +415,7 @@ func buildOutbox(srv *appRuntime.Runtime, cfg config.UsageEventsConfig) (usage.O
 		if err != nil {
 			return nil, fmt.Errorf("file_and_kafka: file sink: %w", err)
 		}
+
 		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
 		if err != nil {
 			return nil, fmt.Errorf("file_and_kafka: kafka producer: %w", err)
@@ -404,6 +432,7 @@ func buildOutbox(srv *appRuntime.Runtime, cfg config.UsageEventsConfig) (usage.O
 		srv.AddCloser("dual-kafka-async", kafkaSink.Close)
 		ob := usage.NewDualWriteOutbox(fileSink, kafkaSink, slog.Default())
 		srv.AddCloser("dual-file-outbox", ob.Close) // only closes file; kafka is managed by the line above
+
 		return ob, nil
 	default:
 		return nil, fmt.Errorf("unknown usage_events driver %q (want file|kafka|async_kafka|file_and_kafka)", cfg.Driver)

@@ -38,10 +38,12 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("azure-openai: ep.routing.url empty")
 	}
+
 	if s.ep.Auth.Type != domain.AuthTypeBearer {
 		return nil, fmt.Errorf("azure-openai: unsupported auth type %q (want %q; payload.api_key = Azure key)",
 			s.ep.Auth.Type, domain.AuthTypeBearer)
 	}
+
 	key, err := domain.DecodePayload[domain.BearerAuth](s.ep.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("azure-openai: decode auth: %w", err)
@@ -56,15 +58,19 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
+
 	for k, vs := range extraHeaders { // quirks first
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
+
 	req.Header.Set("Content-Type", "application/json") // then protocol-required (overriding)
+
 	if key.APIKey != "" {
 		req.Header.Set("api-key", key.APIKey)
 	}
+
 	return req, nil
 }
 
@@ -75,11 +81,13 @@ func ensureAPIVersion(raw, version string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	q := u.Query()
 	if q.Get("api-version") == "" && version != "" {
 		q.Set("api-version", version)
 		u.RawQuery = q.Encode()
 	}
+
 	return u.String(), nil
 }
 

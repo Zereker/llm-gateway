@@ -26,9 +26,11 @@ func converseURL(base string, streaming bool) string {
 	if !streaming || strings.HasSuffix(base, "/converse-stream") {
 		return base
 	}
+
 	if strings.HasSuffix(base, "/converse") {
 		return base[:len(base)-len("/converse")] + "/converse-stream"
 	}
+
 	return base // non-standard URL: leave as-is
 }
 
@@ -55,18 +57,22 @@ func (s *converseSession) BuildRequest(body []byte, extraHeaders http.Header) (*
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("bedrock: ep.routing.url empty")
 	}
+
 	if s.ep.Auth.Type != domain.AuthTypeAWSSigV4 {
 		return nil, fmt.Errorf("bedrock: unsupported auth type %q (want %q)", s.ep.Auth.Type, domain.AuthTypeAWSSigV4)
 	}
+
 	auth, err := domain.DecodePayload[domain.AWSSigV4Auth](s.ep.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: decode aws-sigv4 auth: %w", err)
 	}
+
 	if auth.AccessKey == "" || auth.SecretKey == "" || auth.Region == "" {
 		return nil, errors.New("bedrock: aws-sigv4 auth needs access_key / secret_key / region")
 	}
 
 	streaming := gjson.GetBytes(body, "stream").Bool()
+
 	reqBody, err := stripStreamField(body)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: strip stream field: %w", err)
@@ -76,19 +82,23 @@ func (s *converseSession) BuildRequest(body []byte, extraHeaders http.Header) (*
 	if err != nil {
 		return nil, err
 	}
+
 	for k, vs := range extraHeaders {
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	sum := sha256.Sum256(reqBody)
+
 	creds := awssdk.Credentials{AccessKeyID: auth.AccessKey, SecretAccessKey: auth.SecretKey}
 	if err := signer.SignHTTP(s.ctx, creds, req, hex.EncodeToString(sum[:]), "bedrock", auth.Region, time.Now()); err != nil {
 		return nil, fmt.Errorf("bedrock: sigv4 sign: %w", err)
 	}
+
 	return req, nil
 }
 
@@ -97,7 +107,9 @@ func stripStreamField(body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, err
 	}
+
 	delete(m, "stream")
+
 	return json.Marshal(m)
 }
 

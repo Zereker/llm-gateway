@@ -33,9 +33,11 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 		if err := json.Unmarshal(auth.Payload, &p); err != nil {
 			return nil, fmt.Errorf("gemini-key payload: %w", err)
 		}
+
 		if p.APIKey == "" {
 			return nil, fmt.Errorf("gemini-key: api_key empty")
 		}
+
 		return staticAPIKey{key: p.APIKey}, nil
 
 	case domain.AuthTypeVertexADC:
@@ -44,14 +46,17 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 		if len(auth.Payload) > 0 {
 			_ = json.Unmarshal(auth.Payload, &p) // ignore failure, use default scopes
 		}
+
 		scopes := p.Scopes
 		if len(scopes) == 0 {
 			scopes = []string{"https://www.googleapis.com/auth/cloud-platform"}
 		}
+
 		creds, err := google.FindDefaultCredentials(ctx, scopes...)
 		if err != nil {
 			return nil, fmt.Errorf("vertex-adc: find default credentials: %w", err)
 		}
+
 		return &oauthBearer{ts: creds.TokenSource}, nil
 
 	case domain.AuthTypeOAuth2SA:
@@ -59,16 +64,24 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 		if err := json.Unmarshal(auth.Payload, &p); err != nil {
 			return nil, fmt.Errorf("oauth2-sa payload: %w", err)
 		}
+
 		if p.ServiceAccountJSON == "" {
 			return nil, fmt.Errorf("oauth2-sa: service_account_json empty")
 		}
-		creds, err := google.CredentialsFromJSON(ctx,
+
+		// CredentialsFromJSON is deprecated in favor of the typed variant below,
+		// which also rejects a JSON blob whose "type" field isn't service_account
+		// (e.g. a user-credentials file pasted into the wrong config field) —
+		// stricter than what we had, not just a deprecation dodge.
+		creds, err := google.CredentialsFromJSONWithType(ctx,
 			[]byte(p.ServiceAccountJSON),
+			google.ServiceAccount,
 			"https://www.googleapis.com/auth/cloud-platform",
 		)
 		if err != nil {
 			return nil, fmt.Errorf("oauth2-sa: parse SA JSON: %w", err)
 		}
+
 		return &oauthBearer{ts: creds.TokenSource}, nil
 
 	default:
@@ -77,13 +90,17 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 	}
 }
 
+// headerGoogAPIKey is the AI Studio API-key header name; factored out since
+// this package's tests assert against this exact header name.
+const headerGoogAPIKey = "x-goog-api-key"
+
 // staticAPIKey uses the x-goog-api-key header for AI Studio.
 type staticAPIKey struct {
 	key string
 }
 
 func (s staticAPIKey) AuthHeader(_ context.Context) (string, string, error) {
-	return "x-goog-api-key", s.key, nil
+	return headerGoogAPIKey, s.key, nil
 }
 
 // oauthBearer uses Authorization: Bearer <oauth2 access token> for Vertex.
@@ -100,5 +117,6 @@ func (o *oauthBearer) AuthHeader(_ context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("oauth2 token: %w", err)
 	}
+
 	return "Authorization", "Bearer " + tok.AccessToken, nil
 }

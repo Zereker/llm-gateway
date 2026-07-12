@@ -61,6 +61,25 @@ import (
 	"github.com/zereker/llm-gateway/internal/translator"
 )
 
+// Wire vocabulary this file both reads (switch/case on an upstream field) and
+// writes (as a literal in a constructed map[string]any) — named once per
+// value so a typo shows up as a compile error instead of a silently wrong
+// JSON key/value.
+const (
+	roleAssistant = "assistant"
+	roleUser      = "user"
+
+	keyType      = "type"
+	keyIndex     = "index"
+	keyName      = "name"
+	keyFunction  = "function"
+	keyToolCalls = "tool_calls"
+	keyArguments = "arguments"
+
+	finishStop          = "stop"
+	finishContentFilter = "content_filter"
+)
+
 type openaiBedrock struct{}
 
 // New returns the OpenAI-to-Bedrock-Converse translator.
@@ -184,6 +203,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		ic.StopSequences = parseStopField(in.Stop)
 		out.InferenceConfig = ic
 	}
+
 	if len(in.Tools) > 0 {
 		if tc := buildToolConfig(in.Tools, in.ToolChoice); tc != nil {
 			out.ToolConfig = tc
@@ -199,20 +219,23 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		switch m.Role {
 		case "system":
 			out.System = append(out.System, converseText{Text: contentToString(m.Content)})
-		case "assistant":
-			blk := converseMsg{Role: "assistant"}
+		case roleAssistant:
+			blk := converseMsg{Role: roleAssistant}
 			if text := contentToString(m.Content); text != "" {
 				blk.Content = append(blk.Content, converseBlk{Text: text})
 			}
+
 			for _, tc := range m.ToolCalls {
 				input := json.RawMessage(tc.Function.Arguments)
 				if !json.Valid(input) {
 					input = json.RawMessage("{}")
 				}
+
 				blk.Content = append(blk.Content, converseBlk{ToolUse: &converseToolUse{
 					ToolUseID: tc.ID, Name: tc.Function.Name, Input: input,
 				}})
 			}
+
 			out.Messages = append(out.Messages, blk)
 		case "tool":
 			res := converseBlk{ToolResult: &converseToolRes{
@@ -220,15 +243,16 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 				Content:   []converseText{{Text: contentToString(m.Content)}},
 				Status:    "success",
 			}}
-			if n := len(out.Messages); n > 0 && out.Messages[n-1].Role == "user" && isToolResultOnly(out.Messages[n-1]) {
+			if n := len(out.Messages); n > 0 && out.Messages[n-1].Role == roleUser && isToolResultOnly(out.Messages[n-1]) {
 				out.Messages[n-1].Content = append(out.Messages[n-1].Content, res)
 			} else {
-				out.Messages = append(out.Messages, converseMsg{Role: "user", Content: []converseBlk{res}})
+				out.Messages = append(out.Messages, converseMsg{Role: roleUser, Content: []converseBlk{res}})
 			}
 		default: // user
-			out.Messages = append(out.Messages, converseMsg{Role: "user", Content: []converseBlk{{Text: contentToString(m.Content)}}})
+			out.Messages = append(out.Messages, converseMsg{Role: roleUser, Content: []converseBlk{{Text: contentToString(m.Content)}}})
 		}
 	}
+
 	return json.Marshal(out)
 }
 
@@ -241,6 +265,7 @@ func isToolResultOnly(m converseMsg) bool {
 			return false
 		}
 	}
+
 	return len(m.Content) > 0
 }
 
@@ -263,21 +288,25 @@ func buildToolConfig(rawTools json.RawMessage, rawChoice json.RawMessage) *toolC
 	if err := json.Unmarshal(rawTools, &tools); err != nil || len(tools) == 0 {
 		return nil
 	}
+
 	tc := &toolConfig{Tools: make([]converseTool, 0, len(tools))}
 	for _, t := range tools {
 		params := t.Function.Parameters
 		if len(params) == 0 {
 			params = json.RawMessage(`{"type":"object","properties":{}}`)
 		}
+
 		tc.Tools = append(tc.Tools, converseTool{ToolSpec: converseToolSpec{
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
 			InputSchema: converseSchema{JSON: params},
 		}})
 	}
+
 	if len(rawChoice) > 0 {
 		tc.ToolChoice = mapToolChoice(rawChoice)
 	}
+
 	return tc
 }
 
@@ -291,16 +320,18 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 			return nil // Converse's default (model decides) is the closest available for both
 		}
 	}
+
 	var obj struct {
 		Type     string `json:"type"`
 		Function struct {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
-	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type == "function" && obj.Function.Name != "" {
-		b, _ := json.Marshal(map[string]any{"tool": map[string]string{"name": obj.Function.Name}})
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type == keyFunction && obj.Function.Name != "" {
+		b, _ := json.Marshal(map[string]any{"tool": map[string]string{keyName: obj.Function.Name}})
 		return b
 	}
+
 	return nil
 }
 
@@ -308,14 +339,17 @@ func parseStopField(raw json.RawMessage) []string {
 	if len(raw) == 0 {
 		return nil
 	}
+
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return []string{s}
 	}
+
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err == nil {
 		return arr
 	}
+
 	return nil
 }
 
@@ -327,20 +361,25 @@ func contentToString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
+
 	r := gjson.ParseBytes(raw)
 	if r.Type == gjson.String {
 		return r.String()
 	}
+
 	if r.IsArray() {
 		var sb strings.Builder
 		r.ForEach(func(_, part gjson.Result) bool {
 			if t := part.Get("text"); t.Exists() {
 				sb.WriteString(t.String())
 			}
+
 			return true
 		})
+
 		return sb.String()
 	}
+
 	return r.String()
 }
 
@@ -378,17 +417,21 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 		return h.drain(), nil
 	default:
 		h.buf = append(h.buf, chunk...)
+
 		t := bytes.TrimLeft(h.buf, " \t\r\n")
 		if len(t) == 0 {
 			return nil, nil
 		}
+
 		if t[0] == '{' {
 			h.mode = modeJSON
 			return nil, nil
 		}
+
 		h.mode = modeSSE
 		h.lineBuf = h.buf
 		h.buf = nil
+
 		return h.drain(), nil
 	}
 }
@@ -400,9 +443,12 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 			h.lineBuf = nil
 			out = append(out, h.consumeLine(rest)...)
 		}
+
 		out = append(out, "data: [DONE]\n\n"...)
+
 		return out, h.usage, nil
 	}
+
 	if len(h.buf) == 0 {
 		return nil, nil, nil
 	}
@@ -411,7 +457,9 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	if !gjson.GetBytes(h.buf, "output").Exists() {
 		return h.buf, nil, nil
 	}
+
 	body, usage := translateResponse(h.buf)
+
 	return body, usage, nil
 }
 
@@ -425,10 +473,12 @@ func (h *responseHandler) drain() []byte {
 		if i < 0 {
 			break
 		}
+
 		line := bytes.TrimRight(h.lineBuf[:i], "\r")
 		h.lineBuf = h.lineBuf[i+1:]
 		out = append(out, h.consumeLine(line)...)
 	}
+
 	return out
 }
 
@@ -442,8 +492,10 @@ func (h *responseHandler) consumeLine(line []byte) []byte {
 		if len(data) == 0 {
 			return nil
 		}
+
 		out := h.translateEvent(h.pendingType, data)
 		h.pendingType = ""
+
 		return out
 	default:
 		return nil
@@ -454,21 +506,24 @@ func (h *responseHandler) translateEvent(eventType string, data []byte) []byte {
 	ev := gjson.ParseBytes(data)
 	switch eventType {
 	case "messageStart":
-		return h.chunk(map[string]any{"role": "assistant"}, "")
+		return h.chunk(map[string]any{"role": roleAssistant}, "")
 	case "contentBlockStart":
 		idx := ev.Get("contentBlockIndex").Int()
 		if tu := ev.Get("start.toolUse"); tu.Exists() {
 			if h.blockKind == nil {
 				h.blockKind, h.toolNames, h.toolIDs = map[int64]string{}, map[int64]string{}, map[int64]string{}
 			}
+
 			h.blockKind[idx] = "toolUse"
-			h.toolNames[idx] = tu.Get("name").String()
+			h.toolNames[idx] = tu.Get(keyName).String()
 			h.toolIDs[idx] = tu.Get("toolUseId").String()
-			return h.chunk(map[string]any{"tool_calls": []any{map[string]any{
-				"index": idx, "id": h.toolIDs[idx], "type": "function",
-				"function": map[string]any{"name": h.toolNames[idx], "arguments": ""},
+
+			return h.chunk(map[string]any{keyToolCalls: []any{map[string]any{
+				keyIndex: idx, "id": h.toolIDs[idx], keyType: keyFunction,
+				keyFunction: map[string]any{keyName: h.toolNames[idx], keyArguments: ""},
 			}}}, "")
 		}
+
 		return nil
 	case "contentBlockDelta":
 		idx := ev.Get("contentBlockIndex").Int()
@@ -477,17 +532,21 @@ func (h *responseHandler) translateEvent(eventType string, data []byte) []byte {
 			if frag == "" {
 				return nil
 			}
-			return h.chunk(map[string]any{"tool_calls": []any{map[string]any{
-				"index": idx, "function": map[string]any{"arguments": frag},
+
+			return h.chunk(map[string]any{keyToolCalls: []any{map[string]any{
+				keyIndex: idx, keyFunction: map[string]any{keyArguments: frag},
 			}}}, "")
 		}
+
 		if reasoning := ev.Get("delta.reasoningContent.text").String(); reasoning != "" {
 			return h.chunk(map[string]any{"reasoning_content": reasoning}, "")
 		}
+
 		text := ev.Get("delta.text").String()
 		if text == "" {
 			return nil
 		}
+
 		return h.chunk(map[string]any{"content": text}, "")
 	case "contentBlockStop":
 		return nil
@@ -497,11 +556,14 @@ func (h *responseHandler) translateEvent(eventType string, data []byte) []byte {
 		usageResult := ev.Get("usage")
 		in := usageResult.Get("inputTokens").Int()
 		outTok := usageResult.Get("outputTokens").Int()
+
 		var rawUsage []byte
 		if usageResult.Exists() {
 			rawUsage = []byte(usageResult.Raw)
 		}
+
 		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Raw: rawUsage, Source: domain.UsageSourceUpstream, Confidence: domain.UsageConfidenceExact}
+
 		return nil
 	default: // e.g. exception frames the transport layer passed through as-is
 		return nil
@@ -512,21 +574,26 @@ func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
 	if h.id == "" {
 		h.id = "chatcmpl-" + randHex(8)
 	}
-	choice := map[string]any{"index": 0, "delta": delta, "finish_reason": nil}
+
+	choice := map[string]any{keyIndex: 0, "delta": delta, "finish_reason": nil}
 	if finish != "" {
 		choice["finish_reason"] = finish
 	}
+
 	b, _ := json.Marshal(map[string]any{
 		"id": h.id, "object": "chat.completion.chunk", "choices": []any{choice},
 	})
+
 	return append(append([]byte("data: "), b...), '\n', '\n')
 }
 
 func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	root := gjson.ParseBytes(buf)
 
-	var text, reasoning strings.Builder
-	var toolCalls []map[string]any
+	var (
+		text, reasoning strings.Builder
+		toolCalls       []map[string]any
+	)
 	root.Get("output.message.content").ForEach(func(_, part gjson.Result) bool {
 		switch {
 		case part.Get("text").Exists():
@@ -534,11 +601,11 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 		case part.Get("toolUse").Exists():
 			tu := part.Get("toolUse")
 			toolCalls = append(toolCalls, map[string]any{
-				"id":   tu.Get("toolUseId").String(),
-				"type": "function",
-				"function": map[string]any{
-					"name":      tu.Get("name").String(),
-					"arguments": tu.Get("input").Raw,
+				"id":    tu.Get("toolUseId").String(),
+				keyType: keyFunction,
+				keyFunction: map[string]any{
+					keyName:      tu.Get(keyName).String(),
+					keyArguments: tu.Get("input").Raw,
 				},
 			})
 		case part.Get("reasoningContent").Exists():
@@ -546,24 +613,27 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 			// citationsContent: no OpenAI-compatible mapping designed yet (see
 			// package doc comment) -- intentionally not handled here.
 		}
+
 		return true
 	})
 
 	usageResult := root.Get("usage")
 	in := usageResult.Get("inputTokens").Int()
 	outTok := usageResult.Get("outputTokens").Int()
+
 	var rawUsage []byte
 	if usageResult.Exists() {
 		rawUsage = []byte(usageResult.Raw)
 	}
+
 	usage := &domain.Usage{
 		Input: in, Output: outTok, Total: in + outTok, Raw: rawUsage,
 		Source: domain.UsageSourceUpstream, Confidence: domain.UsageConfidenceExact,
 	}
 
-	message := map[string]any{"role": "assistant"}
+	message := map[string]any{"role": roleAssistant}
 	if len(toolCalls) > 0 {
-		message["tool_calls"] = toolCalls
+		message[keyToolCalls] = toolCalls
 		if text.Len() > 0 {
 			message["content"] = text.String()
 		} else {
@@ -572,6 +642,7 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	} else {
 		message["content"] = text.String()
 	}
+
 	if reasoning.Len() > 0 {
 		message["reasoning_content"] = reasoning.String()
 	}
@@ -580,7 +651,7 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 		"id":     "chatcmpl-" + randHex(8),
 		"object": "chat.completion",
 		"choices": []any{map[string]any{
-			"index":         0,
+			keyIndex:        0,
 			"message":       message,
 			"finish_reason": mapFinishReason(root.Get("stopReason").String()),
 		}},
@@ -591,6 +662,7 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 		},
 	}
 	body, _ := json.Marshal(resp)
+
 	return body, usage
 }
 
@@ -601,20 +673,21 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 func mapFinishReason(sr string) string {
 	switch sr {
 	case "end_turn", "stop_sequence", "":
-		return "stop"
+		return finishStop
 	case "tool_use":
-		return "tool_calls"
+		return keyToolCalls
 	case "max_tokens":
 		return "length"
 	case "content_filtered", "guardrail_intervened":
-		return "content_filter"
+		return finishContentFilter
 	default:
-		return "stop"
+		return finishStop
 	}
 }
 
 func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
+
 	return hex.EncodeToString(b)
 }

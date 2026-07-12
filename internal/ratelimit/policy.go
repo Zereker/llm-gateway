@@ -75,6 +75,7 @@ func NewPolicyCache(upstream PolicySource, ttl time.Duration) *PolicyCache {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
+
 	return &PolicyCache{upstream: upstream, ttl: ttl}
 }
 
@@ -87,6 +88,7 @@ func (c *PolicyCache) Get(ctx context.Context, id int64) (*PolicyRule, error) {
 	if id == 0 {
 		return nil, nil
 	}
+
 	now := time.Now()
 	if v, ok := c.entries.Load(id); ok {
 		e := v.(*cacheEntry)
@@ -100,14 +102,17 @@ func (c *PolicyCache) Get(ctx context.Context, id int64) (*PolicyRule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("policy_cache: upstream: %w", err)
 	}
+
 	var rule *PolicyRule
 	if len(raw) > 0 {
 		var r PolicyRule
 		if err := json.Unmarshal(raw, &r); err != nil {
 			return nil, fmt.Errorf("policy_cache: parse rule_json id=%d: %w", id, err)
 		}
+
 		rule = &r
 	}
+
 	if rule == nil {
 		// **Dangling policy id**: an account/api_key references a quota_policy_id but the row
 		// doesn't exist in the table (typo / hard-deleted). Semantically this is treated as
@@ -119,10 +124,12 @@ func (c *PolicyCache) Get(ctx context.Context, id int64) (*PolicyRule, error) {
 			"policy_id", id)
 		metric.Inc(metric.PolicyCacheTotal, "layer", "any", "result", "dangling")
 	}
+
 	c.entries.Store(id, &cacheEntry{
 		rule:    rule,
 		expires: now.Add(c.ttl),
 	})
+
 	return rule, nil
 }
 
@@ -147,16 +154,19 @@ func (r *PolicyRule) PickRulesAdditive(model string) []ScopedRule {
 	if r == nil {
 		return nil
 	}
+
 	out := make([]ScopedRule, 0, 2)
 	if r.Default != nil && !r.Default.IsEmpty() {
 		out = append(out, ScopedRule{Scope: "*", Quota: r.Default})
 	}
+
 	if model != "" && r.PerModel != nil {
 		if q, ok := r.PerModel[model]; ok && !q.IsEmpty() {
 			qCopy := q // copy to avoid taking the address of a map value
 			out = append(out, ScopedRule{Scope: model, Quota: &qCopy})
 		}
 	}
+
 	return out
 }
 

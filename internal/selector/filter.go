@@ -36,5 +36,6 @@ func runChain(ctx context.Context, filters []Filter, candidates []*domain.Endpoi
 			return nil
 		}
 	}
+
 	return candidates
 }

@@ -50,6 +50,7 @@ func NewBusyFilter(threshold float64) *BusyFilter {
 	if threshold <= 0 {
 		threshold = 0.85
 	}
+
 	return &BusyFilter{threshold: threshold}
 }
 
@@ -63,16 +64,19 @@ func (f *BusyFilter) Apply(ctx context.Context, candidates []*domain.Endpoint, _
 	if f.provider == nil || len(candidates) == 0 {
 		return candidates
 	}
+
 	live := make([]*domain.Endpoint, 0, len(candidates))
 	for _, ep := range candidates {
 		if f.provider.BusyScore(ctx, ep.ID) <= f.threshold {
 			live = append(live, ep)
 		}
 	}
+
 	if len(live) == 0 {
 		// all busy → still pass through to avoid a 503; let the busiest one bear the load (production should alert early)
 		return candidates
 	}
+
 	return live
 }
 

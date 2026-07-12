@@ -51,6 +51,26 @@ import (
 	"github.com/zereker/llm-gateway/internal/translator"
 )
 
+// Wire vocabulary this file both reads (switch/case on an upstream field) and
+// writes (as a literal in a constructed map[string]any) — named once per
+// value so a typo shows up as a compile error instead of a silently wrong
+// JSON key/value.
+const (
+	roleAssistant = "assistant"
+	roleTool      = "tool"
+
+	contentTypeText     = "text"
+	contentTypeImageURL = "image_url"
+
+	keyType      = "type"
+	keyIndex     = "index"
+	keyFunction  = "function"
+	keyToolCalls = "tool_calls"
+	keyArguments = "arguments"
+
+	finishStop = "stop"
+)
+
 type openaiCohere struct{}
 
 // New returns the OpenAI-to-Cohere translator.
@@ -146,6 +166,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	if err := json.Unmarshal(srcBody, &in); err != nil {
 		return nil, err
 	}
+
 	out := cohereReq{
 		Model:            in.Model,
 		MaxTokens:        in.MaxTokens,
@@ -160,6 +181,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 	if len(in.Stop) > 0 {
 		out.StopSequences = parseStopField(in.Stop)
 	}
+
 	if len(in.Tools) > 0 {
 		// Cohere v2's tool definition shape is identical to OpenAI's
 		// {type:"function",function:{name,description,parameters}} — verified
@@ -167,35 +189,39 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 		// transformation is needed.
 		out.Tools = in.Tools
 	}
+
 	if len(in.ToolChoice) > 0 {
 		out.ToolChoice = mapToolChoice(in.ToolChoice)
 	}
+
 	out.Messages = make([]cohereMsg, 0, len(in.Messages))
 	for _, m := range in.Messages {
 		switch m.Role {
-		case "assistant":
-			cm := cohereMsg{Role: "assistant"}
+		case roleAssistant:
+			cm := cohereMsg{Role: roleAssistant}
 			if text := contentToString(m.Content); text != "" {
 				cm.Content = text
 			}
+
 			for _, tc := range m.ToolCalls {
 				cm.ToolCalls = append(cm.ToolCalls, cohereToolCallOut{
 					ID:   tc.ID,
-					Type: "function",
+					Type: keyFunction,
 					Function: cohereToolCallFunc{
 						Name:      tc.Function.Name,
 						Arguments: tc.Function.Arguments,
 					},
 				})
 			}
+
 			out.Messages = append(out.Messages, cm)
-		case "tool":
+		case roleTool:
 			// ToolChatMessageV2 requires tool_call_id to associate the result
 			// with the call it answers — the old code sent {role:"tool",
 			// content} with no tool_call_id at all, so Cohere had no way to
 			// match it back to a pending call.
 			out.Messages = append(out.Messages, cohereMsg{
-				Role:       "tool",
+				Role:       roleTool,
 				ToolCallID: m.ToolCallID,
 				Content:    contentToString(m.Content),
 			})
@@ -205,6 +231,7 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 			out.Messages = append(out.Messages, cohereMsg{Role: m.Role, Content: contentToString(m.Content)})
 		}
 	}
+
 	return json.Marshal(out)
 }
 
@@ -220,25 +247,31 @@ func buildUserContent(raw json.RawMessage) any {
 	if !r.IsArray() {
 		return contentToString(raw)
 	}
+
 	hasImage := false
 	r.ForEach(func(_, part gjson.Result) bool {
-		if part.Get("type").String() == "image_url" {
+		if part.Get(keyType).String() == contentTypeImageURL {
 			hasImage = true
 			return false
 		}
+
 		return true
 	})
+
 	if !hasImage {
 		return contentToString(raw)
 	}
+
 	var parts []json.RawMessage
 	r.ForEach(func(_, part gjson.Result) bool {
-		switch part.Get("type").String() {
-		case "image_url", "text":
+		switch part.Get(keyType).String() {
+		case contentTypeImageURL, contentTypeText:
 			parts = append(parts, json.RawMessage(part.Raw))
 		}
+
 		return true
 	})
+
 	return parts
 }
 
@@ -262,6 +295,7 @@ func mapToolChoice(raw json.RawMessage) *string {
 			return nil
 		}
 	}
+
 	var obj struct {
 		Type string `json:"type"`
 	}
@@ -269,6 +303,7 @@ func mapToolChoice(raw json.RawMessage) *string {
 		v := "REQUIRED"
 		return &v
 	}
+
 	return nil
 }
 
@@ -279,10 +314,12 @@ func parseStopField(raw json.RawMessage) []string {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return []string{s}
 	}
+
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err == nil {
 		return arr
 	}
+
 	return nil
 }
 
@@ -291,20 +328,25 @@ func contentToString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
+
 	r := gjson.ParseBytes(raw)
 	if r.Type == gjson.String {
 		return r.String()
 	}
+
 	if r.IsArray() {
 		var sb strings.Builder
 		r.ForEach(func(_, part gjson.Result) bool {
 			if t := part.Get("text"); t.Exists() {
 				sb.WriteString(t.String())
 			}
+
 			return true
 		})
+
 		return sb.String()
 	}
+
 	return r.String()
 }
 
@@ -352,17 +394,21 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 		return h.drainSSE(), nil
 	default: // undetermined: sniff it
 		h.buf = append(h.buf, chunk...)
+
 		t := bytes.TrimLeft(h.buf, " \t\r\n")
 		if len(t) == 0 {
 			return nil, nil // haven't seen a non-empty byte yet
 		}
+
 		if t[0] == '{' {
 			h.mode = modeJSON
 			return nil, nil
 		}
+
 		h.mode = modeSSE
 		h.lineBuf = h.buf
 		h.buf = nil
+
 		return h.drainSSE(), nil
 	}
 }
@@ -382,7 +428,9 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 				}
 			}
 		}
+
 		out = append(out, "data: [DONE]\n\n"...) // OpenAI stream terminator
+
 		return out, h.usage, nil
 	default: // JSON / empty
 		if len(h.buf) == 0 {
@@ -393,7 +441,9 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		if !gjson.GetBytes(h.buf, "message").IsObject() {
 			return h.buf, nil, nil
 		}
+
 		body, usage := translateResponse(h.buf)
+
 		return body, usage, nil
 	}
 }
@@ -407,17 +457,22 @@ func (h *responseHandler) drainSSE() []byte {
 		if i < 0 {
 			break // partial line, leave it for next time
 		}
+
 		line := bytes.TrimRight(h.lineBuf[:i], "\r")
 		h.lineBuf = h.lineBuf[i+1:]
+
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
+
 		data := bytes.TrimSpace(line[len("data:"):])
 		if len(data) == 0 {
 			continue
 		}
+
 		out = append(out, h.translateEvent(data)...)
 	}
+
 	return out
 }
 
@@ -431,7 +486,9 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		if h.contentType == nil {
 			h.contentType = make(map[int64]string)
 		}
+
 		h.contentType[ev.Get("index").Int()] = ev.Get("delta.message.content.type").String()
+
 		return nil
 	case "content-delta":
 		idx := ev.Get("index").Int()
@@ -443,12 +500,15 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 			if thinking == "" {
 				return nil
 			}
+
 			return h.chunk(map[string]any{"reasoning_content": thinking}, "")
 		}
+
 		text := ev.Get("delta.message.content.text").String()
 		if text == "" {
 			return nil
 		}
+
 		return h.chunk(map[string]any{"content": text}, "")
 	case "message-end":
 		usageResult := ev.Get("delta.usage")
@@ -463,7 +523,9 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		if usageResult.Exists() {
 			rawUsage = []byte(usageResult.Raw)
 		}
+
 		h.usage = &domain.Usage{Input: in, Output: outTok, Total: in + outTok, Raw: rawUsage, Source: domain.UsageSourceUpstream, Confidence: domain.UsageConfidenceExact}
+
 		return h.chunk(map[string]any{}, mapFinishReason(ev.Get("delta.finish_reason").String()))
 	case "tool-call-start":
 		// delta.message.tool_calls is a single object here (not an array) —
@@ -471,13 +533,14 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		// type. index tracks which parallel call this belongs to, matching
 		// OpenAI's own streaming tool_calls[].index convention.
 		tc := ev.Get("delta.message.tool_calls")
-		return h.chunk(map[string]any{"tool_calls": []any{map[string]any{
-			"index": ev.Get("index").Int(),
-			"id":    tc.Get("id").String(),
-			"type":  "function",
-			"function": map[string]any{
-				"name":      tc.Get("function.name").String(),
-				"arguments": "",
+
+		return h.chunk(map[string]any{keyToolCalls: []any{map[string]any{
+			keyIndex: ev.Get(keyIndex).Int(),
+			"id":     tc.Get("id").String(),
+			keyType:  keyFunction,
+			keyFunction: map[string]any{
+				"name":       tc.Get("function.name").String(),
+				keyArguments: "",
 			},
 		}}}, "")
 	case "tool-call-delta":
@@ -485,9 +548,10 @@ func (h *responseHandler) translateEvent(data []byte) []byte {
 		if frag == "" {
 			return nil
 		}
-		return h.chunk(map[string]any{"tool_calls": []any{map[string]any{
-			"index":    ev.Get("index").Int(),
-			"function": map[string]any{"arguments": frag},
+
+		return h.chunk(map[string]any{keyToolCalls: []any{map[string]any{
+			keyIndex:    ev.Get(keyIndex).Int(),
+			keyFunction: map[string]any{keyArguments: frag},
 		}}}, "")
 	case "tool-call-end", "tool-plan-delta", "citation-start", "citation-end":
 		// tool-call-end carries no new content (index only). tool-plan-delta
@@ -506,13 +570,16 @@ func (h *responseHandler) chunk(delta map[string]any, finish string) []byte {
 	if h.id == "" {
 		h.id = "chatcmpl-" + randHex(8)
 	}
+
 	choice := map[string]any{"index": 0, "delta": delta, "finish_reason": nil}
 	if finish != "" {
 		choice["finish_reason"] = finish
 	}
+
 	b, _ := json.Marshal(map[string]any{
 		"id": h.id, "object": "chat.completion.chunk", "choices": []any{choice},
 	})
+
 	return append(append([]byte("data: "), b...), '\n', '\n')
 }
 
@@ -530,16 +597,19 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 		case "thinking":
 			reasoning.WriteString(part.Get("thinking").String())
 		}
+
 		return true
 	})
 
 	usageResult := root.Get("usage")
 	in := usageResult.Get("tokens.input_tokens").Int()
 	outTok := usageResult.Get("tokens.output_tokens").Int()
+
 	var rawUsage []byte
 	if usageResult.Exists() {
 		rawUsage = []byte(usageResult.Raw)
 	}
+
 	usage := &domain.Usage{
 		Input:      in,
 		Output:     outTok,
@@ -567,6 +637,7 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 	} else {
 		message["content"] = text.String()
 	}
+
 	if reasoning.Len() > 0 {
 		message["reasoning_content"] = reasoning.String()
 	}
@@ -586,6 +657,7 @@ func translateResponse(buf []byte) ([]byte, *domain.Usage) {
 		},
 	}
 	body, _ := json.Marshal(resp)
+
 	return body, usage
 }
 
@@ -598,18 +670,21 @@ func extractToolCalls(arr gjson.Result) []map[string]any {
 	if !arr.IsArray() {
 		return nil
 	}
+
 	var out []map[string]any
 	arr.ForEach(func(_, tc gjson.Result) bool {
 		out = append(out, map[string]any{
-			"id":   tc.Get("id").String(),
-			"type": "function",
-			"function": map[string]any{
-				"name":      tc.Get("function.name").String(),
-				"arguments": tc.Get("function.arguments").String(),
+			"id":    tc.Get("id").String(),
+			keyType: keyFunction,
+			keyFunction: map[string]any{
+				"name":       tc.Get("function.name").String(),
+				keyArguments: tc.Get("function.arguments").String(),
 			},
 		})
+
 		return true
 	})
+
 	return out
 }
 
@@ -621,22 +696,23 @@ func extractToolCalls(arr gjson.Result) []map[string]any {
 func mapFinishReason(c string) string {
 	switch c {
 	case "COMPLETE", "STOP_SEQUENCE", "":
-		return "stop"
+		return finishStop
 	case "MAX_TOKENS":
 		return "length"
 	case "TOOL_CALL":
-		return "tool_calls"
+		return keyToolCalls
 	case "ERROR", "TIMEOUT":
 		// OpenAI's enum has no error/timeout member; "stop" is the closest safe
 		// default (callers should also check the HTTP status / error body).
-		return "stop"
+		return finishStop
 	default:
-		return "stop"
+		return finishStop
 	}
 }
 
 func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
+
 	return hex.EncodeToString(b)
 }

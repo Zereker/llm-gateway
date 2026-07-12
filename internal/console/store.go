@@ -69,16 +69,20 @@ func (s *Store) CreateModelAlias(ctx context.Context, in ModelAliasInput) error 
 	if in.Alias == "" || in.Model == "" {
 		return &InvalidAliasError{Reason: "alias and model required"}
 	}
+
 	var n int
 	if err := s.db.GetContext(ctx, &n,
 		`SELECT COUNT(*) FROM model_services WHERE model = ? AND deleted_at IS NULL`, in.Model); err != nil {
 		return err
 	}
+
 	if n == 0 {
 		return &InvalidAliasError{Reason: "canonical model does not exist: " + in.Model}
 	}
+
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO model_aliases (alias, model) VALUES (?, ?)`, in.Alias, in.Model)
+
 	return err
 }
 
@@ -93,9 +97,11 @@ type ModelAliasView struct {
 // ListModelAliases lists all non-deleted aliases.
 func (s *Store) ListModelAliases(ctx context.Context) ([]ModelAliasView, error) {
 	var rows []ModelAliasView
+
 	err := s.db.SelectContext(ctx, &rows,
 		`SELECT alias, model, enabled, created_at
 		 FROM model_aliases WHERE deleted_at IS NULL ORDER BY alias`)
+
 	return rows, err
 }
 
@@ -106,9 +112,11 @@ func (s *Store) DeleteModelAlias(ctx context.Context, alias string) error {
 	if err != nil {
 		return err
 	}
+
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+
 	return nil
 }
 
@@ -145,9 +153,11 @@ func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error
 	if in.AccountID == "" || in.ModelServiceID == 0 {
 		return 0, &InvalidPricingError{Reason: "account_id and model_service_id required"}
 	}
+
 	if !json.Valid(in.Rule) || len(in.Rule) == 0 {
 		return 0, &InvalidPricingError{Reason: "rule must be non-empty valid JSON"}
 	}
+
 	class := orDefault(in.RuleClass, "standard")
 
 	// **Concurrency serialization**: two concurrent PublishPrice calls
@@ -167,10 +177,12 @@ func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error
 	defer func() { _ = conn.Close() }()
 
 	lockName := fmt.Sprintf("llmgw:pricing:%s:%d:%s", in.AccountID, in.ModelServiceID, class)
+
 	var locked int
 	if err := conn.GetContext(ctx, &locked, "SELECT GET_LOCK(?, 10)", lockName); err != nil {
 		return 0, fmt.Errorf("pricing: acquire lock: %w", err)
 	}
+
 	if locked != 1 {
 		return 0, fmt.Errorf("pricing: could not acquire publish lock (timeout)")
 	}
@@ -200,10 +212,13 @@ func (s *Store) PublishPrice(ctx context.Context, in PricingInput) (int64, error
 	if err != nil {
 		return 0, fmt.Errorf("pricing: insert: %w", err)
 	}
+
 	id, _ := res.LastInsertId()
+
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("pricing: commit: %w", err)
 	}
+
 	return id, nil
 }
 
@@ -233,22 +248,30 @@ func (s *Store) ListPricing(ctx context.Context, q PricingQuery) ([]PricingView,
 	sqlStr := `SELECT id, account_id, model_service_id, rule_class, effective_from, effective_to,
 	                  rule_json, created_by, notes
 	           FROM pricing_versions WHERE 1=1`
+
 	var args []any
 	if q.AccountID != "" {
 		sqlStr += ` AND account_id = ?`
+
 		args = append(args, q.AccountID)
 	}
+
 	if q.ModelServiceID != 0 {
 		sqlStr += ` AND model_service_id = ?`
+
 		args = append(args, q.ModelServiceID)
 	}
+
 	if q.ActiveOnly {
 		sqlStr += ` AND effective_to IS NULL`
 	}
+
 	sqlStr += ` ORDER BY effective_from DESC, id DESC`
 
 	var rows []PricingView
+
 	err := s.db.SelectContext(ctx, &rows, sqlStr, args...)
+
 	return rows, err
 }
 
@@ -262,6 +285,7 @@ func (s *Store) RecordAudit(ctx context.Context, actor, role, method, path strin
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit_log (actor, role, method, path, status_code) VALUES (?, ?, ?, ?, ?)`,
 		actor, role, method, path, status)
+
 	return err
 }
 
@@ -281,10 +305,13 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditView, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+
 	var rows []AuditView
+
 	err := s.db.SelectContext(ctx, &rows,
 		`SELECT id, actor, role, method, path, status_code, created_at
 		 FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
+
 	return rows, err
 }
 
@@ -298,11 +325,14 @@ func generateAPIKey() (plain, prefix string, err error) {
 	if _, err = rand.Read(buf); err != nil {
 		return "", "", fmt.Errorf("console: gen api key: %w", err)
 	}
+
 	plain = "sk-" + base64.RawURLEncoding.EncodeToString(buf)
+
 	prefix = plain
 	if len(prefix) > 12 {
 		prefix = prefix[:12]
 	}
+
 	return plain, prefix, nil
 }
 
@@ -312,6 +342,7 @@ func generateID(prefix string) (string, error) {
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("console: gen id: %w", err)
 	}
+
 	return prefix + base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
@@ -319,6 +350,7 @@ func orDefault(s, def string) string {
 	if s == "" {
 		return def
 	}
+
 	return s
 }
 
@@ -326,6 +358,7 @@ func orWeight(w, def uint32) uint32 {
 	if w == 0 {
 		return def
 	}
+
 	return w
 }
 
@@ -333,5 +366,6 @@ func rawOrNil(r json.RawMessage) []byte {
 	if len(r) == 0 {
 		return nil
 	}
+
 	return []byte(r)
 }

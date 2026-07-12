@@ -59,6 +59,7 @@ func decode(payload string) (Invalidation, bool) {
 	if i <= 0 || i == len(payload)-1 {
 		return Invalidation{}, false
 	}
+
 	return Invalidation{Kind: Kind(payload[:i]), Key: payload[i+1:]}, true
 }
 
@@ -73,6 +74,7 @@ func NewPublisher(rdb *redis.Client, channel string) *Publisher {
 	if channel == "" {
 		channel = DefaultChannel
 	}
+
 	return &Publisher{rdb: rdb, channel: channel}
 }
 
@@ -84,9 +86,11 @@ func (p *Publisher) Invalidate(ctx context.Context, inv Invalidation) error {
 	if p == nil || p.rdb == nil {
 		return nil
 	}
+
 	if err := p.rdb.Publish(ctx, p.channel, inv.encode()).Err(); err != nil {
 		return fmt.Errorf("cachebus: publish: %w", err)
 	}
+
 	return nil
 }
 
@@ -103,6 +107,7 @@ func NewSubscriber(rdb *redis.Client, channel string, handler func(Invalidation)
 	if channel == "" {
 		channel = DefaultChannel
 	}
+
 	return &Subscriber{rdb: rdb, channel: channel, handler: handler}
 }
 
@@ -119,18 +124,23 @@ func (s *Subscriber) Start(ctx context.Context) (stop func(), err error) {
 		_ = pubsub.Close()
 		return nil, fmt.Errorf("cachebus: subscribe: %w", err)
 	}
+
 	ch := pubsub.Channel()
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+
 		for msg := range ch {
 			if inv, ok := decode(msg.Payload); ok && s.handler != nil {
 				s.handler(inv)
 			}
 		}
 	}()
+
 	return func() {
 		_ = pubsub.Close()
+
 		<-done
 	}, nil
 }

@@ -37,22 +37,29 @@ func (s *WeightedRandomPicker) Select(_ context.Context, candidates []Candidate)
 	if len(candidates) == 0 {
 		return nil
 	}
+
 	var total float64
+
 	live := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		if c.EffectiveWeight <= 0 {
 			continue
 		}
+
 		total += c.EffectiveWeight
 		live = append(live, c)
 	}
+
 	if len(live) == 0 || total == 0 {
 		return nil
 	}
+
 	if len(live) == 1 {
 		return &live[0]
 	}
+
 	target := s.randFloat() * total
+
 	var acc float64
 	for i := range live {
 		acc += live[i].EffectiveWeight
@@ -68,5 +75,6 @@ func (s *WeightedRandomPicker) randFloat() float64 {
 	if s.rng != nil {
 		return s.rng.Float64()
 	}
+
 	return rand.Float64()
 }
