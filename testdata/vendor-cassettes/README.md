@@ -128,14 +128,16 @@ echo '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}' > /
 RECORD_API_KEY=sk-... go run ./scripts/record-cassette \
   -url https://api.deepseek.com/chat/completions \
   -body-file /tmp/req.json \
-  -out testdata/vendor-cassettes/deepseek/self-recorded/chat_basic.yaml
+  -vendor deepseek -model deepseek-chat -name chat_basic
+# -> testdata/vendor-cassettes/deepseek/deepseek-chat/openai/nostream/chat_basic.yaml
 ```
 
+- **目录布局由工具自动生成**,自录数据的标准层级是 `<vendor>/<model>/<protocol>/<stream|nostream>/<场景名>.yaml`：vendor/model/场景名来自 flag,protocol 默认 `openai`（`-protocol` 覆盖）,流式桶直接读请求体自己的 `"stream"` 字段,不用重复声明。第三方来源目录（`anthropic/simonw-llm-anthropic/` 这批）**不**套这个层级——它们是按来源仓库原样收录的（单个文件内部常混流式/非流式多次交互,物理上放不进单一桶）,溯源和 LICENSE 都挂在来源目录上,两套布局并存、按"自录 vs 收录"区分。
 - key 只从环境变量读（默认 `RECORD_API_KEY`），不进 shell history；落盘前按 header 名（`authorization`/`x-api-key`/…）**和** key 字面值双重脱敏成 `**REDACTED**`（实现见 `internal/cassette/recorder`，其单测证明写出的文件能被 `cassette.Load` 原样读回）。
 - 认证方式：`-auth bearer`（默认）/ `x-api-key` / `api-key` / `query:<param>`（key 在 URL 上，如 Gemini AI Studio 的 `query:key`）/ `none`；协议要求的额外头用 `-header "anthropic-version: 2023-06-01"`（可重复）。
-- 多轮对话（工具调用回环）：第二次调用加 `-append`，追加到同一个 cassette。
+- 多轮对话（工具调用回环）：第二次调用加 `-append`，追加到同一个 cassette；多轮场景归属它**第一轮**落进的桶（第二轮常是非流式,文件不会因此搬家——桶分类的是场景,不是单次交互）。
 - 上游返回非 2xx 时**不落盘**（错误响应也是真实数据,但要求操作者看过错误、修好请求重录,而不是把报错默默提交进语料库）。
-- 目录约定：`<vendor>/self-recorded/`，与第三方来源目录并列；自录数据没有第三方 LICENSE,在本 README 里记一行"何时、对哪个模型、录了什么"即可。
+- 自录数据没有第三方 LICENSE,在本 README 里记一行"何时、对哪个模型、录了什么"即可。
 - **提交前必须人工通读文件再 grep 一遍**——工具脱敏的是它认识的凭证,响应体里如果回显了别的敏感信息,工具不知道。
 
 ## 注意
