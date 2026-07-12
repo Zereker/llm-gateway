@@ -19,6 +19,8 @@ vendor-cassettes/
 │   └── simonw-llm-gemini/            # Apache License 2.0
 ├── cohere/
 │   └── langchain-ai-langchain-cohere/ # MIT License
+├── bedrock/
+│   └── langchain-ai-langchain-aws/   # MIT License（langchain-aws 官方分包，Converse API）
 └── openai/
     └── langchain-ai-langchain/       # MIT License（langchain-openai 官方分包）
 ```
@@ -80,6 +82,21 @@ vendor-cassettes/
 | `test_documents.yaml` | `documents` 请求字段（RAG，OpenAI 协议没有对应概念,不在我们翻译范围内） |
 | `test_command_a_reasoning_with_tool_call.yaml` | `command-a-reasoning-08-2025` 的 `{"type":"thinking","thinking":...}` block（已支持，映射到 `reasoning_content`） |
 | `test_stream.yaml` | 基础流式文本（`content-start`/`content-delta`/`content-end`），用来确认 content block 的 `type` 只在 `content-start` 出现一次 |
+
+### `bedrock/langchain-ai-langchain-aws/`（MIT License）
+
+来自 [langchain-ai/langchain-aws](https://github.com/langchain-ai/langchain-aws) 的 `libs/aws/tests/cassettes/`（原文件是 gzip 压缩的 `.yaml.gz`，**这里直接原样存的就是 `.yaml.gz`**——和上面 `anthropic/langchain-ai-langchain/` 先解压再存的做法不同，因为 `internal/cassette.Load` 现在支持整文件级别的透明 gunzip,不需要再手动解压一遍才能"原样收录"）。
+
+这批录的是 Bedrock **Converse API**（`/model/{id}/converse`、`/converse-stream`），和 `internal/protocol/bedrock` 原有的 **InvokeModel** 路径（`protocol: anthropic`，body 直接是 Anthropic Messages 格式）是完全不同的 wire shape——对应 `internal/translator/openai_bedrock`（新增的 Converse 翻译器，`endpoint.protocol: bedrock`），不是 `openai_anthropic`。
+
+| 文件 | 内容 | 我们的实现状态 |
+|---|---|---|
+| `test_agent_loop[v0/v1].yaml.gz` | 非流式工具调用（agent loop：调用工具→拿到结果→给出最终答案） | 已支持 |
+| `test_agent_loop_streaming[v0/v1].yaml.gz` | 流式工具调用：`contentBlockStart`(`toolUse`)/`contentBlockDelta`(`toolUse.input` 增量 JSON 字符串)/`messageStop`/`metadata`(usage) | 已支持 |
+| `test_thinking[v0/v1].yaml.gz` | extended thinking：`reasoningContent.reasoningText`（含签名，流式 `delta.reasoningContent.text`） | 响应侧文本已映射到 `reasoning_content`；签名本身及请求侧回传未处理（同 Anthropic 直连的 thinking 多轮场景），标记为 not-applicable |
+| `test_citations[document0/1].yaml.gz` | citations：`document` 请求块 + 响应 `citationsContent`（`documentChar` 位置引用，无 URL） | **未实现**——同 Cohere citations 的既有先例，无 OpenAI 对应概念，标记为 not-applicable |
+| `test_citations_v1[v0/v1].yaml.gz` | 同上，citations API v1 变体 | **未实现**，同上 |
+| `test_pdf_citations.yaml.gz` | citations，引用来源是 PDF 文档 | **未实现**，同上 |
 
 ### `openai/langchain-ai-langchain/`（MIT License，99 个文件）
 
