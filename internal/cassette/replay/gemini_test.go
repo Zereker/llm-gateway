@@ -1,12 +1,9 @@
 package replay
 
 import (
-	"encoding/json"
-	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/translator/openai_gemini"
 )
 
@@ -35,61 +32,20 @@ func looksLikeGeminiResponse(body []byte) bool {
 // response handler and asserts it doesn't error and produces well-formed
 // OpenAI-shaped output.
 func TestReplayGeminiResponses(t *testing.T) {
-	tr := openai_gemini.New()
-	for _, dir := range geminiDirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
-		if err != nil {
-			t.Fatalf("LoadDir %s: %v", dir, err)
-		}
-		for _, rel := range cassette.SortedKeys(files) {
-			path := dir + "/" + rel
-			interactions := files[rel]
-			examined := false
-			for i, it := range interactions {
-				if len(it.ResponseBody) == 0 || !looksLikeGeminiResponse(it.ResponseBody) {
-					continue
-				}
-				examined = true
-				i, it := i, it
-				t.Run(path+"#"+strconv.Itoa(i), func(t *testing.T) {
-					h := tr.NewResponseHandler()
-					out, usage := feedResponse(t, h, it.ResponseBody, path)
-					assertValidOpenAIChatOutput(t, out, path)
-					if usage == nil {
-						t.Errorf("%s: expected non-nil usage", path)
-					}
-				})
-			}
-			if examined {
-				claim(path)
-			} else {
-				markNotApplicable(path, "no interaction response body contained a \"candidates\" field")
-			}
-		}
-	}
+	runResponseReplay(t, vendorReplayConfig{
+		dirs:       geminiDirs,
+		classify:   looksLikeGeminiResponse,
+		translator: openai_gemini.New(),
+		notApplicableReason: func(string) string {
+			return `no interaction response body contained a "candidates" field`
+		},
+	})
 }
 
 // TestReplayGeminiRequestsAreWellFormed doesn't translate Gemini request
 // bodies (there's no such translator — see geminiDirs's doc comment) but
-// still claims them: it just asserts they parse as valid JSON, so a
-// corrupted/truncated cassette can't silently masquerade as "out of scope"
-// via markNotApplicable.
+// still guards against a corrupted/truncated cassette silently masquerading
+// as "out of scope".
 func TestReplayGeminiRequestsAreWellFormed(t *testing.T) {
-	for _, dir := range geminiDirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
-		if err != nil {
-			t.Fatalf("LoadDir %s: %v", dir, err)
-		}
-		for _, rel := range cassette.SortedKeys(files) {
-			path := dir + "/" + rel
-			for i, it := range files[rel] {
-				if len(it.RequestBody) == 0 {
-					continue
-				}
-				if !json.Valid(it.RequestBody) {
-					t.Errorf("%s#%d: request body is not valid JSON", path, i)
-				}
-			}
-		}
-	}
+	runRequestWellFormedCheck(t, geminiDirs)
 }

@@ -47,40 +47,19 @@ func looksLikeAnthropicMessageRequest(body []byte) bool {
 // OpenAI-response direction — and asserts it doesn't error and produces
 // well-formed output the OpenAI SDK could parse.
 func TestReplayAnthropicResponses(t *testing.T) {
-	tr := openai_anthropic.New()
-	for _, dir := range anthropicDirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
-		if err != nil {
-			t.Fatalf("LoadDir %s: %v", dir, err)
-		}
-		for _, rel := range cassette.SortedKeys(files) {
-			path := dir + "/" + rel
-			interactions := files[rel]
-			examined := false
-			for i, it := range interactions {
-				if len(it.ResponseBody) == 0 || !looksLikeAnthropicMessageResponse(it.ResponseBody) {
-					continue
-				}
-				examined = true
-				i, it := i, it
-				t.Run(path+"#"+strconv.Itoa(i), func(t *testing.T) {
-					h := tr.NewResponseHandler()
-					out, usage := feedResponse(t, h, it.ResponseBody, path)
-					assertValidOpenAIChatOutput(t, out, path)
-					// An error response has no usage; everything else should
-					// have gotten one from extractor.Anthropic.
-					if !strings.Contains(string(it.ResponseBody), `"type":"error"`) && usage == nil {
-						t.Errorf("%s: expected non-nil usage for a successful response", path)
-					}
-				})
-			}
-			if examined {
-				claim(path)
-			} else {
-				markNotApplicable(path, "no interaction body classified as an Anthropic Messages response (request-only or unrecognized shape)")
-			}
-		}
-	}
+	runResponseReplay(t, vendorReplayConfig{
+		dirs:       anthropicDirs,
+		classify:   looksLikeAnthropicMessageResponse,
+		translator: openai_anthropic.New(),
+		notApplicableReason: func(string) string {
+			return "no interaction body classified as an Anthropic Messages response (request-only or unrecognized shape)"
+		},
+		// An error response has no usage; everything else should have gotten
+		// one from extractor.Anthropic.
+		skipUsageCheck: func(body []byte) bool {
+			return strings.Contains(string(body), `"type":"error"`)
+		},
+	})
 }
 
 // TestReplayAnthropicRequests feeds every real Anthropic Messages *request*
