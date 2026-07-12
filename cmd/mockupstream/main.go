@@ -10,6 +10,9 @@
 //	POST /v1/messages          → Anthropic Messages (includes usage{input_tokens, output_tokens})
 //	POST /v1beta/models/{model}:generateContent  → Gemini generateContent
 //	POST /v2/chat              → Cohere v2/chat (includes usage.tokens{input_tokens,output_tokens})
+//	POST /openai/deployments/{deployment}/chat/completions  → Azure OpenAI (identical wire shape to
+//	     plain OpenAI Chat -- reuses handleOpenAIChat; Azure-specific bits are the URL shape and the
+//	     api-key header, both handled entirely on the gateway side by internal/protocol/azureopenai)
 //	GET  /health               → "ok"
 //
 // Streaming (when stream=true in the request body) emits chunks in each
@@ -42,6 +45,7 @@ func main() {
 	mux.HandleFunc("/v1/messages", handleAnthropicMessages)
 	mux.HandleFunc("/v1beta/models/", handleGemini)
 	mux.HandleFunc("/v2/chat", handleCohereChat)
+	mux.HandleFunc("/openai/deployments/", handleOpenAIChat)
 
 	slog.Info("mockupstream listening", "addr", addr)
 	srv := &http.Server{

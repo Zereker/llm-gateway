@@ -122,8 +122,9 @@ jobs:
     # Real-binary, black-box integration test: actual compiled cmd/gateway +
     # cmd/mockupstream processes talking over real network round trips (not
     # gin's in-process test harness) — one endpoint + one real API key per
-    # upstream vendor (openai/anthropic/gemini/cohere), seeded from
-    # testdata/fieldmatrix/endpoints/*.json via scripts/seed-multivendor, then
+    # upstream vendor, seeded from testdata/fieldmatrix/endpoints/*.json
+    # (currently openai/anthropic/gemini/cohere/azure-openai) via
+    # scripts/seed-multivendor, then
     # curled through cmd/gateway for real. Complements the `go` job's
     # in-process TestE2E_MultiVendor_AllProtocols, which exercises the same
     # manifests without a real listening process. See

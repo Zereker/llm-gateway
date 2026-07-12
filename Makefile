@@ -45,7 +45,7 @@ smoke:                  ## e2e smoke test (start stack + gateway + mockupstream 
 	./scripts/e2e-smoke.sh
 smoke-clean:            ## Same as smoke but runs docker compose down -v afterward
 	./scripts/e2e-smoke.sh --teardown
-smoke-multivendor:       ## Full-protocol e2e smoke test: real gateway + mockupstream binaries, one endpoint + one real api_key per vendor (openai/anthropic/gemini/cohere)
+smoke-multivendor:       ## Full-protocol e2e smoke test: real gateway + mockupstream binaries, one endpoint + one real api_key per vendor (see testdata/fieldmatrix/endpoints/)
 	./scripts/e2e-smoke-multivendor.sh
 smoke-multivendor-clean: ## Same as smoke-multivendor but runs docker compose down -v afterward
 	./scripts/e2e-smoke-multivendor.sh --teardown
