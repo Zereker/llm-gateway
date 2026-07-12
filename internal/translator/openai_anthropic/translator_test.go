@@ -650,7 +650,7 @@ func TestTranslateResponse_ToolOnly(t *testing.T) {
 // TestStreaming_Thinking replays real captured extended-thinking SSE events
 // (from simonw/llm-anthropic's test_stream_events_thinking.yaml cassette,
 // Apache 2.0 — also saved sanitized at
-// internal/app/gateway/testdata/fieldmatrix/upstream/messages-anthropic-compat-thinking-stream.sse)
+// testdata/fieldmatrix/upstream/messages-anthropic-compat-thinking-stream.sse)
 // through the streaming handler: thinking_delta -> reasoning_content deltas,
 // signature_delta -> a reasoning_signature delta, and the final text block
 // still comes through as ordinary content.

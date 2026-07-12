@@ -1,5 +1,5 @@
 // Package replay replays every real cassette under
-// internal/app/gateway/testdata/vendor-cassettes/ through the actual
+// testdata/vendor-cassettes/ (repo root) through the actual
 // translator / usage-extractor implementations, so the whole vendored real
 // upstream traffic corpus is exercised — not just the hand-picked highlight
 // cases inline in each translator's own tests.
@@ -20,11 +20,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/translator"
 )
 
-const vendorRoot = "../../app/gateway/testdata/vendor-cassettes"
+var vendorRoot = cassette.TestdataPath("vendor-cassettes")
 
 // claimed / notApplicable together must account for every file cassette.LoadDir
 // finds under vendorRoot. claimed = "a replay subtest fed at least one
