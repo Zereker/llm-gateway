@@ -40,11 +40,20 @@ run-migrate:            ## Apply versioned database migrations
 run-mockupstream:       ## Run the mock upstream (listens on :9090)
 	MOCK_ADDR=:9090 go run ./cmd/mockupstream
 
-.PHONY: smoke smoke-clean
-smoke:                  ## e2e smoke test (start stack + gateway + mockupstream + seed + curl)
+.PHONY: smoke smoke-clean smoke-multivendor smoke-multivendor-clean seed-multivendor
+smoke:                  ## e2e smoke test (start stack + gateway + mockupstream + seed + curl), single vendor
 	./scripts/e2e-smoke.sh
 smoke-clean:            ## Same as smoke but runs docker compose down -v afterward
 	./scripts/e2e-smoke.sh --teardown
+smoke-multivendor:       ## Full-protocol e2e smoke test: real gateway + mockupstream binaries, one endpoint + one real api_key per vendor (openai/anthropic/gemini/cohere)
+	./scripts/e2e-smoke-multivendor.sh
+smoke-multivendor-clean: ## Same as smoke-multivendor but runs docker compose down -v afterward
+	./scripts/e2e-smoke-multivendor.sh --teardown
+seed-multivendor:        ## Seed one endpoint + one real api_key per vendor against an already-running stack + gateway + mockupstream (idempotent; safe to re-run every startup)
+	go run ./scripts/seed-multivendor \
+	  -dsn "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4" \
+	  -data-key "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" \
+	  -mock-base "http://127.0.0.1:9090"
 
 .PHONY: help
 help:                   ## List all targets
