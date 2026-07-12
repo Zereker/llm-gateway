@@ -141,9 +141,11 @@ func TestE2E_SemanticCacheHit(t *testing.T) {
 	defer chat.Close()
 
 	// Clear any leftover semantic index, guaranteeing the first call is a miss.
+	// Namespace matches cache_semantic.go's ns construction: AccountID|protocol|model
+	// (seedDB always uses the "default" account pin).
 	rdb := redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
 	defer rdb.Close()
-	rdb.Del(context.Background(), "llm-gateway:respcache:sem:openai|gpt-4o")
+	rdb.Del(context.Background(), "llm-gateway:respcache:sem:default|openai|gpt-4o")
 
 	cfg := writeTestConfig(t, chat.URL)
 	cfg.Cache.TTL = time.Minute
