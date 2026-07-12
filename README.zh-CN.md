@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![codecov](https://codecov.io/gh/Zereker/llm-gateway/graph/badge.svg)](https://codecov.io/gh/Zereker/llm-gateway)
+
 一个基于 Go 实现的网关，将 LLM API 请求路由到多个上游供应商
 （OpenAI、Anthropic、Google、AWS Bedrock、自建的 vLLM / Ollama 等），
 对外统一暴露 OpenAI 兼容接口。
@@ -97,7 +99,16 @@ curl http://localhost:8080/v1/chat/completions \
 ```sh
 make test               # 单元测试；没设 MYSQL_DSN 时 SQL 相关测试会 skip
 make test-integration   # 起 stack 后跑全部测试，包含 SQL/outbox
+make cover              # 单元测试 + 覆盖率统计（MYSQL_DSN/REDIS_ADDR 的 gating 规则同上）
 ```
+
+上面的徽章是 CI 实时跑出来、按文件统计的覆盖率（见
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 的 `go` job，上传到
+[codecov.io/gh/Zereker/llm-gateway](https://codecov.io/gh/Zereker/llm-gateway)）——
+那个 job 起了 MySQL/Redis/Kafka，所以也覆盖了 `make cover` 本地默认跳过的
+SQL/Redis 相关测试。想在推送前先看一下本地数字，跑 `make cover`（只测单元测试，
+不设 `MYSQL_DSN`/`REDIS_ADDR`，只统计 `internal/...` 下自己有测试文件的包）；
+`go tool cover -html=coverage.txt` 能在浏览器里看逐行的覆盖情况。
 
 `gateway.yaml` 控制 server 设置（监听地址、超时、body 大小限制）、数据库连接、
 outbox driver 以及各 middleware 的可调参数。默认值是合理的开箱即用值——
