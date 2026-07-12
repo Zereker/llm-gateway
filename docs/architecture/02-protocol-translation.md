@@ -342,8 +342,8 @@ Cross-protocol pairs do not all carry every request feature. Current coverage:
 |---|---|---|---|---|
 | `openai_anthropic` | ✅ | ✅ | ✅ | extended thinking round-trip (via `reasoning_content`/`reasoning_signature`) |
 | `anthropic_openai` | ✅ | ✅ | ✅ | — |
-| `openai_gemini` | ✅ | ✅ | ❌ | `n`/`candidateCount`, `response_format` |
-| `openai_cohere` | ✅ | ✅ | ❌ | citations still dropped (no OpenAI-compatible shape decided) |
+| `openai_gemini` | ✅ | ✅ | ✅ | `n`/`candidateCount`, `response_format` |
+| `openai_cohere` | ✅ | ✅ | ✅ | citations still dropped (no OpenAI-compatible shape decided) |
 
 **Tool calling**: request-side maps `tools` / `tool_choice`, assistant tool
 calls, and tool results between OpenAI's flat `tool_calls` + `role:"tool"`
@@ -359,11 +359,15 @@ named tool (`{"type":"tool",...}` / `allowedFunctionNames`); Cohere v2 only
 has `REQUIRED`/`NONE`, so a named-function choice falls back to `REQUIRED`
 (forces *some* call, not necessarily that one).
 
-**Multimodal (images)**: `openai_anthropic`/`anthropic_openai` convert
-between OpenAI's `image_url` content part (`data:` URI or a plain URL) and
-Anthropic's `image` block (`source.type` = `base64`/`url`). Gemini/Cohere
-still drop non-text content — no vendor-verified field mapping has been done
-for those pairs yet.
+**Multimodal (images)**: all four pairs convert OpenAI's `image_url` content
+part (`data:` URI or a plain URL). Anthropic's `image` block uses
+`source.type` = `base64`/`url`; Gemini's part uses `inlineData`
+(`mimeType`+`data`) for base64 or `fileData` (`fileUri`) for a URL — both
+vendors fetch a plain URL themselves, so the gateway never proxies image
+bytes. Cohere v2's `ImageContent`/`ImageUrl` types (verified against the
+official cohere-python SDK) are structurally identical to OpenAI's
+`image_url` part, so that pair is closer to a filtered passthrough than a
+reshape. Audio/video/document content remains unhandled on all four pairs.
 
 **Extended thinking** (`openai_anthropic` only — the other direction has no
 concept of it upstream, and same-protocol `identity/anthropic` already

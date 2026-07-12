@@ -201,6 +201,48 @@ func TestTranslateRequest_MultipleSystemMessagesMerge(t *testing.T) {
 	}
 }
 
+// TestTranslateRequest_ImageURL covers OpenAI vision content -> Gemini
+// inlineData/fileData parts. The base64 payload is a real captured image (a
+// tiny PNG) from simonw/llm-anthropic's test_image_prompt.yaml cassette
+// (Apache 2.0) — reused here since it's a real image, not a vendor-specific
+// artifact.
+func TestTranslateRequest_ImageURL(t *testing.T) {
+	const realPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAKYAAAEaAgMAAADmmcReAAAACVBMVEX///8A/wD+AQASdAFKAAAAR0lEQVR42u3YMREAMAjAwC5d6q8mUYkEVuA+8yvIkVr0oghFURRFURRFURRFUdRCkSRJM7u/CEVRFEVRFEVRFEXRpdQXkcaVBRUPn8UJn6QAAAAASUVORK5CYII="
+
+	t.Run("data_uri", func(t *testing.T) {
+		body := []byte(`{"model":"gemini-x","messages":[
+			{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,` + realPNGBase64 + `"}},
+				{"type":"text","text":"Describe image in three words"}
+			]}
+		]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		img := gjson.GetBytes(out, "contents.0.parts.0.inlineData")
+		if img.Get("mimeType").String() != "image/png" || img.Get("data").String() != realPNGBase64 {
+			t.Errorf("inlineData wrong: %s", img.Raw)
+		}
+		if txt := gjson.GetBytes(out, "contents.0.parts.1.text").String(); txt != "Describe image in three words" {
+			t.Errorf("text part = %q", txt)
+		}
+	})
+
+	t.Run("https_url_passthrough", func(t *testing.T) {
+		body := []byte(`{"model":"gemini-x","messages":[
+			{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}]}
+		]}`)
+		out, err := translateRequest(body)
+		if err != nil {
+			t.Fatalf("translateRequest error: %v", err)
+		}
+		if got := gjson.GetBytes(out, "contents.0.parts.0.fileData.fileUri").String(); got != "https://example.com/cat.png" {
+			t.Errorf("fileData.fileUri = %q, want passthrough URL", got)
+		}
+	})
+}
+
 // TestTranslateRequest_CandidateCount regresses a bug where OpenAI's "n" was
 // never forwarded, so generationConfig.candidateCount stayed unset and
 // Gemini always returned exactly one candidate regardless of what the client
