@@ -126,7 +126,7 @@ none by design):
 | `internal/repo`, `internal/infra`, `internal/console` | 5-15% (mostly SQL-backed; see `make test-integration`) |
 
 Run `make cover` locally for the exact current number; `go tool cover
--html=coverage.out` renders a per-line breakdown in the browser.
+-html=coverage.txt` renders a per-line breakdown in the browser.
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the
 database connection, outbox driver, and middleware tunables. Defaults are
