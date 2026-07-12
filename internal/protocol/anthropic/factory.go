@@ -29,6 +29,10 @@ import (
 	"github.com/zereker/llm-gateway/internal/protocol"
 )
 
+// VendorName is the key internal/builtin.NewLookup registers this Factory
+// under — shared with Metadata().Vendor below so the two can't drift apart.
+const VendorName = "anthropic"
+
 // Factory implements protocol.Factory.
 type Factory struct{}
 
@@ -37,7 +41,7 @@ type Factory struct{}
 // or ProtoOpenAI (client OpenAI → openai_anthropic translation).
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
-		Vendor:              "anthropic",
+		Vendor:              VendorName,
 		SupportedModalities: []domain.Modality{domain.ModalityChat},
 	}
 }

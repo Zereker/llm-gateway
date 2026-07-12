@@ -48,6 +48,10 @@ import (
 	"github.com/zereker/llm-gateway/internal/protocol"
 )
 
+// VendorName is the key internal/builtin.NewLookup registers this Factory
+// under — shared with Metadata().Vendor below so the two can't drift apart.
+const VendorName = "bedrock"
+
 // Factory implements protocol.Factory. No custom Classify — Bedrock errors are
 // shaped like AWS errors, so falling back to DefaultClassifier's status-based
 // classification is sufficient.
@@ -56,7 +60,7 @@ type Factory struct{}
 // Metadata returns static metadata.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
-		Vendor:              "bedrock",
+		Vendor:              VendorName,
 		SupportedModalities: []domain.Modality{domain.ModalityChat},
 	}
 }

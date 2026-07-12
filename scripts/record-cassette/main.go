@@ -218,6 +218,13 @@ func readBody(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// bucketStream and bucketNoStream are the two directory names resolveOutPath
+// composes into the vendor-cassettes layout.
+const (
+	bucketStream   = "stream"
+	bucketNoStream = "nostream"
+)
+
 // resolveOutPath composes the canonical self-recorded location
 // (<vendor>/<model>/<protocol>/<stream|nostream>/<name>.yaml under
 // testdata/vendor-cassettes/) unless -out overrides it. The bucket comes
@@ -237,16 +244,16 @@ func resolveOutPath(out, vendor, model, protocol, name string, body []byte, appe
 			return "", fmt.Errorf("%s %q must be a single path segment", flagName, v)
 		}
 	}
-	bucket := "nostream"
+	bucket := bucketNoStream
 	if gjson.GetBytes(body, "stream").Bool() {
-		bucket = "stream"
+		bucket = bucketStream
 	}
 	path := cassette.TestdataPath("vendor-cassettes", vendor, model, protocol, bucket, name+".yaml")
 	if appendExisting {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
-			sibling := "stream"
-			if bucket == "stream" {
-				sibling = "nostream"
+			sibling := bucketStream
+			if bucket == bucketStream {
+				sibling = bucketNoStream
 			}
 			alt := cassette.TestdataPath("vendor-cassettes", vendor, model, protocol, sibling, name+".yaml")
 			if _, err := os.Stat(alt); err == nil {

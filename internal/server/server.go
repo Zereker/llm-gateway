@@ -198,6 +198,7 @@ func (s *Server) serveCtx(ctx context.Context, addr string, handler http.Handler
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
+	//nolint:contextcheck // deliberate: ctx is already Done() by this point (see select above), so shutdown needs its own fresh, un-canceled context
 	if err := srv.Shutdown(shutCtx); err != nil {
 		// docs/08 §3: count of requests forcibly cut off by shutdown timeout (route dimension is unknown, unified as "*")
 		s.log.Warn("http shutdown", "err", err)

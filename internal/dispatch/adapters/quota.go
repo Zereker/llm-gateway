@@ -96,6 +96,7 @@ func (q *EndpointQuotaAdapter) ChargeUsage(_ context.Context, ep *domain.Endpoin
 	bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	//nolint:contextcheck // deliberate: detached from the caller's ctx by design (see doc comment above)
 	_, _ = q.store.ChargeBatch(bgCtx, []ratelimit.Bucket{*b})
 }
 

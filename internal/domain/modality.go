@@ -5,6 +5,11 @@ import (
 	"fmt"
 )
 
+// unknownLabel is the shared String() fallback for every enum in this package
+// (Modality, Protocol, BudgetStatus, AttemptOutcome, ...) whose value has no
+// recognized name.
+const unknownLabel = "unknown"
+
 // Modality is the request modality.
 type Modality int
 
@@ -18,43 +23,55 @@ const (
 	ModalityTask // async tasks (video generation, long-form audio synthesis, etc.), polling model
 )
 
+// Wire names for each Modality — shared between String() and ParseModality()
+// so the two can't drift out of sync with each other.
+const (
+	modalityNameChat      = "chat"
+	modalityNameEmbedding = "embedding"
+	modalityNameImage     = "image"
+	modalityNameRerank    = "rerank"
+	modalityNameTTS       = "tts"
+	modalityNameASR       = "asr"
+	modalityNameTask      = "task"
+)
+
 func (m Modality) String() string {
 	switch m {
 	case ModalityChat:
-		return "chat"
+		return modalityNameChat
 	case ModalityEmbedding:
-		return "embedding"
+		return modalityNameEmbedding
 	case ModalityImage:
-		return "image"
+		return modalityNameImage
 	case ModalityRerank:
-		return "rerank"
+		return modalityNameRerank
 	case ModalityTTS:
-		return "tts"
+		return modalityNameTTS
 	case ModalityASR:
-		return "asr"
+		return modalityNameASR
 	case ModalityTask:
-		return "task"
+		return modalityNameTask
 	}
 
-	return "unknown"
+	return unknownLabel
 }
 
 // ParseModality is the reverse: string → Modality; unknown → 0 (ModalityChat) + error.
 func ParseModality(s string) (Modality, error) {
 	switch s {
-	case "chat":
+	case modalityNameChat:
 		return ModalityChat, nil
-	case "embedding":
+	case modalityNameEmbedding:
 		return ModalityEmbedding, nil
-	case "image":
+	case modalityNameImage:
 		return ModalityImage, nil
-	case "rerank":
+	case modalityNameRerank:
 		return ModalityRerank, nil
-	case "tts":
+	case modalityNameTTS:
 		return ModalityTTS, nil
-	case "asr":
+	case modalityNameASR:
 		return ModalityASR, nil
-	case "task":
+	case modalityNameTask:
 		return ModalityTask, nil
 	}
 

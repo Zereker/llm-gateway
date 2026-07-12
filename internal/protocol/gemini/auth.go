@@ -71,8 +71,7 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 
 		// The deprecation is about accepting credential configs from untrusted
 		// sources without validation; this SA JSON comes from our own AES-GCM
-		// encrypted endpoints.auth column, written by the deployer. Migrating to
-		// the replacement API is tracked separately.
+		// encrypted endpoints.auth column, written by the deployer.
 		//nolint:staticcheck // SA1019: see above — input is deployer-controlled, not untrusted
 		creds, err := google.CredentialsFromJSON(ctx,
 			[]byte(p.ServiceAccountJSON),
@@ -90,13 +89,17 @@ func newTokenProvider(ctx context.Context, auth domain.AuthConfig) (tokenProvide
 	}
 }
 
+// headerGoogAPIKey is the AI Studio API-key header name; factored out since
+// this package's tests assert against this exact header name.
+const headerGoogAPIKey = "x-goog-api-key"
+
 // staticAPIKey uses the x-goog-api-key header for AI Studio.
 type staticAPIKey struct {
 	key string
 }
 
 func (s staticAPIKey) AuthHeader(_ context.Context) (string, string, error) {
-	return "x-goog-api-key", s.key, nil
+	return headerGoogAPIKey, s.key, nil
 }
 
 // oauthBearer uses Authorization: Bearer <oauth2 access token> for Vertex.

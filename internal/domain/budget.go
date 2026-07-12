@@ -16,6 +16,6 @@ func (s BudgetStatus) String() string {
 	case BudgetInactive:
 		return "inactive"
 	default:
-		return "unknown"
+		return unknownLabel
 	}
 }

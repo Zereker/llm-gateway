@@ -37,6 +37,40 @@ import (
 // caps at 8192; haiku caps at 8192).
 const defaultAnthropicMaxTokens uint32 = 4096
 
+// Wire vocabulary this file both reads (switch/case on an upstream field) and
+// writes (as a literal in a constructed map[string]any) — named once per
+// value so a typo shows up as a compile error instead of a silently wrong
+// JSON key/value.
+const (
+	roleAssistant = "assistant"
+	roleTool      = "tool"
+	roleUser      = "user"
+
+	blockTypeToolUse  = "tool_use"
+	blockTypeText     = "text"
+	blockTypeThinking = "thinking"
+	blockTypeImage    = "image"
+
+	sourceTypeBase64 = "base64"
+	sourceTypeURL    = "url"
+
+	toolChoiceAuto = "auto"
+	toolChoiceTool = "tool"
+
+	keyType        = "type"
+	keyIndex       = "index"
+	keyName        = "name"
+	keyFunction    = "function"
+	keyToolCalls   = "tool_calls"
+	keyURLCitation = "url_citation"
+	keyObjectField = "object"
+	keyChatObject  = "chat.completion.chunk"
+
+	finishStop          = "stop"
+	finishLength        = "length"
+	finishContentFilter = "content_filter"
+)
+
 type openaiAnthropic struct{}
 
 // New returns the OpenAI-to-Anthropic translator.
@@ -243,10 +277,10 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			h.upstreamModel = ev.Message.Model
 		}
 		// Emit the role chunk (OpenAI SDK convention)
-		h.writeChunk(out, map[string]any{"role": "assistant"}, "")
+		h.writeChunk(out, map[string]any{"role": roleAssistant}, "")
 
 	case "content_block_start":
-		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == blockTypeToolUse {
 			toolIdx := h.nextToolIdx
 
 			h.nextToolIdx++
@@ -256,12 +290,12 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 
 			h.toolBlocks[ev.Index] = toolIdx
 			delta := map[string]any{
-				"tool_calls": []map[string]any{{
-					"index": toolIdx,
-					"id":    ev.ContentBlock.ID,
-					"type":  "function",
-					"function": map[string]any{
-						"name":      ev.ContentBlock.Name,
+				keyToolCalls: []map[string]any{{
+					keyIndex: toolIdx,
+					"id":     ev.ContentBlock.ID,
+					keyType:  keyFunction,
+					keyFunction: map[string]any{
+						keyName:     ev.ContentBlock.Name,
 						"arguments": "",
 					},
 				}},
@@ -269,7 +303,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			h.writeChunk(out, delta, "")
 		}
 
-		if ev.ContentBlock != nil && ev.ContentBlock.Type == "text" {
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == blockTypeText {
 			// Records this block's start offset into the running OpenAI
 			// "content" string, so any citations_delta buffered against it
 			// can compute start_index/end_index the same way the
@@ -323,9 +357,9 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			}
 
 			delta := map[string]any{
-				"tool_calls": []map[string]any{{
-					"index":    toolIdx,
-					"function": map[string]any{"arguments": ev.Delta.PartialJSON},
+				keyToolCalls: []map[string]any{{
+					keyIndex:    toolIdx,
+					keyFunction: map[string]any{"arguments": ev.Delta.PartialJSON},
 				}},
 			}
 			h.writeChunk(out, delta, "")
@@ -354,9 +388,9 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			annotations := make([]map[string]any, 0, len(cites))
 			for _, c := range cites {
 				annotations = append(annotations, map[string]any{
-					"type": "url_citation",
-					"url_citation": map[string]any{
-						"url": c.URL, "title": c.Title, "start_index": start, "end_index": end,
+					keyType: keyURLCitation,
+					keyURLCitation: map[string]any{
+						sourceTypeURL: c.URL, "title": c.Title, "start_index": start, "end_index": end,
 					},
 				})
 			}
@@ -376,7 +410,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 // Writes null when finishReason is empty; writes the string otherwise.
 func (h *responseHandler) writeChunk(out *bytes.Buffer, delta map[string]any, finishReason string) {
 	choice := map[string]any{
-		"index":         0,
+		keyIndex:        0,
 		"delta":         delta,
 		"finish_reason": nil,
 	}
@@ -385,11 +419,11 @@ func (h *responseHandler) writeChunk(out *bytes.Buffer, delta map[string]any, fi
 	}
 
 	chunk := map[string]any{
-		"id":      h.chatcmplID,
-		"object":  "chat.completion.chunk",
-		"created": h.createdSec,
-		"model":   h.upstreamModel,
-		"choices": []map[string]any{choice},
+		"id":           h.chatcmplID,
+		keyObjectField: keyChatObject,
+		"created":      h.createdSec,
+		"model":        h.upstreamModel,
+		"choices":      []map[string]any{choice},
 	}
 
 	b, err := json.Marshal(chunk)
@@ -411,11 +445,11 @@ func (h *responseHandler) writeUsageChunk(out *bytes.Buffer) {
 	}
 
 	chunk := map[string]any{
-		"id":      h.chatcmplID,
-		"object":  "chat.completion.chunk",
-		"created": h.createdSec,
-		"model":   h.upstreamModel,
-		"choices": []map[string]any{},
+		"id":           h.chatcmplID,
+		keyObjectField: keyChatObject,
+		"created":      h.createdSec,
+		"model":        h.upstreamModel,
+		"choices":      []map[string]any{},
 		"usage": map[string]any{
 			"prompt_tokens":     u.Input,
 			"completion_tokens": u.Output,
@@ -559,7 +593,7 @@ func contentToString(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &parts); err == nil {
 		var sb strings.Builder
 		for _, p := range parts {
-			if p.Type == "text" || p.Type == "" {
+			if p.Type == blockTypeText || p.Type == "" {
 				sb.WriteString(p.Text)
 			}
 		}
@@ -605,9 +639,9 @@ func buildUserContent(raw json.RawMessage) (json.RawMessage, error) {
 			if p.ImageURL != nil {
 				blocks = append(blocks, imageBlockFromURL(p.ImageURL.URL))
 			}
-		case "text", "":
+		case blockTypeText, "":
 			if p.Text != "" {
-				blocks = append(blocks, map[string]any{"type": "text", "text": p.Text})
+				blocks = append(blocks, map[string]any{keyType: blockTypeText, blockTypeText: p.Text})
 			}
 		}
 	}
@@ -622,9 +656,9 @@ func buildUserContent(raw json.RawMessage) (json.RawMessage, error) {
 func imageBlockFromURL(url string) map[string]any {
 	if mediaType, data, ok := parseDataURI(url); ok {
 		return map[string]any{
-			"type": "image",
+			keyType: blockTypeImage,
 			"source": map[string]any{
-				"type":       "base64",
+				keyType:      sourceTypeBase64,
 				"media_type": mediaType,
 				"data":       data,
 			},
@@ -632,8 +666,8 @@ func imageBlockFromURL(url string) map[string]any {
 	}
 
 	return map[string]any{
-		"type":   "image",
-		"source": map[string]any{"type": "url", "url": url},
+		keyType:  blockTypeImage,
+		"source": map[string]any{keyType: sourceTypeURL, sourceTypeURL: url},
 	}
 }
 
@@ -655,7 +689,7 @@ func parseDataURI(url string) (mediaType, data string, ok bool) {
 	mediaType = rest[:semi]
 
 	encoding := rest[semi+1 : comma]
-	if encoding != "base64" {
+	if encoding != sourceTypeBase64 {
 		return "", "", false
 	}
 
@@ -802,28 +836,28 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			if s := contentToString(m.Content); s != "" {
 				systemParts = append(systemParts, s)
 			}
-		case "user":
+		case roleUser:
 			c, err := buildUserContent(m.Content)
 			if err != nil {
 				return nil, fmt.Errorf("user content marshal: %w", err)
 			}
 
-			out.Messages = append(out.Messages, anthropicMessage{Role: "user", Content: c})
-		case "assistant":
+			out.Messages = append(out.Messages, anthropicMessage{Role: roleUser, Content: c})
+		case roleAssistant:
 			msg, err := buildAssistantMessage(m)
 			if err != nil {
 				return nil, err
 			}
 
 			out.Messages = append(out.Messages, msg)
-		case "tool":
+		case roleTool:
 			// Merge consecutive tool messages into one Anthropic user turn whose
 			// content array holds all their tool_result blocks.
 			var blocks []any
-			for i < len(in.Messages) && in.Messages[i].Role == "tool" {
+			for i < len(in.Messages) && in.Messages[i].Role == roleTool {
 				tm := in.Messages[i]
 				blocks = append(blocks, map[string]any{
-					"type":        "tool_result",
+					keyType:       "tool_result",
 					"tool_use_id": tm.ToolCallID,
 					"content":     contentToString(tm.Content),
 				})
@@ -837,7 +871,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 				return nil, fmt.Errorf("tool_result marshal: %w", err)
 			}
 
-			out.Messages = append(out.Messages, anthropicMessage{Role: "user", Content: raw})
+			out.Messages = append(out.Messages, anthropicMessage{Role: roleUser, Content: raw})
 		default:
 			return nil, fmt.Errorf("unsupported message role %q (handles system/user/assistant/tool only)", m.Role)
 		}
@@ -905,7 +939,7 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		switch s {
-		case "auto":
+		case toolChoiceAuto:
 			return json.RawMessage(`{"type":"auto"}`)
 		case "required":
 			return json.RawMessage(`{"type":"any"}`)
@@ -923,7 +957,7 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 		} `json:"function"`
 	}
 	if err := json.Unmarshal(raw, &obj); err == nil && obj.Function.Name != "" {
-		b, err := json.Marshal(map[string]any{"type": "tool", "name": obj.Function.Name})
+		b, err := json.Marshal(map[string]any{keyType: toolChoiceTool, keyName: obj.Function.Name})
 		if err == nil {
 			return b
 		}
@@ -939,7 +973,7 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 // parallel_tool_calls:false with no other tool_choice still needs one
 // synthesized.
 func applyDisableParallelToolUse(toolChoice json.RawMessage) json.RawMessage {
-	m := map[string]any{"type": "auto"}
+	m := map[string]any{keyType: toolChoiceAuto}
 	if len(toolChoice) > 0 {
 		_ = json.Unmarshal(toolChoice, &m)
 	}
@@ -973,20 +1007,20 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 			return anthropicMessage{}, fmt.Errorf("assistant content marshal: %w", err)
 		}
 
-		return anthropicMessage{Role: "assistant", Content: c}, nil
+		return anthropicMessage{Role: roleAssistant, Content: c}, nil
 	}
 
 	var blocks []any
 	if m.ReasoningContent != "" {
 		blocks = append(blocks, map[string]any{
-			"type":      "thinking",
-			"thinking":  m.ReasoningContent,
-			"signature": m.ReasoningSignature,
+			keyType:           blockTypeThinking,
+			blockTypeThinking: m.ReasoningContent,
+			"signature":       m.ReasoningSignature,
 		})
 	}
 
 	if s := contentToString(m.Content); s != "" {
-		blocks = append(blocks, map[string]any{"type": "text", "text": s})
+		blocks = append(blocks, map[string]any{keyType: blockTypeText, blockTypeText: s})
 	}
 
 	for _, tc := range m.ToolCalls {
@@ -1001,9 +1035,9 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 		}
 
 		blocks = append(blocks, map[string]any{
-			"type":  "tool_use",
+			keyType: blockTypeToolUse,
 			"id":    tc.ID,
-			"name":  tc.Function.Name,
+			keyName: tc.Function.Name,
 			"input": input,
 		})
 	}
@@ -1013,7 +1047,7 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 		return anthropicMessage{}, fmt.Errorf("assistant tool_use marshal: %w", err)
 	}
 
-	return anthropicMessage{Role: "assistant", Content: raw}, nil
+	return anthropicMessage{Role: roleAssistant, Content: raw}, nil
 }
 
 // translateResponse converts an Anthropic body → OpenAI body (non-streaming).
@@ -1040,7 +1074,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	)
 	for _, blk := range in.Content {
 		switch blk.Type {
-		case "text":
+		case blockTypeText:
 			start := content.Len()
 			content.WriteString(blk.Text)
 
@@ -1051,23 +1085,23 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 				}
 
 				annotations = append(annotations, openAIAnnotation{
-					Type: "url_citation",
+					Type: keyURLCitation,
 					URLCitation: openAIURLCitationOut{
 						URL: c.URL, Title: c.Title, StartIndex: start, EndIndex: end,
 					},
 				})
 			}
-		case "tool_use":
+		case blockTypeToolUse:
 			args := "{}"
 			if len(blk.Input) > 0 {
 				args = string(blk.Input)
 			}
 
-			tc := openAIRespToolCall{ID: blk.ID, Type: "function"}
+			tc := openAIRespToolCall{ID: blk.ID, Type: keyFunction}
 			tc.Function.Name = blk.Name
 			tc.Function.Arguments = args
 			toolCalls = append(toolCalls, tc)
-		case "thinking":
+		case blockTypeThinking:
 			// Surfaced via reasoning_content/reasoning_signature (not
 			// content) so it round-trips through buildAssistantMessage on
 			// the next turn instead of being silently dropped — see that
@@ -1077,7 +1111,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 		}
 	}
 
-	msg := openAIMessage{Role: "assistant", ReasoningContent: reasoningContent, ReasoningSignature: reasoningSignature, Annotations: annotations}
+	msg := openAIMessage{Role: roleAssistant, ReasoningContent: reasoningContent, ReasoningSignature: reasoningSignature, Annotations: annotations}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 		// OpenAI allows content:null alongside tool_calls; use the text only if present.
@@ -1128,21 +1162,21 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 func mapStopReason(r string) string {
 	switch r {
 	case "end_turn", "stop_sequence", "":
-		return "stop"
+		return finishStop
 	case "max_tokens":
-		return "length"
-	case "tool_use":
-		return "tool_calls"
+		return finishLength
+	case blockTypeToolUse:
+		return keyToolCalls
 	case "refusal":
 		// Claude declined to generate a response; content_filter is the
 		// closest OpenAI-compatible signal that this isn't a clean stop.
-		return "content_filter"
+		return finishContentFilter
 	case "pause_turn":
 		// A server-tool-use turn paused mid-generation; OpenAI has no
 		// equivalent, so treat it like a normal stop.
-		return "stop"
+		return finishStop
 	default:
-		return "stop"
+		return finishStop
 	}
 }
 

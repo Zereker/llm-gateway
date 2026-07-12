@@ -156,7 +156,7 @@ func NewCachedEndpointReader(inner *SQLEndpointReader, listCap, idCap int, ttl t
 
 func (r *CachedEndpointReader) ListForModel(ctx context.Context, model, group string) ([]*Endpoint, error) {
 	if group == "" {
-		group = "default"
+		group = defaultGroup
 	}
 
 	key := model + "\x00" + group

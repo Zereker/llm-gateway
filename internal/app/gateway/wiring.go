@@ -189,7 +189,7 @@ func buildEmbeddingCache(cfg config.CacheConfig, rdb *redis.Client) gin.HandlerF
 // buildEmbedder assembles the text embedding backend (P5 fail-fast: unknown driver panics).
 func buildEmbedder(cfg config.EmbedderConfig) embed.Embedder {
 	switch cfg.Driver {
-	case "openai":
+	case config.DriverOpenAI:
 		if cfg.APIKey == "" {
 			panic("cache.semantic.embedder.driver=openai requires api_key")
 		}
@@ -261,9 +261,9 @@ func startHealthProber(srv *appRuntime.Runtime, cfg config.HealthConfig, lister 
 func buildContentLogger(srv *appRuntime.Runtime, cfg config.ContentLogConfig) *contentlog.Logger {
 	var pub contentlog.Publisher
 	switch cfg.Driver {
-	case "", "none":
+	case "", config.DriverNone:
 		return nil
-	case "file":
+	case config.DriverFile:
 		fp, err := contentlog.NewFilePublisher(cfg.File.Path)
 		if err != nil {
 			panic(fmt.Sprintf("content_log: open file %s: %v", cfg.File.Path, err))
@@ -336,15 +336,15 @@ func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 	var guards []moderation.NamedGuard
 
 	switch cfg.Driver {
-	case "", "none":
+	case "", config.DriverNone:
 		// no driver-side moderator
-	case "openai":
+	case config.DriverOpenAI:
 		if cfg.APIKey == "" {
 			panic("moderation.driver=openai requires moderation.api_key")
 		}
 
 		guards = append(guards, moderation.NamedGuard{
-			Name: "openai", Guard: middleware.NewOpenAIModerator(cfg.APIKey, cfg.BaseURL),
+			Name: config.DriverOpenAI, Guard: middleware.NewOpenAIModerator(cfg.APIKey, cfg.BaseURL),
 		})
 	default:
 		panic("unknown moderation driver: " + cfg.Driver)
@@ -378,7 +378,7 @@ func buildModerator(cfg config.ModerationConfig) middleware.Moderator {
 //     AddCloser (to avoid closing it twice).
 func buildOutbox(srv *appRuntime.Runtime, cfg config.UsageEventsConfig) (usage.OutboxPublisher, error) {
 	switch cfg.Driver {
-	case "file":
+	case config.DriverFile:
 		ob, err := usage.NewFileOutbox(cfg.File.Path)
 		if err != nil {
 			return nil, err

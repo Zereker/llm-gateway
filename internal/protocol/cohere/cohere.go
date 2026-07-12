@@ -20,6 +20,10 @@ import (
 	"github.com/zereker/llm-gateway/internal/protocol"
 )
 
+// VendorName is the key internal/builtin.NewLookup registers this Factory
+// under — shared with Metadata().Vendor below so the two can't drift apart.
+const VendorName = "cohere"
+
 // Factory implements protocol.Factory. No custom Classify — Cohere errors fall back
 // to DefaultClassifier's status-based classification.
 type Factory struct{}
@@ -27,7 +31,7 @@ type Factory struct{}
 // Metadata returns static metadata.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
-		Vendor:              "cohere",
+		Vendor:              VendorName,
 		SupportedModalities: []domain.Modality{domain.ModalityChat},
 	}
 }

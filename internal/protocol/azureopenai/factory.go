@@ -26,6 +26,10 @@ import (
 	"github.com/zereker/llm-gateway/internal/protocol/openai"
 )
 
+// VendorName is the key internal/builtin.NewLookup registers this Factory
+// under — shared with Metadata().Vendor below so the two can't drift apart.
+const VendorName = "azure-openai"
+
 // Factory embeds openai.Factory to inherit Classify (Azure returns
 // OpenAI-shaped error JSON), and only overrides Metadata (vendor name) +
 // NewSession (Azure HTTP layer).
@@ -36,7 +40,7 @@ type Factory struct {
 // Metadata overrides the vendor name.
 func (Factory) Metadata() protocol.Metadata {
 	return protocol.Metadata{
-		Vendor: "azure-openai",
+		Vendor: VendorName,
 		SupportedModalities: []domain.Modality{
 			domain.ModalityChat,
 			domain.ModalityEmbedding,
