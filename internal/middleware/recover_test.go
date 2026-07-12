@@ -107,6 +107,34 @@ func TestRecover_HonorsExplicitHTTPStatus(t *testing.T) {
 	}
 }
 
+// TestRecover_PanicAfterWrite_DoesNotAppendErrorBody: if a panic happens
+// *after* bytes have already been flushed to the client (e.g. a bug mid-stream
+// on the M7 dispatch path, which writes directly to c.Writer), the recovery
+// branch must NOT append its JSON error body onto the already-started
+// response — that would corrupt an in-flight stream. Mirrors the Written()
+// guard the rc.Error path already has.
+func TestRecover_PanicAfterWrite_DoesNotAppendErrorBody(t *testing.T) {
+	r := newGinTest(TraceContext(), Recover())
+	r.GET("/stream-then-boom", func(c *gin.Context) {
+		c.String(200, "partial stream chunk")
+		// bytes are now on the wire; a later panic must not append to them
+		panic("mid-stream explosion")
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/stream-then-boom", nil))
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200 (headers already sent before panic)", w.Code)
+	}
+	if got := w.Body.String(); got != "partial stream chunk" {
+		t.Errorf("body = %q, want exactly the already-written chunk with no appended error JSON", got)
+	}
+	if strings.Contains(w.Body.String(), "internal server error") {
+		t.Errorf("recovery appended an error body onto an already-written response: %s", w.Body.String())
+	}
+}
+
 func TestRecover_DoesNotOverwriteWrittenResponse(t *testing.T) {
 	r := newGinTest(TraceContext(), Recover())
 	r.GET("/already-written", func(c *gin.Context) {

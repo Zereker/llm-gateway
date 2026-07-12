@@ -74,6 +74,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // Rewriter is the runtime handle for the "upstream request tweaks" configured
@@ -165,7 +166,42 @@ func CompileJSON(specJSON []byte) (Rewriter, error) {
 		return nil, fmt.Errorf("quirks: parse spec: %w", err)
 	}
 
+	// Body keys are case-sensitive JSON; header names are case-insensitive.
+	if err := checkRenameTargetCollision(spec.Body.Rename, false); err != nil {
+		return nil, fmt.Errorf("quirks: body.rename: %w", err)
+	}
+
+	if err := checkRenameTargetCollision(spec.Headers.Rename, true); err != nil {
+		return nil, fmt.Errorf("quirks: headers.rename: %w", err)
+	}
+
 	return Compile(spec), nil
+}
+
+// checkRenameTargetCollision rejects a rename map where two distinct source
+// keys map to the same destination — applying those renames is order-dependent
+// (Go map iteration is randomized), so the surviving value would vary per
+// request. caseInsensitive folds destinations to lower case (header names).
+func checkRenameTargetCollision(rename map[string]string, caseInsensitive bool) error {
+	if len(rename) < 2 {
+		return nil
+	}
+
+	seen := make(map[string]string, len(rename))
+	for from, to := range rename {
+		key := to
+		if caseInsensitive {
+			key = strings.ToLower(to)
+		}
+
+		if prev, dup := seen[key]; dup {
+			return fmt.Errorf("multiple sources rename to %q (%q and %q)", to, prev, from)
+		}
+
+		seen[key] = from
+	}
+
+	return nil
 }
 
 // compiled is the implementation returned by Compile.

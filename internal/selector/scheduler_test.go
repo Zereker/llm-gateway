@@ -160,6 +160,49 @@ func TestPick_NoCandidates_Nil(t *testing.T) {
 	}
 }
 
+// fakeAffinity is an in-memory AffinityStore for pure-unit affinity tests
+// (the Redis-backed affinity tests are gated on REDIS_ADDR).
+type fakeAffinity struct{ m map[string]int64 }
+
+func newFakeAffinity() *fakeAffinity { return &fakeAffinity{m: map[string]int64{}} }
+func (f *fakeAffinity) Get(_ context.Context, k string) (int64, bool) {
+	id, ok := f.m[k]
+	return id, ok
+}
+func (f *fakeAffinity) Set(_ context.Context, k string, id int64) { f.m[k] = id }
+
+// TestPick_Affinity_SkipsSoftOfflinedEndpoint: a session pinned to an endpoint
+// that an admin has soft-offlined (weight=0) must NOT keep sticking there — the
+// scheduler should fall through to normal selection and re-pin, honoring the
+// same EffectiveWeight>0 exclusion the pickers enforce. Regression test for the
+// affinity sticky-hit path matching by ID only.
+func TestPick_Affinity_SkipsSoftOfflinedEndpoint(t *testing.T) {
+	aff := newFakeAffinity()
+	// Pre-pin the session to endpoint 1.
+	aff.Set(context.Background(), "g|sess-1", 1)
+
+	s := New(Config{Picker: NewWeightedRandomPicker(), Affinity: aff})
+
+	// ep1 is soft-offlined (weight=0, still enabled so it survives filters);
+	// ep2 is healthy (weight=5).
+	got, err := s.Pick(context.Background(), &Request{
+		Model:      "x",
+		Group:      "g",
+		SessionKey: "sess-1",
+		Candidates: candidates(ep(1, 0), ep(2, 5)),
+	})
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got == nil || got.ID != 2 {
+		t.Errorf("got=%v, want ep2 — a weight=0 pinned endpoint must not win the sticky hit", got)
+	}
+	// And the session should be re-pinned to the healthy endpoint.
+	if id, _ := aff.Get(context.Background(), "g|sess-1"); id != 2 {
+		t.Errorf("re-pin=%d, want 2", id)
+	}
+}
+
 func TestPick_HappyPath_ReturnsCandidate(t *testing.T) {
 	s := New(Config{Picker: stubPicker{}})
 	got, err := s.Pick(context.Background(), &Request{

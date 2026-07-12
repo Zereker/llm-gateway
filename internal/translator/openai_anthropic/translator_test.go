@@ -37,6 +37,28 @@ func TestMapStopReason_Completeness(t *testing.T) {
 
 // OpenAI vision / multi-part requests send content as an array of parts.
 // translateRequest must accept it, not reject it with a parse error.
+// TestIsAnthropicError_StructuralNotSubstring: error detection must key off a
+// structural top-level "error" object, not a naive substring scan — otherwise
+// a successful Anthropic response whose content merely contains the bytes
+// "error" gets misdetected, returning the raw untranslated body to the client
+// AND zeroing its usage/billing.
+func TestIsAnthropicError_StructuralNotSubstring(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+		note string
+	}{
+		{`{"type":"error","error":{"type":"authentication_error","message":"bad x-api-key"}}`, true, "real Anthropic error envelope"},
+		{`{"type":"message","role":"assistant","content":[{"type":"text","text":"error"}]}`, false, "success whose text content is literally \"error\""},
+		{`{"type":"message","role":"assistant","content":[{"type":"text","text":"the error is fixed"}],"error":null}`, false, "success carrying error:null must not be misdetected"},
+	}
+	for _, tc := range cases {
+		if got := isAnthropicError([]byte(tc.body)); got != tc.want {
+			t.Errorf("isAnthropicError(%s) = %v, want %v (%s)", tc.body, got, tc.want, tc.note)
+		}
+	}
+}
+
 // TestTranslateRequest_ImageURL covers OpenAI vision content -> Anthropic
 // image blocks, both the data: URI form (base64 decoded into
 // source.media_type/data) and a plain https URL (passed through as
@@ -295,7 +317,7 @@ func TestTranslateRequest_ToolStrict(t *testing.T) {
 	}
 }
 
-// TestTranslateRequest_BadToolArgs: unparsable function.arguments → input:{}.
+// TestTranslateRequest_BadToolArgs: unparsable function.arguments -> input:{}.
 func TestTranslateRequest_BadToolArgs(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[
 		{"role":"assistant","content":"","tool_calls":[
@@ -426,7 +448,7 @@ func mustCanon(s string) string {
 	return string(b)
 }
 
-// TestTranslateResponse_TextAndTool: text + tool_use → content + tool_calls.
+// TestTranslateResponse_TextAndTool: text + tool_use -> content + tool_calls.
 // TestTranslateResponse_Thinking covers the non-streaming response side: a
 // thinking block surfaces as reasoning_content/reasoning_signature, not as
 // visible content, and finish_reason still reflects the real stop_reason.
@@ -616,7 +638,7 @@ func TestTranslateResponse_TextAndTool(t *testing.T) {
 	}
 }
 
-// TestTranslateResponse_ToolOnly: tool_use with no text → content:null.
+// TestTranslateResponse_ToolOnly: tool_use with no text -> content:null.
 func TestTranslateResponse_ToolOnly(t *testing.T) {
 	body := []byte(`{
 		"id":"msg_2","model":"claude-x",

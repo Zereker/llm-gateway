@@ -17,9 +17,14 @@ func TestMapFinishReason_Completeness(t *testing.T) {
 		"tool_use": true, "refusal": true, "pause_turn": true,
 	}
 	for in, want := range map[string]string{
-		"stop":           "end_turn",
-		"length":         "max_tokens",
-		"content_filter": "stop_sequence",
+		"stop":   "end_turn",
+		"length": "max_tokens",
+		// content_filter means the upstream's moderation blocked the content —
+		// map it to Anthropic's "refusal" (the round-trip inverse of
+		// openai_anthropic mapping Anthropic "refusal" -> OpenAI "content_filter").
+		// "stop_sequence" would falsely tell the client a configured stop string
+		// matched.
+		"content_filter": "refusal",
 		"tool_calls":     "tool_use",
 		"function_call":  "tool_use",
 		"":               "end_turn",
@@ -30,6 +35,29 @@ func TestMapFinishReason_Completeness(t *testing.T) {
 		}
 		if !anthropicValidStopReasons[got] {
 			t.Errorf("mapFinishReason(%q) = %q, not a valid Anthropic stop_reason", in, got)
+		}
+	}
+}
+
+// TestIsOpenAIError_StructuralNotSubstring: error detection must key off a
+// structural top-level "error" object, not a naive substring scan — otherwise
+// a successful response that merely contains the bytes "error" (a compat
+// backend's "error":null parity field, or content that happens to be the word
+// "error") gets misdetected, returning the raw untranslated body to the client
+// AND zeroing its usage/billing.
+func TestIsOpenAIError_StructuralNotSubstring(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+		note string
+	}{
+		{`{"error":{"message":"bad key","type":"invalid_request_error"}}`, true, "real top-level error object"},
+		{`{"id":"chatcmpl-x","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"hi"}}],"error":null}`, false, "success with error:null (vLLM/LiteLLM API parity) must not be misdetected"},
+		{`{"id":"chatcmpl-x","choices":[{"message":{"role":"assistant","content":"error"}}]}`, false, "success whose content is literally \"error\""},
+	}
+	for _, tc := range cases {
+		if got := isOpenAIError([]byte(tc.body)); got != tc.want {
+			t.Errorf("isOpenAIError(%s) = %v, want %v (%s)", tc.body, got, tc.want, tc.note)
 		}
 	}
 }

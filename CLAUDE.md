@@ -101,6 +101,10 @@ All external dependencies go through interfaces: `BudgetGate` / `Moderator` / `T
 - **Config driver paths**: all pluggable implementations are selected via a `driver:` field in yaml (`alwayspass` / `inmemory` / `slog` / `otel` / `file` / `kafka` / `none` / `openai`, etc.); the `build*` functions in `cmd/*/main.go` switch on it to the concrete implementation.
 - **Endpoint credential encryption**: the `endpoints.auth` column is encrypted with AES-256-GCM; the KEK comes from `cfg.DataKey` (hex-encoded 32 bytes); when the deployer inserts encrypted ciphertext via SQL it must use the same KEK.
 
+## Bug Fixes
+
+- **Test-first, always.** Before fixing a bug, write a unit test that reproduces it and **run it to confirm it fails** (the test must fail for the right reason — the actual defect, not a compile error). Only then write the fix, and re-run to confirm the test passes. Never fix first and test after. This applies to every bug fix, however small.
+
 ## Docs & Requirements
 
 - Architecture and interface contracts: `docs/architecture/00-overview.md` ~ `08-observability.md`; a PR that changes the main path must update the corresponding doc in the same PR.
