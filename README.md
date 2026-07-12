@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![codecov](https://codecov.io/gh/Zereker/llm-gateway/graph/badge.svg)](https://codecov.io/gh/Zereker/llm-gateway)
+
 A Go-based gateway that routes LLM API requests to multiple upstream providers
 (OpenAI, Anthropic, Google, AWS Bedrock, vLLM / Ollama self-hosted, etc.) under
 one OpenAI-compatible interface.
@@ -98,7 +100,17 @@ curl http://localhost:8080/v1/chat/completions \
 ```sh
 make test               # unit tests; SQL tests skip without MYSQL_DSN
 make test-integration   # bring up stack, run all tests including SQL/outbox
+make cover              # unit tests + a coverage profile (same MYSQL_DSN/REDIS_ADDR gating)
 ```
+
+The badge above is the live, per-file coverage from CI (`go` job in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml), uploaded to
+[codecov.io/gh/Zereker/llm-gateway](https://codecov.io/gh/Zereker/llm-gateway)) —
+that job runs with MySQL/Redis/Kafka up, so it also covers the SQL/Redis-backed
+suites `make cover` skips locally by default. For a local number before
+pushing, run `make cover` (unit tests only, no `MYSQL_DSN`/`REDIS_ADDR`,
+scoped to `internal/...` packages that have their own test files); `go tool
+cover -html=coverage.txt` renders a per-line breakdown in the browser.
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the
 database connection, outbox driver, and middleware tunables. Defaults are
