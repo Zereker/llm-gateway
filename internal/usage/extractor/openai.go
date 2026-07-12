@@ -39,9 +39,11 @@ func (s *openaiSession) Feed(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
+
 	if !s.streamingDecided {
 		s.detectStreaming(chunk)
 	}
+
 	if s.isStreaming {
 		s.sseBuffer = append(s.sseBuffer, chunk...)
 		s.parseSSEBuffer()
@@ -54,6 +56,7 @@ func (s *openaiSession) Final() *domain.Usage {
 	if !s.isStreaming && s.usage == nil && len(s.bodyBuffer) > 0 {
 		s.tryExtract(s.bodyBuffer)
 	}
+
 	return s.usage
 }
 
@@ -71,6 +74,7 @@ func (s *openaiSession) parseSSEBuffer() {
 		if !ok {
 			return
 		}
+
 		s.sseBuffer = rest
 
 		for _, line := range bytes.Split(event, []byte("\n")) {
@@ -78,9 +82,11 @@ func (s *openaiSession) parseSSEBuffer() {
 			if payload == nil {
 				continue
 			}
+
 			if bytes.Equal(payload, []byte("[DONE]")) {
 				return
 			}
+
 			s.tryExtract(payload)
 		}
 	}

@@ -30,10 +30,12 @@ func Compose(front, back Translator) Translator {
 	if front == nil || back == nil {
 		panic("translator.Compose: nil translator")
 	}
+
 	if front.Target() != back.Source() {
 		panic(fmt.Sprintf("translator.Compose: pivot mismatch %s != %s",
 			front.Target(), back.Source()))
 	}
+
 	return &composed{front: front, back: back}
 }
 
@@ -53,11 +55,14 @@ func (r *Registry) FindVia(src, tgt, pivot domain.Protocol) Translator {
 	if t := r.Find(src, tgt); t != nil {
 		return t
 	}
+
 	front := r.Find(src, pivot)
+
 	back := r.Find(pivot, tgt)
 	if front == nil || back == nil {
 		return nil
 	}
+
 	return Compose(front, back)
 }
 
@@ -83,10 +88,12 @@ func (c *composed) TranslateRequest(srcBody []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compose front (%s→%s): %w", c.front.Source(), c.front.Target(), err)
 	}
+
 	tgtBody, err := c.back.TranslateRequest(pivotBody)
 	if err != nil {
 		return nil, fmt.Errorf("compose back (%s→%s): %w", c.back.Source(), c.back.Target(), err)
 	}
+
 	return tgtBody, nil
 }
 
@@ -116,9 +123,11 @@ func (h *composedHandler) Feed(chunk []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if len(mid) == 0 {
 		return nil, nil
 	}
+
 	return h.client.Feed(mid)
 }
 
@@ -130,23 +139,28 @@ func (h *composedHandler) Flush() ([]byte, *domain.Usage, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+
 	var out []byte
 	if len(midBytes) > 0 {
 		fed, err := h.client.Feed(midBytes)
 		if err != nil {
 			return nil, nil, err
 		}
+
 		out = append(out, fed...)
 	}
+
 	tail, clientUsage, err := h.client.Flush()
 	if err != nil {
 		return nil, nil, err
 	}
+
 	out = append(out, tail...)
 
 	usage := upUsage
 	if usage == nil {
 		usage = clientUsage
 	}
+
 	return out, usage, nil
 }

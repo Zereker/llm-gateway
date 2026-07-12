@@ -23,6 +23,7 @@ func New(cfg Config) Scheduler {
 	if cfg.Picker == nil {
 		cfg.Picker = NewWeightedRandomPicker()
 	}
+
 	return &defaultScheduler{cfg: cfg}
 }
 
@@ -43,6 +44,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 	if req == nil {
 		return nil, errors.New("schedule: nil request")
 	}
+
 	if len(req.Candidates) == 0 {
 		return nil, nil
 	}
@@ -53,11 +55,14 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		if c.Endpoint == nil {
 			continue
 		}
+
 		if _, excluded := req.ExcludeIDs[c.Endpoint.ID]; excluded {
 			continue
 		}
+
 		avail = append(avail, c)
 	}
+
 	if len(avail) == 0 {
 		return nil, nil
 	}
@@ -67,6 +72,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 	for i, c := range avail {
 		eps[i] = c.Endpoint
 	}
+
 	eps = runChain(ctx, s.cfg.Filters, eps, req)
 	if len(eps) == 0 {
 		return nil, nil
@@ -74,16 +80,19 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 
 	// 3. Scorer adjusts weights (optional): map the surviving eps back to Candidate (keeping the original EffectiveWeight)
 	survived := make([]Candidate, 0, len(eps))
+
 	keepSet := make(map[int64]float64, len(avail))
 	for _, c := range avail {
 		keepSet[c.Endpoint.ID] = c.EffectiveWeight
 	}
+
 	for _, ep := range eps {
 		survived = append(survived, Candidate{
 			Endpoint:        ep,
 			EffectiveWeight: keepSet[ep.ID],
 		})
 	}
+
 	if s.cfg.Scorer != nil {
 		survived = s.cfg.Scorer.Score(ctx, survived, req)
 	}
@@ -107,7 +116,9 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 		if chosen == nil {
 			return nil, nil
 		}
+
 		s.cfg.Affinity.Set(ctx, ak, chosen.Endpoint.ID)
+
 		return s.chosen(chosen.Endpoint), nil
 	}
 
@@ -116,6 +127,7 @@ func (s *defaultScheduler) Pick(ctx context.Context, req *Request) (*domain.Endp
 	if chosen == nil {
 		return nil, nil
 	}
+
 	return s.chosen(chosen.Endpoint), nil
 }
 
@@ -127,6 +139,7 @@ func (s *defaultScheduler) chosen(ep *domain.Endpoint) *domain.Endpoint {
 	if s.cfg.Inflight != nil && ep != nil {
 		s.cfg.Inflight.Inc(ep.ID)
 	}
+
 	return ep
 }
 

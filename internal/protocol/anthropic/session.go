@@ -43,13 +43,16 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("anthropic: ep.routing.url empty")
 	}
+
 	if s.ep.Auth.Type != domain.AuthTypeXAPIKey {
 		return nil, fmt.Errorf("anthropic: unsupported auth type %q (want %q)", s.ep.Auth.Type, domain.AuthTypeXAPIKey)
 	}
+
 	apikey, err := domain.DecodePayload[domain.XAPIKeyAuth](s.ep.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: decode x-api-key: %w", err)
 	}
+
 	if apikey.APIKey == "" {
 		return nil, errors.New("anthropic: x-api-key empty")
 	}
@@ -68,6 +71,7 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apikey.APIKey)
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
+
 	return req, nil
 }
 

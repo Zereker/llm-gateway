@@ -31,10 +31,13 @@ func (p *SQLSubscriptionProvider) Has(ctx context.Context, accountID string, mod
 	if accountID == "" {
 		return false, errors.New("subscription: empty account_id")
 	}
+
 	if modelServiceID == 0 {
 		return false, errors.New("subscription: empty model_service_id")
 	}
+
 	var one int
+
 	err := p.db.GetContext(ctx, &one, p.db.Rebind(
 		`SELECT 1 FROM account_model_subscriptions
 		 WHERE account_id = ? AND model_service_id = ?
@@ -46,8 +49,10 @@ func (p *SQLSubscriptionProvider) Has(ctx context.Context, accountID string, mod
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
+
 		return false, fmt.Errorf("subscription: lookup: %w", err)
 	}
+
 	return true, nil
 }
 

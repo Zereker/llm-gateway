@@ -57,6 +57,7 @@ func Add(name string, val float64, labels ...string) {
 	if val <= 0 {
 		return
 	}
+
 	keys, vals := splitLabels(labels)
 	getCounter(name, keys).WithLabelValues(vals...).Add(val)
 }
@@ -77,46 +78,57 @@ func Gauge(name string, val float64, labels ...string) {
 func splitLabels(pairs []string) ([]string, []string) {
 	n := len(pairs) / 2
 	keys := make([]string, n)
+
 	vals := make([]string, n)
 	for i := 0; i < n; i++ {
 		keys[i] = pairs[2*i]
 		vals[i] = pairs[2*i+1]
 	}
+
 	return keys, vals
 }
 
 func getCounter(name string, keys []string) *prometheus.CounterVec {
 	mu.Lock()
 	defer mu.Unlock()
+
 	if cv, ok := counters[name]; ok {
 		return cv
 	}
+
 	cv := promauto.NewCounterVec(prometheus.CounterOpts{Name: name}, keys)
 	counters[name] = cv
+
 	return cv
 }
 
 func getHistogram(name string, keys []string) *prometheus.HistogramVec {
 	mu.Lock()
 	defer mu.Unlock()
+
 	if hv, ok := histos[name]; ok {
 		return hv
 	}
+
 	hv := promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    name,
 		Buckets: secondsBuckets,
 	}, keys)
 	histos[name] = hv
+
 	return hv
 }
 
 func getGauge(name string, keys []string) *prometheus.GaugeVec {
 	mu.Lock()
 	defer mu.Unlock()
+
 	if gv, ok := gauges[name]; ok {
 		return gv
 	}
+
 	gv := promauto.NewGaugeVec(prometheus.GaugeOpts{Name: name}, keys)
 	gauges[name] = gv
+
 	return gv
 }

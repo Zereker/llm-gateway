@@ -38,10 +38,12 @@ func (q *EndpointQuotaAdapter) Reserve(ctx context.Context, ep *domain.Endpoint)
 	if q == nil || q.store == nil || ep == nil {
 		return nil, nil
 	}
+
 	buckets := ratelimit.EndpointReserveBuckets(ep)
 	if len(buckets) == 0 {
 		return nil, nil
 	}
+
 	allowed, violated, err := q.store.ReserveBatch(ctx, buckets)
 	if err != nil {
 		// **A dependency failure is not a capacity rejection**: a Redis error
@@ -53,21 +55,25 @@ func (q *EndpointQuotaAdapter) Reserve(ctx context.Context, ep *domain.Endpoint)
 		// after Redis recovers (docs/04 §8: an endpoint ReserveBatch error
 		// means the current endpoint is treated as unavailable and we try the
 		// next one — it must not be mistakenly flagged as a bad endpoint).
+		//nolint:nilerr // deliberate: the failure is conveyed via the verdict's ClassUnknown, not the error return (see comment above)
 		return &dispatch.QuotaVerdict{
 			Class:  dispatch.ClassUnknown,
 			Reason: "endpoint reserve (store error): " + err.Error(),
 		}, nil
 	}
+
 	if !allowed {
 		key := ""
 		if violated != nil {
 			key = violated.Key
 		}
+
 		return &dispatch.QuotaVerdict{
 			Class:     dispatch.ClassCapacity,
 			BucketKey: key,
 		}, nil
 	}
+
 	return nil, nil
 }
 
@@ -81,12 +87,15 @@ func (q *EndpointQuotaAdapter) ChargeUsage(_ context.Context, ep *domain.Endpoin
 	if q == nil || q.store == nil || ep == nil || usage == nil || usage.Total <= 0 {
 		return
 	}
+
 	b := ratelimit.EndpointTPMChargeBucket(ep, uint32(usage.Total))
 	if b == nil {
 		return
 	}
+
 	bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+
 	_, _ = q.store.ChargeBatch(bgCtx, []ratelimit.Bucket{*b})
 }
 
@@ -97,10 +106,12 @@ func (q *EndpointQuotaAdapter) Release(ctx context.Context, ep *domain.Endpoint)
 	if q == nil || q.store == nil || ep == nil {
 		return
 	}
+
 	buckets := ratelimit.EndpointReserveBuckets(ep)
 	if len(buckets) == 0 {
 		return
 	}
+
 	_ = q.store.ReleaseBatch(ctx, buckets)
 }
 

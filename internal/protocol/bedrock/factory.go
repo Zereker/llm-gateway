@@ -66,5 +66,6 @@ func (Factory) NewSession(c context.Context, ep *domain.Endpoint, env *domain.Re
 	if ep.Protocol == domain.ProtoBedrock {
 		return newConverseSession(c, ep, env), nil
 	}
+
 	return newSession(c, ep, env), nil
 }

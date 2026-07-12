@@ -45,9 +45,11 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("openai: ep.routing.url empty")
 	}
+
 	if s.ep.Auth.Type != domain.AuthTypeBearer {
 		return nil, fmt.Errorf("openai: unsupported auth type %q (want %q)", s.ep.Auth.Type, domain.AuthTypeBearer)
 	}
+
 	bearer, err := domain.DecodePayload[domain.BearerAuth](s.ep.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("openai: decode bearer auth: %w", err)
@@ -65,9 +67,11 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	}
 	// then protocol-required headers (override)
 	req.Header.Set("Content-Type", "application/json")
+
 	if bearer.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer.APIKey)
 	}
+
 	return req, nil
 }
 

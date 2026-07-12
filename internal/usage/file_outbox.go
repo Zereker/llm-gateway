@@ -61,13 +61,16 @@ func NewFileOutbox(path string) (*FileOutbox, error) {
 	if path == "" {
 		return nil, errors.New("usage: FileOutbox path is empty")
 	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
+
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, err
 	}
+
 	return &FileOutbox{f: f}, nil
 }
 
@@ -80,6 +83,7 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 	if evt == nil {
 		return errors.New("usage: FileOutbox.Publish: nil event")
 	}
+
 	bp := fileOutboxBufPool.Get().(*[]byte)
 	buf := (*bp)[:0]
 	buf = append(buf, evt.Payload...)
@@ -91,12 +95,14 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 	// atomically without interleaving with other Publish calls.
 	o.mu.RLock()
 	f := o.f
+
 	var err error
 	if f == nil {
 		err = errors.New("usage: FileOutbox: closed")
 	} else {
 		_, err = f.Write(buf)
 	}
+
 	o.mu.RUnlock()
 
 	// A buffer that a large payload grew is not returned to the pool, to
@@ -105,6 +111,7 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 		*bp = buf[:0]
 		fileOutboxBufPool.Put(bp)
 	}
+
 	return err
 }
 
@@ -118,11 +125,14 @@ func (o *FileOutbox) Publish(_ context.Context, evt *OutboxEvent) error {
 func (o *FileOutbox) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
 	if o.f == nil {
 		return nil
 	}
+
 	err := o.f.Close()
 	o.f = nil
+
 	return err
 }
 

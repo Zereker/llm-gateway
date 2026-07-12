@@ -29,5 +29,6 @@ func CheckSchema(ctx context.Context, db *sqlx.DB) error {
 			return fmt.Errorf("repo: schema check failed on %q (run infra.Migrate or apply schema.sql first): %w", t, err)
 		}
 	}
+
 	return nil
 }

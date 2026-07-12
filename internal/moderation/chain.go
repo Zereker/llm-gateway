@@ -43,6 +43,7 @@ func (c *Chain) CheckInput(ctx context.Context, env *domain.RequestEnvelope) err
 			return fmt.Errorf("%s: %w", g.Name, err)
 		}
 	}
+
 	return nil
 }
 
@@ -53,6 +54,7 @@ func (c *Chain) CheckOutput(ctx context.Context, chunk []byte) error {
 			return fmt.Errorf("%s: %w", g.Name, err)
 		}
 	}
+
 	return nil
 }
 

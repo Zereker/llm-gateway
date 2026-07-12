@@ -29,16 +29,20 @@ func (h HeaderAttemptCap) Resolve(in Input) int {
 	if def <= 0 {
 		def = 3
 	}
+
 	raw := strings.TrimSpace(in.AttemptCapOverride)
 	if raw == "" {
 		return def
 	}
+
 	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {
 		return def
 	}
+
 	if n < def {
 		return n
 	}
+
 	return def
 }

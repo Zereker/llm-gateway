@@ -50,6 +50,7 @@ func NewCtxHandler(inner slog.Handler) *CtxHandler {
 	if inner == nil {
 		inner = slog.NewJSONHandler(os.Stderr, nil)
 	}
+
 	return &CtxHandler{inner: inner}
 }
 
@@ -72,6 +73,7 @@ func (h *CtxHandler) Handle(ctx context.Context, r slog.Record) error {
 	if sc.HasTraceID() {
 		r.AddAttrs(slog.String("trace_id", sc.TraceID().String()))
 	}
+
 	if sc.HasSpanID() {
 		r.AddAttrs(slog.String("span_id", sc.SpanID().String()))
 	}

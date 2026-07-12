@@ -49,6 +49,7 @@ func NewDualWriteOutbox(file, kafka OutboxPublisher, log *slog.Logger) *DualWrit
 	if log == nil {
 		log = slog.Default()
 	}
+
 	return &DualWriteOutbox{file: file, kafka: kafka, log: log}
 }
 
@@ -75,17 +76,21 @@ func (d *DualWriteOutbox) Publish(ctx context.Context, evt *OutboxEvent) error {
 	if evt == nil {
 		return errors.New("usage: DualWriteOutbox.Publish: nil event")
 	}
+
 	if fileErr := d.file.Publish(ctx, evt); fileErr != nil {
 		metric.Inc(metric.OutboxFileErrorTotal, "result", "error")
 		d.log.ErrorContext(ctx, "usage_events: file sink publish failed; event NOT forwarded to kafka (file is source of truth)",
 			"event_key", evt.Key, "err", fileErr.Error())
+
 		return fileErr
 	}
+
 	if err := d.kafka.Publish(ctx, evt); err != nil {
 		metric.Inc(metric.OutboxKafkaPublishErrorTotal, "result", "error")
 		d.log.WarnContext(ctx, "usage_events: kafka sink publish failed; file has source of truth",
 			"event_key", evt.Key, "err", err.Error())
 	}
+
 	return nil
 }
 
@@ -94,6 +99,7 @@ func (d *DualWriteOutbox) Close() error {
 	if c, ok := d.file.(io.Closer); ok {
 		return c.Close()
 	}
+
 	return nil
 }
 

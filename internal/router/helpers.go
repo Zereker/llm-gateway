@@ -54,12 +54,15 @@ func readyzHandler(checks []ReadinessChecker) gin.HandlerFunc {
 		for _, chk := range checks {
 			ctx, cancel := context.WithTimeout(c.Request.Context(), readyzTimeout)
 			err := chk.Check(ctx)
+
 			cancel()
+
 			if err != nil {
 				c.String(503, "not ready: %s: %v", chk.Name, err)
 				return
 			}
 		}
+
 		c.String(200, "ok")
 	}
 }

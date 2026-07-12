@@ -26,10 +26,13 @@ func Combine(ad Factory, tr translator.Translator) Handler {
 	if ad == nil {
 		panic("protocol.Combine: nil Factory")
 	}
+
 	if tr == nil {
 		panic("protocol.Combine: nil translator.Translator")
 	}
+
 	meta := ad.Metadata()
+
 	return &combined{
 		ad: ad,
 		tr: tr,
@@ -81,10 +84,12 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 		if err != nil {
 			return nil, NewPrepareError(PhaseQuirks, err)
 		}
+
 		upstreamBody, err = rw.RewriteBody(upstreamBody)
 		if err != nil {
 			return nil, NewPrepareError(PhaseQuirks, err)
 		}
+
 		extraHeaders = make(http.Header)
 		rw.RewriteHeader(extraHeaders) // run the spec against an empty header: set / set_default take effect
 	}
@@ -101,6 +106,7 @@ func (c *combined) PrepareCall(ctx context.Context, ep *domain.Endpoint, srcBody
 	if err != nil {
 		return nil, NewPrepareError(PhaseBuild, err)
 	}
+
 	req, err := sess.BuildRequest(upstreamBody, extraHeaders)
 	if err != nil {
 		_ = sess.Close()
@@ -127,11 +133,14 @@ func (c *combined) quirksFor(rawSpec []byte) (quirks.Rewriter, error) {
 	if cached, ok := c.quirksCache.Load(key); ok {
 		return cached.(quirks.Rewriter), nil
 	}
+
 	rw, err := quirks.CompileJSON(rawSpec)
 	if err != nil {
 		return nil, err
 	}
+
 	actual, _ := c.quirksCache.LoadOrStore(key, rw)
+
 	return actual.(quirks.Rewriter), nil
 }
 
@@ -148,6 +157,7 @@ func (c *combined) Classify(status int, body []byte) *domain.AdapterError {
 	if cls, ok := c.ad.(Classifier); ok {
 		return cls.Classify(status, body)
 	}
+
 	return nil
 }
 
@@ -158,6 +168,7 @@ func (c *combined) DecodeTransport(resp *http.Response) io.Reader {
 	if dec, ok := c.ad.(TransportDecoder); ok {
 		return dec.DecodeTransport(resp)
 	}
+
 	return nil
 }
 

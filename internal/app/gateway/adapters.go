@@ -40,6 +40,7 @@ func (a repoQuotaPolicyAdapter) RuleJSONByID(ctx context.Context, id int64) ([]b
 	if err != nil || policy == nil {
 		return nil, err
 	}
+
 	return policy.RuleJSON, nil
 }
 

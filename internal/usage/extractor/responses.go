@@ -40,9 +40,11 @@ func (s *responsesSession) Feed(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
+
 	if !s.streamingDecided {
 		s.detectStreaming(chunk)
 	}
+
 	if s.isStreaming {
 		s.sseBuffer = append(s.sseBuffer, chunk...)
 		s.parseSSEBuffer()
@@ -55,6 +57,7 @@ func (s *responsesSession) Final() *domain.Usage {
 	if !s.isStreaming && s.usage == nil && len(s.bodyBuffer) > 0 {
 		s.tryExtract(s.bodyBuffer)
 	}
+
 	return s.usage
 }
 
@@ -74,6 +77,7 @@ func (s *responsesSession) parseSSEBuffer() {
 		if !ok {
 			return
 		}
+
 		s.sseBuffer = rest
 
 		for _, line := range bytes.Split(event, []byte("\n")) {
@@ -81,9 +85,11 @@ func (s *responsesSession) parseSSEBuffer() {
 			if payload == nil {
 				continue
 			}
+
 			if bytes.Equal(payload, []byte("[DONE]")) {
 				return
 			}
+
 			s.tryExtract(payload)
 		}
 	}
@@ -106,6 +112,7 @@ func (s *responsesSession) tryExtract(payload []byte) {
 	if u == nil && ev.Response != nil {
 		u = ev.Response.Usage
 	}
+
 	if u == nil {
 		return
 	}

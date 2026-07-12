@@ -48,10 +48,12 @@ func writeError(c *gin.Context, e *domain.AdapterError) {
 	if e == nil {
 		return
 	}
+
 	status := e.HTTPStatus
 	if status == 0 {
 		status = domain.DefaultHTTPStatus(e.Class)
 	}
+
 	code := e.Code
 	if code == "" {
 		code = domain.DefaultCode(e.Class)

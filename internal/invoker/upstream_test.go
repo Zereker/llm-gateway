@@ -296,7 +296,6 @@ func (s *stubDoer) Do(*http.Request) (*http.Response, error) {
 }
 
 func TestSend_WithCustomHTTPDoer(t *testing.T) {
-
 	doer := &stubDoer{
 		resp: &http.Response{
 			StatusCode: 200,
@@ -506,7 +505,6 @@ func TestHooks_FiredOnSuccessPath(t *testing.T) {
 }
 
 func TestHooks_AttemptCompleteFiredOnFailure(t *testing.T) {
-
 	hook := &recordingHook{}
 	// let the factory return nil to trigger the Permanent failure path
 	sender := newSender(t, nil, nil, domain.ProtoUnknown, WithHooks(hook))
@@ -540,7 +538,6 @@ func (h *onlyClientReqHook) OnClientRequest(_ context.Context, _ *domain.Endpoin
 }
 
 func TestHooks_PartialInterfaceIsAllowed(t *testing.T) {
-
 	partial := &onlyClientReqHook{}
 	// missing factory takes the Permanent path
 	sender := newSender(t, nil, nil, domain.ProtoUnknown, WithHooks(partial))
@@ -553,7 +550,6 @@ func TestHooks_PartialInterfaceIsAllowed(t *testing.T) {
 }
 
 func TestHooks_MultipleHooksFireInOrder(t *testing.T) {
-
 	var order []string
 	mk := func(name string) Hook {
 		return clientReqHookFunc(func(_ context.Context, _ *domain.Endpoint, _ []byte) {

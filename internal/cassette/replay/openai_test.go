@@ -75,7 +75,6 @@ func TestReplayOpenAIUsageExtraction(t *testing.T) {
 					continue
 				}
 				examined = true
-				i, it, kind := i, it, kind
 				t.Run(path+"#"+strconv.Itoa(i), func(t *testing.T) {
 					var session extractor.Session
 					if kind == kindChat {

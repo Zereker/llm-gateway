@@ -53,6 +53,7 @@ func registerLLMRoute(group *gin.RouterGroup, deps Deps, spec routeSpec) {
 	if spec.Cache != nil {
 		handlers = append(handlers, spec.Cache)
 	}
+
 	handlers = append(handlers, middleware.Schedule(deps.Dispatcher), noopHandler)
 	group.POST(spec.Path, handlers...)
 }

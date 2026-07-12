@@ -96,18 +96,24 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	if len(chunk) == 0 {
 		return nil, nil
 	}
+
 	h.ex.Feed(chunk)
+
 	if !h.streamingDecided {
 		h.detectStreaming(chunk)
+
 		if h.isStreaming {
 			h.messageID = "msg_" + randID()
 		}
 	}
+
 	if h.isStreaming {
 		h.sseBuffer = append(h.sseBuffer, chunk...)
 		return h.parseAndEmitStream(), nil
 	}
+
 	h.bodyBuffer = append(h.bodyBuffer, chunk...)
+
 	return nil, nil
 }
 
@@ -116,10 +122,12 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 		// streaming: emit the closing events if the upstream hit EOF unexpectedly without sending [DONE]
 		var out bytes.Buffer
 		h.emitClosing(&out)
+
 		usage := h.ex.Final()
 		if out.Len() == 0 {
 			return nil, usage, nil
 		}
+
 		return out.Bytes(), usage, nil
 	}
 
@@ -127,10 +135,13 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	if len(h.bodyBuffer) == 0 {
 		return nil, nil, nil
 	}
+
 	if isOpenAIError(h.bodyBuffer) {
 		return h.bodyBuffer, nil, nil
 	}
+
 	body, err := translateResponse(h.bodyBuffer, h.requestModel)
+
 	return body, h.ex.Final(), err
 }
 
@@ -162,6 +173,7 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 		if !ok {
 			return out.Bytes()
 		}
+
 		h.sseBuffer = rest
 
 		// extract the data: line
@@ -172,13 +184,16 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 				break
 			}
 		}
+
 		if dataPayload == nil {
 			continue
 		}
+
 		if bytes.Equal(dataPayload, []byte("[DONE]")) {
 			h.emitClosing(&out)
 			continue
 		}
+
 		h.translateOpenAIChunk(&out, dataPayload)
 	}
 }
@@ -212,6 +227,7 @@ func (h *responseHandler) translateOpenAIChunk(out *bytes.Buffer, data []byte) {
 	if err := json.Unmarshal(data, &ev); err != nil {
 		return
 	}
+
 	if ev.Model != "" && h.upstreamModel == "" {
 		h.upstreamModel = ev.Model
 	}
@@ -242,9 +258,11 @@ func (h *responseHandler) translateOpenAIChunk(out *bytes.Buffer, data []byte) {
 		if ch.FinishReason != "" {
 			h.pendingStopReason = mapFinishReason(ch.FinishReason)
 		}
+
 		if ch.Delta == nil {
 			continue
 		}
+
 		if ch.Delta.Content != "" {
 			if !h.textStarted {
 				h.textStarted = true
@@ -261,6 +279,7 @@ func (h *responseHandler) translateOpenAIChunk(out *bytes.Buffer, data []byte) {
 				h.hasOpenBlock = true
 				h.openBlockIndex = h.textBlockIndex
 			}
+
 			writeEvent(out, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": h.textBlockIndex,
@@ -270,12 +289,14 @@ func (h *responseHandler) translateOpenAIChunk(out *bytes.Buffer, data []byte) {
 				},
 			})
 		}
+
 		for _, tc := range ch.Delta.ToolCalls {
 			var name, args string
 			if tc.Function != nil {
 				name = tc.Function.Name
 				args = tc.Function.Arguments
 			}
+
 			h.emitToolCallDelta(out, tc.Index, tc.ID, name, args)
 		}
 		// delta.role appears in OpenAI's first chunk; Anthropic doesn't need a separate event for it (already covered by message_start)
@@ -297,6 +318,7 @@ func (h *responseHandler) emitToolCallDelta(out *bytes.Buffer, oaIndex int, id, 
 	if h.toolBlocks == nil {
 		h.toolBlocks = make(map[int]int)
 	}
+
 	anthIdx, seen := h.toolBlocks[oaIndex]
 	if !seen {
 		// A new tool block starts: close the currently open block first.
@@ -307,6 +329,7 @@ func (h *responseHandler) emitToolCallDelta(out *bytes.Buffer, oaIndex int, id, 
 			})
 			h.hasOpenBlock = false
 		}
+
 		anthIdx = h.nextAnthIndex
 		h.nextAnthIndex++
 		h.toolBlocks[oaIndex] = anthIdx
@@ -320,9 +343,11 @@ func (h *responseHandler) emitToolCallDelta(out *bytes.Buffer, oaIndex int, id, 
 				"input": map[string]any{},
 			},
 		})
+
 		h.hasOpenBlock = true
 		h.openBlockIndex = anthIdx
 	}
+
 	if args != "" {
 		writeEvent(out, "content_block_delta", map[string]any{
 			"type":  "content_block_delta",
@@ -343,10 +368,12 @@ func (h *responseHandler) emitClosing(out *bytes.Buffer) {
 	if h.emittedClosing {
 		return
 	}
+
 	if !h.emittedMessageStart {
 		// upstream sent nothing at all -- message_start was never emitted, so skip the closing sequence
 		return
 	}
+
 	h.emittedClosing = true
 
 	// Close whatever block is still open (the text block, or the last tool_use
@@ -363,6 +390,7 @@ func (h *responseHandler) emitClosing(out *bytes.Buffer) {
 	if stopReason == "" {
 		stopReason = "end_turn"
 	}
+
 	delta := map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
@@ -373,6 +401,7 @@ func (h *responseHandler) emitClosing(out *bytes.Buffer) {
 	if h.outputTokens > 0 {
 		delta["usage"] = map[string]any{"output_tokens": h.outputTokens}
 	}
+
 	writeEvent(out, "message_delta", delta)
 
 	writeEvent(out, "message_stop", map[string]any{
@@ -386,6 +415,7 @@ func writeEvent(out *bytes.Buffer, eventType string, payload map[string]any) {
 	if err != nil {
 		return
 	}
+
 	out.WriteString("event: ")
 	out.WriteString(eventType)
 	out.WriteString("\ndata: ")
@@ -455,10 +485,12 @@ func contentToString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
+
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
 	}
+
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -470,8 +502,10 @@ func contentToString(raw json.RawMessage) string {
 				sb.WriteString(b.Text)
 			}
 		}
+
 		return sb.String()
 	}
+
 	return ""
 }
 
@@ -601,6 +635,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			Content: sys,
 		})
 	}
+
 	for _, m := range in.Messages {
 		switch m.Role {
 		case "assistant":
@@ -611,29 +646,37 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			return nil, fmt.Errorf("unsupported message role %q (handles user/assistant only; system goes through the top-level system field)", m.Role)
 		}
 	}
+
 	if len(in.Tools) > 0 {
 		out.Tools = translateTools(in.Tools)
 	}
+
 	if tc := translateToolChoice(in.ToolChoice); tc != nil {
 		out.ToolChoice = tc
 	}
+
 	if anthropicDisablesParallelToolUse(in.ToolChoice) {
 		f := false
 		out.ParallelToolCalls = &f
 	}
+
 	if in.MaxTokens > 0 {
 		mt := in.MaxTokens
 		out.MaxTokens = &mt
 	}
+
 	if in.Temperature != nil {
 		out.Temperature = in.Temperature
 	}
+
 	if in.TopP != nil {
 		out.TopP = in.TopP
 	}
+
 	if len(in.StopSequences) > 0 {
 		out.Stop = in.StopSequences
 	}
+
 	if in.Stream {
 		out.StreamOptions = &openAIStreamOp{IncludeUsage: true}
 	}
@@ -650,6 +693,7 @@ func translateTools(tools []anthropicTool) []openAITool {
 		if len(bytes.TrimSpace(params)) == 0 {
 			params = json.RawMessage(`{"type":"object"}`)
 		}
+
 		out = append(out, openAITool{
 			Type: "function",
 			Function: openAIToolFunction{
@@ -660,6 +704,7 @@ func translateTools(tools []anthropicTool) []openAITool {
 			},
 		})
 	}
+
 	return out
 }
 
@@ -675,6 +720,7 @@ func translateToolChoice(raw json.RawMessage) any {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
+
 	var tc struct {
 		Type string `json:"type"`
 		Name string `json:"name"`
@@ -682,6 +728,7 @@ func translateToolChoice(raw json.RawMessage) any {
 	if err := json.Unmarshal(raw, &tc); err != nil {
 		return nil
 	}
+
 	switch tc.Type {
 	case "auto":
 		return "auto"
@@ -706,12 +753,14 @@ func anthropicDisablesParallelToolUse(raw json.RawMessage) bool {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return false
 	}
+
 	var tc struct {
 		DisableParallelToolUse bool `json:"disable_parallel_tool_use"`
 	}
 	if err := json.Unmarshal(raw, &tc); err != nil {
 		return false
 	}
+
 	return tc.DisableParallelToolUse
 }
 
@@ -723,8 +772,11 @@ func translateAssistantMessage(raw json.RawMessage) openAIMessage {
 	if !ok {
 		return openAIMessage{Role: "assistant", Content: contentToString(raw)}
 	}
-	var text strings.Builder
-	var toolCalls []openAIToolCall
+
+	var (
+		text      strings.Builder
+		toolCalls []openAIToolCall
+	)
 	for _, b := range blocks {
 		switch b.Type {
 		case "text", "":
@@ -740,10 +792,12 @@ func translateAssistantMessage(raw json.RawMessage) openAIMessage {
 			})
 		}
 	}
+
 	msg := openAIMessage{Role: "assistant", Content: text.String()}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 	}
+
 	return msg
 }
 
@@ -759,6 +813,7 @@ func translateUserMessage(raw json.RawMessage) []openAIMessage {
 	if !ok {
 		return []openAIMessage{{Role: "user", Content: contentToString(raw)}}
 	}
+
 	hasToolResult, hasImage := false, false
 	for _, b := range blocks {
 		switch b.Type {
@@ -768,6 +823,7 @@ func translateUserMessage(raw json.RawMessage) []openAIMessage {
 			hasImage = true
 		}
 	}
+
 	if hasImage && !hasToolResult {
 		var parts []any
 		for _, b := range blocks {
@@ -782,14 +838,18 @@ func translateUserMessage(raw json.RawMessage) []openAIMessage {
 				}
 			}
 		}
+
 		return []openAIMessage{{Role: "user", Content: parts}}
 	}
+
 	if !hasToolResult {
 		return []openAIMessage{{Role: "user", Content: contentToString(raw)}}
 	}
 
-	var msgs []openAIMessage
-	var text strings.Builder
+	var (
+		msgs []openAIMessage
+		text strings.Builder
+	)
 	for _, b := range blocks {
 		switch b.Type {
 		case "tool_result":
@@ -802,9 +862,11 @@ func translateUserMessage(raw json.RawMessage) []openAIMessage {
 			text.WriteString(b.Text)
 		}
 	}
+
 	if text.Len() > 0 {
 		msgs = append(msgs, openAIMessage{Role: "user", Content: text.String()})
 	}
+
 	return msgs
 }
 
@@ -816,6 +878,7 @@ func imageURLPartFromSource(src anthropicImageSource) map[string]any {
 	if src.Type == "base64" {
 		url = "data:" + src.MediaType + ";base64," + src.Data
 	}
+
 	return map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}}
 }
 
@@ -828,10 +891,12 @@ func parseBlocks(raw json.RawMessage) ([]anthropicBlock, bool) {
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return nil, false
 	}
+
 	var blocks []anthropicBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return nil, false
 	}
+
 	return blocks, true
 }
 
@@ -841,14 +906,17 @@ func rawToJSONString(raw json.RawMessage) string {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return "{}"
 	}
+
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return "{}"
 	}
+
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "{}"
 	}
+
 	return string(b)
 }
 
@@ -868,8 +936,10 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 		model = fallbackModel
 	}
 
-	var blocks []anthropicContentBlock
-	var stopReason string
+	var (
+		blocks     []anthropicContentBlock
+		stopReason string
+	)
 	if len(in.Choices) > 0 {
 		msg := in.Choices[0].Message
 		// OpenAI's own chat-completion response never returns array content —
@@ -878,11 +948,13 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 		if s, ok := msg.Content.(string); ok && s != "" {
 			blocks = append(blocks, anthropicContentBlock{Type: "text", Text: s})
 		}
+
 		for _, tc := range msg.ToolCalls {
 			input := json.RawMessage("{}")
 			if tc.Function.Arguments != "" && json.Valid([]byte(tc.Function.Arguments)) {
 				input = json.RawMessage(tc.Function.Arguments)
 			}
+
 			blocks = append(blocks, anthropicContentBlock{
 				Type:  "tool_use",
 				ID:    tc.ID,
@@ -890,10 +962,12 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 				Input: input,
 			})
 		}
+
 		stopReason = mapFinishReason(in.Choices[0].FinishReason)
 	} else {
 		stopReason = "end_turn"
 	}
+
 	if len(blocks) == 0 {
 		// No content and no tool calls: keep a single empty text block (existing behavior).
 		blocks = append(blocks, anthropicContentBlock{Type: "text", Text: ""})
@@ -919,6 +993,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("anthropic response marshal: %w", err)
 	}
+
 	return body, nil
 }
 
@@ -948,6 +1023,7 @@ func openAIIDOrGen(openaiID string) string {
 	if openaiID == "" {
 		return "msg_" + randID()
 	}
+
 	return "msg_" + strings.TrimPrefix(openaiID, "chatcmpl-")
 }
 
@@ -959,19 +1035,23 @@ func isOpenAIError(body []byte) bool {
 			if len(rest) > 200 {
 				rest = rest[:200]
 			}
+
 			for j := 0; j+7 <= len(rest); j++ {
 				if string(rest[j:j+7]) == `"error"` {
 					return true
 				}
 			}
+
 			return false
 		}
 	}
+
 	return false
 }
 
 func randID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
+
 	return hex.EncodeToString(b)
 }

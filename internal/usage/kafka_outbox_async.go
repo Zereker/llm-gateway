@@ -71,12 +71,15 @@ func NewAsyncKafkaOutbox(w KafkaWriter, topic string, opts AsyncOptions) *AsyncK
 	if opts.BufferSize <= 0 {
 		opts.BufferSize = 1024
 	}
+
 	if opts.MaxRetries <= 0 {
 		opts.MaxRetries = 3
 	}
+
 	if opts.BackoffBase <= 0 {
 		opts.BackoffBase = 200 * time.Millisecond
 	}
+
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -91,8 +94,10 @@ func NewAsyncKafkaOutbox(w KafkaWriter, topic string, opts AsyncOptions) *AsyncK
 		logger:      opts.Logger,
 		done:        make(chan struct{}),
 	}
+
 	o.wg.Add(1)
 	go o.worker()
+
 	return o
 }
 
@@ -117,6 +122,7 @@ func (o *AsyncKafkaOutbox) Publish(ctx context.Context, evt *OutboxEvent) error 
 		return errors.New("usage: AsyncKafkaOutbox: closed")
 	default:
 	}
+
 	select {
 	case o.queue <- evt:
 		metric.Gauge(metric.OutboxBufferSize, float64(len(o.queue)))
@@ -138,6 +144,7 @@ func (o *AsyncKafkaOutbox) Publish(ctx context.Context, evt *OutboxEvent) error 
 // on the done case alone can't prevent that).
 func (o *AsyncKafkaOutbox) worker() {
 	defer o.wg.Done()
+
 	for {
 		select {
 		case evt := <-o.queue:
@@ -166,22 +173,27 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		writeStart := time.Now()
 		err := o.inner.Write(ctx, o.topic, []byte(evt.Key), evt.Payload)
+
 		cancel()
 		// docs/08 §3: outbox_publish_duration_seconds（labels: driver, result）
 		result := "ok"
 		if err != nil {
 			result = "error"
 		}
+
 		metric.Observe(metric.OutboxPublishDurationSeconds, time.Since(writeStart).Seconds(),
 			"driver", "async_kafka", "result", result)
+
 		if err == nil {
 			metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "ok")
 			return
 		}
+
 		if attempt < o.maxRetries {
 			metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "retry")
 			time.Sleep(delay)
 			delay *= 2
+
 			continue
 		}
 		// retries exhausted
@@ -189,6 +201,7 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 			"topic", o.topic, "key", evt.Key, "err", err)
 		metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "exhausted")
 		o.toDLQ(evt, err)
+
 		return
 	}
 }
@@ -198,8 +211,10 @@ func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 	if o.dlqTopic == "" {
 		o.dropped.Add(1)
 		metric.Inc(metric.OutboxDroppedTotal, "driver", "async_kafka", "reason", "no_dlq")
+
 		return
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// DLQ payload: the original payload wrapped in an envelope noting the reason
@@ -211,6 +226,7 @@ func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 		metric.Inc(metric.OutboxDLQTotal, "driver", "async_kafka", "result", "error")
 		o.logger.Error("usage outbox: DLQ also failed; event lost",
 			"dlq_topic", o.dlqTopic, "key", evt.Key, "err", err)
+
 		return
 	}
 	// docs/08 §3: outbox_dlq_total{driver,result=ok}
@@ -245,6 +261,7 @@ func (o *AsyncKafkaOutbox) Close() error {
 			o.wg.Wait()
 			close(drainDone)
 		}()
+
 		select {
 		case <-drainDone:
 		case <-time.After(30 * time.Second):
@@ -252,6 +269,7 @@ func (o *AsyncKafkaOutbox) Close() error {
 				"buffer_depth", len(o.queue))
 		}
 	})
+
 	return nil
 }
 

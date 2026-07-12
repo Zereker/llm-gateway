@@ -52,6 +52,7 @@ func NewTTLCache[K comparable, V any](capacity int, ttl time.Duration) *TTLCache
 	if capacity <= 0 {
 		capacity = 1024
 	}
+
 	return &TTLCache[K, V]{inner: lru.NewLRU[K, V](capacity, nil, ttl)}
 }
 
@@ -64,6 +65,7 @@ func NewTTLCache[K comparable, V any](capacity int, ttl time.Duration) *TTLCache
 func (c *TTLCache[K, V]) WithMetrics(table string, m Metrics) *TTLCache[K, V] {
 	c.metrics = m
 	c.table = table
+
 	return c
 }
 
@@ -109,29 +111,36 @@ func (c *TTLCache[K, V]) GetOrLoad(ctx context.Context, key K, loader LoaderFunc
 	// The singleflight key is a string; fmt.Sprintf on the comparable is fine
 	// (the miss path isn't a hot path).
 	sfKey := fmt.Sprintf("%v", key)
+
 	raw, err, _ := c.sf.Do(sfKey, func() (any, error) {
 		// By the time the block ends another goroutine may already have
 		// backfilled it, so check again.
 		if v, ok := c.inner.Get(key); ok {
 			return v, nil
 		}
+
 		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loaderTimeout)
 		defer cancel()
+
 		v, cache, err := loader(loadCtx)
 		if err != nil {
 			c.record("error")
 			return v, err
 		}
+
 		if cache {
 			c.inner.Add(key, v)
 		}
+
 		c.record("miss")
+
 		return v, nil
 	})
 	if err != nil {
 		var zero V
 		return zero, err
 	}
+
 	return raw.(V), nil
 }
 

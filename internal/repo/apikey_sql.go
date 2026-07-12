@@ -68,6 +68,7 @@ func (p *SQLAPIKeyProvider) Resolve(ctx context.Context, creds *Credentials) (*U
 	hashed := HashAPIKey(creds.APIKey)
 
 	var row resolveRow
+
 	err := p.db.GetContext(ctx, &row, p.db.Rebind(
 		`SELECT
 		    a.account_id           AS account_id,

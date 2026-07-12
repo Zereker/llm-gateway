@@ -45,27 +45,32 @@ func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
+
 	if cfg.moderator == nil {
 		// pass-through fast path: doesn't even open a tracer.
 		return func(c *gin.Context) { c.Next() }
 	}
+
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		ctx, span := tracer.Start(c.Request.Context(), "moderation.check")
 		defer span.End()
+
 		c.Request = c.Request.WithContext(ctx)
 
 		rc := GetRequestContext(c)
 		if rc.Envelope == nil {
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3 Envelope did not run before M8")
+
 			return
 		}
 
 		if err := cfg.moderator.CheckInput(ctx, rc.Envelope); err != nil {
 			abortWithCode(c, 400, domain.ErrInvalid, domain.ErrCodeContentRejected,
 				"content rejected: "+err.Error())
+
 			return
 		}
 

@@ -130,7 +130,7 @@ func (h *fakeHandler) Flush() ([]byte, *domain.Usage, error) {
 
 func TestWrapWithModerator_NoModeratorInCtx_ReturnsInner(t *testing.T) {
 	inner := &fakeHandler{}
-	got := moderation.WrapStream(inner, nil)
+	got := moderation.WrapStream(context.TODO(), inner)
 	if got != inner {
 		t.Errorf("expected inner returned when ctx is nil")
 	}
@@ -140,7 +140,7 @@ func TestModeratedResponseHandler_Feed_AbortsOnViolation(t *testing.T) {
 	mod := &stubModerator{checkOutputErr: errors.New("hate speech")}
 	inner := &fakeHandler{}
 	ctx := moderation.ContextWithModerator(context.Background(), mod)
-	h := moderation.WrapStream(inner, ctx)
+	h := moderation.WrapStream(ctx, inner)
 
 	out, err := h.Feed([]byte("bad chunk"))
 	if err == nil {
@@ -164,7 +164,7 @@ func TestModeratedResponseHandler_Feed_PassThroughOnOK(t *testing.T) {
 	mod := &stubModerator{}
 	inner := &fakeHandler{}
 	ctx := moderation.ContextWithModerator(context.Background(), mod)
-	h := moderation.WrapStream(inner, ctx)
+	h := moderation.WrapStream(ctx, inner)
 
 	out, err := h.Feed([]byte("clean"))
 	if err != nil {
@@ -182,7 +182,7 @@ func TestModeratedResponseHandler_Flush_RunsCheckOutputOnFinal(t *testing.T) {
 	mod := &stubModerator{}
 	inner := &fakeHandler{flush: []byte("final bytes"), usage: &domain.Usage{Total: 50}}
 	ctx := moderation.ContextWithModerator(context.Background(), mod)
-	h := moderation.WrapStream(inner, ctx)
+	h := moderation.WrapStream(ctx, inner)
 
 	out, usage, err := h.Flush()
 	if err != nil {
@@ -203,7 +203,7 @@ func TestModeratedResponseHandler_Flush_ViolatedFromStream_DropsFinal(t *testing
 	mod := &stubModerator{checkOutputErr: errors.New("violated")}
 	inner := &fakeHandler{flush: []byte("never_sent"), usage: &domain.Usage{Total: 1}}
 	ctx := moderation.ContextWithModerator(context.Background(), mod)
-	h := moderation.WrapStream(inner, ctx)
+	h := moderation.WrapStream(ctx, inner)
 
 	// first, Feed triggers a violation
 	_, _ = h.Feed([]byte("bad"))

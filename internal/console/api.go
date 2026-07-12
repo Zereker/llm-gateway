@@ -54,6 +54,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.POST("/model-aliases", requireAdmin, api.createModelAlias)
 		admin.DELETE("/model-aliases/:alias", requireAdmin, api.deleteModelAlias)
 	}
+
 	return engine
 }
 
@@ -77,14 +78,17 @@ func (a *api) createAccount(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
+
 	if in.Pin == "" || in.Name == "" {
 		abortError(c, 400, "invalid_argument", "pin and name are required")
 		return
 	}
+
 	if err := a.store.CreateAccount(c.Request.Context(), in); err != nil {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusCreated, gin.H{"pin": in.Pin})
 }
 
@@ -94,6 +98,7 @@ func (a *api) listAccounts(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"accounts": rows})
 }
 
@@ -106,15 +111,18 @@ func (a *api) createModelService(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
+
 	if in.ServiceID == "" || in.Model == "" {
 		abortError(c, 400, "invalid_argument", "service_id and model are required")
 		return
 	}
+
 	id, err := a.store.CreateModelService(c.Request.Context(), in)
 	if err != nil {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusCreated, gin.H{"id": id})
 }
 
@@ -124,6 +132,7 @@ func (a *api) listModelServices(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"model_services": rows})
 }
 
@@ -132,14 +141,17 @@ func (a *api) subscribe(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
+
 	if in.AccountID == "" || in.ModelServiceID == 0 {
 		abortError(c, 400, "invalid_argument", "account_id and model_service_id are required")
 		return
 	}
+
 	if err := a.store.Subscribe(c.Request.Context(), in); err != nil {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusCreated, gin.H{"status": "subscribed"})
 }
 
@@ -152,6 +164,7 @@ func (a *api) createEndpoint(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
+
 	id, err := a.store.CreateEndpoint(c.Request.Context(), in)
 	if err != nil {
 		var invalid *InvalidEndpointError
@@ -159,11 +172,15 @@ func (a *api) createEndpoint(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": gin.H{"code": "endpoint_invalid", "message": "endpoint failed validation", "reasons": invalid.Reasons},
 			})
+
 			return
 		}
+
 		writeStoreErr(c, err)
+
 		return
 	}
+
 	c.JSON(http.StatusCreated, gin.H{"id": id})
 }
 
@@ -173,6 +190,7 @@ func (a *api) listEndpoints(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"endpoints": rows})
 }
 
@@ -181,11 +199,13 @@ func (a *api) getEndpoint(c *gin.Context) {
 	if !ok {
 		return
 	}
+
 	v, err := a.store.GetEndpoint(c.Request.Context(), id)
 	if err != nil {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, v)
 }
 
@@ -194,10 +214,12 @@ func (a *api) deleteEndpoint(c *gin.Context) {
 	if !ok {
 		return
 	}
+
 	if err := a.store.DeleteEndpoint(c.Request.Context(), id); err != nil {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
@@ -210,10 +232,12 @@ func (a *api) createAPIKey(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
+
 	if in.SubAccountID == "" {
 		abortError(c, 400, "invalid_argument", "sub_account_id is required")
 		return
 	}
+
 	created, err := a.store.CreateAPIKey(c.Request.Context(), in)
 	if err != nil {
 		writeStoreErr(c, err)
@@ -229,6 +253,7 @@ func (a *api) listAPIKeys(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"api_keys": rows})
 }
 
@@ -237,6 +262,7 @@ func (a *api) revokeAPIKey(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "revoked"})
 }
 
@@ -249,6 +275,7 @@ func (a *api) createQuotaPolicy(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
+
 	id, err := a.store.CreateQuotaPolicy(c.Request.Context(), in)
 	if err != nil {
 		var invalid *InvalidPolicyError
@@ -256,9 +283,12 @@ func (a *api) createQuotaPolicy(c *gin.Context) {
 			abortError(c, 400, "policy_invalid", invalid.Reason)
 			return
 		}
+
 		writeStoreErr(c, err)
+
 		return
 	}
+
 	c.JSON(http.StatusCreated, gin.H{"id": id})
 }
 
@@ -268,6 +298,7 @@ func (a *api) listQuotaPolicies(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"quota_policies": rows})
 }
 
@@ -276,10 +307,12 @@ func (a *api) deleteQuotaPolicy(c *gin.Context) {
 	if !ok {
 		return
 	}
+
 	if err := a.store.DeleteQuotaPolicy(c.Request.Context(), id); err != nil {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
@@ -292,6 +325,7 @@ func (a *api) publishPrice(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
+
 	id, err := a.store.PublishPrice(c.Request.Context(), in)
 	if err != nil {
 		var invalid *InvalidPricingError
@@ -299,9 +333,12 @@ func (a *api) publishPrice(c *gin.Context) {
 			abortError(c, 400, "pricing_invalid", invalid.Reason)
 			return
 		}
+
 		writeStoreErr(c, err)
+
 		return
 	}
+
 	c.JSON(http.StatusCreated, gin.H{"id": id})
 }
 
@@ -312,11 +349,13 @@ func (a *api) listPricing(c *gin.Context) {
 			q.ModelServiceID = n
 		}
 	}
+
 	rows, err := a.store.ListPricing(c.Request.Context(), q)
 	if err != nil {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"pricing": rows})
 }
 
@@ -329,15 +368,19 @@ func (a *api) createModelAlias(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
+
 	if err := a.store.CreateModelAlias(c.Request.Context(), in); err != nil {
 		var invalid *InvalidAliasError
 		if errors.As(err, &invalid) {
 			abortError(c, 400, "alias_invalid", invalid.Reason)
 			return
 		}
+
 		writeStoreErr(c, err)
+
 		return
 	}
+
 	c.JSON(http.StatusCreated, gin.H{"alias": in.Alias})
 }
 
@@ -347,6 +390,7 @@ func (a *api) listModelAliases(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"model_aliases": rows})
 }
 
@@ -355,6 +399,7 @@ func (a *api) deleteModelAlias(c *gin.Context) {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
@@ -369,11 +414,13 @@ func (a *api) listAudit(c *gin.Context) {
 			limit = n
 		}
 	}
+
 	rows, err := a.store.ListAudit(c.Request.Context(), limit)
 	if err != nil {
 		writeStoreErr(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"audit": rows})
 }
 
@@ -388,6 +435,7 @@ func bind(c *gin.Context, dst any) bool {
 		abortError(c, 400, "invalid_json", err.Error())
 		return false
 	}
+
 	return true
 }
 
@@ -397,6 +445,7 @@ func pathInt64(c *gin.Context, name string) (int64, bool) {
 		abortError(c, 400, "invalid_argument", name+" must be an integer")
 		return 0, false
 	}
+
 	return v, true
 }
 
@@ -424,7 +473,9 @@ func isForeignKeyViolation(err error) bool {
 	if err == nil {
 		return false
 	}
+
 	s := err.Error()
+
 	return containsAny(s, "foreign key constraint fails", "Error 1452")
 }
 
@@ -434,7 +485,9 @@ func isDuplicateKey(err error) bool {
 	if err == nil {
 		return false
 	}
+
 	s := err.Error()
+
 	return containsAny(s, "Duplicate entry", "Error 1062")
 }
 
@@ -444,6 +497,7 @@ func containsAny(s string, subs ...string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -453,6 +507,7 @@ func indexOf(s, sub string) int {
 			return i
 		}
 	}
+
 	return -1
 }
 

@@ -33,6 +33,7 @@ func NewFilePublisher(path string) (*FilePublisher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("contentlog: open file: %w", err)
 	}
+
 	return &FilePublisher{w: f}, nil
 }
 
@@ -42,12 +43,16 @@ func (p *FilePublisher) Publish(_ context.Context, r *Record) error {
 	if err != nil {
 		return err
 	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	if _, err := p.w.Write(buf); err != nil {
 		return err
 	}
+
 	_, err = p.w.Write([]byte("\n"))
+
 	return err
 }
 
@@ -55,10 +60,13 @@ func (p *FilePublisher) Publish(_ context.Context, r *Record) error {
 func (p *FilePublisher) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	if p.w == nil {
 		return nil
 	}
+
 	err := p.w.Close()
 	p.w = nil
+
 	return err
 }

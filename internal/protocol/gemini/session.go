@@ -48,9 +48,11 @@ func geminiStreamURL(base string) string {
 	if strings.Contains(base, ":streamGenerateContent") {
 		return ensureAltSSE(base)
 	}
+
 	if i := strings.LastIndex(base, ":generateContent"); i >= 0 {
 		return ensureAltSSE(base[:i] + ":streamGenerateContent" + base[i+len(":generateContent"):])
 	}
+
 	return base
 }
 
@@ -58,10 +60,12 @@ func ensureAltSSE(u string) string {
 	if strings.Contains(u, "alt=sse") {
 		return u
 	}
+
 	sep := "?"
 	if strings.Contains(u, "?") {
 		sep = "&"
 	}
+
 	return u + sep + "alt=sse"
 }
 
@@ -75,10 +79,12 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("gemini: ep.routing.url empty")
 	}
+
 	url := s.ep.Routing.URL
 	if s.streaming {
 		url = geminiStreamURL(url)
 	}
+
 	req, err := http.NewRequestWithContext(s.ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -96,6 +102,7 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header.Set(hdrName, hdrValue)
 
 	return req, nil

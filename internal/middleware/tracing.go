@@ -77,6 +77,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
+
 	otelTracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
@@ -84,6 +85,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 
 		ctx, span := otelTracer.Start(c.Request.Context(), "tracing.commit")
 		defer span.End()
+
 		c.Request = c.Request.WithContext(ctx)
 
 		rc := GetRequestContext(c)
@@ -96,11 +98,13 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 		if rc.ModelService != nil {
 			model = rc.ModelService.Model
 		}
+
 		if rc.RoutedModelService != nil {
 			routedModel = rc.RoutedModelService.Model
 		} else {
 			routedModel = model
 		}
+
 		metric.Observe(metric.HTTPRequestDurationSeconds, elapsed.Seconds(),
 			"method", c.Request.Method,
 			"route", c.FullPath(),
@@ -114,6 +118,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 		if rc.Error != nil {
 			errClass = rc.Error.Class.String()
 		}
+
 		metric.Inc(metric.HTTPRequestsTotal,
 			"method", c.Request.Method,
 			"route", c.FullPath(),
@@ -122,7 +127,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 		)
 
 		if rc.Usage != nil {
-			fillUsageMeta(rc, ctx, now, elapsed.Milliseconds())
+			fillUsageMeta(ctx, rc, now, elapsed.Milliseconds())
 			// usage tokens metric
 			metric.Add(metric.UsageTokensTotal, float64(rc.Usage.Input),
 				"model", model, "routed_model", routedModel,
@@ -136,13 +141,16 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 		if rc.Usage != nil && cfg.outbox != nil {
 			publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+
 			evt := buildUsageEvent(rc)
+
 			payload, err := json.Marshal(evt)
 			if err == nil {
 				key := rc.Identity.AccountID
 				if key == "" {
 					key = rc.RequestID
 				}
+
 				result := "ok"
 				if err := cfg.outbox.Publish(publishCtx, &usage.OutboxEvent{
 					Payload: payload,
@@ -150,6 +158,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 				}); err != nil {
 					result = "error"
 				}
+
 				metric.Inc(metric.UsagePublishTotal, "backend", "outbox", "result", result)
 			}
 		}
@@ -165,7 +174,7 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 // Follows the field source table in docs/05 §4. RoutedModelService takes
 // priority; on fallback, usage.meta.Model = the model that actually
 // succeeded (not the requested model).
-func fillUsageMeta(rc *requeststate.State, ctx context.Context, endTime time.Time, totalLatencyMs int64) {
+func fillUsageMeta(ctx context.Context, rc *requeststate.State, endTime time.Time, totalLatencyMs int64) {
 	m := &rc.Usage.Meta
 
 	m.StartTime = rc.StartTime
@@ -185,6 +194,7 @@ func fillUsageMeta(rc *requeststate.State, ctx context.Context, endTime time.Tim
 	if routed == nil {
 		routed = rc.ModelService
 	}
+
 	if routed != nil {
 		m.Model = routed.Model
 		m.ServiceID = routed.ServiceID

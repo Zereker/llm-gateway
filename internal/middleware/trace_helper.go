@@ -19,9 +19,11 @@ func TraceIDFromCtx(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
+
 	sc := oteltrace.SpanContextFromContext(ctx)
 	if !sc.HasTraceID() {
 		return ""
 	}
+
 	return sc.TraceID().String()
 }

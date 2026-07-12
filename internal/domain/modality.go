@@ -35,6 +35,7 @@ func (m Modality) String() string {
 	case ModalityTask:
 		return "task"
 	}
+
 	return "unknown"
 }
 
@@ -56,6 +57,7 @@ func ParseModality(s string) (Modality, error) {
 	case "task":
 		return ModalityTask, nil
 	}
+
 	return 0, fmt.Errorf("unknown modality %q", s)
 }
 
@@ -73,10 +75,13 @@ func (m *Modality) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
+
 	parsed, err := ParseModality(s)
 	if err != nil {
 		return err
 	}
+
 	*m = parsed
+
 	return nil
 }
