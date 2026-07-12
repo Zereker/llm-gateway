@@ -34,7 +34,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 	api := &api{store: store}
 	// adminAuth authenticates + resolves role/actor first; auditWrites then
 	// records the write-operation audit (this order must not be reversed).
-	admin := engine.Group("/admin", adminAuth(tokens), auditWrites(store))
+	admin := engine.Group("/admin", adminAuth(tokens), requireAdminForWrites, auditWrites(store))
 	{
 		// Reads: both admin and viewer are allowed
 		admin.GET("/accounts", api.listAccounts)
@@ -47,19 +47,21 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/model-aliases", api.listModelAliases)
 		admin.GET("/audit", requireAdmin, api.listAudit) // audit is admin-only
 
-		// Writes: admin only
-		admin.POST("/accounts", requireAdmin, api.createAccount)
-		admin.POST("/model-services", requireAdmin, api.createModelService)
-		admin.POST("/subscriptions", requireAdmin, api.subscribe)
-		admin.POST("/endpoints", requireAdmin, api.createEndpoint)
-		admin.DELETE("/endpoints/:id", requireAdmin, api.deleteEndpoint)
-		admin.POST("/api-keys", requireAdmin, api.createAPIKey)
-		admin.DELETE("/accounts/:pin/api-keys/:keyID", requireAdmin, api.revokeAPIKey)
-		admin.POST("/quota-policies", requireAdmin, api.createQuotaPolicy)
-		admin.DELETE("/quota-policies/:id", requireAdmin, api.deleteQuotaPolicy)
-		admin.POST("/pricing", requireAdmin, api.publishPrice)
-		admin.POST("/model-aliases", requireAdmin, api.createModelAlias)
-		admin.DELETE("/model-aliases/:alias", requireAdmin, api.deleteModelAlias)
+		// Writes: admin only. Enforcement is method-driven at the group level
+		// (requireAdminForWrites, attached below) rather than per-route, so a
+		// newly added write route cannot silently ship reachable by a viewer.
+		admin.POST("/accounts", api.createAccount)
+		admin.POST("/model-services", api.createModelService)
+		admin.POST("/subscriptions", api.subscribe)
+		admin.POST("/endpoints", api.createEndpoint)
+		admin.DELETE("/endpoints/:id", api.deleteEndpoint)
+		admin.POST("/api-keys", api.createAPIKey)
+		admin.DELETE("/accounts/:pin/api-keys/:keyID", api.revokeAPIKey)
+		admin.POST("/quota-policies", api.createQuotaPolicy)
+		admin.DELETE("/quota-policies/:id", api.deleteQuotaPolicy)
+		admin.POST("/pricing", api.publishPrice)
+		admin.POST("/model-aliases", api.createModelAlias)
+		admin.DELETE("/model-aliases/:alias", api.deleteModelAlias)
 	}
 
 	return engine
