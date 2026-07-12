@@ -20,6 +20,12 @@
 # Usage:
 #   ./scripts/e2e-smoke-multivendor.sh                # default 60s timeout; keeps the docker stack
 #   ./scripts/e2e-smoke-multivendor.sh --teardown     # runs docker compose down -v afterward
+#   ./scripts/e2e-smoke-multivendor.sh --no-docker-stack  # assume mysql/redis are already
+#                                                          # reachable on localhost (e.g. GitHub
+#                                                          # Actions service containers) instead
+#                                                          # of bringing up docker-compose's stack;
+#                                                          # see .github/workflows/ci.yml's
+#                                                          # smoke-multivendor job
 #
 # Exit codes:
 #   0  all four vendors passed
@@ -31,9 +37,11 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 TEARDOWN=0
+NO_DOCKER_STACK=0
 for arg in "$@"; do
   case "$arg" in
     --teardown) TEARDOWN=1 ;;
+    --no-docker-stack) NO_DOCKER_STACK=1 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -54,7 +62,7 @@ cleanup() {
   [[ -n "$PID_GW" ]] && kill "$PID_GW" 2>/dev/null || true
   [[ -n "$PID_UP" ]] && kill "$PID_UP" 2>/dev/null || true
   wait 2>/dev/null || true
-  if [[ "$TEARDOWN" == "1" ]]; then
+  if [[ "$TEARDOWN" == "1" && "$NO_DOCKER_STACK" == "0" ]]; then
     echo "[smoke-mv] docker compose down -v" >&2
     docker compose down -v >/dev/null 2>&1 || true
   fi
@@ -85,20 +93,27 @@ wait_http() {
 }
 
 # ============================================================================
-# 1) docker stack
+# 1) docker stack (skipped with --no-docker-stack: the caller already has
+#    mysql/redis reachable on localhost, e.g. GitHub Actions service containers)
 # ============================================================================
-echo "[smoke-mv] docker compose up -d"
-docker compose up -d >/dev/null
+if [[ "$NO_DOCKER_STACK" == "0" ]]; then
+  echo "[smoke-mv] docker compose up -d"
+  docker compose up -d >/dev/null
 
-echo "[smoke-mv] wait for mysql / redis"
-wait_port 127.0.0.1 3306 60 || { echo "mysql failed to start" >&2; exit 1; }
-wait_port 127.0.0.1 6379 30 || { echo "redis failed to start" >&2; exit 1; }
-for ((i=0; i<30; i++)); do
-  if docker compose exec -T mysql mysqladmin ping -h localhost -uroot --silent >/dev/null 2>&1; then
-    break
-  fi
-  sleep 1
-done
+  echo "[smoke-mv] wait for mysql / redis"
+  wait_port 127.0.0.1 3306 60 || { echo "mysql failed to start" >&2; exit 1; }
+  wait_port 127.0.0.1 6379 30 || { echo "redis failed to start" >&2; exit 1; }
+  for ((i=0; i<30; i++)); do
+    if docker compose exec -T mysql mysqladmin ping -h localhost -uroot --silent >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+else
+  echo "[smoke-mv] --no-docker-stack: assuming mysql/redis are already up"
+  wait_port 127.0.0.1 3306 60 || { echo "mysql not reachable" >&2; exit 1; }
+  wait_port 127.0.0.1 6379 30 || { echo "redis not reachable" >&2; exit 1; }
+fi
 
 # ============================================================================
 # 2) mockupstream (background) -- serves openai/anthropic/gemini/cohere routes
