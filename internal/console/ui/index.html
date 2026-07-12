@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Gateway · Console</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--line:#2a2f3a;--fg:#e6e8ec;--mut:#9aa3b2;--acc:#5b8cff;--ok:#3fb950;--bad:#f85149;--warn:#d29922}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+  header{display:flex;gap:12px;align-items:center;padding:12px 18px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+  header .grow{flex:1}
+  input,select,button,textarea{font:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:7px 9px}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc)}
+  button{cursor:pointer;background:var(--panel2)}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+  button.danger{color:var(--bad);border-color:#3a2326}
+  button:hover{filter:brightness(1.1)}
+  #status{font-size:12px;color:var(--mut)}
+  #status.ok{color:var(--ok)} #status.bad{color:var(--bad)}
+  nav{display:flex;gap:4px;padding:10px 18px 0;background:var(--panel);border-bottom:1px solid var(--line)}
+  nav button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--mut);padding:8px 12px}
+  nav button.active{color:var(--fg);border-bottom-color:var(--acc)}
+  main{padding:18px;max-width:1100px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:18px}
+  .card h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+  .grid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--mut);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  td.mono,code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .tbl-wrap{overflow-x:auto}
+  .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line)}
+  .pill.on{color:var(--ok);border-color:#1f3524} .pill.off{color:var(--bad);border-color:#3a2326}
+  .empty{color:var(--mut);padding:14px;text-align:center}
+  .toast{position:fixed;right:16px;bottom:16px;max-width:420px;background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--acc);border-radius:8px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+  .toast.bad{border-left-color:var(--bad)} .toast.ok{border-left-color:var(--ok)}
+  .toast code{display:block;margin-top:6px;color:var(--warn);word-break:break-all}
+  .hint{color:var(--mut);font-size:12px;margin-top:6px}
+  .totals{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:12px}
+  .totals div{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+  .totals b{display:block;font-size:18px}
+  .totals span{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰️ LLM Gateway <span style="color:var(--mut);font-weight:400">Console</span></h1>
+  <div class="grow"></div>
+  <input id="token" type="password" placeholder="admin bearer token" style="width:260px">
+  <button class="primary" onclick="connect()">Connect</button>
+  <span id="status">not connected</span>
+</header>
+<nav id="nav"></nav>
+<main id="view"><div class="empty">Enter your admin token and click Connect.</div></main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const TABS = ["Endpoints","API Keys","Accounts","Models","Aliases","Policies","Pricing","Audit"];
+let TOKEN = sessionStorage.getItem("tok") || "";
+let active = "Endpoints";
+
+const $ = (s,r=document)=>r.querySelector(s);
+const el = (t,a={},...kids)=>{const e=document.createElement(t);for(const k in a){if(k==="html")e.innerHTML=a[k];else if(k.startsWith("on"))e.addEventListener(k.slice(2),a[k]);else e.setAttribute(k,a[k])}for(const k of kids)e.append(k);return e};
+const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function toast(msg,kind="",extra){
+  const t=$("#toast"); t.className="toast "+kind;
+  t.innerHTML="<div>"+esc(msg)+"</div>"+(extra?("<code>"+esc(extra)+"</code>"):"");
+  t.style.display="block"; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display="none", extra?15000:4000);
+}
+
+async function api(method,path,body){
+  const r=await fetch(path,{method,headers:{"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});
+  let data=null; try{data=await r.json()}catch(e){}
+  if(!r.ok){const m=data&&data.error?data.error.message:("HTTP "+r.status);const rs=data&&data.error&&data.error.reasons?(" ["+data.error.reasons.join(", ")+"]"):"";throw new Error(m+rs)}
+  return data;
+}
+
+function connect(){
+  TOKEN=$("#token").value.trim();
+  if(!TOKEN){toast("enter a token","bad");return}
+  sessionStorage.setItem("tok",TOKEN);
+  api("GET","/admin/endpoints").then(()=>{
+    $("#status").textContent="connected"; $("#status").className="ok";
+    renderNav(); show(active);
+  }).catch(e=>{$("#status").textContent="auth failed"; $("#status").className="bad"; toast(e.message,"bad")});
+}
+
+function renderNav(){
+  const n=$("#nav"); n.innerHTML="";
+  TABS.forEach(t=>n.append(el("button",{class:t===active?"active":"",onclick:()=>show(t)},t)));
+}
+
+function show(tab){
+  active=tab; renderNav();
+  const v=$("#view"); v.innerHTML="<div class='empty'>loading…</div>";
+  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Aliases":viewAliases,"Policies":viewPolicies,"Pricing":viewPricing,"Audit":viewAudit})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
+}
+
+function table(cols,rows,rowFn){
+  const w=el("div",{class:"tbl-wrap"});
+  if(!rows||!rows.length){w.append(el("div",{class:"empty"},"nothing here yet"));return w}
+  const t=el("table"); const head=el("tr"); cols.forEach(c=>head.append(el("th",{},c))); t.append(el("thead",{},head));
+  const tb=el("tbody"); rows.forEach(r=>tb.append(rowFn(r))); t.append(tb); w.append(t); return w;
+}
+const onoff = b => el("span",{class:"pill "+(b?"on":"off")}, b?"enabled":"disabled");
+
+// ---- Endpoints ----
+async function viewEndpoints(){
+  const {endpoints}=await api("GET","/admin/endpoints");
+  const v=$("#view"); v.innerHTML="";
+  const form=el("div",{class:"card"},el("h2",{},"Create endpoint"));
+  const g=el("div",{class:"grid"});
+  const f={};
+  [["name","name"],["vendor","vendor (openai/anthropic/gemini)"],["protocol","protocol (openai/anthropic/gemini/responses)"],["model","model"],["url","routing url"],["authType","auth type (bearer/x-api-key/gemini-key)"],["apiKey","upstream api key"]]
+    .forEach(([k,ph])=>{f[k]=el("input",{placeholder:ph});g.append(el("label",{},ph,f[k]))});
+  form.append(g);
+  form.append(el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
+    try{
+      await api("POST","/admin/endpoints",{name:f.name.value,vendor:f.vendor.value,protocol:f.protocol.value,model:f.model.value,
+        routing:{url:f.url.value},auth:{type:f.authType.value||"bearer",payload:{api_key:f.apiKey.value}}});
+      toast("endpoint created","ok"); show("Endpoints");
+    }catch(e){toast(e.message,"bad")}
+  }},"Create")));
+  v.append(form);
+
+  const list=el("div",{class:"card"},el("h2",{},"Endpoints ("+endpoints.length+")"));
+  list.append(table(["ID","Name","Vendor","Proto","Model","Group","W","Enabled","Auth","URL",""],endpoints,e=>el("tr",{},
+    el("td",{class:"mono"},String(e.id)),el("td",{},e.name),el("td",{},e.vendor),el("td",{},e.protocol),el("td",{},e.model),
+    el("td",{},e.group),el("td",{},String(e.weight)),el("td",{},onoff(e.enabled)),el("td",{},e.auth_type),
+    el("td",{class:"mono"},e.routing_url||""),
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete endpoint "+e.name+"?")){try{await api("DELETE","/admin/endpoints/"+e.id);toast("deleted","ok");show("Endpoints")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
+  v.append(list);
+}
+
+// ---- API Keys ----
+async function viewKeys(){
+  const {accounts}=await api("GET","/admin/accounts");
+  const v=$("#view"); v.innerHTML="";
+  const form=el("div",{class:"card"},el("h2",{},"Mint API key"));
+  const g=el("div",{class:"grid"});
+  const acct=el("select"); (accounts||[]).forEach(a=>acct.append(el("option",{value:a.pin},a.pin)));
+  const sub=el("input",{placeholder:"sub_account_id (operator)"}), name=el("input",{placeholder:"name (prod/ci)"});
+  g.append(el("label",{},"account",acct),el("label",{},"sub_account_id",sub),el("label",{},"name",name));
+  form.append(g,el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
+    try{const r=await api("POST","/admin/api-keys",{account_id:acct.value,sub_account_id:sub.value,name:name.value});
+      toast("API key created — copy it now, shown only once:","ok",r.api_key); show("API Keys");
+    }catch(e){toast(e.message,"bad")}
+  }},"Mint key")),el("div",{class:"hint"},"The plaintext key is returned once and never again — copy it from the toast."));
+  v.append(form);
+
+  for(const a of (accounts||[])){
+    const {api_keys}=await api("GET","/admin/accounts/"+encodeURIComponent(a.pin)+"/api-keys");
+    if(!api_keys||!api_keys.length)continue;
+    const card=el("div",{class:"card"},el("h2",{},"Keys · "+a.pin));
+    card.append(table(["Key ID","Prefix","Name","Sub-acct","Enabled","Created",""],api_keys,k=>el("tr",{},
+      el("td",{class:"mono"},k.api_key_id),el("td",{class:"mono"},k.api_key_prefix),el("td",{},k.name||""),el("td",{},k.sub_account_id),
+      el("td",{},onoff(k.enabled)),el("td",{class:"mono"},(k.created_at||"").slice(0,19)),
+      el("td",{},k.enabled?el("button",{class:"danger",onclick:async()=>{if(confirm("Revoke "+k.api_key_id+"?")){try{await api("DELETE","/admin/accounts/"+encodeURIComponent(a.pin)+"/api-keys/"+k.api_key_id);toast("revoked (data plane invalidated)","ok");show("API Keys")}catch(x){toast(x.message,"bad")}}}},"Revoke"):el("span",{class:"pill off"},"revoked")))));
+    v.append(card);
+  }
+}
+
+// ---- Accounts ----
+async function viewAccounts(){
+  const {accounts}=await api("GET","/admin/accounts");
+  const v=$("#view"); v.innerHTML="";
+  const pin=el("input",{placeholder:"pin"}), name=el("input",{placeholder:"display name"});
+  v.append(el("div",{class:"card"},el("h2",{},"Create account"),el("div",{class:"grid"},el("label",{},"pin",pin),el("label",{},"name",name)),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/admin/accounts",{pin:pin.value,name:name.value});toast("account created","ok");show("Accounts")}catch(e){toast(e.message,"bad")}}},"Create"))));
+  const card=el("div",{class:"card"},el("h2",{},"Accounts ("+(accounts||[]).length+")"));
+  card.append(table(["Pin","Name","Enabled","Quota Policy","Created"],accounts,a=>el("tr",{},
+    el("td",{class:"mono"},a.pin),el("td",{},a.name),el("td",{},onoff(a.enabled)),el("td",{},a.quota_policy_id?String(a.quota_policy_id):"—"),el("td",{class:"mono"},(a.created_at||"").slice(0,19)))));
+  v.append(card);
+}
+
+// ---- Models ----
+async function viewModels(){
+  const {model_services}=await api("GET","/admin/model-services");
+  const {accounts}=await api("GET","/admin/accounts");
+  const v=$("#view"); v.innerHTML="";
+  const sid=el("input",{placeholder:"service_id (openai/gpt-4o)"}), model=el("input",{placeholder:"model (gpt-4o)"});
+  v.append(el("div",{class:"card"},el("h2",{},"Create model service"),el("div",{class:"grid"},el("label",{},"service_id",sid),el("label",{},"model",model)),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/admin/model-services",{service_id:sid.value,model:model.value});toast("model created","ok");show("Models")}catch(e){toast(e.message,"bad")}}},"Create"))));
+
+  const sacc=el("select"); (accounts||[]).forEach(a=>sacc.append(el("option",{value:a.pin},a.pin)));
+  const smod=el("select"); (model_services||[]).forEach(m=>smod.append(el("option",{value:m.id},m.model)));
+  v.append(el("div",{class:"card"},el("h2",{},"Subscribe account → model"),el("div",{class:"grid"},el("label",{},"account",sacc),el("label",{},"model",smod)),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/admin/subscriptions",{account_id:sacc.value,model_service_id:Number(smod.value)});toast("subscribed","ok")}catch(e){toast(e.message,"bad")}}},"Subscribe"))));
+
+  const card=el("div",{class:"card"},el("h2",{},"Model services ("+(model_services||[]).length+")"));
+  card.append(table(["ID","Service ID","Model","Created"],model_services,m=>el("tr",{},
+    el("td",{class:"mono"},String(m.id)),el("td",{},m.service_id),el("td",{},m.model),el("td",{class:"mono"},(m.created_at||"").slice(0,19)))));
+  v.append(card);
+}
+
+// ---- Model Aliases ----
+async function viewAliases(){
+  const {model_services}=await api("GET","/admin/model-services");
+  const {model_aliases}=await api("GET","/admin/model-aliases");
+  const v=$("#view"); v.innerHTML="";
+  const alias=el("input",{placeholder:"alias (fast)"});
+  const model=el("select"); (model_services||[]).forEach(m=>model.append(el("option",{value:m.model},m.model)));
+  v.append(el("div",{class:"card"},el("h2",{},"Create model alias"),
+    el("div",{class:"hint",style:"margin-bottom:8px"},"client requests the alias → gateway resolves to the canonical model (transparent downstream)"),
+    el("div",{class:"grid"},el("label",{},"alias",alias),el("label",{},"canonical model",model)),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
+      try{await api("POST","/admin/model-aliases",{alias:alias.value,model:model.value});toast("alias created","ok");show("Aliases")}catch(e){toast(e.message,"bad")}
+    }},"Create"))));
+  const card=el("div",{class:"card"},el("h2",{},"Aliases ("+(model_aliases||[]).length+")"));
+  card.append(table(["Alias","→ Canonical model","Enabled",""],model_aliases,a=>el("tr",{},
+    el("td",{class:"mono"},a.alias),el("td",{class:"mono"},a.model),el("td",{},onoff(a.enabled)),
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete alias "+a.alias+"?")){try{await api("DELETE","/admin/model-aliases/"+encodeURIComponent(a.alias));toast("deleted","ok");show("Aliases")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
+  v.append(card);
+}
+
+// ---- Quota Policies ----
+async function viewPolicies(){
+  const {quota_policies}=await api("GET","/admin/quota-policies");
+  const v=$("#view"); v.innerHTML="";
+  const name=el("input",{placeholder:"name (tier1)"}), desc=el("input",{placeholder:"description"});
+  const rule=el("textarea",{rows:"5",style:"width:100%;font-family:ui-monospace,monospace",placeholder:'{"default":{"rpm":60,"tpm":100000},"per_model":{"gpt-4o":{"rpm":10}}}'});
+  v.append(el("div",{class:"card"},el("h2",{},"Create quota policy"),
+    el("div",{class:"grid"},el("label",{},"name",name),el("label",{},"description",desc)),
+    el("div",{style:"margin-top:10px"},el("div",{class:"hint",style:"margin-bottom:4px"},"rule JSON (default / per_model with rpm·tpm·rps)"),rule),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
+      let parsed; try{parsed=JSON.parse(rule.value)}catch(e){toast("rule is not valid JSON","bad");return}
+      try{await api("POST","/admin/quota-policies",{name:name.value,description:desc.value,rule:parsed});toast("policy created","ok");show("Policies")}catch(e){toast(e.message,"bad")}
+    }},"Create"))));
+
+  const card=el("div",{class:"card"},el("h2",{},"Quota policies ("+(quota_policies||[]).length+")"));
+  card.append(table(["ID","Name","Description","Rule","Enabled",""],quota_policies,p=>el("tr",{},
+    el("td",{class:"mono"},String(p.id)),el("td",{},p.name),el("td",{},p.description||""),
+    el("td",{class:"mono"},JSON.stringify(p.rule)),el("td",{},onoff(p.enabled)),
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete policy "+p.name+"?")){try{await api("DELETE","/admin/quota-policies/"+p.id);toast("deleted","ok");show("Policies")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
+  v.append(card);
+}
+
+// ---- Pricing (append-only) ----
+async function viewPricing(){
+  const {accounts}=await api("GET","/admin/accounts");
+  const {model_services}=await api("GET","/admin/model-services");
+  const v=$("#view"); v.innerHTML="";
+  const acc=el("select"); (accounts||[]).forEach(a=>acc.append(el("option",{value:a.pin},a.pin)));
+  const mod=el("select"); (model_services||[]).forEach(m=>mod.append(el("option",{value:m.id},m.model)));
+  const cls=el("input",{placeholder:"rule_class (standard)"}), by=el("input",{placeholder:"created_by"});
+  const rule=el("textarea",{rows:"4",style:"width:100%;font-family:ui-monospace,monospace",placeholder:'{"unit":"tokens_per_1m","currency":"USD","rates":{"input":5.0,"output":15.0}}'});
+  v.append(el("div",{class:"card"},el("h2",{},"Publish price (append-only — closes the current active version)"),
+    el("div",{class:"grid"},el("label",{},"account",acc),el("label",{},"model",mod),el("label",{},"rule_class",cls),el("label",{},"created_by",by)),
+    el("div",{style:"margin-top:10px"},el("div",{class:"hint",style:"margin-bottom:4px"},"rule JSON (opaque to the gateway — billing engine defines the schema)"),rule),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
+      let parsed; try{parsed=JSON.parse(rule.value)}catch(e){toast("rule is not valid JSON","bad");return}
+      try{await api("POST","/admin/pricing",{account_id:acc.value,model_service_id:Number(mod.value),rule_class:cls.value,rule:parsed,created_by:by.value});toast("price published","ok");show("Pricing")}catch(e){toast(e.message,"bad")}
+    }},"Publish"))));
+
+  const {pricing}=await api("GET","/admin/pricing");
+  const card=el("div",{class:"card"},el("h2",{},"Price versions ("+(pricing||[]).length+")"));
+  card.append(table(["ID","Account","Model#","Class","From","To","Rule","By"],pricing,p=>el("tr",{},
+    el("td",{class:"mono"},String(p.id)),el("td",{class:"mono"},p.account_id),el("td",{class:"mono"},String(p.model_service_id)),
+    el("td",{},p.rule_class),el("td",{class:"mono"},(p.effective_from||"").slice(0,19)),
+    el("td",{},p.effective_to?el("span",{class:"mono"},p.effective_to.slice(0,19)):el("span",{class:"pill on"},"active")),
+    el("td",{class:"mono"},JSON.stringify(p.rule)),el("td",{},p.created_by||""))));
+  v.append(card);
+}
+
+// ---- Audit (admin only) ----
+async function viewAudit(){
+  const v=$("#view"); v.innerHTML="";
+  let data;
+  try{ data=await api("GET","/admin/audit?limit=200"); }
+  catch(e){ v.append(el("div",{class:"card"},el("div",{class:"empty"},"audit is admin-only ("+esc(e.message)+")"))); return; }
+  const card=el("div",{class:"card"},el("h2",{},"Audit log — recent writes ("+(data.audit||[]).length+")"),
+    el("div",{class:"hint",style:"margin-bottom:8px"},"actor · method · path · status — request bodies are never recorded (no secrets)"));
+  card.append(table(["When","Actor","Role","Method","Path","Status"],data.audit,a=>el("tr",{},
+    el("td",{class:"mono"},(a.created_at||"").slice(0,19).replace("T"," ")),el("td",{},a.actor),el("td",{},a.role),
+    el("td",{class:"mono"},a.method),el("td",{class:"mono"},a.path),
+    el("td",{},el("span",{class:"pill "+(a.status_code<400?"on":"off")},String(a.status_code))))));
+  v.append(card);
+}
+
+if(TOKEN){$("#token").value=TOKEN; connect();}
+</script>
+</body>
+</html>

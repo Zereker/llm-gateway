@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-gateway
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+data:
+  gateway.yaml: |
+    {{- $cfg := .Values.gateway.config }}
+    server:
+      addr: {{ $cfg.server.addr | quote }}
+      read_header_timeout: {{ $cfg.server.read_header_timeout }}
+      shutdown_timeout: {{ $cfg.server.shutdown_timeout }}
+    request:
+      body_limit_bytes: {{ printf "%.0f" $cfg.request.body_limit_bytes }}
+      timeout: {{ $cfg.request.timeout }}
+    # Sensitive values are overridden directly from LLM_GATEWAY_* env vars.
+    database:
+      driver: mysql
+      auto_migrate: false
+    redis:
+      db: 0
+    usage_events:
+      driver: {{ $cfg.usage_events.driver | quote }}
+      {{- if or (eq $cfg.usage_events.driver "file") (eq $cfg.usage_events.driver "file_and_kafka") }}
+      file:
+        path: {{ $cfg.usage_events.file.path | quote }}
+      {{- end }}
+      {{- if or (eq $cfg.usage_events.driver "kafka") (eq $cfg.usage_events.driver "async_kafka") (eq $cfg.usage_events.driver "file_and_kafka") }}
+      kafka:
+        brokers: {{ $cfg.usage_events.kafka.brokers | toJson }}
+        topic: {{ $cfg.usage_events.kafka.topic | quote }}
+        {{- if $cfg.usage_events.kafka.async }}
+        async: true
+        {{- end }}
+        {{- if $cfg.usage_events.kafka.dlq_topic }}
+        dlq_topic: {{ $cfg.usage_events.kafka.dlq_topic | quote }}
+        {{- end }}
+      {{- end }}
+    selector:
+      filters: {{ $cfg.selector.filters | toJson }}
+      max_attempts: {{ $cfg.selector.max_attempts }}
+      cooldown:
+        transient: {{ $cfg.selector.cooldown.transient }}
+        capacity: {{ $cfg.selector.cooldown.capacity }}
+        permanent: {{ $cfg.selector.cooldown.permanent }}
+        invalid: {{ $cfg.selector.cooldown.invalid }}
+        unknown: {{ $cfg.selector.cooldown.unknown }}
+    budget:
+      driver: {{ $cfg.budget.driver | quote }}
+    moderation:
+      driver: {{ $cfg.moderation.driver | quote }}
+      {{- if eq $cfg.moderation.driver "openai" }}
+      {{- end }}
+    trace:
+      driver: {{ $cfg.trace.driver | quote }}
+      {{- if eq $cfg.trace.driver "otel" }}
+      endpoint: {{ $cfg.trace.endpoint | quote }}
+      service_name: {{ $cfg.trace.service_name | quote }}
+      {{- end }}

@@ -1,0 +1,260 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          # Keep in sync with the version .golangci.yml was verified against.
+          version: v2.12.2
+
+  go:
+    runs-on: ubuntu-latest
+    # Mirrors `make test-integration` (mysql + redis + a Kafka broker) so CI exercises
+    # the SQL (internal/repo, outbox), Redis-backed (ratelimit, cachebus, semantic
+    # cache, selector affinity), and Kafka-backed (internal/infra's live-broker
+    # producer test) suites instead of silently skipping them — those tests self-gate
+    # on MYSQL_DSN / REDIS_ADDR / KAFKA_BROKERS being unset (see e.g.
+    # internal/cachebus/cachebus_test.go, internal/infra/kafka_test.go), which is
+    # exactly what plain `go test ./...` without these services does.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: llm_gateway_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+      kafka:
+        # KRaft mode (no ZooKeeper); the image's default config already advertises
+        # localhost:9092, matching how a GitHub Actions service container is reached
+        # from the job (localhost + the mapped port, not a container hostname) — see
+        # internal/infra/kafka_test.go's own "docker run -p 9092:9092 apache/kafka"
+        # doc comment, which this mirrors exactly.
+        image: apache/kafka:latest
+        ports:
+          - 9092:9092
+    env:
+      MYSQL_DSN: root:@tcp(127.0.0.1:3306)/llm_gateway_test?parseTime=true&charset=utf8mb4
+      REDIS_ADDR: 127.0.0.1:6379
+      KAFKA_BROKERS: 127.0.0.1:9092
+      KAFKA_TOPIC: llm-gateway-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Wait for Kafka
+        # The kafka service has no docker-level healthcheck (the image doesn't ship a
+        # lightweight CLI probe we could confidently name without risking a wrong
+        # binary path); poll the mapped port from the job container instead, which
+        # only needs bash — always present on ubuntu-latest.
+        run: |
+          for i in $(seq 1 30); do
+            if bash -c 'exec 3<>/dev/tcp/127.0.0.1/9092' 2>/dev/null; then
+              echo "Kafka port open after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Kafka never opened port 9092" >&2; exit 1
+      - name: Create Kafka test topic
+        # apache/kafka:latest defaults to auto.create.topics.enable=false, so
+        # TestKafkaProducer_WriteIntegration's Write fails with "Unknown Topic Or
+        # Partition" unless the topic exists first (confirmed by an actual failed
+        # CI run — this isn't a guess). Rather than guess at this image's server.properties
+        # override env vars or the kafka-topics.sh binary's path inside the container,
+        # create it with the kafka-go client already vendored for internal/infra.
+        run: |
+          cat > /tmp/create_kafka_topic.go << 'EOF'
+          package main
+
+          import (
+                  "log"
+                  "os"
+
+                  "github.com/segmentio/kafka-go"
+          )
+
+          func main() {
+                  conn, err := kafka.Dial("tcp", os.Getenv("KAFKA_BROKERS"))
+                  if err != nil {
+                          log.Fatalf("dial: %v", err)
+                  }
+                  defer conn.Close()
+                  if err := conn.CreateTopics(kafka.TopicConfig{
+                          Topic:             os.Getenv("KAFKA_TOPIC"),
+                          NumPartitions:     1,
+                          ReplicationFactor: 1,
+                  }); err != nil {
+                          log.Fatalf("create topic: %v", err)
+                  }
+                  log.Printf("topic %q ready", os.Getenv("KAFKA_TOPIC"))
+          }
+          EOF
+          go run /tmp/create_kafka_topic.go
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        # -p 1: the SQL suite TRUNCATEs shared tables between cases (see CLAUDE.md),
+        # so packages must not run concurrently against the same database.
+        #
+        # Coverage is scoped to internal/... packages with their own test
+        # files (matches `make cover`; see its comment) rather than a plain
+        # ./... pattern -- cmd/* and scripts/* have none by design, and a
+        # package with zero test files of its own can only get attributed
+        # coverage via a covdata merge across other packages' test binaries,
+        # which isn't worth the fragility for packages that were never
+        # meant to be measured here. go vet (above) + go build ./cmd/...
+        # (below) already guard compilation of the packages this excludes.
+        run: |
+          go test -p 1 -coverprofile=coverage.txt -covermode=atomic \
+            $(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./internal/...)
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.txt
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+      - name: Build commands
+        run: go build ./cmd/...
+
+  smoke-multivendor:
+    runs-on: ubuntu-latest
+    # Real-binary, black-box integration test: actual compiled cmd/gateway +
+    # cmd/mockupstream processes talking over real network round trips (not
+    # gin's in-process test harness) — one endpoint + one real API key per
+    # upstream vendor, seeded from testdata/fieldmatrix/endpoints/*.json
+    # (currently openai/anthropic/gemini/cohere/azure-openai) via
+    # scripts/seed-multivendor, then
+    # curled through cmd/gateway for real. Complements the `go` job's
+    # in-process TestE2E_MultiVendor_AllProtocols, which exercises the same
+    # manifests without a real listening process. See
+    # scripts/e2e-smoke-multivendor.sh's doc comment for the full step list.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          # matches configs/local/gateway.yaml's dsn (database name "llm_gateway",
+          # not "llm_gateway_test" -- that name is reserved for the `go` job's
+          # SQL test suite, which TRUNCATEs tables between cases).
+          MYSQL_DATABASE: llm_gateway
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+      kafka:
+        # gateway.yaml's usage_events driver is file_and_kafka; file is the
+        # commit-path source of truth (async Kafka failures don't block a
+        # request), but a real broker here keeps this job's shape faithful to
+        # an actual deployment instead of exercising a permanently-degraded one.
+        image: apache/kafka:latest
+        ports:
+          - 9092:9092
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Wait for Kafka
+        run: |
+          for i in $(seq 1 30); do
+            if bash -c 'exec 3<>/dev/tcp/127.0.0.1/9092' 2>/dev/null; then
+              echo "Kafka port open after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Kafka never opened port 9092" >&2; exit 1
+      - name: Create Kafka topics
+        # apache/kafka:latest defaults to auto.create.topics.enable=false (see
+        # the `go` job's identical note) -- pre-create the topic + DLQ topic
+        # gateway.yaml's usage_events.kafka section names.
+        run: |
+          cat > /tmp/create_kafka_topics.go << 'EOF'
+          package main
+
+          import (
+                  "log"
+
+                  "github.com/segmentio/kafka-go"
+          )
+
+          func main() {
+                  conn, err := kafka.Dial("tcp", "127.0.0.1:9092")
+                  if err != nil {
+                          log.Fatalf("dial: %v", err)
+                  }
+                  defer conn.Close()
+                  for _, topic := range []string{"billing.usage.recorded.v1", "billing.usage.recorded.v1.dlq"} {
+                          if err := conn.CreateTopics(kafka.TopicConfig{
+                                  Topic:             topic,
+                                  NumPartitions:     1,
+                                  ReplicationFactor: 1,
+                          }); err != nil {
+                                  log.Fatalf("create topic %s: %v", topic, err)
+                          }
+                  }
+                  log.Println("topics ready")
+          }
+          EOF
+          go run /tmp/create_kafka_topics.go
+      - name: Multi-vendor smoke test
+        run: ./scripts/e2e-smoke-multivendor.sh --no-docker-stack
+
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Build gateway image
+        run: docker build --target gateway -t llm-gateway:ci .
+      - name: Helm lint
+        run: helm lint examples/k8s/llm-gateway
+      - name: Render Helm chart
+        run: helm template test examples/k8s/llm-gateway > /tmp/llm-gateway.yaml
+      - name: Image command smoke test
+        run: docker run --rm --entrypoint /app/gateway llm-gateway:ci -h
+      - name: Migrate binary present in image
+        run: docker run --rm --entrypoint /bin/sh llm-gateway:ci -c "test -x /app/migrate && echo migrate-binary-ok"

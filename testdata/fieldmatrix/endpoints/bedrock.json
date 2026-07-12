@@ -1,0 +1,14 @@
+{
+  "vendor": "bedrock",
+  "protocol": "bedrock",
+  "model": "mock-bedrock-model",
+  "auth_type": "aws-sigv4",
+  "client_api_key": "sk-mv-bedrock",
+  "upstream_auth": {"access_key": "AKIAMOCKBEDROCK", "secret_key": "mock-secret-key-not-real", "region": "us-west-2"},
+  "upstream_path": "/model/mock-bedrock-model/converse",
+  "reply": {
+    "kind": "cassette",
+    "path": "bedrock/langchain-ai-langchain-aws/test_agent_loop[v0].yaml.gz",
+    "index": 0
+  }
+}

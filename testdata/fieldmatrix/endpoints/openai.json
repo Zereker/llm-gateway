@@ -1,0 +1,13 @@
+{
+  "vendor": "openai",
+  "protocol": "openai",
+  "model": "mock-openai-model",
+  "auth_type": "bearer",
+  "client_api_key": "sk-mv-openai",
+  "upstream_auth": {"api_key": "sk-upstream-mock-openai"},
+  "upstream_path": "/v1/chat/completions",
+  "reply": {
+    "kind": "fixture",
+    "path": "chat-openai-compat.json"
+  }
+}

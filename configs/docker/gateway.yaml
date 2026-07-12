@@ -1,0 +1,67 @@
+# gateway.yaml — in-container startup configuration
+#
+# host substitutions:
+#   mysql -> mysql, redis -> redis, kafka -> redpanda:9092
+#   mockupstream is reached via the compose service name
+#
+# usage_events uses file_and_kafka: the file lands at /tmp/llm-gateway-usage.jsonl
+# (mounted out as a volume, used by e2e to verify events landed), and Kafka
+# delivers to billing.usage.recorded.v1 for Flink to consume.
+
+server:
+  addr: ":8080"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+database:
+  driver: mysql
+  dsn: "root:@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+  auto_migrate: true
+
+redis:
+  addr: "redis:6379"
+  db: 0
+  password: ""
+
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+request:
+  body_limit_bytes: 10485760
+  timeout: 60s
+
+budget:
+  driver: alwayspass
+  default_balance: 0
+
+moderation:
+  driver: none
+
+selector:
+  filters: [cooldown, limit_read, weighted_random]
+  cooldown:
+    transient: 30s
+    capacity:  60s
+    permanent: 5m
+    invalid:   0s
+    unknown:   10s
+  max_attempts: 3
+
+usage_events:
+  driver: file_and_kafka
+  file:
+    path: /var/lib/llm-gateway/usage.jsonl
+  kafka:
+    brokers: ["redpanda:9092"]
+    topic: billing.usage.recorded.v1
+    async: true
+    buffer_size: 1024
+    max_retries: 3
+    dlq_topic: billing.usage.recorded.v1.dlq
+
+content_log:
+  driver: file
+  sample_rate: 1.0
+  buffer_size: 1024
+  backpressure: drop_oldest
+  file:
+    path: /var/lib/llm-gateway/content.jsonl

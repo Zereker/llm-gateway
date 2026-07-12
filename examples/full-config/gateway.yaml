@@ -1,0 +1,84 @@
+# gateway.yaml — full-feature demo for examples/full-config
+#
+# Differences from configs/local/gateway.yaml:
+#   - Enables the Kafka outbox (production shape) + keeps the file driver commented out as a fallback
+#   - Explicitly lists all selector filters (including limit_read, which uses redis for rate-limit counting)
+#   - Cooldown is configured per ErrorClass dimension
+#   - A typical multi-model + multi-endpoint setup (data is written via SQL by the deployer; this file only configures runtime behavior)
+#
+# Paired seed file: seed.sql (multiple accounts / model_services / pricing_versions / quota_policies)
+# Startup order: docker compose up -d -> cmd/migrate -> start gateway -> mysql < seed.sql
+
+server:
+  addr: ":8080"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+request:
+  # Default per-request HTTP limits (historically named "middleware:", but actually unrelated to the M1-M10 chain)
+  body_limit_bytes: 10485760  # 10 MiB; in production, tune this to the actual body size for your workload
+  timeout: 120s               # Long streaming chats can exceed 60s; tune to your SLA
+
+database:
+  driver: mysql
+  # Production DSN: enable multiStatements + connection pool (internal/infra defaults to maxOpenConns=20)
+  dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/llm_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
+  auto_migrate: false
+
+redis:
+  # In production, configure primary/replica or sentinel; this file only illustrates a single instance. Hard dependency for M6 rate limiting.
+  addr: "redis.internal:6379"
+  db: 0
+  password: ""    # Injected from a secret manager in production
+
+# data_key: the KEK (hex-encoded 32 bytes) used for AES-256-GCM encryption of the endpoints.auth column.
+# When the deployer writes endpoints via SQL, it must encrypt the auth column with this same KEK.
+# **Strict production requirement**: inject from a secret manager / KMS, never commit the real value.
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+usage_events:
+  # Downstream channel for usage events (Transactional Outbox Pattern implementation, internal/usage.DualWriteOutbox).
+  # Production recommendation: file_and_kafka — file is the source of truth, Kafka broadcasts asynchronously; no data loss if the broker goes down.
+  # Other available drivers: file (local only) / kafka (Kafka only, not recommended) / async_kafka (Kafka + retry + DLQ)
+  driver: file_and_kafka
+  file:
+    path: /var/log/llm-gateway/usage.jsonl
+  kafka:
+    brokers: ["kafka-1.internal:9092", "kafka-2.internal:9092", "kafka-3.internal:9092"]
+    # Topic naming follows "domain.entity.event.version", decoupled from the producer service name
+    topic: billing.usage.recorded.v1
+    async: true
+    dlq_topic: billing.usage.recorded.v1.dlq
+  # To switch back to file, just comment out driver and set it to file:
+  # driver: file
+  # file:
+  #   path: /var/log/llm-gateway/usage.log
+
+budget:
+  # Single-instance production demo: use inmemory with a default balance of 100 USD; call the SetBalance API yourself to adjust it.
+  # For multi-replica production, use alwayspass and integrate with an external billing system (v0.5 has no Redis-backed implementation).
+  driver: inmemory
+  default_balance: 100
+
+moderation:
+  # Production recommendation: enable openai moderation (free endpoint, ~100ms latency).
+  # Inject the API key from a secret manager / env; do not commit the real value.
+  driver: openai
+  api_key: "sk-CHANGEME-moderation-key"
+  # Leave base_url empty to use the official OpenAI endpoint
+  # base_url: "https://api.openai.com"
+
+selector:
+  # Production recommendation for the filter chain: cooldown (isolate failing endpoints) -> limit_read (read-only, avoids already-throttled endpoints)
+  #                       -> weighted_random (weighted sampling).
+  # weighted_random must come last (the other filters prune candidates; this one selects).
+  filters: [cooldown, limit_read, weighted_random]
+
+  cooldown:
+    transient: 30s    # Upstream 5xx / network error / timeout
+    capacity:  60s    # Upstream 429 / overloaded (can be shorter than 5xx)
+    permanent: 5m     # Upstream 401 / config error (needs a manual fix to recover)
+    invalid:   0s     # Client 400-class errors — **should not cool down the endpoint**
+    unknown:   10s    # Fallback; errors that can't be classified are treated as transient but with a shorter duration
+
+  max_attempts: 3       # Global attempt cap; clients may override via X-Gateway-Max-Attempts (only to a smaller value)

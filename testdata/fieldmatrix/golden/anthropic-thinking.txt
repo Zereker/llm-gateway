@@ -1,0 +1,24 @@
+data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"reasoning_content":"The user wants"},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"reasoning_content":" two names for a pet pelican, and they want me to be brief. I'll suggest two names that would suit a pelican well."},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"reasoning_content":"\n\nSome good options:\n- Pelé (play on pelican)\n- Pouch"},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"reasoning_content":" (referencing their bill pouch)\n- Captain Beak\n- Squ"},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"reasoning_content":"irt\n- Scoop\n- Wing\n\nLet me give two brief, catchy names:"},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"reasoning_signature":"EuYDCmMIDBgCKkC05Zda4P+Cdk/LQKE+Aol4ZY3EY4wLDrf8XcApz2PiqrxiRjS7uY1kGtZ63vVlaVmtuIpdsHbkdfGHb9AsBYw+MhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOAASDAXGiw23anViCe75HBoMATySwgVJ0A405/0FIjDbVX0lAn7rEq/ejcuOZWDihLSbS9KGihD2QsWmXzp2Ly5ZD5vtKOcKvhEDQ0PCeVkqsALmnx7FhoJ7TQQyomwwFY+zA/Sft9n7u3lNE/RzbZMF4jmvo9i1vtNLETK18iSdCAhSy+NJLFRK/vcw6sVaDNrEMGgIadv5iZ0Jmx+iHyR8sXbasYDMbN07/ype7JGpKxHCdQOrNA7plS39Yy5l7hqJz4ueYoCpMxc+IkNY+TCyMpKwGxYqKSUdElyLr0Ko3vXtdLJBTJQuMtU+cz+UPHkpTbGRPntg/hBvNztCjlqqeM6PKoE8rsDJMx0+q1eOrFPC9SYgCZqSGHlSHoOexnfkrN2aTlZjcBcFblXq76bKF1YHINp3uL+jByhp91XFSkhF+b43BC9PDtRUYKw3wT+IZlEI6V3GppKBDSa8L0Sgm8m1Bb2PYvi3oIv+LDpUImrMckjemNZmBeGcEZQ4FjZiGAE="},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"content":"1. **Pouch** - references their iconic bill pouch\n2. **Pelé** - play"},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"content":"ful take on \"pelican\""},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk"}
+
+data: {"choices":[],"created":0,"id":"chatcmpl-GOLDEN","model":"claude-haiku-4-5-20251001","object":"chat.completion.chunk","usage":{"completion_tokens":133,"prompt_tokens":46,"total_tokens":179}}
+
+data: [DONE]
+
