@@ -62,6 +62,7 @@ import (
 
 	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/cassette/recorder"
+	"github.com/zereker/llm-gateway/internal/cassette/scenario"
 )
 
 // headerFlags collects repeatable -header "Name: value" flags.
@@ -78,7 +79,8 @@ func (h *headerFlags) Set(v string) error {
 
 func main() {
 	endpoint := flag.String("url", "", "full endpoint URL (required)")
-	bodyFile := flag.String("body-file", "", "request body file, '-' for stdin (required)")
+	bodyFile := flag.String("body-file", "", "request body file, '-' for stdin (single-recording mode)")
+	scenarioDir := flag.String("scenario-dir", "", "record every scenario in this pack instead of one -body-file (see testdata/record-scenarios/)")
 	vendor := flag.String("vendor", "", "vendor directory name, e.g. deepseek / zhipu / minimax")
 	model := flag.String("model", "", "model directory name, e.g. deepseek-chat / glm-4-plus")
 	protocol := flag.String("protocol", "openai", "wire protocol being recorded (path segment)")
@@ -88,65 +90,125 @@ func main() {
 	keyEnv := flag.String("key-env", "RECORD_API_KEY", "environment variable holding the API key")
 	appendExisting := flag.Bool("append", false, "prepend the existing cassette (must have been written by this tool)")
 	timeout := flag.Duration("timeout", 3*time.Minute, "request timeout (reasoning models can be slow)")
+	pause := flag.Duration("pause", time.Second, "delay between scenario calls in batch mode (rate-limit courtesy)")
 	var headers headerFlags
 	flag.Var(&headers, "header", "extra request header \"Name: value\" (repeatable)")
 	flag.Parse()
 
-	if *endpoint == "" || *bodyFile == "" {
-		log.Fatal("record-cassette: -url and -body-file are required")
+	if *endpoint == "" {
+		log.Fatal("record-cassette: -url is required")
 	}
 	key := os.Getenv(*keyEnv)
 	if key == "" && *authStyle != "none" {
 		log.Fatalf("record-cassette: environment variable %s is empty (or pass -auth none)", *keyEnv)
 	}
 
+	if *scenarioDir != "" {
+		if *bodyFile != "" || *name != "" || *out != "" || *appendExisting {
+			log.Fatal("record-cassette: -scenario-dir is exclusive with -body-file/-name/-out/-append")
+		}
+		if *vendor == "" || *model == "" {
+			log.Fatal("record-cassette: batch mode needs -vendor and -model")
+		}
+		runBatch(*scenarioDir, *endpoint, *vendor, *model, *protocol, *authStyle, key, headers, *timeout, *pause)
+		return
+	}
+
+	if *bodyFile == "" {
+		log.Fatal("record-cassette: -body-file (or -scenario-dir) is required")
+	}
 	body, err := readBody(*bodyFile)
 	if err != nil {
 		log.Fatalf("record-cassette: read body: %v", err)
 	}
-
 	outPath, err := resolveOutPath(*out, *vendor, *model, *protocol, *name, body, *appendExisting)
 	if err != nil {
 		log.Fatalf("record-cassette: %v", err)
 	}
-
-	rec := recorder.New(nil)
-	rec.RedactValue(key)
-	if *appendExisting {
-		if err := rec.PrependFromFile(outPath); err != nil {
-			log.Fatalf("record-cassette: -append: %v", err)
-		}
+	if err := recordOne(*endpoint, body, *authStyle, key, headers, *timeout, outPath, *appendExisting); err != nil {
+		log.Fatalf("record-cassette: %v", err)
 	}
+	fmt.Fprintln(os.Stderr, "before committing: read the file, grep it for secrets, and add it to testdata/vendor-cassettes/README.md")
+}
 
-	req, err := buildRequest(*endpoint, body, *authStyle, key, headers, rec)
+// runBatch replays every scenario in the pack against the vendor, one file
+// per scenario. A scenario the upstream rejects (non-2xx) is skipped — not
+// written — and reported at the end, so one strict vendor rejecting e.g.
+// the full-parameter matrix doesn't abort the rest of the recording run.
+func runBatch(dir, endpoint, vendor, model, protocol, authStyle, key string, headers headerFlags, timeout, pause time.Duration) {
+	pack, err := scenario.LoadDir(dir)
 	if err != nil {
 		log.Fatalf("record-cassette: %v", err)
 	}
+	var failed []string
+	for i, sc := range pack {
+		if i > 0 {
+			time.Sleep(pause)
+		}
+		fmt.Fprintf(os.Stderr, "\n===== scenario %d/%d: %s =====\n", i+1, len(pack), sc.Name)
+		body, err := sc.WithModel(model)
+		if err != nil {
+			log.Fatalf("record-cassette: %v", err)
+		}
+		outPath, err := resolveOutPath("", vendor, model, protocol, sc.Name, body, false)
+		if err != nil {
+			log.Fatalf("record-cassette: %v", err)
+		}
+		if err := recordOne(endpoint, body, authStyle, key, headers, timeout, outPath, false); err != nil {
+			fmt.Fprintf(os.Stderr, "SKIPPED %s: %v\n", sc.Name, err)
+			failed = append(failed, sc.Name)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "\n%d/%d scenarios recorded", len(pack)-len(failed), len(pack))
+	if len(failed) > 0 {
+		fmt.Fprintf(os.Stderr, "; failed: %s\n", strings.Join(failed, ", "))
+	} else {
+		fmt.Fprintln(os.Stderr)
+	}
+	fmt.Fprintln(os.Stderr, "before committing: read the files, grep them for secrets, and add them to testdata/vendor-cassettes/README.md")
+	if len(failed) > 0 {
+		os.Exit(1)
+	}
+}
 
-	client := &http.Client{Transport: rec, Timeout: *timeout}
+// recordOne performs a single call-and-record round: it is the whole
+// pipeline behind one cassette file, shared by both modes.
+func recordOne(endpoint string, body []byte, authStyle, key string, headers headerFlags, timeout time.Duration, outPath string, appendExisting bool) error {
+	rec := recorder.New(nil)
+	rec.RedactValue(key)
+	if appendExisting {
+		if err := rec.PrependFromFile(outPath); err != nil {
+			return fmt.Errorf("-append: %w", err)
+		}
+	}
+
+	req, err := buildRequest(endpoint, body, authStyle, key, headers, rec)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Transport: rec, Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("record-cassette: request failed (nothing recorded): %v", err)
+		return fmt.Errorf("request failed (nothing recorded): %w", err)
 	}
 	respBody, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
-		log.Fatalf("record-cassette: read response: %v", err)
+		return fmt.Errorf("read response: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "HTTP %s\n%s\n", resp.Status, preview(respBody, 2000))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Still record it if asked — a real error response is real data too —
-		// but make the operator opt in by reading this and re-running with the
-		// body fixed, rather than silently committing an error cassette.
-		log.Fatalf("record-cassette: upstream returned %s; not writing %s (fix the request and re-run)", resp.Status, outPath)
+		// A real error response is real data too — but make the operator read
+		// it and re-run with the request fixed, rather than silently committing
+		// an error cassette.
+		return fmt.Errorf("upstream returned %s; not writing %s (fix the request and re-run)", resp.Status, outPath)
 	}
-
 	if err := rec.WriteFile(outPath); err != nil {
-		log.Fatalf("record-cassette: %v", err)
+		return err
 	}
-	fmt.Fprintf(os.Stderr, "\nwrote %d interaction(s) to %s\n", rec.Len(), outPath)
-	fmt.Fprintln(os.Stderr, "before committing: read the file, grep it for secrets, and add it to testdata/vendor-cassettes/README.md")
+	fmt.Fprintf(os.Stderr, "wrote %d interaction(s) to %s\n", rec.Len(), outPath)
+	return nil
 }
 
 func readBody(path string) ([]byte, error) {
