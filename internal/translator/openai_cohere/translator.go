@@ -19,7 +19,10 @@
 // tool_plan (reasoning text emitted before a tool call) and citations have no OpenAI
 // equivalent and are not translated.
 //
-// **Limitation**: vision / multimodal content is not supported.
+// **Vision**: Cohere v2's ImageContent/ImageUrl types (verified against the
+// official cohere-python SDK) are structurally identical to OpenAI's
+// image_url content part, so a user message's image_url parts pass through
+// almost unchanged (see buildUserContent) — no reshaping needed.
 //
 // Other client protocols (Anthropic / Responses) reach this via the OpenAI pivot composition
 // (see translator.compose).
@@ -47,9 +50,6 @@ func (openaiCohere) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiCohere) Target() domain.Protocol { return domain.ProtoCohere }
 
 func (openaiCohere) TranslateRequest(srcBody []byte) ([]byte, error) {
-	// tools/tool_calls now translate (see the package doc); only multimodal
-	// content is still dropped, so restrict the warning to that.
-	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoCohere, srcBody, "multimodal")
 	return translateRequest(srcBody)
 }
 
@@ -189,11 +189,47 @@ func translateRequest(srcBody []byte) ([]byte, error) {
 				ToolCallID: m.ToolCallID,
 				Content:    contentToString(m.Content),
 			})
-		default: // system, user
+		case "user":
+			out.Messages = append(out.Messages, cohereMsg{Role: "user", Content: buildUserContent(m.Content)})
+		default: // system
 			out.Messages = append(out.Messages, cohereMsg{Role: m.Role, Content: contentToString(m.Content)})
 		}
 	}
 	return json.Marshal(out)
+}
+
+// buildUserContent converts an OpenAI user message's content into Cohere v2
+// shape: a plain string when there's no image_url part, or the content-part
+// array passed through mostly as-is when one is present — Cohere v2's
+// ImageContent/ImageUrl types (verified against cohere-python's SDK type
+// definitions) are structurally identical to OpenAI's image_url content
+// part ({"type":"image_url","image_url":{"url":...,"detail"?:...}}), so no
+// reshaping is needed, only filtering to the two part types Cohere accepts.
+func buildUserContent(raw json.RawMessage) any {
+	r := gjson.ParseBytes(raw)
+	if !r.IsArray() {
+		return contentToString(raw)
+	}
+	hasImage := false
+	r.ForEach(func(_, part gjson.Result) bool {
+		if part.Get("type").String() == "image_url" {
+			hasImage = true
+			return false
+		}
+		return true
+	})
+	if !hasImage {
+		return contentToString(raw)
+	}
+	var parts []json.RawMessage
+	r.ForEach(func(_, part gjson.Result) bool {
+		switch part.Get("type").String() {
+		case "image_url", "text":
+			parts = append(parts, json.RawMessage(part.Raw))
+		}
+		return true
+	})
+	return parts
 }
 
 // mapToolChoice converts an OpenAI tool_choice to Cohere v2's tool_choice.

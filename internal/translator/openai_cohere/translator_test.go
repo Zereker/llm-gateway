@@ -167,6 +167,37 @@ func TestTranslateRequest_MultimodalContentToText(t *testing.T) {
 	}
 }
 
+// TestTranslateRequest_ImageURLPassthrough: Cohere v2's image_url content
+// part is structurally identical to OpenAI's, so it should pass through
+// as an array (not collapse to text-only) once an image is present. The
+// base64 payload is a real captured image (a tiny PNG) from
+// simonw/llm-anthropic's test_image_prompt.yaml cassette (Apache 2.0).
+func TestTranslateRequest_ImageURLPassthrough(t *testing.T) {
+	const realPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAKYAAAEaAgMAAADmmcReAAAACVBMVEX///8A/wD+AQASdAFKAAAAR0lEQVR42u3YMREAMAjAwC5d6q8mUYkEVuA+8yvIkVr0oghFURRFURRFURRFUdRCkSRJM7u/CEVRFEVRFEVRFEXRpdQXkcaVBRUPn8UJn6QAAAAASUVORK5CYII="
+	in := `{"model":"m","messages":[{"role":"user","content":[
+		{"type":"image_url","image_url":{"url":"data:image/png;base64,` + realPNGBase64 + `"}},
+		{"type":"text","text":"Describe image in three words"}
+	]}]}`
+	out, err := translateRequest([]byte(in))
+	if err != nil {
+		t.Fatalf("translateRequest: %v", err)
+	}
+	content := gjson.GetBytes(out, "messages.0.content")
+	if !content.IsArray() {
+		t.Fatalf("content should stay an array when an image is present, got: %s", content.Raw)
+	}
+	parts := content.Array()
+	if len(parts) != 2 {
+		t.Fatalf("want 2 parts, got %d: %s", len(parts), content.Raw)
+	}
+	if parts[0].Get("type").String() != "image_url" || parts[0].Get("image_url.url").String() != "data:image/png;base64,"+realPNGBase64 {
+		t.Errorf("image_url part not passed through: %s", parts[0].Raw)
+	}
+	if parts[1].Get("type").String() != "text" || parts[1].Get("text").String() != "Describe image in three words" {
+		t.Errorf("text part wrong: %s", parts[1].Raw)
+	}
+}
+
 func TestTranslateResponse(t *testing.T) {
 	cohere := `{"id":"c-123","finish_reason":"COMPLETE",
 	           "message":{"role":"assistant","content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]},

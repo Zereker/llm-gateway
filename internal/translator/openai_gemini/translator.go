@@ -5,11 +5,14 @@
 // the upstream response back to OpenAI format for the client.
 //
 // **Supported**:
+//
 //   - chat (system/user/assistant/text content)
+//
 //   - streaming: when the client sends stream:true, the upstream call goes through
 //     :streamGenerateContent?alt=sse, and responseHandler incrementally translates
 //     Gemini SSE chunks into OpenAI SSE chunks (see below). Non-streaming uses
 //     buffer-then-translate (translated all at once in Flush).
+//
 //   - function calling: tools -> Gemini tools[].functionDeclarations, tool_choice ->
 //     toolConfig.functionCallingConfig (mode + allowedFunctionNames — verified against
 //     the official generativelanguage v1beta content.proto and LiteLLM's
@@ -22,7 +25,8 @@
 //     messages already get merged into one turn elsewhere in this codebase
 //     (openai_anthropic does the same for Anthropic).
 //
-// **Not supported**: vision (parts only support text and function call/response).
+//   - vision: image_url content parts -> inlineData (data: URI, base64
+//     decoded) or fileData (plain URL, Gemini fetches it directly) parts.
 //
 // See translateRequest / translateResponse for the field mapping.
 package openai_gemini
@@ -52,9 +56,6 @@ func (openaiGemini) Source() domain.Protocol { return domain.ProtoOpenAI }
 func (openaiGemini) Target() domain.Protocol { return domain.ProtoGemini }
 
 func (openaiGemini) TranslateRequest(srcBody []byte) ([]byte, error) {
-	// tools/tool_calls now translate (see the package doc); only multimodal
-	// content is still dropped, so restrict the warning to that.
-	translator.ReportLossyRequest(domain.ProtoOpenAI, domain.ProtoGemini, srcBody, "multimodal")
 	return translateRequest(srcBody)
 }
 
@@ -348,6 +349,67 @@ func contentToString(raw json.RawMessage) string {
 	return s
 }
 
+// buildUserParts converts an OpenAI user message's content into Gemini
+// parts: a single text part for plain-string content, or a text+image part
+// mix when the content is an array containing image_url entries — collapsing
+// to contentToString would silently drop the image.
+func buildUserParts(raw json.RawMessage) []geminiPart {
+	var arr []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return []geminiPart{{Text: contentToString(raw)}}
+	}
+	var parts []geminiPart
+	for _, p := range arr {
+		switch p.Type {
+		case "image_url":
+			if p.ImageURL != nil {
+				parts = append(parts, imagePartFromURL(p.ImageURL.URL))
+			}
+		default: // "text" or unset
+			if p.Text != "" {
+				parts = append(parts, geminiPart{Text: p.Text})
+			}
+		}
+	}
+	return parts
+}
+
+// imagePartFromURL converts an OpenAI image_url.url into a Gemini part: a
+// data: URI decodes into inlineData (mimeType + base64 data split out);
+// anything else passes through as fileData (Gemini fetches it directly).
+func imagePartFromURL(url string) geminiPart {
+	if mimeType, data, ok := parseDataURI(url); ok {
+		return geminiPart{InlineData: &geminiInlineData{MimeType: mimeType, Data: data}}
+	}
+	return geminiPart{FileData: &geminiFileData{FileURI: url}}
+}
+
+// parseDataURI splits a "data:<mimeType>;base64,<data>" URI into its parts.
+func parseDataURI(url string) (mimeType, data string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(url, prefix) {
+		return "", "", false
+	}
+	rest := url[len(prefix):]
+	semi := strings.IndexByte(rest, ';')
+	comma := strings.IndexByte(rest, ',')
+	if semi < 0 || comma < 0 || comma < semi {
+		return "", "", false
+	}
+	mimeType = rest[:semi]
+	encoding := rest[semi+1 : comma]
+	if encoding != "base64" {
+		return "", "", false
+	}
+	return mimeType, rest[comma+1:], true
+}
+
 // =============================================================================
 // Gemini upstream-side shape
 // =============================================================================
@@ -371,6 +433,22 @@ type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
+	FileData         *geminiFileData         `json:"fileData,omitempty"`
+}
+
+// geminiInlineData carries base64-inline media (verified against the
+// generativelanguage v1beta content.proto Blob message: mimeType + data).
+type geminiInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+// geminiFileData references media by URL — Gemini fetches it directly, no
+// need for the gateway to proxy the bytes.
+type geminiFileData struct {
+	MimeType string `json:"mimeType,omitempty"`
+	FileURI  string `json:"fileUri"`
 }
 
 // geminiFunctionCall.Args is a JSON **object**, not a string — the one
@@ -529,7 +607,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 		case "user":
 			out.Contents = append(out.Contents, geminiContent{
 				Role:  "user",
-				Parts: []geminiPart{{Text: contentToString(m.Content)}},
+				Parts: buildUserParts(m.Content),
 			})
 		case "tool":
 			pendingToolParts = append(pendingToolParts, geminiPart{FunctionResponse: &geminiFunctionResponse{
