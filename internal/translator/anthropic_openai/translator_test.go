@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 // TestMapFinishReason_Completeness covers every documented OpenAI
@@ -177,6 +179,27 @@ func TestTranslateRequest_StringContent(t *testing.T) {
 
 // Request translation: tools + assistant tool_use + user tool_result must map to
 // the OpenAI function-calling shapes.
+// TestTranslateRequest_ToolStrict: Anthropic's tool-level "strict" flag
+// (verified against a real captured request/response pair,
+// langchain-ai/langchain's official langchain-anthropic package, Apache 2.0,
+// tests/cassettes/test_strict_tool_use.yaml.gz) must carry over to OpenAI's
+// tool definition verbatim — same field name.
+func TestTranslateRequest_ToolStrict(t *testing.T) {
+	body := []byte(`{"model":"claude-x","max_tokens":100,
+		"tools":[{"name":"get_weather","description":"Get the weather at a location.",
+		"input_schema":{"type":"object","properties":{"location":{"type":"string"},"unit":{"type":"string","enum":["C","F"]}},"required":["location","unit"],"additionalProperties":false},
+		"strict":true}],
+		"messages":[{"role":"user","content":"weather in Boston, in Celsius?"}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translateRequest error: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	if !r.Get("tools.0.function.strict").Bool() {
+		t.Errorf("strict flag dropped: %s", out)
+	}
+}
+
 func TestTranslateRequest_Tools(t *testing.T) {
 	body := []byte(`{
 		"model": "claude-x",

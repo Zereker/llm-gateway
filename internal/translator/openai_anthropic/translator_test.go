@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 // TestMapStopReason_Completeness covers every documented Anthropic stop_reason
@@ -267,6 +269,29 @@ func TestTranslateRequest_Tools(t *testing.T) {
 	}
 	if userStr != "weather in SF and NY?" {
 		t.Errorf("user content = %q", userStr)
+	}
+}
+
+// TestTranslateRequest_ToolStrict: OpenAI's tool-level "strict" flag must
+// carry over to Anthropic's tool definition verbatim — Anthropic's schema
+// accepts the same field name, verified against a real captured request
+// (langchain-ai/langchain's official langchain-anthropic package, Apache 2.0,
+// tests/cassettes/test_strict_tool_use.yaml.gz).
+func TestTranslateRequest_ToolStrict(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"weather?"}],
+		"tools":[{"type":"function","function":{"name":"get_weather","description":"Get the weather at a location.",
+		"parameters":{"type":"object","properties":{"location":{"type":"string"},"unit":{"type":"string","enum":["C","F"]}},"required":["location","unit"],"additionalProperties":false},
+		"strict":true}}]}`)
+	out, err := translateRequest(body)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	r := gjson.ParseBytes(out)
+	if !r.Get("tools.0.strict").Bool() {
+		t.Errorf("strict flag dropped: %s", out)
+	}
+	if !r.Get("tools.0.input_schema.additionalProperties").Exists() || r.Get("tools.0.input_schema.additionalProperties").Bool() {
+		t.Errorf("additionalProperties:false dropped from input_schema: %s", out)
 	}
 }
 

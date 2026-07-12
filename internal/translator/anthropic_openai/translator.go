@@ -419,6 +419,7 @@ type anthropicTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 // anthropicBlock is a single content block inside a message's content array.
@@ -512,6 +513,7 @@ type openAIToolFunction struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 type openAIToolCall struct {
@@ -654,6 +656,7 @@ func translateTools(tools []anthropicTool) []openAITool {
 				Name:        t.Name,
 				Description: t.Description,
 				Parameters:  params,
+				Strict:      t.Strict,
 			},
 		})
 	}

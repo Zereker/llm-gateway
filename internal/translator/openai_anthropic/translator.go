@@ -381,6 +381,7 @@ type openAITool struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description,omitempty"`
 		Parameters  json.RawMessage `json:"parameters,omitempty"`
+		Strict      *bool           `json:"strict,omitempty"`
 	} `json:"function"`
 }
 
@@ -568,6 +569,11 @@ type anthropicTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	// Strict mirrors OpenAI's tool-level strict flag verbatim — Anthropic's
+	// tool schema accepts the same field name (verified against a real
+	// captured request/response pair, langchain-ai/langchain's official
+	// langchain-anthropic package, Apache 2.0, tests/cassettes/test_strict_tool_use.yaml.gz).
+	Strict *bool `json:"strict,omitempty"`
 }
 
 // anthropicMessage.Content is a raw message so it can hold either the simple
@@ -646,6 +652,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
 			InputSchema: normalizeToolSchema(t.Function.Parameters),
+			Strict:      t.Function.Strict,
 		})
 	}
 	if len(in.ToolChoice) > 0 {
