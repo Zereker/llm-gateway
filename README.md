@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![codecov](https://codecov.io/gh/Zereker/llm-gateway/graph/badge.svg)](https://codecov.io/gh/Zereker/llm-gateway)
+
 A Go-based gateway that routes LLM API requests to multiple upstream providers
 (OpenAI, Anthropic, Google, AWS Bedrock, vLLM / Ollama self-hosted, etc.) under
 one OpenAI-compatible interface.
@@ -101,8 +103,12 @@ make test-integration   # bring up stack, run all tests including SQL/outbox
 make cover              # unit tests + a coverage profile (same MYSQL_DSN/REDIS_ADDR gating)
 ```
 
-Coverage is statement coverage from `go tool cover`, not branch coverage — a
-snapshot as of this commit, unit tests only (`make test`'s default gating; no
+The badge above is the live number from CI (`go` job in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)), which runs with
+MySQL/Redis/Kafka up, so it also covers the SQL/Redis-backed suites this
+local snapshot doesn't. Coverage is statement coverage from `go tool cover`,
+not branch coverage. The table below is a `make cover` snapshot as of this
+commit, unit tests only (`make test`'s default gating; no
 `MYSQL_DSN`/`REDIS_ADDR`, so SQL/Redis-backed tests are skipped and count as
 0% covered here). `make cover` only measures `internal/...` packages that
 have their own test files (`cmd/*` / `scripts/*` are thin entry points with
