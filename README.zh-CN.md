@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![codecov](https://codecov.io/gh/Zereker/llm-gateway/graph/badge.svg)](https://codecov.io/gh/Zereker/llm-gateway)
+
 一个基于 Go 实现的网关，将 LLM API 请求路由到多个上游供应商
 （OpenAI、Anthropic、Google、AWS Bedrock、自建的 vLLM / Ollama 等），
 对外统一暴露 OpenAI 兼容接口。
@@ -100,10 +102,13 @@ make test-integration   # 起 stack 后跑全部测试，包含 SQL/outbox
 make cover              # 单元测试 + 覆盖率统计（MYSQL_DSN/REDIS_ADDR 的 gating 规则同上）
 ```
 
-覆盖率是 `go tool cover` 给出的语句覆盖率（不是分支覆盖率），是本次提交时的快照——
-只跑了 `make test` 默认档（不设 `MYSQL_DSN`/`REDIS_ADDR`，SQL/Redis 相关测试会被 skip，
-在这里算 0%）。`make cover` 只统计 `internal/...` 下自己有测试文件的包
-（`cmd/*`/`scripts/*` 本身就是没有测试的薄入口，设计上如此）：
+上面的徽章是 CI 里实时跑出来的数字（见
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 的 `go` job）——那边起了
+MySQL/Redis/Kafka，所以也覆盖了本地这份快照没跑到的 SQL/Redis 相关测试。覆盖率是
+`go tool cover` 给出的语句覆盖率（不是分支覆盖率）。下面这张表是本次提交时
+`make cover` 的本地快照，只跑了 `make test` 默认档（不设 `MYSQL_DSN`/`REDIS_ADDR`，
+SQL/Redis 相关测试会被 skip，在这里算 0%）。`make cover` 只统计 `internal/...`
+下自己有测试文件的包（`cmd/*`/`scripts/*` 本身就是没有测试的薄入口，设计上如此）：
 
 | | |
 |---|---|
