@@ -62,6 +62,26 @@ func TestReplayAnthropicResponses(t *testing.T) {
 	})
 }
 
+// TestGoldenAnthropicThinking pins the exact translated output of a real
+// extended-thinking stream (thinking text -> reasoning_content deltas, the
+// signature -> a reasoning_signature delta, then the final answer -> content
+// deltas) against a hand-reviewed fixture -- a stricter companion to
+// TestReplayAnthropicResponses, which only checks the shape is valid and
+// would not notice e.g. thinking and answer text getting swapped.
+func TestGoldenAnthropicThinking(t *testing.T) {
+	its, err := cassette.Load(vendorRoot + "/anthropic/simonw-llm-anthropic/test_stream_events_thinking.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	h := openai_anthropic.New().NewResponseHandler()
+	out, usage := feedResponse(t, h, its[0].ResponseBody, "golden/anthropic-thinking")
+	assertValidOpenAIChatOutput(t, out, "golden/anthropic-thinking")
+	if usage == nil || usage.Input != 46 || usage.Output != 133 || usage.Total != 179 {
+		t.Fatalf("usage drifted from the real cassette's reported tokens: %+v", usage)
+	}
+	assertGolden(t, "anthropic-thinking.txt", out)
+}
+
 // TestReplayAnthropicRequests feeds every real Anthropic Messages *request*
 // body through anthropic_openai's TranslateRequest — the Anthropic-request ->
 // OpenAI-upstream direction — and asserts it translates without error into
