@@ -78,10 +78,13 @@ func (p *Protocol) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
+
 	parsed := ParseProtocol(s)
 	if parsed == ProtoUnknown && s != "" && s != "unknown" {
 		return fmt.Errorf("domain: unknown protocol %q", s)
 	}
+
 	*p = parsed
+
 	return nil
 }

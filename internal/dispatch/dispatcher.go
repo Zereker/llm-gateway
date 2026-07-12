@@ -43,30 +43,39 @@ func New(opts ...Option) *Dispatcher {
 	for _, opt := range opts {
 		opt(d)
 	}
+
 	if d.candidates == nil {
 		panic("dispatch.New: WithCandidates required")
 	}
+
 	if d.selector == nil {
 		panic("dispatch.New: WithSelector required")
 	}
+
 	if d.invokerFactory == nil {
 		panic("dispatch.New: WithInvokerFactory required")
 	}
+
 	if d.cap == nil {
 		panic("dispatch.New: WithCap required")
 	}
+
 	if d.retry == nil {
 		panic("dispatch.New: WithRetry required")
 	}
+
 	if d.fallback == nil {
 		panic("dispatch.New: WithFallback required")
 	}
+
 	if d.quota == nil {
 		d.quota = NoopQuota{}
 	}
+
 	if d.tracer == nil {
 		d.tracer = trace.NewSlogTracer(nil) // NoOp span, zero overhead on the hot path
 	}
+
 	return d
 }
 
@@ -92,6 +101,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Inp
 	ctx, span := d.tracer.StartSpan(ctx, "dispatch.request")
 	span.SetAttribute("dispatch.model", s.CurrentModelName())
 	span.SetAttribute("dispatch.group", s.Group())
+
 	span.SetAttribute("dispatch.attempt_cap", s.AttemptsCap())
 	defer span.End()
 
@@ -113,6 +123,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Inp
 			span.SetAttribute("dispatch.outcome", out.Result.String())
 			span.SetAttribute("dispatch.routed_model", modelName(out.RoutedModel))
 			span.SetAttribute("dispatch.attempts", s.Attempts())
+
 			return out
 		case Abort:
 			s.SetAbort(a)
@@ -120,6 +131,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, w http.ResponseWriter, in Inp
 			span.SetAttribute("dispatch.outcome", out.Result.String())
 			span.SetAttribute("dispatch.http_code", a.HTTPCode)
 			span.SetAttribute("dispatch.attempts", s.Attempts())
+
 			return out
 		}
 	}
@@ -154,6 +166,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 
 	ctx, span := d.tracer.StartSpan(ctx, "dispatch.attempt")
 	span.SetAttribute("attempt.model", s.CurrentModelName())
+
 	span.SetAttribute("attempt.index", s.Attempts())
 	defer span.End()
 
@@ -167,13 +180,16 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 			Reason:   "candidates: " + err.Error(),
 		}
 	}
+
 	span.SetAttribute("attempt.candidates", len(candidates))
 	eligible := filterEligible(candidates, s.Envelope(), s.Handlers())
 	span.SetAttribute("attempt.eligible", len(eligible))
+
 	if len(eligible) == 0 {
 		span.SetAttribute("attempt.exit", "no_eligible")
 		return d.fallback.OnExhausted(s)
 	}
+
 	ep, err := d.selector.Pick(ctx, eligible, s.PickQuery())
 	if err != nil {
 		return Abort{
@@ -183,6 +199,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 			Reason:   "select: " + err.Error(),
 		}
 	}
+
 	if ep == nil {
 		// candidates were eligible, but the picker skipped all of them (e.g.
 		// due to cooldown) — hand it off to FallbackPolicy
@@ -194,6 +211,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 	// miss / invoke error / success / stream break / panic unwind). Decoupled
 	// from Report because the success+stream-break path Reports twice.
 	defer d.selector.Release(ctx, ep)
+
 	annotateEndpoint(span, ep)
 
 	// === EndpointQuota.Reserve (pre-deduction) ===
@@ -202,6 +220,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		annotateVerdict(span, v)
 		s.Record(ep, v)
 		d.selector.Report(ctx, ep, v)
+
 		return d.retry.Decide(s, v)
 	}
 
@@ -224,11 +243,13 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		// silently throttle the endpoint.
 		d.quota.Release(ctx, ep)
 		d.selector.Report(ctx, ep, v)
+
 		return d.retry.Decide(s, v)
 	}
 
 	// === Invoker.Invoke (pure HTTP) ===
 	inv := d.invokerFactory.For(ep, handler, s.Envelope())
+
 	res, ierr := inv.Invoke(ctx)
 	if ctx.Err() != nil {
 		// The request ctx died while invoking: whatever Invoke returned
@@ -241,9 +262,12 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		if ierr == nil && res != nil {
 			res.Close()
 		}
+
 		span.SetAttribute("attempt.exit", "client_abort")
+
 		return clientAbort(ctx)
 	}
+
 	if ierr != nil {
 		// "unable to construct the call" is very rare (the current default
 		// InvokerFactory never hits this; it's a path left open for custom
@@ -261,8 +285,10 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		// contacted, so refund its reserve.
 		d.quota.Release(ctx, ep)
 		d.selector.Report(ctx, ep, v)
+
 		return d.retry.Decide(s, v)
 	}
+
 	defer res.Close()
 
 	verdict := res.Verdict()
@@ -283,6 +309,7 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 		if rep.Err == nil {
 			d.quota.ChargeUsage(ctx, ep, rep.Usage)
 		}
+
 		if rep.Err != nil {
 			// stream interrupted after a 200: the status code is already
 			// written, so no retry is possible. Whether we penalize the
@@ -311,8 +338,10 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 				d.selector.Report(ctx, ep, sv)
 			}
 		}
+
 		return Stream{}
 	}
+
 	return action
 }
 
@@ -351,6 +380,7 @@ func isClientAbort(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return true
 	}
+
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
@@ -359,6 +389,7 @@ func modelName(m *domain.ModelService) string {
 	if m == nil {
 		return ""
 	}
+
 	return m.Model
 }
 
@@ -368,6 +399,7 @@ func annotateEndpoint(span trace.Span, ep *domain.Endpoint) {
 	if ep == nil {
 		return
 	}
+
 	span.SetAttribute("endpoint.id", strconv.FormatInt(ep.ID, 10))
 	span.SetAttribute("endpoint.vendor", ep.Vendor)
 	span.SetAttribute("endpoint.protocol", ep.Protocol.String())
@@ -377,9 +409,11 @@ func annotateEndpoint(span trace.Span, ep *domain.Endpoint) {
 func annotateVerdict(span trace.Span, v Verdict) {
 	span.SetAttribute("verdict.stage", v.Stage.String())
 	span.SetAttribute("verdict.class", v.Class.String())
+
 	if v.HTTPCode != 0 {
 		span.SetAttribute("verdict.http_code", v.HTTPCode)
 	}
+
 	if v.Reason != "" {
 		span.SetAttribute("verdict.reason", v.Reason)
 	}
@@ -407,8 +441,10 @@ func quotaVerdictToAttempt(denied *QuotaVerdict, qerr error) Verdict {
 		if denied.BucketKey != "" && reason == "" {
 			reason = "endpoint quota exhausted: " + denied.BucketKey
 		}
+
 		return Verdict{Stage: StageReserve, Class: denied.Class, Reason: reason}
 	}
+
 	return Verdict{
 		Stage:  StageReserve,
 		Class:  ClassUnknown,

@@ -33,14 +33,17 @@ func (q *QuotaConfig) Scan(value any) error {
 		*q = QuotaConfig{}
 		return nil
 	}
+
 	b, err := bytesFromScan(value, "QuotaConfig")
 	if err != nil {
 		return err
 	}
+
 	if len(b) == 0 {
 		*q = QuotaConfig{}
 		return nil
 	}
+
 	return json.Unmarshal(b, q)
 }
 
@@ -50,6 +53,7 @@ func (q QuotaConfig) Value() (driver.Value, error) {
 	if q.RPM == nil && q.TPM == nil && q.RPS == nil && q.ConcurrentRequests == nil {
 		return nil, nil
 	}
+
 	return json.Marshal(q)
 }
 

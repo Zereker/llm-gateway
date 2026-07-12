@@ -35,9 +35,11 @@ func NewRedisAffinityStore(rdb *redis.Client, prefix string, ttl time.Duration) 
 	if prefix == "" {
 		prefix = "llm-gateway:sched"
 	}
+
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
+
 	return &RedisAffinityStore{rdb: rdb, prefix: prefix, ttl: ttl}
 }
 
@@ -51,10 +53,12 @@ func (s *RedisAffinityStore) Get(ctx context.Context, sessionKey string) (int64,
 	if err != nil {
 		return 0, false
 	}
+
 	id, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || id == 0 {
 		return 0, false
 	}
+
 	return id, true
 }
 
@@ -63,6 +67,7 @@ func (s *RedisAffinityStore) Set(ctx context.Context, sessionKey string, endpoin
 	if endpointID == 0 {
 		return
 	}
+
 	_ = s.rdb.Set(ctx, s.key(sessionKey), endpointID, s.ttl).Err()
 }
 

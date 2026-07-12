@@ -26,6 +26,7 @@ func NewRedisStore(rdb *redis.Client, prefix string) *RedisStore {
 	if prefix == "" {
 		prefix = "llm-gateway:respcache"
 	}
+
 	return &RedisStore{rdb: rdb, prefix: prefix}
 }
 
@@ -38,10 +39,12 @@ func (s *RedisStore) Get(ctx context.Context, key string) (CachedResponse, bool)
 	if err != nil {
 		return CachedResponse{}, false
 	}
+
 	var cr CachedResponse
 	if json.Unmarshal(b, &cr) != nil {
 		return CachedResponse{}, false
 	}
+
 	return cr, true
 }
 
@@ -51,9 +54,11 @@ func (s *RedisStore) Set(ctx context.Context, key string, resp CachedResponse, t
 	if err != nil {
 		return
 	}
+
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
+
 	_ = s.rdb.Set(ctx, s.key(key), b, ttl).Err()
 }
 

@@ -398,7 +398,9 @@ func TestResponseHandler_BufferThenTranslate(t *testing.T) {
 	if b, _ := h.Feed([]byte(`{"id":"x","message":{"role":"assistant","content":[{"type":"text",`)); b != nil {
 		t.Error("buffer-mode Feed should not return bytes")
 	}
-	h.Feed([]byte(`"text":"ok"}]},"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":1,"output_tokens":2}}}`))
+	if _, err := h.Feed([]byte(`"text":"ok"}]},"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":1,"output_tokens":2}}}`)); err != nil {
+		t.Fatalf("Feed: %v", err)
+	}
 	body, usage, err := h.Flush()
 	if err != nil {
 		t.Fatalf("Flush: %v", err)
@@ -412,7 +414,9 @@ func TestResponseHandler_BufferThenTranslate(t *testing.T) {
 func TestResponseHandler_ErrorPassthrough(t *testing.T) {
 	h := &responseHandler{}
 	errBody := `{"id":"x","message":"invalid api token"}`
-	h.Feed([]byte(errBody))
+	if _, err := h.Feed([]byte(errBody)); err != nil {
+		t.Fatalf("Feed: %v", err)
+	}
 	body, usage, _ := h.Flush()
 	if string(body) != errBody {
 		t.Errorf("error body should be passed through as-is, got %s", body)

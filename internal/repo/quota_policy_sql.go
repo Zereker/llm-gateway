@@ -47,7 +47,9 @@ func (p *SQLQuotaPolicyProvider) GetByID(ctx context.Context, id int64) (*QuotaP
 	if id == 0 {
 		return nil, nil
 	}
+
 	var pv QuotaPolicy
+
 	err := p.db.GetContext(ctx, &pv, p.db.Rebind(
 		`SELECT `+qpColumns+` FROM quota_policies
 		 WHERE id = ? AND enabled = 1 AND deleted_at IS NULL
@@ -58,8 +60,10 @@ func (p *SQLQuotaPolicyProvider) GetByID(ctx context.Context, id int64) (*QuotaP
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
+
 		return nil, fmt.Errorf("quota_policy: get by id: %w", err)
 	}
+
 	return &pv, nil
 }
 

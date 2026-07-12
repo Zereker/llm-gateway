@@ -112,9 +112,11 @@ func resolveCooldownTTL(d CooldownDurations, class ErrorClass, retryAfter time.D
 	if ttl <= 0 {
 		return 0
 	}
+
 	if retryAfter > 0 {
 		return min(max(retryAfter, resetTTLFloor), resetTTLCap)
 	}
+
 	return ttl
 }
 
@@ -138,14 +140,17 @@ func (m *RedisCooldownManager) Mark(ctx context.Context, endpointID int64, class
 	if endpointID == 0 {
 		return nil
 	}
+
 	ttl := jitterTTL(resolveCooldownTTL(m.durations, class, retryAfter))
 	if ttl <= 0 {
 		return nil
 	}
+
 	key := cooldownKey(endpointID)
 	if err := m.rdb.Set(ctx, key, class.String(), ttl).Err(); err != nil {
 		return fmt.Errorf("cooldown: set %s: %w", key, err)
 	}
+
 	return nil
 }
 
@@ -156,20 +161,24 @@ func (m *RedisCooldownManager) InCooldown(ctx context.Context, endpointIDs []int
 	if len(endpointIDs) == 0 {
 		return nil, nil
 	}
+
 	keys := make([]string, len(endpointIDs))
 	for i, id := range endpointIDs {
 		keys[i] = cooldownKey(id)
 	}
+
 	vals, err := m.rdb.MGet(ctx, keys...).Result()
 	if err != nil {
 		return nil, fmt.Errorf("cooldown: mget: %w", err)
 	}
+
 	out := make(map[int64]bool, len(endpointIDs))
 	for i, v := range vals {
 		if v != nil {
 			out[endpointIDs[i]] = true
 		}
 	}
+
 	return out, nil
 }
 
@@ -195,11 +204,14 @@ func (m *RedisCooldownManager) ClearIfRecoverable(ctx context.Context, endpointI
 	if endpointID == 0 {
 		return false, nil
 	}
+
 	key := cooldownKey(endpointID)
+
 	n, err := clearRecoverableScript.Run(ctx, m.rdb, []string{key}).Int()
 	if err != nil {
 		return false, fmt.Errorf("cooldown: clear %s: %w", key, err)
 	}
+
 	return n == 1, nil
 }
 
@@ -233,21 +245,25 @@ func (f *CooldownFilter) Apply(ctx context.Context, candidates []*domain.Endpoin
 	if len(candidates) == 0 || f.mgr == nil {
 		return candidates
 	}
+
 	ids := make([]int64, len(candidates))
 	for i, ep := range candidates {
 		ids[i] = ep.ID
 	}
+
 	cooled, err := f.mgr.InCooldown(ctx, ids)
 	if err != nil {
 		// fail-open: don't filter out all endpoints when Redis errors
 		return candidates
 	}
+
 	out := make([]*domain.Endpoint, 0, len(candidates))
 	for _, ep := range candidates {
 		if !cooled[ep.ID] {
 			out = append(out, ep)
 		}
 	}
+
 	return out
 }
 

@@ -34,12 +34,15 @@ func ReportLossyRequest(src, tgt domain.Protocol, clientBody []byte, only ...str
 		if len(only) > 0 && !containsString(only, feature) {
 			continue
 		}
+
 		metric.Inc(metric.TranslatorFeatureDroppedTotal,
 			"src", src.String(), "tgt", tgt.String(), "feature", feature)
+
 		key := src.String() + "|" + tgt.String() + "|" + feature
 		if _, seen := warnedLossy.LoadOrStore(key, struct{}{}); seen {
 			continue
 		}
+
 		slog.Warn("translator: cross-protocol translation drops an unsupported request feature",
 			"src", src.String(), "tgt", tgt.String(), "feature", feature)
 	}
@@ -51,6 +54,7 @@ func containsString(xs []string, want string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -59,12 +63,14 @@ func containsString(xs []string, want string) bool {
 // so it is never reported.
 func droppedRequestFeatures(src domain.Protocol, body []byte) []string {
 	var feats []string
+
 	add := func(f string) {
 		for _, e := range feats {
 			if e == f {
 				return
 			}
 		}
+
 		feats = append(feats, f)
 	}
 
@@ -85,8 +91,10 @@ func droppedRequestFeatures(src domain.Protocol, body []byte) []string {
 				case "image":
 					add("multimodal")
 				}
+
 				return true
 			})
+
 			return true
 		})
 	default:
@@ -96,16 +104,20 @@ func droppedRequestFeatures(src domain.Protocol, body []byte) []string {
 			if msg.Get("tool_calls").IsArray() || msg.Get("role").String() == "tool" {
 				add("tool_calls")
 			}
+
 			if content := msg.Get("content"); content.IsArray() {
 				content.ForEach(func(_, part gjson.Result) bool {
 					if t := part.Get("type").String(); t != "" && t != "text" {
 						add("multimodal")
 					}
+
 					return true
 				})
 			}
+
 			return true
 		})
 	}
+
 	return feats
 }

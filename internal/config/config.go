@@ -350,11 +350,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	c.ApplyEnv()
 	c.ApplyDefaults()
+
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config: validate %q: %w", path, err)
 	}
+
 	return c, nil
 }
 
@@ -366,8 +369,10 @@ func LoadDatabase(path string) (infra.DBConfig, error) {
 	if err != nil {
 		return infra.DBConfig{}, err
 	}
+
 	c.ApplyEnv()
 	c.ApplyDefaults()
+
 	return c.Database, nil
 }
 
@@ -375,18 +380,22 @@ func decode(path string) (*Config, error) {
 	if path == "" {
 		return nil, errors.New("config: empty path")
 	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: read %q: %w", path, err)
 	}
+
 	var c Config
 	if len(bytes.TrimSpace(data)) > 0 {
 		decoder := yaml.NewDecoder(bytes.NewReader(data))
 		decoder.KnownFields(true)
+
 		if err := decoder.Decode(&c); err != nil {
 			return nil, fmt.Errorf("config: parse %q: %w", path, err)
 		}
 	}
+
 	return &c, nil
 }
 
@@ -399,6 +408,7 @@ func (c *Config) ApplyEnv() {
 	setStringFromEnv(&c.DataKey, "LLM_GATEWAY_DATA_KEY")
 	setStringFromEnv(&c.Moderation.APIKey, "LLM_GATEWAY_MODERATION_API_KEY")
 	setStringFromEnv(&c.Trace.Endpoint, "LLM_GATEWAY_OTEL_ENDPOINT")
+
 	if v := os.Getenv("LLM_GATEWAY_KAFKA_BROKERS"); v != "" {
 		c.UsageEvents.Kafka.Brokers = splitNonEmpty(v)
 	}
@@ -412,12 +422,14 @@ func setStringFromEnv(dst *string, key string) {
 
 func splitNonEmpty(value string) []string {
 	parts := strings.Split(value, ",")
+
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part = strings.TrimSpace(part); part != "" {
 			out = append(out, part)
 		}
 	}
+
 	return out
 }
 
@@ -442,6 +454,7 @@ func (c *Config) Validate() error {
 	if c.DataKey != "" && len(c.DataKey) != 64 {
 		return fmt.Errorf("data_key must be 64 hex chars (32 bytes); got %d", len(c.DataKey))
 	}
+
 	switch c.Trace.Driver {
 	case "", "slog":
 		// ok; endpoint is ignored
@@ -452,6 +465,7 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("trace.driver=%q not supported (use slog|otel)", c.Trace.Driver)
 	}
+
 	switch c.UsageEvents.Driver {
 	case "", "file":
 		// the file driver doesn't need the kafka section; file.path is backstopped by ApplyDefaults
@@ -459,6 +473,7 @@ func (c *Config) Validate() error {
 		if len(c.UsageEvents.Kafka.Brokers) == 0 {
 			return errors.New("usage_events.driver=" + c.UsageEvents.Driver + " requires kafka.brokers non-empty")
 		}
+
 		if c.UsageEvents.Kafka.Topic == "" {
 			return errors.New("usage_events.driver=" + c.UsageEvents.Driver + " requires kafka.topic")
 		}
@@ -467,15 +482,18 @@ func (c *Config) Validate() error {
 		if c.UsageEvents.File.Path == "" {
 			return errors.New("usage_events.driver=file_and_kafka requires file.path non-empty (source of truth)")
 		}
+
 		if len(c.UsageEvents.Kafka.Brokers) == 0 {
 			return errors.New("usage_events.driver=file_and_kafka requires kafka.brokers non-empty")
 		}
+
 		if c.UsageEvents.Kafka.Topic == "" {
 			return errors.New("usage_events.driver=file_and_kafka requires kafka.topic")
 		}
 	default:
 		return fmt.Errorf("usage_events.driver=%q not supported (use file|kafka|async_kafka|file_and_kafka)", c.UsageEvents.Driver)
 	}
+
 	switch c.ContentLog.Driver {
 	case "", "none", "file":
 		// ok
@@ -485,11 +503,13 @@ func (c *Config) Validate() error {
 		// downstream fan-out is left to fluent-bit / vector (see docs/05 §2 + docs/07 §2).
 		return fmt.Errorf("content_log.driver=%q not supported (use none|file; kafka handling has moved to fluent-bit/vector)", c.ContentLog.Driver)
 	}
+
 	switch c.Budget.Driver {
 	case "", "alwayspass", "inmemory":
 	default:
 		return fmt.Errorf("budget.driver=%q not supported (use alwayspass|inmemory)", c.Budget.Driver)
 	}
+
 	switch c.Moderation.Driver {
 	case "", "none":
 	case "openai":
@@ -499,41 +519,50 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("moderation.driver=%q not supported (use none|openai)", c.Moderation.Driver)
 	}
+
 	switch c.Scoring.Driver {
 	case "", "inmemory", "redis":
 	default:
 		return fmt.Errorf("scoring.driver=%q not supported (use inmemory|redis)", c.Scoring.Driver)
 	}
+
 	switch c.Selector.Picker {
 	case "", "weighted_random", "p2c":
 	default:
 		return fmt.Errorf("selector.picker=%q not supported (use weighted_random|p2c)", c.Selector.Picker)
 	}
+
 	validFilters := map[string]bool{"cooldown": true, "limit_read": true, "weighted_random": true, "prefix_cache": true, "busy": true}
 	for _, filter := range c.Selector.Filters {
 		if !validFilters[filter] {
 			return fmt.Errorf("selector.filters contains unsupported value %q", filter)
 		}
 	}
+
 	if c.Cache.Semantic.Enabled {
 		if c.Cache.Semantic.Embedder.Driver != "openai" {
 			return fmt.Errorf("cache.semantic.embedder.driver=%q not supported (use openai)", c.Cache.Semantic.Embedder.Driver)
 		}
+
 		if c.Cache.Semantic.Embedder.APIKey == "" {
 			return errors.New("cache.semantic embedder requires api_key")
 		}
 	}
+
 	if c.ContentLog.Driver == "file" && c.ContentLog.File.Path == "" {
 		return errors.New("content_log.driver=file requires file.path non-empty")
 	}
+
 	if c.ContentLog.Backpressure == "block" && c.ContentLog.BlockTimeout <= 0 {
 		return errors.New("content_log.backpressure=block requires block_timeout > 0")
 	}
+
 	switch c.ContentLog.Backpressure {
 	case "", "drop_oldest", "drop_newest", "block":
 	default:
 		return fmt.Errorf("content_log.backpressure=%q not supported", c.ContentLog.Backpressure)
 	}
+
 	return nil
 }
 
@@ -545,30 +574,39 @@ func (c *Config) ApplyDefaults() {
 	if c.Server.Addr == "" {
 		c.Server.Addr = ":8080"
 	}
+
 	if c.Server.ReadHeaderTimeout == 0 {
 		c.Server.ReadHeaderTimeout = 10 * time.Second
 	}
+
 	if c.Server.ShutdownTimeout == 0 {
 		c.Server.ShutdownTimeout = 30 * time.Second
 	}
+
 	if c.Request.BodyLimitBytes == 0 {
 		c.Request.BodyLimitBytes = 10 << 20 // 10 MiB
 	}
+
 	if c.Request.Timeout == 0 {
 		c.Request.Timeout = 60 * time.Second
 	}
+
 	if c.Database.Driver == "" {
 		c.Database.Driver = infra.DriverMySQL
 	}
+
 	if c.Database.DSN == "" {
 		c.Database.DSN = "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
 	}
+
 	if c.Redis.Addr == "" {
 		c.Redis.Addr = "localhost:6379"
 	}
+
 	if c.UsageEvents.Driver == "" {
 		c.UsageEvents.Driver = "file"
 	}
+
 	if c.UsageEvents.File.Path == "" {
 		c.UsageEvents.File.Path = "/tmp/llm-gateway-usage.log"
 	}
@@ -578,18 +616,23 @@ func (c *Config) ApplyDefaults() {
 	if len(c.Selector.Filters) == 0 {
 		c.Selector.Filters = []string{"cooldown", "limit_read", "weighted_random"}
 	}
+
 	if c.Selector.MaxAttempts == 0 {
 		c.Selector.MaxAttempts = 3
 	}
+
 	if c.Selector.Cooldown.Transient == 0 {
 		c.Selector.Cooldown.Transient = 30 * time.Second
 	}
+
 	if c.Selector.Cooldown.Capacity == 0 {
 		c.Selector.Cooldown.Capacity = 60 * time.Second
 	}
+
 	if c.Selector.Cooldown.Permanent == 0 {
 		c.Selector.Cooldown.Permanent = 5 * time.Minute
 	}
+
 	if c.Selector.Cooldown.Unknown == 0 {
 		c.Selector.Cooldown.Unknown = 10 * time.Second
 	}
@@ -607,6 +650,7 @@ func (c *Config) ApplyDefaults() {
 	if c.Trace.Driver == "" {
 		c.Trace.Driver = "slog"
 	}
+
 	if c.Trace.ServiceName == "" {
 		c.Trace.ServiceName = "llm-gateway"
 	}

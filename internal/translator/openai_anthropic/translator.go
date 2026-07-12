@@ -104,19 +104,25 @@ func (h *responseHandler) Feed(chunk []byte) ([]byte, error) {
 	if len(chunk) == 0 {
 		return nil, nil
 	}
+
 	h.ex.Feed(chunk)
+
 	if !h.streamingDecided {
 		h.detectStreaming(chunk)
+
 		if h.isStreaming {
 			h.chatcmplID = "chatcmpl-" + randID()
 			h.createdSec = time.Now().Unix()
 		}
 	}
+
 	if h.isStreaming {
 		h.sseBuffer = append(h.sseBuffer, chunk...)
 		return h.parseAndEmitStream(), nil
 	}
+
 	h.bodyBuffer = append(h.bodyBuffer, chunk...)
+
 	return nil, nil
 }
 
@@ -129,10 +135,13 @@ func (h *responseHandler) Flush() ([]byte, *domain.Usage, error) {
 	if len(h.bodyBuffer) == 0 {
 		return nil, nil, nil
 	}
+
 	if isAnthropicError(h.bodyBuffer) {
 		return h.bodyBuffer, nil, nil
 	}
+
 	body, err := translateResponse(h.bodyBuffer, h.requestModel)
+
 	return body, h.ex.Final(), err
 }
 
@@ -157,6 +166,7 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 		if !ok {
 			return out.Bytes()
 		}
+
 		h.sseBuffer = rest
 
 		// Extract the data: line
@@ -167,9 +177,11 @@ func (h *responseHandler) parseAndEmitStream() []byte {
 				break
 			}
 		}
+
 		if dataPayload == nil {
 			continue
 		}
+
 		h.translateAnthropicEvent(&out, dataPayload)
 	}
 }
@@ -236,10 +248,12 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 	case "content_block_start":
 		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
 			toolIdx := h.nextToolIdx
+
 			h.nextToolIdx++
 			if h.toolBlocks == nil {
 				h.toolBlocks = make(map[int]int)
 			}
+
 			h.toolBlocks[ev.Index] = toolIdx
 			delta := map[string]any{
 				"tool_calls": []map[string]any{{
@@ -254,6 +268,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			}
 			h.writeChunk(out, delta, "")
 		}
+
 		if ev.ContentBlock != nil && ev.ContentBlock.Type == "text" {
 			// Records this block's start offset into the running OpenAI
 			// "content" string, so any citations_delta buffered against it
@@ -262,6 +277,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			if h.citeStarts == nil {
 				h.citeStarts = make(map[int]int)
 			}
+
 			h.citeStarts[ev.Index] = h.contentLen
 		}
 
@@ -269,6 +285,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		if ev.Delta == nil {
 			return
 		}
+
 		switch ev.Delta.Type {
 		case "text_delta":
 			if ev.Delta.Text != "" {
@@ -282,6 +299,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 				if h.pendingCites == nil {
 					h.pendingCites = make(map[int][]anthropicCitation)
 				}
+
 				h.pendingCites[ev.Index] = append(h.pendingCites[ev.Index], *ev.Delta.Citation)
 			}
 		case "thinking_delta":
@@ -303,6 +321,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 			if !ok {
 				return
 			}
+
 			delta := map[string]any{
 				"tool_calls": []map[string]any{{
 					"index":    toolIdx,
@@ -331,6 +350,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		if cites, ok := h.pendingCites[ev.Index]; ok {
 			start := h.citeStarts[ev.Index]
 			end := h.contentLen
+
 			annotations := make([]map[string]any, 0, len(cites))
 			for _, c := range cites {
 				annotations = append(annotations, map[string]any{
@@ -340,6 +360,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 					},
 				})
 			}
+
 			h.writeChunk(out, map[string]any{"annotations": annotations}, "")
 			delete(h.pendingCites, ev.Index)
 		}
@@ -362,6 +383,7 @@ func (h *responseHandler) writeChunk(out *bytes.Buffer, delta map[string]any, fi
 	if finishReason != "" {
 		choice["finish_reason"] = finishReason
 	}
+
 	chunk := map[string]any{
 		"id":      h.chatcmplID,
 		"object":  "chat.completion.chunk",
@@ -369,10 +391,12 @@ func (h *responseHandler) writeChunk(out *bytes.Buffer, delta map[string]any, fi
 		"model":   h.upstreamModel,
 		"choices": []map[string]any{choice},
 	}
+
 	b, err := json.Marshal(chunk)
 	if err != nil {
 		return
 	}
+
 	out.WriteString("data: ")
 	out.Write(b)
 	out.WriteString("\n\n")
@@ -522,10 +546,12 @@ func contentToString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
+
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
 	}
+
 	var parts []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -537,8 +563,10 @@ func contentToString(raw json.RawMessage) string {
 				sb.WriteString(p.Text)
 			}
 		}
+
 		return sb.String()
 	}
+
 	return ""
 }
 
@@ -557,6 +585,7 @@ func buildUserContent(raw json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(raw, &parts); err != nil {
 		return json.Marshal(contentToString(raw))
 	}
+
 	hasImage := false
 	for _, p := range parts {
 		if p.Type == "image_url" {
@@ -564,9 +593,11 @@ func buildUserContent(raw json.RawMessage) (json.RawMessage, error) {
 			break
 		}
 	}
+
 	if !hasImage {
 		return json.Marshal(contentToString(raw))
 	}
+
 	var blocks []any
 	for _, p := range parts {
 		switch p.Type {
@@ -580,6 +611,7 @@ func buildUserContent(raw json.RawMessage) (json.RawMessage, error) {
 			}
 		}
 	}
+
 	return json.Marshal(blocks)
 }
 
@@ -598,6 +630,7 @@ func imageBlockFromURL(url string) map[string]any {
 			},
 		}
 	}
+
 	return map[string]any{
 		"type":   "image",
 		"source": map[string]any{"type": "url", "url": url},
@@ -610,17 +643,22 @@ func parseDataURI(url string) (mediaType, data string, ok bool) {
 	if !strings.HasPrefix(url, prefix) {
 		return "", "", false
 	}
+
 	rest := url[len(prefix):]
 	semi := strings.IndexByte(rest, ';')
+
 	comma := strings.IndexByte(rest, ',')
 	if semi < 0 || comma < 0 || comma < semi {
 		return "", "", false
 	}
+
 	mediaType = rest[:semi]
+
 	encoding := rest[semi+1 : comma]
 	if encoding != "base64" {
 		return "", "", false
 	}
+
 	return mediaType, rest[comma+1:], true
 }
 
@@ -739,6 +777,7 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 		if t.Type != "" && t.Type != "function" {
 			continue
 		}
+
 		out.Tools = append(out.Tools, anthropicTool{
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
@@ -746,9 +785,11 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			Strict:      t.Function.Strict,
 		})
 	}
+
 	if len(in.ToolChoice) > 0 {
 		out.ToolChoice = mapToolChoice(in.ToolChoice)
 	}
+
 	if in.ParallelToolCalls != nil && !*in.ParallelToolCalls {
 		out.ToolChoice = applyDisableParallelToolUse(out.ToolChoice)
 	}
@@ -766,12 +807,14 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("user content marshal: %w", err)
 			}
+
 			out.Messages = append(out.Messages, anthropicMessage{Role: "user", Content: c})
 		case "assistant":
 			msg, err := buildAssistantMessage(m)
 			if err != nil {
 				return nil, err
 			}
+
 			out.Messages = append(out.Messages, msg)
 		case "tool":
 			// Merge consecutive tool messages into one Anthropic user turn whose
@@ -786,16 +829,20 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 				})
 				i++
 			}
+
 			i-- // compensate for the outer loop's increment
+
 			raw, err := json.Marshal(blocks)
 			if err != nil {
 				return nil, fmt.Errorf("tool_result marshal: %w", err)
 			}
+
 			out.Messages = append(out.Messages, anthropicMessage{Role: "user", Content: raw})
 		default:
 			return nil, fmt.Errorf("unsupported message role %q (handles system/user/assistant/tool only)", m.Role)
 		}
 	}
+
 	if len(systemParts) > 0 {
 		out.System = strings.Join(systemParts, "\n\n")
 	}
@@ -805,12 +852,15 @@ func translateRequest(rawBody []byte) ([]byte, error) {
 	} else {
 		out.MaxTokens = defaultAnthropicMaxTokens
 	}
+
 	if in.Temperature != nil {
 		out.Temperature = in.Temperature
 	}
+
 	if in.TopP != nil {
 		out.TopP = in.TopP
 	}
+
 	if len(in.Stop) > 0 {
 		out.StopSequences = parseStopField(in.Stop)
 	}
@@ -823,10 +873,12 @@ func parseStopField(raw json.RawMessage) []string {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return []string{s}
 	}
+
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err == nil {
 		return arr
 	}
+
 	return nil
 }
 
@@ -863,6 +915,7 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 			return nil
 		}
 	}
+
 	var obj struct {
 		Type     string `json:"type"`
 		Function struct {
@@ -875,6 +928,7 @@ func mapToolChoice(raw json.RawMessage) json.RawMessage {
 			return b
 		}
 	}
+
 	return nil
 }
 
@@ -889,11 +943,14 @@ func applyDisableParallelToolUse(toolChoice json.RawMessage) json.RawMessage {
 	if len(toolChoice) > 0 {
 		_ = json.Unmarshal(toolChoice, &m)
 	}
+
 	m["disable_parallel_tool_use"] = true
+
 	b, err := json.Marshal(m)
 	if err != nil {
 		return toolChoice
 	}
+
 	return b
 }
 
@@ -915,6 +972,7 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 		if err != nil {
 			return anthropicMessage{}, fmt.Errorf("assistant content marshal: %w", err)
 		}
+
 		return anthropicMessage{Role: "assistant", Content: c}, nil
 	}
 
@@ -926,9 +984,11 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 			"signature": m.ReasoningSignature,
 		})
 	}
+
 	if s := contentToString(m.Content); s != "" {
 		blocks = append(blocks, map[string]any{"type": "text", "text": s})
 	}
+
 	for _, tc := range m.ToolCalls {
 		// function.arguments is a JSON string; parse it into the input object.
 		// Fall back to an empty object if it is absent or not a valid object.
@@ -939,6 +999,7 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 				input = json.RawMessage(tc.Function.Arguments)
 			}
 		}
+
 		blocks = append(blocks, map[string]any{
 			"type":  "tool_use",
 			"id":    tc.ID,
@@ -946,10 +1007,12 @@ func buildAssistantMessage(m openAIInboundMessage) (anthropicMessage, error) {
 			"input": input,
 		})
 	}
+
 	raw, err := json.Marshal(blocks)
 	if err != nil {
 		return anthropicMessage{}, fmt.Errorf("assistant tool_use marshal: %w", err)
 	}
+
 	return anthropicMessage{Role: "assistant", Content: raw}, nil
 }
 
@@ -969,20 +1032,24 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 		model = fallbackModel
 	}
 
-	var content strings.Builder
-	var toolCalls []openAIRespToolCall
-	var annotations []openAIAnnotation
-	var reasoningContent, reasoningSignature string
+	var (
+		content                              strings.Builder
+		toolCalls                            []openAIRespToolCall
+		annotations                          []openAIAnnotation
+		reasoningContent, reasoningSignature string
+	)
 	for _, blk := range in.Content {
 		switch blk.Type {
 		case "text":
 			start := content.Len()
 			content.WriteString(blk.Text)
+
 			end := content.Len()
 			for _, c := range blk.Citations {
 				if c.Type != "web_search_result_location" {
 					continue // no URL to cite — see anthropicCitation's doc comment
 				}
+
 				annotations = append(annotations, openAIAnnotation{
 					Type: "url_citation",
 					URLCitation: openAIURLCitationOut{
@@ -995,6 +1062,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 			if len(blk.Input) > 0 {
 				args = string(blk.Input)
 			}
+
 			tc := openAIRespToolCall{ID: blk.ID, Type: "function"}
 			tc.Function.Name = blk.Name
 			tc.Function.Arguments = args
@@ -1048,6 +1116,7 @@ func translateResponse(rawBody []byte, fallbackModel string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("openai response marshal: %w", err)
 	}
+
 	return body, nil
 }
 
@@ -1082,6 +1151,7 @@ func anthropicIDOrGen(anthropicID string) string {
 	if anthropicID == "" {
 		return "chatcmpl-" + randID()
 	}
+
 	return "chatcmpl-" + strings.TrimPrefix(anthropicID, "msg_")
 }
 
@@ -1093,19 +1163,23 @@ func isAnthropicError(body []byte) bool {
 			if len(rest) > 200 {
 				rest = rest[:200]
 			}
+
 			for j := 0; j+7 <= len(rest); j++ {
 				if string(rest[j:j+7]) == `"error"` {
 					return true
 				}
 			}
+
 			return false
 		}
 	}
+
 	return false
 }
 
 func randID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
+
 	return hex.EncodeToString(b)
 }

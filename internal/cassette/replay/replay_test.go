@@ -168,7 +168,6 @@ func runResponseReplay(t *testing.T, cfg vendorReplayConfig) {
 					continue
 				}
 				examined = true
-				i, it := i, it
 				t.Run(path+"#"+strconv.Itoa(i), func(t *testing.T) {
 					h := cfg.translator.NewResponseHandler()
 					out, usage := feedResponse(t, h, it.ResponseBody, path)

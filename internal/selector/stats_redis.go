@@ -32,12 +32,15 @@ func NewRedisStatsStore(rdb *redis.Client, prefix string, decay float64, ttl tim
 	if decay <= 0 || decay > 1 {
 		decay = 0.2
 	}
+
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
+
 	if prefix == "" {
 		prefix = "llm-gateway:sched"
 	}
+
 	return &RedisStatsStore{rdb: rdb, prefix: prefix, decay: decay, ttl: ttl}
 }
 
@@ -81,6 +84,7 @@ func (s *RedisStatsStore) Record(ctx context.Context, endpointID int64, result R
 	if ttlSec < 1 {
 		ttlSec = 1
 	}
+
 	_ = recordScript.Run(ctx, s.rdb, []string{s.key(endpointID)},
 		float64(result.Latency.Milliseconds()),
 		success01(result.Class),
@@ -98,15 +102,18 @@ func (s *RedisStatsStore) Snapshot(ctx context.Context, endpointID int64) Endpoi
 	if endpointID == 0 {
 		return neutral
 	}
+
 	vals, err := s.rdb.HMGet(ctx, s.key(endpointID),
 		"latency_ms", "success_rate", "sample_count", "updated").Result()
 	if err != nil || len(vals) != 4 || vals[2] == nil {
 		return neutral
 	}
+
 	cnt := parseUint32(vals[2])
 	if cnt == 0 {
 		return neutral
 	}
+
 	return EndpointStats{
 		LatencyMs:   parseFloat(vals[0]),
 		SuccessRate: parseFloat(vals[1]),
@@ -120,7 +127,9 @@ func parseFloat(v any) float64 {
 	if !ok {
 		return 0
 	}
+
 	f, _ := strconv.ParseFloat(s, 64)
+
 	return f
 }
 
@@ -129,10 +138,12 @@ func parseUint32(v any) uint32 {
 	if !ok {
 		return 0
 	}
+
 	n, _ := strconv.ParseFloat(s, 64) // Lua stores a number, which may have decimals; parse as float first, then truncate
 	if n < 0 {
 		return 0
 	}
+
 	return uint32(n)
 }
 
@@ -141,7 +152,9 @@ func parseInt64(v any) int64 {
 	if !ok {
 		return 0
 	}
+
 	n, _ := strconv.ParseInt(s, 10, 64)
+
 	return n
 }
 

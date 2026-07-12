@@ -156,12 +156,15 @@ func CompileJSON(specJSON []byte) (Rewriter, error) {
 	if len(bytes.TrimSpace(specJSON)) == 0 {
 		return Compile(Spec{}), nil
 	}
+
 	dec := json.NewDecoder(bytes.NewReader(specJSON))
 	dec.DisallowUnknownFields()
+
 	var spec Spec
 	if err := dec.Decode(&spec); err != nil {
 		return nil, fmt.Errorf("quirks: parse spec: %w", err)
 	}
+
 	return Compile(spec), nil
 }
 
@@ -175,6 +178,7 @@ func (c *compiled) RewriteBody(body []byte) ([]byte, error) {
 	if c == nil || c.spec.Body.Empty() {
 		return body, nil
 	}
+
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, fmt.Errorf("quirks: parse body: %w", err)
@@ -186,12 +190,15 @@ func (c *compiled) RewriteBody(body []byte) ([]byte, error) {
 			delete(m, from)
 		}
 	}
+
 	for _, k := range c.spec.Body.Strip {
 		delete(m, k)
 	}
+
 	for k, v := range c.spec.Body.Set {
 		m[k] = v
 	}
+
 	for k, v := range c.spec.Body.SetDefault {
 		if _, exists := m[k]; !exists {
 			m[k] = v
@@ -202,6 +209,7 @@ func (c *compiled) RewriteBody(body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quirks: re-marshal: %w", err)
 	}
+
 	return out, nil
 }
 
@@ -223,23 +231,29 @@ func (c *compiled) RewriteHeader(h http.Header) {
 	for from, to := range c.spec.Headers.Rename {
 		fromKey := http.CanonicalHeaderKey(from)
 		toKey := http.CanonicalHeaderKey(to)
+
 		vals := h.Values(fromKey)
 		if len(vals) == 0 {
 			continue
 		}
+
 		h.Del(fromKey)
 		// Move multiple values together: Set the first, Add the rest
 		h.Set(toKey, vals[0])
+
 		for _, v := range vals[1:] {
 			h.Add(toKey, v)
 		}
 	}
+
 	for _, k := range c.spec.Headers.Strip {
 		h.Del(k)
 	}
+
 	for k, v := range c.spec.Headers.Set {
 		h.Set(k, v)
 	}
+
 	for k, v := range c.spec.Headers.SetDefault {
 		canonical := http.CanonicalHeaderKey(k)
 		if _, exists := h[canonical]; !exists {

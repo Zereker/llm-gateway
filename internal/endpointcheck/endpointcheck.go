@@ -62,6 +62,7 @@ func (v Validator) Validate(ep *domain.Endpoint) []string {
 				break
 			}
 		}
+
 		if !reachable {
 			reasons = append(reasons, "no_translator_path")
 		}
@@ -95,13 +96,16 @@ func validateRoutingURL(raw string) string {
 	if raw == "" {
 		return "empty_routing_url"
 	}
+
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "invalid_routing_url"
 	}
+
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return "invalid_routing_scheme"
 	}
+
 	host := strings.ToLower(u.Hostname())
 	if host == "" {
 		return "invalid_routing_url"
@@ -115,5 +119,6 @@ func validateRoutingURL(raw string) string {
 	if ip, err := netip.ParseAddr(host); err == nil && invoker.IsMetadataIP(ip) {
 		return "metadata_endpoint"
 	}
+
 	return ""
 }

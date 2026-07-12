@@ -20,6 +20,7 @@ func NewSlogTracer(logger *slog.Logger) *SlogTracer {
 	if logger == nil {
 		logger = slog.Default()
 	}
+
 	return &SlogTracer{Logger: logger}
 }
 

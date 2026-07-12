@@ -25,9 +25,11 @@ func bedrockURL(base string, streaming bool) string {
 	if !streaming || strings.HasSuffix(base, "/invoke-with-response-stream") {
 		return base
 	}
+
 	if strings.HasSuffix(base, "/invoke") {
 		return base[:len(base)-len("/invoke")] + "/invoke-with-response-stream"
 	}
+
 	return base // non-standard URL: leave as-is (deployer may already point at the streaming endpoint)
 }
 
@@ -53,13 +55,16 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("bedrock: ep.routing.url empty")
 	}
+
 	if s.ep.Auth.Type != domain.AuthTypeAWSSigV4 {
 		return nil, fmt.Errorf("bedrock: unsupported auth type %q (want %q)", s.ep.Auth.Type, domain.AuthTypeAWSSigV4)
 	}
+
 	auth, err := domain.DecodePayload[domain.AWSSigV4Auth](s.ep.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: decode aws-sigv4 auth: %w", err)
 	}
+
 	if auth.AccessKey == "" || auth.SecretKey == "" || auth.Region == "" {
 		return nil, errors.New("bedrock: aws-sigv4 auth needs access_key / secret_key / region")
 	}
@@ -68,6 +73,7 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	// response is AWS event-stream, decoded into Anthropic SSE by
 	// Factory.DecodeTransport). The stream flag is stripped during the rewrite below.
 	streaming := gjson.GetBytes(body, "stream").Bool()
+
 	reqBody, err := toBedrockBody(body)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: rewrite body: %w", err)
@@ -83,15 +89,18 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 			req.Header.Add(k, v)
 		}
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	// SigV4 signature (official signer). payloadHash = hex(sha256(body)).
 	sum := sha256.Sum256(reqBody)
+
 	creds := awssdk.Credentials{AccessKeyID: auth.AccessKey, SecretAccessKey: auth.SecretKey}
 	if err := signer.SignHTTP(s.ctx, creds, req, hex.EncodeToString(sum[:]), "bedrock", auth.Region, time.Now()); err != nil {
 		return nil, fmt.Errorf("bedrock: sigv4 sign: %w", err)
 	}
+
 	return req, nil
 }
 
@@ -107,11 +116,14 @@ func toBedrockBody(body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, err
 	}
+
 	delete(m, "model")
 	delete(m, "stream")
+
 	if _, ok := m["anthropic_version"]; !ok {
 		m["anthropic_version"] = json.RawMessage(`"` + bedrockAnthropicVersion + `"`)
 	}
+
 	return json.Marshal(m)
 }
 

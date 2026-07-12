@@ -43,6 +43,7 @@ func NewPrefixCacheFilter(vnodes int) *PrefixCacheFilter {
 	if vnodes <= 0 {
 		vnodes = 64
 	}
+
 	return &PrefixCacheFilter{vnodes: vnodes}
 }
 
@@ -53,6 +54,7 @@ func (f *PrefixCacheFilter) Apply(_ context.Context, candidates []*domain.Endpoi
 	if len(candidates) == 0 {
 		return nil
 	}
+
 	if req == nil || len(req.PrefixKey) == 0 {
 		// prefix empty → pass through; let the selector later in the chain (weighted_random / etc) choose
 		return candidates
@@ -62,6 +64,7 @@ func (f *PrefixCacheFilter) Apply(_ context.Context, candidates []*domain.Endpoi
 		hash uint64
 		ep   *domain.Endpoint
 	}
+
 	ring := make([]node, 0, len(candidates)*f.vnodes)
 	for _, ep := range candidates {
 		for v := 0; v < f.vnodes; v++ {
@@ -72,6 +75,7 @@ func (f *PrefixCacheFilter) Apply(_ context.Context, candidates []*domain.Endpoi
 			ring = append(ring, node{hash: h.Sum64(), ep: ep})
 		}
 	}
+
 	sort.Slice(ring, func(i, j int) bool { return ring[i].hash < ring[j].hash })
 
 	keyHash := fnv.New64a()
@@ -82,6 +86,7 @@ func (f *PrefixCacheFilter) Apply(_ context.Context, candidates []*domain.Endpoi
 	if idx == len(ring) {
 		idx = 0 // wrap
 	}
+
 	return []*domain.Endpoint{ring[idx].ep}
 }
 

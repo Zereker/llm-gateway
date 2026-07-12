@@ -128,23 +128,29 @@ func New(cfg Config) *Logger {
 	if cfg.BufferSize <= 0 {
 		cfg.BufferSize = 1024
 	}
+
 	if cfg.SampleRate <= 0 {
 		cfg.SampleRate = 0
 	}
+
 	if cfg.SampleRate > 1 {
 		cfg.SampleRate = 1
 	}
+
 	if cfg.Backpressure == BackpressureBlock && cfg.BlockTimeout <= 0 {
 		cfg.BlockTimeout = 50 * time.Millisecond
 	}
+
 	l := &Logger{
 		cfg:   cfg,
 		queue: make(chan *Record, cfg.BufferSize),
 		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 	}
+
 	l.wg.Add(1)
 	go l.worker()
+
 	return l
 }
 
@@ -154,6 +160,7 @@ func (l *Logger) Close(ctx context.Context) error {
 		l.closed.Store(true)
 		close(l.stop)
 	})
+
 	select {
 	case <-l.done:
 		return nil
@@ -199,6 +206,7 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 	if l == nil || l.cfg.Publisher == nil || l.closed.Load() {
 		return
 	}
+
 	if !l.shouldSample() {
 		metric.Inc(metric.ContentLogPublishTotal, "backend", "logger", "result", "sampled_out", "sampled", "false")
 		return
@@ -223,6 +231,7 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 			l.drop("redact_failed")
 			return
 		}
+
 		bodyCopy = out
 		redacted = ok
 	}
@@ -242,6 +251,7 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 		rec.Vendor = ep.Vendor
 		rec.EndpointID = formatInt(ep.ID)
 	}
+
 	enrichFromCtx(ctx, rec)
 
 	// 5) enqueue (per the backpressure strategy)
@@ -255,6 +265,7 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 	case BackpressureBlock:
 		ctx2, cancel := context.WithTimeout(ctx, l.cfg.BlockTimeout)
 		defer cancel()
+
 		select {
 		case l.queue <- rec:
 		case <-ctx2.Done():
@@ -281,6 +292,7 @@ func (l *Logger) enqueue(ctx context.Context, ep *domain.Endpoint, dir Direction
 func (l *Logger) drop(reason string) {
 	l.dropped.Add(1)
 	metric.Inc(metric.ContentLogPublishTotal, "backend", "logger", "result", "drop_"+reason, "sampled", "true")
+
 	if l.cfg.OnDrop != nil {
 		l.cfg.OnDrop(reason)
 	}
@@ -294,12 +306,14 @@ func (l *Logger) shouldSample() bool {
 	if l.cfg.SampleRate >= 1.0 {
 		return true
 	}
+
 	if l.cfg.SampleRate <= 0 {
 		return false
 	}
 	// simple RNG; avoids pulling in an extra dependency
 	v := l.sampleSeed.Add(0x9E3779B97F4A7C15) // golden ratio constant
 	frac := float64(v%1000_000) / 1_000_000.0
+
 	return frac < l.cfg.SampleRate
 }
 
@@ -309,6 +323,7 @@ func (l *Logger) worker() {
 		l.wg.Done()
 		close(l.done)
 	}()
+
 	for {
 		select {
 		case <-l.stop:
@@ -331,8 +346,10 @@ func (l *Logger) publish(r *Record) {
 	if r == nil {
 		return
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	if err := l.cfg.Publisher.Publish(ctx, r); err != nil {
 		metric.Inc(metric.ContentLogPublishTotal, "backend", "logger", "result", "publish_error", "sampled", "true")
 		slog.WarnContext(ctx, "contentlog: publish failed",
@@ -340,8 +357,10 @@ func (l *Logger) publish(r *Record) {
 			"request_id", r.RequestID,
 			"err", err.Error(),
 		)
+
 		return
 	}
+
 	metric.Inc(metric.ContentLogPublishTotal, "backend", "logger", "result", "ok", "sampled", "true")
 }
 
@@ -377,6 +396,7 @@ func enrichFromCtx(ctx context.Context, r *Record) {
 	if ctx == nil {
 		return
 	}
+
 	v, _ := ctx.Value(ctxEnrichKey{}).(RequestEnrich)
 	r.RequestID = v.RequestID
 	r.TraceID = v.TraceID
@@ -395,16 +415,20 @@ func formatInt(v int64) string {
 	}
 	// stdlib strconv would do, but this package has no other strconv calls, so inline a simple implementation
 	const digits = "0123456789"
+
 	if v < 0 {
 		return "-" + formatInt(-v)
 	}
+
 	var buf [20]byte
+
 	i := len(buf)
 	for v > 0 {
 		i--
 		buf[i] = digits[v%10]
 		v /= 10
 	}
+
 	return string(buf[i:])
 }
 

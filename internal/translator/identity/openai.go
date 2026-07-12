@@ -54,6 +54,7 @@ func (h *openaiResponseHandler) Feed(chunk []byte) ([]byte, error) {
 	if len(chunk) == 0 {
 		return nil, nil
 	}
+
 	h.ex.Feed(chunk)
 	// Same-protocol pass-through: return the chunk to the client unchanged
 	return chunk, nil
@@ -89,19 +90,24 @@ func ensureStreamUsage(body []byte) []byte {
 	if raw, ok := m["stream_options"]; ok {
 		_ = json.Unmarshal(raw, &so)
 	}
+
 	if so == nil {
 		so = make(map[string]json.RawMessage)
 	}
+
 	so["include_usage"] = json.RawMessage(`true`)
 
 	soBytes, err := json.Marshal(so)
 	if err != nil {
 		return body
 	}
+
 	m["stream_options"] = soBytes
+
 	out, err := json.Marshal(m)
 	if err != nil {
 		return body
 	}
+
 	return out
 }

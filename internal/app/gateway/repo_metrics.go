@@ -42,6 +42,7 @@ func newRepoCacheMetrics() *repoCacheMetrics {
 			panic(err)
 		}
 	}
+
 	return &repoCacheMetrics{counter: c}
 }
 

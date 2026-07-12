@@ -179,14 +179,17 @@ func (c *EndpointCapabilities) Scan(value any) error {
 		*c = EndpointCapabilities{}
 		return nil
 	}
+
 	b, err := bytesFromScan(value, "EndpointCapabilities")
 	if err != nil {
 		return err
 	}
+
 	if len(b) == 0 {
 		*c = EndpointCapabilities{}
 		return nil
 	}
+
 	return json.Unmarshal(b, c)
 }
 
@@ -195,6 +198,7 @@ func (c EndpointCapabilities) Value() (driver.Value, error) {
 	if c.isEmpty() {
 		return nil, nil
 	}
+
 	return json.Marshal(c)
 }
 
@@ -292,6 +296,7 @@ func (f EndpointForm) String() string {
 	if f == FormSelfHosted {
 		return "self_hosted"
 	}
+
 	return "vendor"
 }
 
@@ -300,6 +305,7 @@ func (e *Endpoint) Form() EndpointForm {
 	if e.Capabilities.SelfHosted {
 		return FormSelfHosted
 	}
+
 	return FormVendor
 }
 
@@ -324,17 +330,21 @@ func (r *rawJSON) Scan(value any) error {
 		*r = nil
 		return nil
 	}
+
 	b, err := bytesFromScan(value, "rawJSON")
 	if err != nil {
 		return err
 	}
+
 	if len(b) == 0 {
 		*r = nil
 		return nil
 	}
+
 	cp := make([]byte, len(b))
 	copy(cp, b)
 	*r = cp
+
 	return nil
 }
 
@@ -343,6 +353,7 @@ func (r rawJSON) Value() (driver.Value, error) {
 	if len(r) == 0 {
 		return nil, nil
 	}
+
 	return []byte(r), nil
 }
 

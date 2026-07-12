@@ -36,6 +36,7 @@ func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	if len(body) == 0 {
 		return base
 	}
+
 	var probe struct {
 		Type  string `json:"type"`
 		Error *struct {
@@ -46,9 +47,11 @@ func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	if err := json.Unmarshal(body, &probe); err != nil {
 		return base
 	}
+
 	if probe.Error == nil {
 		return base
 	}
+
 	if probe.Error.Message != "" {
 		base.UpstreamMessage = probe.Error.Message
 	}
@@ -61,6 +64,7 @@ func (Factory) Classify(httpStatus int, body []byte) *domain.AdapterError {
 	case "authentication_error", "permission_error":
 		base.Class = domain.ErrPermanent
 	}
+
 	return base
 }
 

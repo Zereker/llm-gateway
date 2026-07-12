@@ -79,10 +79,12 @@ func Open(cfg DBConfig) (*sqlx.DB, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("infra: ping %s: %w", cfg.Driver, err)
 	}
+
 	return db, nil
 }
 
@@ -115,10 +117,12 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 	}
 
 	applied := make(map[int]bool)
+
 	var versions []int
 	if err := db.SelectContext(ctx, &versions, `SELECT version FROM schema_migrations`); err != nil {
 		return fmt.Errorf("infra: read schema migrations: %w", err)
 	}
+
 	for _, version := range versions {
 		applied[version] = true
 	}
@@ -127,20 +131,24 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 		if err := applyBaseSchema(ctx, db); err != nil {
 			return err
 		}
+
 		if err := recordMigration(ctx, db, 1); err != nil {
 			return err
 		}
 	}
+
 	if !applied[2] {
 		if err := ensureColumn(ctx, db, columnMigration{
 			"endpoints", "quirks", "ALTER TABLE endpoints ADD COLUMN quirks JSON DEFAULT NULL",
 		}); err != nil {
 			return err
 		}
+
 		if err := recordMigration(ctx, db, 2); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -149,6 +157,7 @@ func applyBaseSchema(ctx context.Context, db *sqlx.DB) error {
 	if err != nil {
 		return fmt.Errorf("infra: read schema: %w", err)
 	}
+
 	for _, stmt := range splitSQL(string(raw)) {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("infra: apply schema: %w\n--- stmt ---\n%s", err, stmt)
@@ -162,6 +171,7 @@ func recordMigration(ctx context.Context, db *sqlx.DB, version int) error {
 	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
 		return fmt.Errorf("infra: record schema migration %d: %w", version, err)
 	}
+
 	return nil
 }
 
@@ -181,6 +191,7 @@ func CheckMigrationVersion(ctx context.Context, db *sqlx.DB) error {
 	if version < latestSchemaVersion {
 		return fmt.Errorf("infra: schema version %d is older than required %d; run the migrate binary (cmd/migrate)", version, latestSchemaVersion)
 	}
+
 	return nil
 }
 
@@ -197,6 +208,7 @@ type columnMigration struct {
 // in place, so we treat it as success.
 func ensureColumn(ctx context.Context, db *sqlx.DB, m columnMigration) error {
 	var n int
+
 	err := db.GetContext(ctx, &n,
 		`SELECT COUNT(*) FROM information_schema.columns
 		 WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
@@ -204,15 +216,19 @@ func ensureColumn(ctx context.Context, db *sqlx.DB, m columnMigration) error {
 	if err != nil {
 		return fmt.Errorf("infra: check column %s.%s: %w", m.table, m.column, err)
 	}
+
 	if n > 0 {
 		return nil
 	}
+
 	if _, err := db.ExecContext(ctx, m.ddl); err != nil {
 		if strings.Contains(err.Error(), "Duplicate column name") {
 			return nil // a concurrent replica added it first; the target state is already reached
 		}
+
 		return fmt.Errorf("infra: add column %s.%s: %w", m.table, m.column, err)
 	}
+
 	return nil
 }
 

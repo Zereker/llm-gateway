@@ -93,7 +93,6 @@ func TestReplayBedrockConverseStreaming(t *testing.T) {
 					continue
 				}
 				examined = true
-				i, it := i, it
 				t.Run(path+"#"+strconv.Itoa(i), func(t *testing.T) {
 					req, err := http.NewRequest("POST", it.URI, nil)
 					if err != nil {

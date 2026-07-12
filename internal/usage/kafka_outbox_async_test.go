@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-
 // **Regression (review MED#10)**: a race between Close and concurrent
 // Publish must not panic — in the old implementation, close(queue) meant a
 // concurrent Publish's select could pick sending on an already-closed

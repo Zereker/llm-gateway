@@ -29,9 +29,11 @@ func (DefaultRetry) Decide(_ State, v Verdict) Action {
 			Reason:   v.Reason,
 		}
 	}
+
 	if v.Class.IsRetryable() {
 		return Continue{}
 	}
+
 	return Abort{
 		Result:   OutcomeTerminal,
 		Class:    v.Class,

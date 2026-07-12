@@ -65,20 +65,24 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
+
 	if cfg.provider == nil {
 		panic("middleware.Auth: WithIdentityProvider required")
 	}
+
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		ctx, span := tracer.Start(c.Request.Context(), "auth.lookup")
 		defer span.End()
+
 		c.Request = c.Request.WithContext(ctx)
 
 		creds := extractCredentials(c)
 		if creds == nil {
 			metric.Inc(metric.AuthTotal, "result", "missing")
 			abortWithCode(c, 401, domain.ErrPermanent, domain.ErrCodeUnauthorized, "missing credentials")
+
 			return
 		}
 
@@ -95,16 +99,20 @@ func Auth(opts ...AuthOption) gin.HandlerFunc {
 			if errors.Is(err, domain.ErrInvalidCredentials) {
 				metric.Inc(metric.AuthTotal, "result", "invalid")
 				abortWithCode(c, 401, domain.ErrPermanent, domain.ErrCodeUnauthorized, "invalid credentials")
+
 				return
 			}
+
 			metric.Inc(metric.AuthTotal, "result", "error")
 			slog.ErrorContext(ctx, "auth: identity lookup failed", "err", err)
 			c.Header("Retry-After", "1")
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable, "identity lookup unavailable")
+
 			return
 		}
 
 		rc := GetRequestContext(c)
+
 		rc.Identity = *u
 		if member, err := baggage.NewMember("sub_account_id", u.SubAccountID); err == nil {
 			if newBag, err := baggage.FromContext(ctx).SetMember(member); err == nil {

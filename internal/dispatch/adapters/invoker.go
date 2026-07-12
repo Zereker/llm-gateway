@@ -54,6 +54,7 @@ func (i *invokerImpl) Invoke(ctx context.Context) (dispatch.Result, error) {
 	if i.env != nil {
 		body = i.env.RawBytes
 	}
+
 	outcome, _ := i.sender.Send(ctx, i.ep, i.env, body, i.handler)
 	v := dispatch.Verdict{
 		Stage:      invokerStageToDispatch(outcome.Stage),
@@ -63,6 +64,7 @@ func (i *invokerImpl) Invoke(ctx context.Context) (dispatch.Result, error) {
 		Latency:    outcome.Latency,
 		RetryAfter: outcome.RetryAfter,
 	}
+
 	return &invokerResult{
 		ep:       i.ep,
 		verdict:  v,
@@ -90,6 +92,7 @@ func (r *invokerResult) StreamTo(ctx context.Context, w http.ResponseWriter) dis
 	if r.consumed || r.response == nil || r.handler == nil {
 		return dispatch.StreamReport{}
 	}
+
 	r.consumed = true
 
 	// Transport decoding seam: a vendor (e.g. Bedrock event-stream) decodes the
@@ -115,7 +118,7 @@ func (r *invokerResult) StreamTo(ctx context.Context, w http.ResponseWriter) dis
 		}
 	}
 
-	stream := moderation.WrapStream(r.handler.NewResponseStream(), ctx)
+	stream := moderation.WrapStream(ctx, r.handler.NewResponseStream())
 	fwd := r.sender.Forward(ctx, w, r.ep, r.response, stream)
 
 	return dispatch.StreamReport{
@@ -129,7 +132,9 @@ func (r *invokerResult) Close() error {
 	if r.consumed || r.response == nil {
 		return nil
 	}
+
 	r.consumed = true
+
 	return r.response.Body.Close()
 }
 
@@ -141,6 +146,7 @@ func invokerStageToDispatch(s invoker.Stage) dispatch.Stage {
 	if s == invoker.StagePrepare {
 		return dispatch.StagePrepare
 	}
+
 	return dispatch.StageInvoke
 }
 

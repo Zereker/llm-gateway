@@ -35,6 +35,7 @@ func parseRetryAfter(h http.Header, now time.Time) time.Duration {
 			openai = d
 		}
 	}
+
 	if openai > 0 {
 		return openai
 	}
@@ -48,6 +49,7 @@ func parseRetryAfter(h http.Header, now time.Time) time.Duration {
 			}
 		}
 	}
+
 	return anthropic
 }
 
@@ -57,16 +59,20 @@ func parseRetryAfterValue(v string, now time.Time) time.Duration {
 	if v == "" {
 		return 0
 	}
+
 	if secs, err := strconv.Atoi(v); err == nil {
 		if secs <= 0 {
 			return 0
 		}
+
 		return time.Duration(secs) * time.Second
 	}
+
 	if t, err := http.ParseTime(v); err == nil {
 		if d := t.Sub(now); d > 0 {
 			return d
 		}
 	}
+
 	return 0
 }

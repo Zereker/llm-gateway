@@ -33,13 +33,16 @@ func LoadDir(dir string) ([]Scenario, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scenario: read %s: %w", dir, err)
 	}
+
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
 			names = append(names, e.Name())
 		}
 	}
+
 	sort.Strings(names)
+
 	if len(names) == 0 {
 		return nil, fmt.Errorf("scenario: no *.json scenarios in %s", dir)
 	}
@@ -47,22 +50,27 @@ func LoadDir(dir string) ([]Scenario, error) {
 	out := make([]Scenario, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
+
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("scenario: read %s: %w", path, err)
 		}
+
 		if !json.Valid(body) {
 			return nil, fmt.Errorf("scenario: %s is not valid JSON", path)
 		}
+
 		if !gjson.GetBytes(body, "model").Exists() || !gjson.GetBytes(body, "messages").Exists() {
 			return nil, fmt.Errorf("scenario: %s must have top-level model and messages fields", path)
 		}
+
 		out = append(out, Scenario{
 			Name:   strings.TrimSuffix(name, ".json"),
 			Body:   body,
 			Stream: gjson.GetBytes(body, "stream").Bool(),
 		})
 	}
+
 	return out, nil
 }
 
@@ -74,10 +82,13 @@ func (s Scenario) WithModel(model string) ([]byte, error) {
 	if err := json.Unmarshal(s.Body, &m); err != nil {
 		return nil, fmt.Errorf("scenario %s: %w", s.Name, err)
 	}
+
 	quoted, err := json.Marshal(model)
 	if err != nil {
 		return nil, err
 	}
+
 	m["model"] = quoted
+
 	return json.Marshal(m)
 }

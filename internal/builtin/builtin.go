@@ -33,10 +33,12 @@ func NewLookup() *protocol.DefaultLookup {
 	for _, alias := range openai.Aliases() {
 		factories[alias] = openai.Factory{}
 	}
+
 	translators := identity.All()
 	translators = append(translators,
 		anthropic_openai.New(), openai_anthropic.New(), openai_bedrock.New(), openai_cohere.New(),
 		openai_gemini.New(), responses_openai.New(),
 	)
+
 	return protocol.NewLookup(factories, translator.NewRegistry(translators...))
 }

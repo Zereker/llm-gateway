@@ -29,9 +29,11 @@ func NewRedisSemanticStore(rdb *redis.Client, prefix string, maxEntries int) *Re
 	if prefix == "" {
 		prefix = "llm-gateway:respcache"
 	}
+
 	if maxEntries <= 0 {
 		maxEntries = 500
 	}
+
 	return &RedisSemanticStore{rdb: rdb, prefix: prefix, maxEntries: maxEntries}
 }
 
@@ -49,19 +51,25 @@ func (s *RedisSemanticStore) Lookup(ctx context.Context, ns string, vec []float3
 	if err != nil {
 		return CachedResponse{}, false
 	}
-	var best float64
-	var bestResp CachedResponse
+
+	var (
+		best     float64
+		bestResp CachedResponse
+	)
+
 	found := false
 	for _, it := range items {
 		var e semanticEntry
 		if json.Unmarshal([]byte(it), &e) != nil {
 			continue
 		}
+
 		sim := embed.Cosine(vec, e.Vec)
 		if sim >= threshold && sim > best {
 			best, bestResp, found = sim, e.Resp, true
 		}
 	}
+
 	return bestResp, found
 }
 
@@ -72,9 +80,11 @@ func (s *RedisSemanticStore) Store(ctx context.Context, ns string, vec []float32
 	if err != nil {
 		return
 	}
+
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
+
 	key := s.key(ns)
 	pipe := s.rdb.Pipeline()
 	pipe.LPush(ctx, key, b)

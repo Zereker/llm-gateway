@@ -48,9 +48,11 @@ func (o *KafkaOutbox) Publish(ctx context.Context, evt *OutboxEvent) error {
 	if evt == nil {
 		return errors.New("usage: KafkaOutbox.Publish: nil event")
 	}
+
 	if o.topic == "" {
 		return errors.New("usage: KafkaOutbox: empty topic (must be set at NewKafkaOutbox)")
 	}
+
 	return o.w.Write(ctx, o.topic, []byte(evt.Key), evt.Payload)
 }
 

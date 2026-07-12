@@ -35,10 +35,12 @@ func (s *PickerAdapter) Pick(ctx context.Context, eligible []*domain.Endpoint, q
 	if len(eligible) == 0 {
 		return nil, nil
 	}
+
 	cands := make([]selector.Candidate, len(eligible))
 	for i, ep := range eligible {
 		cands[i] = selector.Candidate{Endpoint: ep, EffectiveWeight: float64(ep.Weight)}
 	}
+
 	return s.sched.Pick(ctx, &selector.Request{
 		Model:      q.Model,
 		Group:      q.Group,

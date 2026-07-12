@@ -67,23 +67,28 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 	for _, opt := range opts {
 		opt.apply(&cfg)
 	}
+
 	if cfg.catalog == nil {
 		panic("middleware.ModelService: WithModelCatalog required")
 	}
+
 	if cfg.subscriptions == nil {
 		panic("middleware.ModelService: WithSubscriptionChecker required")
 	}
+
 	tracer := otel.GetTracerProvider().Tracer(ScopeName)
 
 	return func(c *gin.Context) {
 		ctx, span := tracer.Start(c.Request.Context(), "catalog.resolve")
 		defer span.End()
+
 		c.Request = c.Request.WithContext(ctx)
 
 		rc := GetRequestContext(c)
 		if rc.Envelope == nil {
 			abortWithCode(c, 500, domain.ErrUnknown, domain.ErrCodeInternalError,
 				"internal: M3 Envelope did not run before M5")
+
 			return
 		}
 
@@ -94,11 +99,14 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 			slog.ErrorContext(ctx, "m5: model catalog lookup failed", "err", err)
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
 				"model catalog unavailable")
+
 			return
 		}
+
 		if ms == nil {
 			abortWithCode(c, 404, domain.ErrInvalid, domain.ErrCodeModelNotFound,
 				"model not found: "+rc.Envelope.Model)
+
 			return
 		}
 
@@ -107,11 +115,14 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 			slog.ErrorContext(ctx, "m5: subscription lookup failed", "err", err)
 			abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
 				"subscription lookup unavailable")
+
 			return
 		}
+
 		if !subscribed {
 			abortWithCode(c, 403, domain.ErrPermanent, domain.ErrCodeModelNotSubscribed,
 				"model not subscribed: "+rc.Envelope.Model)
+
 			return
 		}
 
@@ -147,18 +158,22 @@ func resolveModelChain(
 		if _, dup := seen[m]; dup {
 			continue
 		}
+
 		seen[m] = struct{}{}
 
 		ms, err := cfg.catalog.GetByModel(ctx, m)
 		if err != nil || ms == nil {
 			continue
 		}
+
 		subscribed, err := cfg.subscriptions.HasModel(ctx, accountID, ms.ID)
 		if err != nil || !subscribed {
 			continue
 		}
+
 		chain = append(chain, ms)
 	}
+
 	return chain
 }
 
@@ -172,22 +187,28 @@ func parseFallbackModels(c *gin.Context, primary string) []string {
 	if hdr == "" {
 		return nil
 	}
+
 	seen := make(map[string]struct{}, MaxFallbackModels)
+
 	out := make([]string, 0, MaxFallbackModels)
 	for _, m := range strings.Split(hdr, ",") {
 		m = strings.TrimSpace(m)
 		if m == "" || m == primary {
 			continue
 		}
+
 		if _, dup := seen[m]; dup {
 			continue
 		}
+
 		seen[m] = struct{}{}
+
 		out = append(out, m)
 		if len(out) >= MaxFallbackModels {
 			break
 		}
 	}
+
 	return out
 }
 

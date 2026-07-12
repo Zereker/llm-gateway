@@ -47,9 +47,11 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if s.ep.Routing.URL == "" {
 		return nil, errors.New("cohere: ep.routing.url empty")
 	}
+
 	if s.ep.Auth.Type != domain.AuthTypeBearer {
 		return nil, fmt.Errorf("cohere: unsupported auth type %q (want %q)", s.ep.Auth.Type, domain.AuthTypeBearer)
 	}
+
 	bearer, err := domain.DecodePayload[domain.BearerAuth](s.ep.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("cohere: decode bearer: %w", err)
@@ -59,15 +61,19 @@ func (s *session) BuildRequest(body []byte, extraHeaders http.Header) (*http.Req
 	if err != nil {
 		return nil, err
 	}
+
 	for k, vs := range extraHeaders { // quirks first
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
+
 	req.Header.Set("Content-Type", "application/json") // then protocol-required (overrides)
+
 	if bearer.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer.APIKey)
 	}
+
 	return req, nil
 }
 

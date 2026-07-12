@@ -69,6 +69,7 @@ func NewInMemoryStatsStore(decay float64) *InMemoryStatsStore {
 	if decay <= 0 || decay > 1 {
 		decay = 0.2
 	}
+
 	return &InMemoryStatsStore{
 		stats: make(map[int64]*EndpointStats),
 		decay: decay,
@@ -80,8 +81,10 @@ func (s *InMemoryStatsStore) Record(_ context.Context, endpointID int64, result 
 	if endpointID == 0 {
 		return
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	st, ok := s.stats[endpointID]
 	if !ok {
 		// first time: take this value directly
@@ -92,8 +95,10 @@ func (s *InMemoryStatsStore) Record(_ context.Context, endpointID int64, result 
 			Updated:     time.Now(),
 		}
 		s.stats[endpointID] = st
+
 		return
 	}
+
 	st.LatencyMs = ema(st.LatencyMs, float64(result.Latency.Milliseconds()), s.decay)
 	st.SuccessRate = ema(st.SuccessRate, success01(result.Class), s.decay)
 	st.SampleCount++
@@ -104,9 +109,11 @@ func (s *InMemoryStatsStore) Record(_ context.Context, endpointID int64, result 
 func (s *InMemoryStatsStore) Snapshot(_ context.Context, endpointID int64) EndpointStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	if st, ok := s.stats[endpointID]; ok {
 		return *st
 	}
+
 	return EndpointStats{SuccessRate: 1.0}
 }
 
@@ -120,6 +127,7 @@ func success01(c ErrorClass) float64 {
 	if c == ClassSuccess {
 		return 1.0
 	}
+
 	return 0.0
 }
 
@@ -151,9 +159,11 @@ func NewDefaultScorer(store EndpointStatsStore, minSamples uint32, baselineMs fl
 	if minSamples == 0 {
 		minSamples = 5
 	}
+
 	if baselineMs <= 0 {
 		baselineMs = 200
 	}
+
 	return &DefaultScorer{
 		store:             store,
 		minSamples:        minSamples,
@@ -168,17 +178,21 @@ func (s *DefaultScorer) Score(ctx context.Context, candidates []Candidate, _ *Re
 	if s.store == nil {
 		return candidates
 	}
+
 	out := make([]Candidate, len(candidates))
 	for i, c := range candidates {
 		out[i] = c
+
 		stats := s.store.Snapshot(ctx, c.Endpoint.ID)
 		if stats.SampleCount < s.minSamples {
 			continue // neutral factor, keep base weight
 		}
+
 		successFactor := clampFactor(stats.SuccessRate, s.minFactor, s.maxFactor)
 		latencyFactor := clampFactor(s.latencyBaselineMs/maxFloat(stats.LatencyMs, 1), s.minFactor, s.maxFactor)
 		out[i].EffectiveWeight = c.EffectiveWeight * successFactor * latencyFactor
 	}
+
 	return out
 }
 
@@ -186,9 +200,11 @@ func clampFactor(v, lo, hi float64) float64 {
 	if v < lo {
 		return lo
 	}
+
 	if v > hi {
 		return hi
 	}
+
 	return v
 }
 
@@ -196,5 +212,6 @@ func maxFloat(a, b float64) float64 {
 	if a > b {
 		return a
 	}
+
 	return b
 }

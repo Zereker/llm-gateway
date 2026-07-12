@@ -43,6 +43,7 @@ func (s *Store) CreateEndpoint(ctx context.Context, in EndpointInput) (int64, er
 	if err != nil {
 		return 0, &InvalidEndpointError{Reasons: []string{"invalid_auth: " + err.Error()}}
 	}
+
 	ep := &repo.Endpoint{
 		Name: in.Name, Vendor: in.Vendor, Protocol: in.Protocol, Model: in.Model,
 		Group: orDefault(in.Group, "default"), Weight: orWeight(in.Weight, 100),
@@ -54,18 +55,22 @@ func (s *Store) CreateEndpoint(ctx context.Context, in EndpointInput) (int64, er
 			return 0, &InvalidEndpointError{Reasons: []string{"invalid_capabilities: " + err.Error()}}
 		}
 	}
+
 	if len(in.Quota) > 0 {
 		if err := json.Unmarshal(in.Quota, &ep.Quota); err != nil {
 			return 0, &InvalidEndpointError{Reasons: []string{"invalid_quota: " + err.Error()}}
 		}
 	}
+
 	validator := s.endpointValidator
 	if validator.Catalog == nil {
 		return 0, &InvalidEndpointError{Reasons: []string{"protocol_catalog_not_configured"}}
 	}
+
 	if reasons := validator.Validate(repo.ToDomainEndpoint(ep)); len(reasons) > 0 {
 		return 0, &InvalidEndpointError{Reasons: reasons}
 	}
+
 	res, err := s.db.NamedExecContext(ctx,
 		`INSERT INTO endpoints
 		 (name, vendor, protocol, model, group_name, weight, enabled,
@@ -76,6 +81,7 @@ func (s *Store) CreateEndpoint(ctx context.Context, in EndpointInput) (int64, er
 	if err != nil {
 		return 0, err
 	}
+
 	return res.LastInsertId()
 }
 
@@ -110,24 +116,30 @@ func (s *Store) ListEndpoints(ctx context.Context) ([]EndpointView, error) {
 		`SELECT `+epSelectColumns+` FROM endpoints WHERE deleted_at IS NULL ORDER BY id`); err != nil {
 		return nil, err
 	}
+
 	out := make([]EndpointView, len(rows))
 	for i := range rows {
 		out[i] = endpointToView(&rows[i])
 	}
+
 	return out, nil
 }
 
 func (s *Store) GetEndpoint(ctx context.Context, id int64) (*EndpointView, error) {
 	var endpoint repo.Endpoint
+
 	err := s.db.GetContext(ctx, &endpoint,
 		`SELECT `+epSelectColumns+` FROM endpoints WHERE id = ? AND deleted_at IS NULL`, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
+
 	if err != nil {
 		return nil, err
 	}
+
 	view := endpointToView(&endpoint)
+
 	return &view, nil
 }
 
@@ -137,8 +149,10 @@ func (s *Store) DeleteEndpoint(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
+
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+
 	return nil
 }

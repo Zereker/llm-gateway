@@ -52,16 +52,19 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 		role  Role
 		actor string
 	}
+
 	entries := make([]entry, len(tokens))
 	for i, t := range tokens {
 		role := t.Role
 		if role == "" {
 			role = RoleAdmin
 		}
+
 		actor := t.Name
 		if actor == "" {
 			actor = string(role) // fall back to the role as the actor when name isn't configured
 		}
+
 		entries[i] = entry{sum: sha256.Sum256([]byte(t.Value)), role: role, actor: actor}
 	}
 
@@ -71,10 +74,14 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 			abortError(c, 401, "unauthorized", "missing bearer token")
 			return
 		}
+
 		gotSum := sha256.Sum256([]byte(got))
 		matched := false
-		var role Role
-		var actor string
+
+		var (
+			role  Role
+			actor string
+		)
 		for _, e := range entries {
 			if subtle.ConstantTimeCompare(gotSum[:], e.sum[:]) == 1 {
 				matched = true
@@ -82,10 +89,12 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 				actor = e.actor
 			}
 		}
+
 		if !matched {
 			abortError(c, 401, "unauthorized", "invalid admin token")
 			return
 		}
+
 		c.Set(ctxRoleKey, string(role))
 		c.Set(ctxActorKey, actor)
 		c.Next()
@@ -101,6 +110,7 @@ func adminAuth(tokens []Token) gin.HandlerFunc {
 func auditWrites(store *Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
+
 		switch c.Request.Method {
 		case http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodPatch:
 			if err := store.RecordAudit(c.Request.Context(),
@@ -120,6 +130,7 @@ func requireAdmin(c *gin.Context) {
 		abortError(c, 403, "forbidden", "admin role required for this operation")
 		return
 	}
+
 	c.Next()
 }
 
@@ -130,9 +141,11 @@ func bearerToken(c *gin.Context) string {
 	if h == "" {
 		return ""
 	}
+
 	const p = "bearer "
 	if len(h) <= len(p) || !strings.EqualFold(h[:len(p)], p) {
 		return ""
 	}
+
 	return strings.TrimSpace(h[len(p):])
 }

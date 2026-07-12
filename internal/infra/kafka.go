@@ -53,6 +53,7 @@ func NewKafkaProducer(cfg KafkaConfig) (*KafkaProducer, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, fmt.Errorf("infra: kafka brokers empty")
 	}
+
 	return &KafkaProducer{
 		w: &kafka.Writer{
 			Addr:         kafka.TCP(cfg.Brokers...),
@@ -79,6 +80,7 @@ func (p *KafkaProducer) Write(ctx context.Context, topic string, key, value []by
 	if topic == "" {
 		return fmt.Errorf("infra: kafka write: empty topic")
 	}
+
 	if err := p.w.WriteMessages(ctx, kafka.Message{
 		Topic: topic,
 		Key:   key,
@@ -86,6 +88,7 @@ func (p *KafkaProducer) Write(ctx context.Context, topic string, key, value []by
 	}); err != nil {
 		return fmt.Errorf("infra: kafka write topic=%q: %w", topic, err)
 	}
+
 	return nil
 }
 

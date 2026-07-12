@@ -15,6 +15,7 @@ func (s *Store) CreateAccount(ctx context.Context, in AccountInput) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO accounts (pin, name, quota_policy_id) VALUES (?, ?, ?)`,
 		in.Pin, in.Name, in.QuotaPolicyID)
+
 	return err
 }
 
@@ -29,9 +30,11 @@ type AccountView struct {
 
 func (s *Store) ListAccounts(ctx context.Context) ([]AccountView, error) {
 	var rows []AccountView
+
 	err := s.db.SelectContext(ctx, &rows,
 		`SELECT pin, name, enabled, quota_policy_id, created_at, updated_at
 		 FROM accounts WHERE deleted_at IS NULL ORDER BY created_at`)
+
 	return rows, err
 }
 
@@ -47,6 +50,7 @@ func (s *Store) CreateModelService(ctx context.Context, in ModelServiceInput) (i
 	if err != nil {
 		return 0, err
 	}
+
 	return res.LastInsertId()
 }
 
@@ -59,9 +63,11 @@ type ModelServiceView struct {
 
 func (s *Store) ListModelServices(ctx context.Context) ([]ModelServiceView, error) {
 	var rows []ModelServiceView
+
 	err := s.db.SelectContext(ctx, &rows,
 		`SELECT id, service_id, model, created_at
 		 FROM model_services WHERE deleted_at IS NULL ORDER BY id`)
+
 	return rows, err
 }
 
@@ -76,5 +82,6 @@ func (s *Store) Subscribe(ctx context.Context, in SubscriptionInput) error {
 		 VALUES (?, ?, 1)
 		 ON DUPLICATE KEY UPDATE enabled = 1, deleted_at = NULL`,
 		in.AccountID, in.ModelServiceID)
+
 	return err
 }

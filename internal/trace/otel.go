@@ -40,6 +40,7 @@ func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.T
 	if endpoint != "" {
 		opts = append(opts, otlptracegrpc.WithEndpoint(endpoint))
 	}
+
 	exp, err := otlptracegrpc.New(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("otel exporter: %w", err)
@@ -71,6 +72,7 @@ func NewOtelProvider(ctx context.Context, service, endpoint string) (*sdktrace.T
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
+
 	return tp, nil
 }
 
@@ -111,10 +113,12 @@ func (t *OtelTracer) Log(c context.Context, name string, payload any) {
 	if !span.IsRecording() {
 		return
 	}
+
 	attrs := []attribute.KeyValue{}
 	if payload != nil {
 		attrs = append(attrs, attribute.String("payload", fmt.Sprintf("%v", payload)))
 	}
+
 	span.AddEvent(name, oteltrace.WithAttributes(attrs...))
 }
 
@@ -139,6 +143,7 @@ func (s *otelSpan) SetAttribute(key string, value any) {
 	if s.span == nil {
 		return
 	}
+
 	switch v := value.(type) {
 	case string:
 		s.span.SetAttributes(attribute.String(key, v))
