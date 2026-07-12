@@ -98,7 +98,29 @@ curl http://localhost:8080/v1/chat/completions \
 ```sh
 make test               # unit tests; SQL tests skip without MYSQL_DSN
 make test-integration   # bring up stack, run all tests including SQL/outbox
+make cover              # unit tests + a coverage profile (same MYSQL_DSN/REDIS_ADDR gating)
 ```
+
+Coverage is statement coverage from `go tool cover`, not branch coverage — a
+snapshot as of this commit, unit tests only (`make test`'s default gating; no
+`MYSQL_DSN`/`REDIS_ADDR`, so SQL/Redis-backed tests are skipped and count as
+0% covered here). `make cover` only measures `internal/...` packages that
+have their own test files (`cmd/*` / `scripts/*` are thin entry points with
+none by design):
+
+| | |
+|---|---|
+| **Total** | **57.8%** |
+| `internal/dispatch` | 87.3% |
+| `internal/invoker` | 89.5% |
+| `internal/middleware` | 79.2% |
+| `internal/protocol/quirks` | 96.2% |
+| `internal/router` | 82.1% |
+| `internal/translator/*` (avg) | ~72% |
+| `internal/repo`, `internal/infra`, `internal/console` | 5-15% (mostly SQL-backed; see `make test-integration`) |
+
+Run `make cover` locally for the exact current number; `go tool cover
+-html=coverage.out` renders a per-line breakdown in the browser.
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the
 database connection, outbox driver, and middleware tunables. Defaults are

@@ -14,7 +14,7 @@ stack-stop:             ## Stop containers (keep data volumes)
 stack-clean:            ## Stop containers and remove data volumes (full reset)
 	docker compose down -v
 
-.PHONY: test test-integration build run-gateway run-console run-migrate run-mockupstream
+.PHONY: test test-integration cover build run-gateway run-console run-migrate run-mockupstream
 test:                   ## Run unit tests (SQL tests depend on MYSQL_DSN; skipped if unset)
 	go test ./...
 
@@ -23,6 +23,17 @@ test-integration: stack ## Start the stack then run the full test suite serially
 	@until docker compose exec -T mysql mysqladmin ping -h localhost -uroot --silent; do sleep 1; done
 	@docker compose exec -T mysql mysql -uroot -e "CREATE DATABASE IF NOT EXISTS llm_gateway_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 	MYSQL_DSN='$(MYSQL_DSN)' go test -p 1 ./...
+
+cover:                  ## Run unit tests with a coverage profile + print the total (same MYSQL_DSN/REDIS_ADDR gating as test/test-integration)
+	# Package list is filtered to internal/... packages that actually have test
+	# files: cmd/* and scripts/* are thin main-wiring entry points with no
+	# tests by design, and a package with zero test files of its own (e.g. a
+	# pure-types leaf only exercised transitively via another package's tests)
+	# makes `go test -coverprofile` require `go tool covdata` to attribute it,
+	# which some minimal Go toolchain installs don't ship.
+	go test -coverprofile=coverage.out $$(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./internal/...)
+	go tool cover -func=coverage.out | tail -1
+	@echo "Full HTML report: go tool cover -html=coverage.out"
 
 build:                  ## Compile cmd/gateway / cmd/console / cmd/mockupstream into ./bin (static binaries, for containers)
 	mkdir -p bin

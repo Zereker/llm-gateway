@@ -97,7 +97,27 @@ curl http://localhost:8080/v1/chat/completions \
 ```sh
 make test               # 单元测试；没设 MYSQL_DSN 时 SQL 相关测试会 skip
 make test-integration   # 起 stack 后跑全部测试，包含 SQL/outbox
+make cover              # 单元测试 + 覆盖率统计（MYSQL_DSN/REDIS_ADDR 的 gating 规则同上）
 ```
+
+覆盖率是 `go tool cover` 给出的语句覆盖率（不是分支覆盖率），是本次提交时的快照——
+只跑了 `make test` 默认档（不设 `MYSQL_DSN`/`REDIS_ADDR`，SQL/Redis 相关测试会被 skip，
+在这里算 0%）。`make cover` 只统计 `internal/...` 下自己有测试文件的包
+（`cmd/*`/`scripts/*` 本身就是没有测试的薄入口，设计上如此）：
+
+| | |
+|---|---|
+| **总计** | **57.8%** |
+| `internal/dispatch` | 87.3% |
+| `internal/invoker` | 89.5% |
+| `internal/middleware` | 79.2% |
+| `internal/protocol/quirks` | 96.2% |
+| `internal/router` | 82.1% |
+| `internal/translator/*`（平均） | ~72% |
+| `internal/repo`、`internal/infra`、`internal/console` | 5-15%（主要靠 SQL 驱动的测试覆盖，见 `make test-integration`） |
+
+想要当前准确数字，本地跑一下 `make cover`；`go tool cover -html=coverage.out`
+能在浏览器里看逐行的覆盖情况。
 
 `gateway.yaml` 控制 server 设置（监听地址、超时、body 大小限制）、数据库连接、
 outbox driver 以及各 middleware 的可调参数。默认值是合理的开箱即用值——
