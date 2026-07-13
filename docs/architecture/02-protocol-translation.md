@@ -632,6 +632,14 @@ retrying the same endpoint, so it can Switch directly to the next model or Abort
 
 ## 12. Steps for adding a new vendor / endpoint
 
+**OpenAI-compatible vendor (fast path, no rebuild)**: add the name to
+`vendors.openai_compatible` in gateway.yaml (and console.yaml, so the control
+plane's endpoint validator accepts it too), restart, then create the endpoint
+row with `protocol: openai`. The compiled-in fast path (`openai.Aliases()`)
+remains for names worth shipping with the binary.
+
+**Vendor with its own wire protocol**:
+
 1. Implement `protocol.Factory` and `protocol.Session` in `internal/protocol/<vendor>/`.
 2. Export the factory and add it to `internal/builtin.NewLookup`.
 3. If the protocol the client will use doesn't match the vendor's upstream protocol,

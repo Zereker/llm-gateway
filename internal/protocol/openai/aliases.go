@@ -15,6 +15,10 @@ package openai
 // When a vendor needs vendor-specific handling (e.g. the reasoning_content
 // field in DeepSeek-R1 responses, or a completely different protocol like
 // Anthropic's), pull it out of this list into its own sub-package.
+//
+// Deployment-local names that don't warrant shipping in the binary can be
+// registered via gateway.yaml's vendors.openai_compatible instead — same
+// Factory, zero rebuild (see NewLookup's extraOpenAIAliases).
 func Aliases() []string {
 	// All OpenAI-compatible (/v1/chat/completions + Bearer). When a deployer
 	// writes an endpoint, they set vendor to one of these names, protocol to

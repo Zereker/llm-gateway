@@ -111,6 +111,8 @@ type Store interface {
 
 `SnapshotBatch` is read-only, used for subsequent endpoint quota / observability scenarios to read current state, without any deduction side effects.
 
+**Driver selection** (`rate_limit.driver`, see [07 §2](./07-configuration.md#2-gatewayyaml)): `redis` (default) shares counters fleet-wide via Lua scripts and is the only correct choice for multi-replica deployments; `inmemory` implements the identical sliding-window semantics with process-local counters — limits are then enforced **per replica**, so it is only suitable for single-replica deployments, local development, and tests. Both implement the same `ratelimit.Store` interface; switching drivers never changes limiting math, only counter scope.
+
 ## 6. Bucket Naming
 
 M6 user-side buckets:

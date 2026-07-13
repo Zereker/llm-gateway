@@ -21,7 +21,15 @@ import (
 )
 
 // NewLookup returns the complete built-in handler catalog.
-func NewLookup() *protocol.DefaultLookup {
+//
+// extraOpenAIAliases registers additional deployment-local vendor names on
+// the shared OpenAI Factory (from gateway.yaml's vendors.openai_compatible),
+// on top of the compiled-in openai.Aliases() list — so onboarding a plain
+// OpenAI-compatible vendor needs no rebuild. A name that would shadow a
+// registered non-OpenAI vendor panics: this is assembly-time
+// misconfiguration (same fail-fast stance as the translator registry's
+// duplicate panic).
+func NewLookup(extraOpenAIAliases ...string) *protocol.DefaultLookup {
 	factories := map[string]protocol.Factory{
 		openai.VendorName:      openai.Factory{},
 		anthropic.VendorName:   anthropic.Factory{},
@@ -31,6 +39,18 @@ func NewLookup() *protocol.DefaultLookup {
 		"gemini":               gemini.Factory{},
 	}
 	for _, alias := range openai.Aliases() {
+		factories[alias] = openai.Factory{}
+	}
+
+	for _, alias := range extraOpenAIAliases {
+		if existing, ok := factories[alias]; ok {
+			if _, isOpenAI := existing.(openai.Factory); !isOpenAI {
+				panic("builtin: vendors.openai_compatible name " + alias + " collides with a built-in non-OpenAI vendor")
+			}
+			// duplicate of a built-in alias — harmless, same Factory
+			continue
+		}
+
 		factories[alias] = openai.Factory{}
 	}
 

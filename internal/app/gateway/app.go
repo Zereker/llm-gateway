@@ -71,7 +71,7 @@ func Run(configPath string) error {
 // If any intermediate step fails, a defer Closes whatever infra has already
 // been opened, to avoid leaking resources.
 func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtime, err error) {
-	handlers := builtin.NewLookup()
+	handlers := builtin.NewLookup(cfg.Vendors.OpenAICompatible...)
 	// Hold the runtime in a local variable s: on the error path
 	// `return nil, nil, err` would overwrite the named return srv with nil, and
 	// if a defer relied on srv it would Close nil → panic, masking the real
@@ -185,7 +185,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	// layers would mean a policy change takes up to 60s to take effect, and the
 	// two layers' distinct miss semantics stacked together would be hard to debug.
 	quotaPolicyReader := repo.NewSQLQuotaPolicyProvider(sqldb)
-	rateStore := ratelimit.NewRedisStore(rdb)
+	rateStore := buildRateLimitStore(cfg.RateLimit, rdb)
 	cooldown := selector.NewRedisCooldownManager(rdb, selector.CooldownDurations{
 		Transient: cfg.Selector.Cooldown.Transient,
 		Capacity:  cfg.Selector.Cooldown.Capacity,

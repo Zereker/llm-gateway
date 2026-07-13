@@ -36,6 +36,13 @@ type Config struct {
 	Redis infra.RedisConfig `yaml:"redis"`
 	Admin AdminConfig       `yaml:"admin"`
 
+	// Vendors mirrors gateway.yaml's vendors section: extra OpenAI-compatible
+	// vendor names registered on the shared OpenAI Factory. The console's
+	// endpoint validator must know the same set the gateway serves, or it
+	// would reject endpoint writes for config-registered vendors. Keep this
+	// list identical to the gateway's.
+	Vendors VendorsConfig `yaml:"vendors"`
+
 	// DataKey is the AES-256-GCM KEK (64 hex characters). The control plane
 	// uses it to encrypt endpoints.auth on write — **it must exactly match
 	// the data plane's cfg.data_key**, otherwise the data plane can't decrypt
@@ -54,6 +61,12 @@ type ServerConfig struct {
 // AdminConfig is static bearer-token auth + role (the RBAC primitive for
 // Phase 4; real OIDC/multi-tenancy is left for later). Each token in the yaml
 // carries a role (admin / viewer; empty = admin).
+// VendorsConfig mirrors config.VendorsConfig (gateway side); see that type's
+// doc for semantics.
+type VendorsConfig struct {
+	OpenAICompatible []string `yaml:"openai_compatible"`
+}
+
 type AdminConfig struct {
 	Tokens []Token `yaml:"tokens"`
 }

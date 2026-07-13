@@ -30,6 +30,20 @@ import (
 //     must maintain for it
 //
 // An unrecognized name panics directly (fail-fast; surfaces config errors at startup).
+// buildRateLimitStore constructs the M6 rate-limit counter store per
+// cfg.RateLimit.Driver: redis (default; fleet-wide counters) or inmemory
+// (process-local counters, single-replica/dev only — see config.RateLimitConfig).
+func buildRateLimitStore(cfg config.RateLimitConfig, rdb *redis.Client) ratelimit.Store {
+	switch cfg.Driver {
+	case "", config.DriverRedis:
+		return ratelimit.NewRedisStore(rdb)
+	case config.DriverInMemory:
+		return ratelimit.NewInMemoryStore()
+	default:
+		panic("unknown rate_limit.driver: " + cfg.Driver)
+	}
+}
+
 func buildPicker(name string) (selector.Picker, *selector.Inflight) {
 	switch name {
 	case "", "weighted_random":
