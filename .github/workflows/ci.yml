@@ -69,15 +69,6 @@ jobs:
       KAFKA_TOPIC: llm-gateway-ci
     steps:
       - uses: actions/checkout@v4
-        with:
-          # The opencassette corpus lives in a git submodule
-          # (testdata/opencassette); the SQL-gated e2e
-          # (TestE2E_MultiVendor_AllProtocols) seeds its Zhipu/MiniMax/Moonshot
-          # endpoints from it and the translator replay (TestReplayOpenCassetteCorpus)
-          # reads all of it, so this job — the only one that runs those — must
-          # check the submodule out. The lint/smoke/deployment jobs don't touch
-          # the corpus, so they keep the default (submodule-less) checkout.
-          submodules: true
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

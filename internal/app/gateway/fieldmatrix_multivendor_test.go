@@ -29,6 +29,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zereker/opencassette"
+
 	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/cassette/vendorfixture"
 	"github.com/zereker/llm-gateway/internal/config"
@@ -56,17 +58,15 @@ func realCassetteResponse(t *testing.T, relPath string, idx int) []byte {
 }
 
 // realOpenCassetteResponse loads interaction index idx's response body from a
-// cassette in the opencassette corpus submodule (relative to
-// testdata/opencassette/corpus/ at the repo root). Fails with an actionable
-// message if the submodule isn't checked out — CI must use
-// actions/checkout with submodules: true for these opencassette-backed
-// vendors to seed.
+// cassette in the opencassette corpus, read from the embedded corpus the
+// opencassette module ships (opencassette.Corpus(), an fs.FS rooted at
+// corpus/) — so these opencassette-backed vendors seed from a versioned Go
+// dependency, no submodule or checked-out tree required.
 func realOpenCassetteResponse(t *testing.T, relPath string, idx int) []byte {
 	t.Helper()
-	full := cassette.TestdataPath("opencassette", "corpus", relPath)
-	interactions, err := cassette.Load(full)
+	interactions, err := cassette.LoadFS(opencassette.Corpus(), relPath)
 	if err != nil {
-		t.Fatalf("opencassette corpus load %s: %v (is the git submodule at testdata/opencassette checked out? run: git submodule update --init)", relPath, err)
+		t.Fatalf("opencassette corpus load %s: %v", relPath, err)
 	}
 	if idx >= len(interactions) {
 		t.Fatalf("%s: want interaction #%d, only has %d", relPath, idx, len(interactions))

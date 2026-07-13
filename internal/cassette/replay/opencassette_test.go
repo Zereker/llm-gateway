@@ -25,19 +25,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zereker/opencassette"
+
 	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/translator/openai_anthropic"
 	"github.com/zereker/llm-gateway/internal/translator/openai_gemini"
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
 )
-
-// ocRoot is the opencassette corpus root inside the submodule. If the
-// submodule wasn't checked out (git clone without --recurse-submodules, or CI
-// checkout without submodules: true) this directory is empty and LoadDir
-// returns zero files — which TestReplayOpenCassetteCorpus turns into an
-// explicit skip rather than a silent pass, so a misconfigured checkout is
-// visible instead of looking like "corpus fully covered, 0 files".
-var ocRoot = cassette.TestdataPath("opencassette", "corpus")
 
 // protocolOf returns the wire-protocol segment of a corpus-relative path
 // (<vendor>/<model>/<protocol>/<stream|nostream>/<scenario>.yaml). Returns ""
@@ -168,14 +162,16 @@ func assertWellFormedOpenAIChatBody(t *testing.T, body []byte, label string) {
 // switch with a stated reason. A recognized-protocol file with zero usable
 // interactions is a hard failure (a truncated/corrupt capture), not a skip.
 func TestReplayOpenCassetteCorpus(t *testing.T) {
-	files, err := cassette.LoadDir(ocRoot)
+	// The corpus is embedded in the opencassette module (opencassette.Corpus()
+	// returns an fs.FS rooted at corpus/), so unlike a submodule it's always
+	// present once the dependency resolves — a zero-file result would mean a
+	// broken/empty embed, which is a hard failure, not a skip.
+	files, err := cassette.LoadDirFS(opencassette.Corpus())
 	if err != nil {
-		t.Fatalf("LoadDir %s: %v", ocRoot, err)
+		t.Fatalf("LoadDirFS(opencassette.Corpus()): %v", err)
 	}
-	// README.md under the corpus root isn't a cassette; LoadDir already only
-	// globs *.yaml(.gz), so a non-cassette markdown file never appears here.
 	if len(files) == 0 {
-		t.Skip("opencassette corpus is empty — the git submodule at testdata/opencassette is not checked out (run: git submodule update --init)")
+		t.Fatal("opencassette.Corpus() embedded zero cassettes — the dependency's corpus embed is empty")
 	}
 
 	anthropicTr := openai_anthropic.New()

@@ -15,8 +15,6 @@ testdata/
 ├── vendor-cassettes/   real, raw VCR cassettes: third-party-licensed sources (per-source-repo dirs)
 │                       + self-recorded ones (<vendor>/<model>/<protocol>/<stream|nostream>/, see
 │                       scripts/record-cassette and vendor-cassettes/README.md)
-├── opencassette/       git submodule (github.com/zereker/opencassette): our own purpose-recorded
-│                       corpus, covering vendors with no third-party cassette (Zhipu/MiniMax/Moonshot)
 ├── record-scenarios/   standard request-body packs record-cassette's batch mode replays against a
 │                       new vendor — SDK-derived, coverage-enforced by internal/cassette/scenario's tests
 └── fieldmatrix/        curated/sanitized fixtures for the gateway's own e2e suite
@@ -48,38 +46,42 @@ detail per source.
 writing a synthetic literal. If the exact shape you need isn't covered yet,
 see that directory's README for how to add a new source.
 
-## `opencassette/` — our own recorded corpus (git submodule)
+## opencassette corpus — our own recordings (Go module dependency)
 
-A git submodule pinned to [`github.com/zereker/opencassette`](https://github.com/zereker/opencassette):
-a purpose-built companion project that records real vendor traffic against
-our own scenario packs and, crucially, covers vendors for which **no public
-recorded traffic exists at all** — Zhipu GLM, MiniMax, Moonshot Kimi — plus
-fresh AWS Bedrock (Anthropic wire) / Azure (OpenAI + Responses) / Google
-Gemini captures. Layout is `corpus/<vendor>/<model>/<protocol>/<stream|nostream>/<scenario>.yaml`;
-the on-disk format is pytest-recording's `interactions:` plus a provenance
-`meta:` block, so `internal/cassette.Load` reads it with no special-casing
-(it ignores the unknown `meta:` key).
+Not a directory here: the opencassette corpus is pulled in as a **Go module**,
+[`github.com/zereker/opencassette`](https://github.com/zereker/opencassette),
+which embeds its recordings (`//go:embed`). `opencassette.Corpus()` returns an
+`fs.FS` rooted at the corpus, so a cassette's name is its
+`<vendor>/<model>/<protocol>/<stream|nostream>/<scenario>.yaml` path.
 
-**Checkout:** clone with `--recurse-submodules`, or run
-`git submodule update --init` in an existing clone. CI checks it out only in
-the one job that needs it (see `.github/workflows/ci.yml`'s `go` job).
+opencassette is a purpose-built companion project that records real vendor
+traffic against our own scenario packs and, crucially, covers vendors for which
+**no public recorded traffic exists at all** — Zhipu GLM, MiniMax, Moonshot
+Kimi, Volcano ARK — plus AWS Bedrock (Anthropic wire) / Azure (OpenAI +
+Responses) / Google Gemini captures. The on-disk format is pytest-recording's
+`interactions:` plus a provenance `meta:` block, which `internal/cassette`
+reads via `LoadFS` / `LoadDirFS` (the `fs.FS` counterparts of `Load`/`LoadDir`)
+with no special-casing — it ignores the unknown `meta:` key.
+
+Because the corpus is embedded in a versioned dependency, no submodule or
+checked-out tree is needed — a plain `go test` resolves it like any other
+module.
 
 **Consumers** (both wired so a newly-recorded vendor can't land without
 coverage):
-- `internal/cassette/replay`'s `TestReplayOpenCassetteCorpus` — routes every
-  corpus file by its wire-protocol path segment through the matching
-  translator/extractor (openai_anthropic / openai_gemini / the OpenAI +
-  Responses extractors) and fails loudly if any file is left unaccounted for.
-  If the submodule isn't checked out it **skips** (rather than silently
-  passing on zero files).
-- `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` — the
-  Zhipu/MiniMax/Moonshot endpoint manifests reply with a real captured body
-  from here (`reply.kind: "opencassette"`), so the full middleware chain
-  (auth → routing → translation → billing) runs against real data for
-  vendors that previously had none.
+- `internal/cassette/replay`'s `TestReplayOpenCassetteCorpus` — walks
+  `opencassette.Corpus()` and routes every file by its wire-protocol path
+  segment through the matching translator/extractor (openai_anthropic /
+  openai_gemini / the OpenAI + Responses extractors), failing loudly if any
+  file is left unaccounted for.
+- `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` — endpoint
+  manifests with `reply.kind: "opencassette"` (Zhipu/MiniMax/Moonshot on the
+  OpenAI protocol, plus Gemini/Anthropic repointed here) reply with a real
+  captured body from the corpus, so the full middleware chain
+  (auth → routing → translation → billing) runs against our own real data.
 
 vs. `vendor-cassettes/`: that directory is third-party fixtures vendored
-in-tree; this one is our own corpus, versioned as an external repo and
+in-tree; opencassette is our own corpus, versioned as an external module and
 pulled in by reference. Both are raw/unmodified real traffic — hand-shaped
 per-scenario derivatives still go in `fieldmatrix/`.
 
