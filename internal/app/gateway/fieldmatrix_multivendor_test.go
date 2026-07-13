@@ -55,6 +55,29 @@ func realCassetteResponse(t *testing.T, relPath string, idx int) []byte {
 	return body
 }
 
+// realOpenCassetteResponse loads interaction index idx's response body from a
+// cassette in the opencassette corpus submodule (relative to
+// testdata/opencassette/corpus/ at the repo root). Fails with an actionable
+// message if the submodule isn't checked out — CI must use
+// actions/checkout with submodules: true for these opencassette-backed
+// vendors to seed.
+func realOpenCassetteResponse(t *testing.T, relPath string, idx int) []byte {
+	t.Helper()
+	full := cassette.TestdataPath("opencassette", "corpus", relPath)
+	interactions, err := cassette.Load(full)
+	if err != nil {
+		t.Fatalf("opencassette corpus load %s: %v (is the git submodule at testdata/opencassette checked out? run: git submodule update --init)", relPath, err)
+	}
+	if idx >= len(interactions) {
+		t.Fatalf("%s: want interaction #%d, only has %d", relPath, idx, len(interactions))
+	}
+	body := interactions[idx].ResponseBody
+	if len(body) == 0 {
+		t.Fatalf("%s: interaction #%d has an empty response body", relPath, idx)
+	}
+	return body
+}
+
 // vendorScenario is a vendorfixture.Scenario (vendor/protocol/model/auth —
 // loaded from testdata/fieldmatrix/endpoints/) plus its resolved reply body
 // (loaded per the manifest's "reply" field — see resolveReply).
@@ -74,6 +97,8 @@ func resolveReply(t *testing.T, r vendorfixture.Reply) []byte {
 		return readFixtureFile(t, cassette.TestdataPath("fieldmatrix", "upstream", r.Path))
 	case "cassette":
 		return realCassetteResponse(t, r.Path, r.Index)
+	case "opencassette":
+		return realOpenCassetteResponse(t, r.Path, r.Index)
 	default:
 		t.Fatalf("resolveReply: unknown reply.kind %q", r.Kind)
 		return nil

@@ -15,6 +15,8 @@ testdata/
 ├── vendor-cassettes/   real, raw VCR cassettes: third-party-licensed sources (per-source-repo dirs)
 │                       + self-recorded ones (<vendor>/<model>/<protocol>/<stream|nostream>/, see
 │                       scripts/record-cassette and vendor-cassettes/README.md)
+├── opencassette/       git submodule (github.com/zereker/opencassette): our own purpose-recorded
+│                       corpus, covering vendors with no third-party cassette (Zhipu/MiniMax/Moonshot)
 ├── record-scenarios/   standard request-body packs record-cassette's batch mode replays against a
 │                       new vendor — SDK-derived, coverage-enforced by internal/cassette/scenario's tests
 └── fieldmatrix/        curated/sanitized fixtures for the gateway's own e2e suite
@@ -46,6 +48,41 @@ detail per source.
 writing a synthetic literal. If the exact shape you need isn't covered yet,
 see that directory's README for how to add a new source.
 
+## `opencassette/` — our own recorded corpus (git submodule)
+
+A git submodule pinned to [`github.com/zereker/opencassette`](https://github.com/zereker/opencassette):
+a purpose-built companion project that records real vendor traffic against
+our own scenario packs and, crucially, covers vendors for which **no public
+recorded traffic exists at all** — Zhipu GLM, MiniMax, Moonshot Kimi — plus
+fresh AWS Bedrock (Anthropic wire) / Azure (OpenAI + Responses) / Google
+Gemini captures. Layout is `corpus/<vendor>/<model>/<protocol>/<stream|nostream>/<scenario>.yaml`;
+the on-disk format is pytest-recording's `interactions:` plus a provenance
+`meta:` block, so `internal/cassette.Load` reads it with no special-casing
+(it ignores the unknown `meta:` key).
+
+**Checkout:** clone with `--recurse-submodules`, or run
+`git submodule update --init` in an existing clone. CI checks it out only in
+the one job that needs it (see `.github/workflows/ci.yml`'s `go` job).
+
+**Consumers** (both wired so a newly-recorded vendor can't land without
+coverage):
+- `internal/cassette/replay`'s `TestReplayOpenCassetteCorpus` — routes every
+  corpus file by its wire-protocol path segment through the matching
+  translator/extractor (openai_anthropic / openai_gemini / the OpenAI +
+  Responses extractors) and fails loudly if any file is left unaccounted for.
+  If the submodule isn't checked out it **skips** (rather than silently
+  passing on zero files).
+- `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` — the
+  Zhipu/MiniMax/Moonshot endpoint manifests reply with a real captured body
+  from here (`reply.kind: "opencassette"`), so the full middleware chain
+  (auth → routing → translation → billing) runs against real data for
+  vendors that previously had none.
+
+vs. `vendor-cassettes/`: that directory is third-party fixtures vendored
+in-tree; this one is our own corpus, versioned as an external repo and
+pulled in by reference. Both are raw/unmodified real traffic — hand-shaped
+per-scenario derivatives still go in `fieldmatrix/`.
+
 ## `fieldmatrix/` — curated e2e fixtures
 
 Two kinds of file, both purpose-built for `internal/app/gateway`'s own e2e
@@ -66,8 +103,10 @@ anything hand-shaped for one specific test scenario goes in `fieldmatrix/`.
 
 One JSON file per upstream vendor (see `internal/cassette/vendorfixture` for
 the loader and exact field shape): vendor / protocol / model / auth type /
-auth payload / which upstream path to route to / which real response
-(`vendor-cassettes/` or `fieldmatrix/upstream/`) to reply with.
+auth payload / which upstream path to route to / which real response to reply
+with — `reply.kind` selects the source: `"cassette"` (`vendor-cassettes/`),
+`"opencassette"` (the `opencassette/` submodule corpus), or `"fixture"`
+(`fieldmatrix/upstream/`).
 
 **Consumers**, both reading the *same* files so there is exactly one place
 that declares "these are the vendors this gateway supports end-to-end":

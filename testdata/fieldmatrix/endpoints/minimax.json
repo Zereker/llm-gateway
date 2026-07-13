@@ -1,0 +1,14 @@
+{
+  "vendor": "minimax",
+  "protocol": "openai",
+  "model": "MiniMax-M3",
+  "auth_type": "bearer",
+  "client_api_key": "sk-mv-minimax",
+  "upstream_auth": {"api_key": "sk-upstream-mock-minimax"},
+  "upstream_path": "/v1/chat/completions",
+  "reply": {
+    "kind": "opencassette",
+    "path": "minimax/MiniMax-M3/openai/nostream/chat_basic.yaml",
+    "index": 0
+  }
+}

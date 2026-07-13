@@ -1,0 +1,3 @@
+[submodule "testdata/opencassette"]
+	path = testdata/opencassette
+	url = https://github.com/zereker/opencassette
