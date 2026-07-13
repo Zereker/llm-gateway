@@ -9,7 +9,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
 )
 
-// openaiDirs are every vendor-cassettes source that captured real
+// openaiDirs are every vendored-corpus source that captured real
 // api.openai.com traffic.
 var openaiDirs = []string{
 	"openai/langchain-ai-langchain",
@@ -58,7 +58,7 @@ func classifyOpenAIResponse(body []byte) openaiKind {
 // internal/translator/identity/responses.go and internal/usage/extractor).
 func TestReplayOpenAIUsageExtraction(t *testing.T) {
 	for _, dir := range openaiDirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
+		files, err := loadVendoredDir(dir)
 		if err != nil {
 			t.Fatalf("LoadDir %s: %v", dir, err)
 		}

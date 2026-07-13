@@ -25,14 +25,13 @@ import (
 )
 
 // Reply picks which real captured data a mock upstream should hand back for
-// this scenario. Kind "cassette" reads response body #Index from a real VCR
-// file under testdata/vendor-cassettes/Path; kind "opencassette" reads
-// response body #Index from a cassette in the opencassette corpus submodule
-// (testdata/opencassette/corpus/Path) — our own purpose-recorded captures,
-// notably for vendors (Zhipu / MiniMax / Moonshot) that have no third-party
-// cassette to borrow; kind "fixture" reads the whole file verbatim from
-// testdata/fieldmatrix/upstream/Path (a curated/sanitized derivative, for
-// vendors where the raw cassette shape needs adapting first).
+// this scenario, all resolved by ResolveReply. Kind "opencassette" reads
+// response body #Index from opencassette.Corpus() (our own purpose-recorded
+// captures, notably for vendors — Zhipu / MiniMax / Moonshot — that have no
+// third-party cassette to borrow); kind "cassette" reads response body #Index
+// from opencassette.Vendored() (the third-party corpus); kind "fixture" reads
+// the whole file verbatim from testdata/fieldmatrix/upstream/Path (a
+// curated/sanitized derivative, for vendors where the raw shape needs adapting).
 type Reply struct {
 	Kind  string `json:"kind"`
 	Path  string `json:"path"`

@@ -5,7 +5,8 @@
 // model-agnostic wire shape and needs its own translator).
 //
 // **Scope**: verified against real captured cassettes (langchain-ai/langchain-aws,
-// MIT, see testdata/vendor-cassettes/bedrock/langchain-ai-langchain-aws/) —
+// MIT, in the opencassette module's vendored corpus,
+// bedrock/langchain-ai-langchain-aws/) —
 // specifically the Claude-on-Bedrock-via-Converse cassettes. Converse is
 // designed to be model-family-agnostic (Titan/Nova/Llama/...), but this
 // translator has only been verified against Claude traffic; other model

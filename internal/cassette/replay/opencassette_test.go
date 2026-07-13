@@ -1,8 +1,8 @@
 package replay
 
 // This file replays the opencassette corpus — the purpose-built companion
-// dataset vendored as a git submodule at testdata/opencassette (module
-// github.com/zereker/opencassette). Unlike vendor-cassettes/ (third-party VCR
+// dataset the opencassette Go module embeds and exposes as opencassette.Corpus()
+// (github.com/zereker/opencassette). Unlike the vendored corpus (third-party VCR
 // fixtures incidentally published by langchain / simonw), the opencassette
 // corpus is recorded by us against our own scenario packs, and crucially
 // covers vendors for which no public recorded traffic existed at all — Zhipu
@@ -14,7 +14,7 @@ package replay
 // routes each file by that segment through the matching real gateway code —
 // the openai_gemini / openai_anthropic translators for the cross-protocol
 // vendors, the usage extractor for the OpenAI-native ones — and, like
-// TestZZZ_Completeness does for vendor-cassettes/, fails loudly if any file is
+// TestZZZ_Completeness does for the vendored corpus, fails loudly if any file is
 // neither exercised nor consciously accounted for, so a newly-recorded vendor
 // can never silently land without a replay test covering it.
 

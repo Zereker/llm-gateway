@@ -1,150 +1,115 @@
 # testdata/
 
-Repo-root shared test fixtures — anything used by more than one package (or
-by both a unit-test layer and the integration-test layer) lives here, not
-nested inside whichever package happened to consume it first. See
-`internal/cassette.TestdataPath` for how a test file finds this directory:
-it resolves an **absolute** path from `internal/cassette/cassette.go`'s own
-source location, so any package can call `cassette.TestdataPath("vendor-cassettes", "...")`
-regardless of its own nesting depth or the test runner's working directory —
-no hand-counted `"../../..."` relative paths to get wrong or silently break
-when a file moves.
+Repo-root shared test fixtures — the **llm-gateway-specific** scaffolding the
+e2e suite needs. The bulk real-traffic corpora are *not* here: they come from
+the opencassette Go module (see "Real cassette corpora" below). What remains is
+`fieldmatrix/` — hand-shaped fixtures, endpoint manifests, and golden outputs
+purpose-built for this gateway's tests. `internal/cassette.TestdataPath`
+resolves an **absolute** path to this directory from `cassette.go`'s own source
+location, so any package can call e.g. `cassette.TestdataPath("fieldmatrix",
+"endpoints")` regardless of its nesting depth or the test runner's working
+directory — no hand-counted `"../../..."` relative paths to get wrong.
 
 ```
 testdata/
-├── vendor-cassettes/   real, raw VCR cassettes: third-party-licensed sources (per-source-repo dirs);
-│                       see vendor-cassettes/README.md for provenance/licenses
-└── fieldmatrix/        curated/sanitized fixtures for the gateway's own e2e suite
-
-(Recording new real traffic — a recorder, credential scrubbing, scenario packs — now
-lives in the opencassette project, not here; see the "opencassette corpus" section below.)
+└── fieldmatrix/        curated/sanitized fixtures + manifests for the gateway's own e2e suite
     ├── endpoints/      per-vendor endpoint-seed manifests (vendor/protocol/model/auth/reply)
+    ├── upstream/       sanitized derivative upstream responses for specific e2e scenarios
     └── golden/         hand-reviewed exact-match fixtures for internal/cassette/replay's TestGolden* tests
 ```
 
-## `vendor-cassettes/` — real upstream traffic, unmodified
+## Real cassette corpora — the opencassette Go module
 
-Real request/response pairs recorded by third-party open-source projects
-against actual vendor APIs (Anthropic / Gemini / Cohere / OpenAI), vendored
-in as-recorded (only auth headers scrubbed, by the recording tool itself,
-not by us). See `vendor-cassettes/README.md` for full provenance/license
-detail per source.
+The real recorded vendor traffic that used to live here (`vendor-cassettes/`)
+now comes from the [`github.com/zereker/opencassette`](https://github.com/zereker/opencassette)
+module, which embeds two corpora and exposes each as an `fs.FS`:
+
+- `opencassette.Corpus()` — opencassette's **own** recordings against its
+  scenario packs, covering vendors for which no public recorded traffic existed
+  at all (Zhipu GLM, MiniMax, Moonshot Kimi, Volcano ARK) plus fresh AWS Bedrock
+  (Anthropic wire) / Azure (OpenAI + Responses) / Google Gemini captures.
+- `opencassette.Vendored()` — the **third-party** cassettes (langchain partner
+  packages, simonw's `llm-*` plugins) recorded against live vendor APIs and
+  published under Apache-2.0 / MIT, kept for their value as a real-world
+  reference of each vendor's wire shape (Anthropic / Gemini / Cohere / OpenAI /
+  Bedrock).
+
+`internal/cassette` reads both via `LoadFS` / `LoadDirFS`, handling the two
+cassette formats (pytest-recording's `interactions:` and langchain's parallel
+`requests:`/`responses:` lists) plus transparent gunzip (`*.yaml.gz` and
+gzipped bodies). Because the corpora are embedded in a versioned dependency, a
+plain `go test` resolves them — no submodule, no checked-out tree. Recording new
+traffic (a recorder, credential scrubbing, scenario packs) also lives in
+opencassette, not here.
 
 **Consumers:**
-- `internal/cassette` — the loader (`Load`/`LoadDir`) that parses both
-  on-disk cassette formats found across these sources.
-- `internal/cassette/replay` — unit-ish tests that replay every interaction
-  in every file through the real translator/extractor code
-  (`internal/translator/openai_anthropic` etc.), asserting no case is
-  silently unaccounted for (see that package's `zzz_completeness_test.go`).
-- `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` — pulls
-  specific real response bodies from here as the canned reply for a mock
-  upstream, so the *integration* test exercises real vendor data too, one
-  layer above the translator.
+- `internal/cassette/replay` — replays every cassette in both corpora through
+  the real translator/extractor code, with completeness enforcement (a file
+  that stops being claimed is a hard failure). `TestReplayOpenCassetteCorpus`
+  covers `Corpus()`; the per-vendor `TestReplay*` suites cover `Vendored()`.
+- `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` and the
+  `cmd/mockupstream` smoke test — a mock upstream replays a real captured body
+  per manifest, so the full middleware chain runs on real data. `reply.kind`
+  picks the source (see `endpoints/` below).
 
-**When you need real data for a new unit test**: check here first before
-writing a synthetic literal. If the exact shape you need isn't covered yet,
-see that directory's README for how to add a new source.
+## `fieldmatrix/` — curated e2e fixtures (llm-gateway-specific)
 
-## opencassette corpus — our own recordings (Go module dependency)
+Purpose-built for `internal/app/gateway`'s own e2e suite (`fieldmatrix_test.go`,
+`fieldmatrix_multivendor_test.go`) — hand-shaped for specific scenarios, unlike
+the raw/unmodified opencassette corpora:
 
-Not a directory here: the opencassette corpus is pulled in as a **Go module**,
-[`github.com/zereker/opencassette`](https://github.com/zereker/opencassette),
-which embeds its recordings (`//go:embed`). `opencassette.Corpus()` returns an
-`fs.FS` rooted at the corpus, so a cassette's name is its
-`<vendor>/<model>/<protocol>/<stream|nostream>/<scenario>.yaml` path.
-
-opencassette is a purpose-built companion project that records real vendor
-traffic against our own scenario packs and, crucially, covers vendors for which
-**no public recorded traffic exists at all** — Zhipu GLM, MiniMax, Moonshot
-Kimi, Volcano ARK — plus AWS Bedrock (Anthropic wire) / Azure (OpenAI +
-Responses) / Google Gemini captures. The on-disk format is pytest-recording's
-`interactions:` plus a provenance `meta:` block, which `internal/cassette`
-reads via `LoadFS` / `LoadDirFS` (the `fs.FS` counterparts of `Load`/`LoadDir`)
-with no special-casing — it ignores the unknown `meta:` key.
-
-Because the corpus is embedded in a versioned dependency, no submodule or
-checked-out tree is needed — a plain `go test` resolves it like any other
-module.
-
-**Consumers** (both wired so a newly-recorded vendor can't land without
-coverage):
-- `internal/cassette/replay`'s `TestReplayOpenCassetteCorpus` — walks
-  `opencassette.Corpus()` and routes every file by its wire-protocol path
-  segment through the matching translator/extractor (openai_anthropic /
-  openai_gemini / the OpenAI + Responses extractors), failing loudly if any
-  file is left unaccounted for.
-- `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` — endpoint
-  manifests with `reply.kind: "opencassette"` (Zhipu/MiniMax/Moonshot on the
-  OpenAI protocol, plus Gemini/Anthropic repointed here) reply with a real
-  captured body from the corpus, so the full middleware chain
-  (auth → routing → translation → billing) runs against our own real data.
-
-vs. `vendor-cassettes/`: that directory is third-party fixtures vendored
-in-tree; opencassette is our own corpus, versioned as an external module and
-pulled in by reference. Both are raw/unmodified real traffic — hand-shaped
-per-scenario derivatives still go in `fieldmatrix/`.
-
-## `fieldmatrix/` — curated e2e fixtures
-
-Two kinds of file, both purpose-built for `internal/app/gateway`'s own e2e
-suite (`fieldmatrix_test.go`, `fieldmatrix_multivendor_test.go`):
 - `*.json` — full-parameter **client request** bodies (every field a real
-  upstream is known to accept), used to assert the gateway forwards fields
-  it should and drops/rejects fields it can't translate.
-- `upstream/*.json|*.sse` — **sanitized derivatives** of real captured
-  vendor responses (see `upstream/README.md`), shaped for a specific e2e
-  scenario (a truncated array, a redacted opaque blob) rather than kept
-  byte-for-byte like `vendor-cassettes/`.
+  upstream is known to accept), used to assert the gateway forwards fields it
+  should and drops/rejects fields it can't translate.
+- `upstream/*.json|*.sse` — **sanitized derivatives** of real captured vendor
+  responses (see `upstream/README.md`), shaped for a specific e2e scenario (a
+  truncated array, a redacted opaque blob) rather than kept byte-for-byte.
 
-If you're not sure whether a new fixture belongs here or in
-`vendor-cassettes/`: raw/unmodified real traffic goes in `vendor-cassettes/`;
+Rule of thumb: raw/unmodified real traffic belongs in the opencassette corpora;
 anything hand-shaped for one specific test scenario goes in `fieldmatrix/`.
 
 ### `endpoints/` — per-vendor endpoint-seed manifests
 
-One JSON file per upstream vendor (see `internal/cassette/vendorfixture` for
-the loader and exact field shape): vendor / protocol / model / auth type /
-auth payload / which upstream path to route to / which real response to reply
-with — `reply.kind` selects the source: `"cassette"` (`vendor-cassettes/`),
-`"opencassette"` (the `opencassette/` submodule corpus), or `"fixture"`
-(`fieldmatrix/upstream/`).
+One JSON file per upstream vendor (see `internal/cassette/vendorfixture` for the
+loader and exact field shape): vendor / protocol / model / auth type / auth
+payload / which upstream path to route to / which real response to reply with.
+`reply.kind` selects the response source:
 
-**Consumers**, both reading the *same* files so there is exactly one place
-that declares "these are the vendors this gateway supports end-to-end":
+- `"opencassette"` — a cassette from `opencassette.Corpus()` (our own recordings).
+- `"cassette"` — a cassette from `opencassette.Vendored()` (third-party corpus).
+- `"fixture"` — a whole file from `fieldmatrix/upstream/` (a curated derivative).
+
+**Consumers**, both reading the *same* files so there is exactly one place that
+declares "these are the vendors this gateway supports end-to-end":
 - `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` — in-process e2e.
 - `scripts/seed-multivendor` — seeds a real MySQL instance for
   `scripts/e2e-smoke-multivendor.sh`'s real-binary (`cmd/gateway` +
   `cmd/mockupstream`) black-box run.
 
-Adding a vendor to *both* is one new JSON file here — see any existing file
-for the shape, and `cmd/mockupstream`'s doc comment for which
-`upstream_path` values it actually serves.
+Adding a vendor to *both* is one new JSON file here — see any existing file for
+the shape, and `cmd/mockupstream`'s doc comment for which `upstream_path` values
+it actually serves.
 
 ### `golden/` — exact-match fixtures (a stricter companion to the replay suite)
 
-`internal/cassette/replay`'s ordinary tests (`TestReplay*`) only assert
-"this is a well-formed OpenAI response" — they'd miss a translator bug that
-swaps two fields but keeps the shape valid (e.g. mapping `stopReason:
-tool_use` to `finish_reason: "stop"` instead of `"tool_calls"` — a real
-regression a coverage number can't tell you is caught). The handful of
-`TestGolden*` tests in that package compare a translator's *exact* output
-against a fixture here, byte for byte (after normalizing the two fields
-every `openai_*` translator generates itself — a random `id`, a `created`
-timestamp — so the comparison isn't flaky by construction).
+`internal/cassette/replay`'s ordinary tests (`TestReplay*`) only assert "this is
+a well-formed OpenAI response" — they'd miss a translator bug that swaps two
+fields but keeps the shape valid (e.g. mapping `stopReason: tool_use` to
+`finish_reason: "stop"` instead of `"tool_calls"`). The handful of `TestGolden*`
+tests compare a translator's *exact* output against a fixture here, byte for
+byte (after normalizing the random `id` / `created` timestamp every `openai_*`
+translator generates, so the comparison isn't flaky by construction).
 
-**These fixtures are not self-verifying.** A new one is only trustworthy
-after a human reads the generated output next to the real cassette
-interaction it came from and confirms the translation is actually correct —
-regenerating a fixture from a translator that has a bug bakes the bug in as
-the new "expected" output. Workflow:
+**These fixtures are not self-verifying.** A new one is only trustworthy after a
+human reads the generated output next to the real cassette interaction it came
+from and confirms the translation is actually correct — regenerating a fixture
+from a buggy translator bakes the bug in as the new "expected" output. Workflow:
 
 ```sh
 UPDATE_GOLDEN=1 go test ./internal/cassette/replay/... -run TestGolden -v
 git diff testdata/fieldmatrix/golden/   # read it by hand before committing
 ```
 
-Use this sparingly — on scenarios worth pinning down precisely (a tool call,
-an extended-thinking turn) — not as a wholesale replacement for the
-shape-only checks across the full real-cassette corpus, which stay useful
-for "did this crash or produce garbage" on everything else.
+Use this sparingly — on scenarios worth pinning down precisely (a tool call, an
+extended-thinking turn) — not as a wholesale replacement for the shape-only
+checks across the full corpora.

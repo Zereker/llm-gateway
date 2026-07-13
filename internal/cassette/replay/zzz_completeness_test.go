@@ -18,13 +18,13 @@ import (
 // would otherwise sort even later than "zzz_".
 //
 // It is the actual enforcement of "not a single case gets silently dropped":
-// every *.yaml file cassette.LoadDir finds under vendor-cassettes must have
+// every *.yaml file cassette.LoadDirFS finds in the vendored corpus must have
 // been either claim()ed by a replay subtest above, or explicitly
 // markNotApplicable() with a reason. A file matching neither means some
 // classifier regressed (or a new vendor cassette source was vendored without
 // wiring a replay test for it) — that is a hard failure, not a warning.
 func TestZZZ_Completeness(t *testing.T) {
-	all, err := cassette.LoadDir(vendorRoot)
+	all, err := cassette.LoadDirFS(vendored)
 	if err != nil {
 		t.Fatalf("LoadDir: %v", err)
 	}

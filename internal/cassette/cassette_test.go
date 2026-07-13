@@ -1,10 +1,11 @@
 package cassette
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/zereker/opencassette"
 )
 
 // TestLoadFS_and_LoadDirFS exercises the fs.FS loaders (the counterparts of
@@ -52,14 +53,17 @@ func TestLoadFS_and_LoadDirFS(t *testing.T) {
 	}
 }
 
-var vendorRoot = TestdataPath("vendor-cassettes")
+// vendored is the third-party corpus, read from the opencassette module's
+// embedded FS. The format tests below exercise the fs.FS loaders against real
+// two-format + gzipped data (they used to read testdata/vendor-cassettes/ on
+// disk, before that tree moved into the opencassette dependency).
+var vendored = opencassette.Vendored()
 
-func TestLoad_InteractionsFormat(t *testing.T) {
+func TestLoadFS_InteractionsFormat(t *testing.T) {
 	// simonw's pytest-recording format: top-level `interactions:`.
-	path := filepath.Join(vendorRoot, "anthropic/simonw-llm-anthropic/test_tools.yaml")
-	interactions, err := Load(path)
+	interactions, err := LoadFS(vendored, "anthropic/simonw-llm-anthropic/test_tools.yaml")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("LoadFS: %v", err)
 	}
 	if len(interactions) == 0 {
 		t.Fatalf("want at least 1 interaction, got 0")
@@ -73,12 +77,11 @@ func TestLoad_InteractionsFormat(t *testing.T) {
 	}
 }
 
-func TestLoad_RequestsResponsesFormat(t *testing.T) {
+func TestLoadFS_RequestsResponsesFormat(t *testing.T) {
 	// langchain-ai/langchain's own format: parallel `requests:`/`responses:`.
-	path := filepath.Join(vendorRoot, "anthropic/langchain-ai-langchain/test_citations.yaml")
-	interactions, err := Load(path)
+	interactions, err := LoadFS(vendored, "anthropic/langchain-ai-langchain/test_citations.yaml")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("LoadFS: %v", err)
 	}
 	if len(interactions) != 3 {
 		t.Fatalf("want 3 interactions, got %d", len(interactions))
@@ -95,14 +98,13 @@ func TestLoad_RequestsResponsesFormat(t *testing.T) {
 	}
 }
 
-func TestLoad_GzippedBinaryBody(t *testing.T) {
+func TestLoadFS_GzippedBinaryBody(t *testing.T) {
 	// simonw's cassette with a real gzip-compressed !!binary response body
 	// (see test_tools.yaml's second interaction — vision/tool-call responses
 	// there are gzip-compressed, unlike test_citations.yaml's plain !!binary).
-	path := filepath.Join(vendorRoot, "anthropic/simonw-llm-anthropic/test_tools.yaml")
-	interactions, err := Load(path)
+	interactions, err := LoadFS(vendored, "anthropic/simonw-llm-anthropic/test_tools.yaml")
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("LoadFS: %v", err)
 	}
 	found := false
 	for _, it := range interactions {
@@ -115,13 +117,13 @@ func TestLoad_GzippedBinaryBody(t *testing.T) {
 	}
 }
 
-func TestLoadDir_CoversAllFiles(t *testing.T) {
-	all, err := LoadDir(vendorRoot)
+func TestLoadDirFS_CoversAllFiles(t *testing.T) {
+	all, err := LoadDirFS(vendored)
 	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
+		t.Fatalf("LoadDirFS: %v", err)
 	}
 	if len(all) < 100 {
-		t.Fatalf("want at least 100 cassette files under vendor-cassettes, found %d", len(all))
+		t.Fatalf("want at least 100 cassette files in the vendored corpus, found %d", len(all))
 	}
 	for _, path := range SortedKeys(all) {
 		if len(all[path]) == 0 {

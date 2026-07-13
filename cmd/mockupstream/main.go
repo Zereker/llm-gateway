@@ -5,7 +5,7 @@
 //
 // At startup it loads the same testdata/fieldmatrix/endpoints manifests the
 // gateway seeds from (see loadRecordedReplies) and, keyed by upstream model,
-// replays each manifest's recorded response — opencassette / vendor-cassettes /
+// replays each manifest's recorded response — opencassette (own) / vendored /
 // fixture, the exact data the in-process e2e (internal/app/gateway) validates —
 // so the real-binary smoke test exercises real captured vendor traffic. A model
 // with no manifest entry falls back to a canned per-protocol response (with
@@ -52,7 +52,7 @@ import (
 // body this mock returns for it, loaded once at startup from the same
 // testdata/fieldmatrix/endpoints manifests the gateway seeds from (see
 // loadRecordedReplies). This makes the real-binary smoke test replay the exact
-// captured vendor data — opencassette / vendor-cassettes / fixture — that the
+// captured vendor data — opencassette (own) / vendored / fixture — that the
 // in-process e2e (internal/app/gateway) already validates, instead of a canned
 // per-protocol stub. A model with no manifest entry falls back to the canned
 // response below, so the mock still runs standalone for ad-hoc debugging.

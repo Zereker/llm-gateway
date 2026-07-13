@@ -7,7 +7,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/translator/openai_cohere"
 )
 
-// cohereDirs are every vendor-cassettes source that captured real
+// cohereDirs are every vendored-corpus source that captured real
 // api.cohere.com traffic. Like Gemini, Cohere is upstream-only in this
 // gateway, so only the response direction (openai_cohere) has a translator
 // to replay through.

@@ -1,13 +1,11 @@
 // Package cassette loads real VCR cassette fixtures (recorded HTTP
-// request/response pairs) vendored under testdata/vendor-cassettes/ (repo
-// root) so unit tests (translator/extractor) and integration tests (the
-// gateway's own SQL-backed e2e suite) can both replay real upstream traffic
-// instead of hand-written literals, from a single shared, canonical
-// location — see TestdataPath for how any package finds it regardless of
-// its own nesting depth or the test runner's working directory.
+// request/response pairs) from an fs.FS — in practice the corpora the
+// opencassette module embeds (github.com/zereker/opencassette: Corpus() for
+// our own recordings, Vendored() for the third-party ones) — so unit tests
+// (translator/extractor) and the SQL-backed e2e suite can both replay real
+// upstream traffic instead of hand-written literals.
 //
-// Two on-disk cassette formats are supported (both used across the vendored
-// sources — see that directory's README for provenance):
+// Two cassette formats are supported (both appear across the corpora):
 //
 //   - pytest-recording's own format: a top-level `interactions:` list, each
 //     with a `request`/`response` pair.
@@ -16,14 +14,14 @@
 //
 // A body may be a plain YAML string, a `!!binary` scalar (base64,
 // gzip-compressed or not), or — in pytest-recording's variant — nested one
-// level under a `string:` key. Load normalizes all of that into plain []byte,
-// transparently gunzipping where the gzip magic bytes are present.
+// level under a `string:` key. LoadFS normalizes all of that into plain
+// []byte, transparently gunzipping where the gzip magic bytes are present. The
+// whole file may also be gzip-compressed (`*.yaml.gz`); LoadDirFS globs both
+// `*.yaml` and `*.yaml.gz`.
 //
-// The **whole file** may also be gzip-compressed (langchain-ai/langchain-aws
-// stores its cassettes as `*.yaml.gz` to keep the repo small) — Load detects
-// the gzip magic bytes up front and transparently decompresses before
-// parsing, so a vendored source's on-disk compression choice doesn't need
-// normalizing at vendor-in time; LoadDir globs both `*.yaml` and `*.yaml.gz`.
+// TestdataPath is unrelated to the corpora — it locates the repo's own on-disk
+// fixtures under testdata/ (e.g. fieldmatrix/), which are llm-gateway-specific
+// scaffolding, not shared corpus.
 package cassette
 
 import (
@@ -32,7 +30,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -51,11 +48,11 @@ var repoRoot = func() string {
 }()
 
 // TestdataPath returns an absolute path to testdata/<elem...> at the repo
-// root (e.g. TestdataPath("vendor-cassettes", "anthropic") ->
-// "<repo>/testdata/vendor-cassettes/anthropic"). Safe to call from any
-// package's test file regardless of nesting depth — unlike a hand-counted
-// relative path ("../../testdata/..."), it doesn't silently break if either
-// the caller or testdata/ itself moves one level.
+// root (e.g. TestdataPath("fieldmatrix", "endpoints") ->
+// "<repo>/testdata/fieldmatrix/endpoints"). Safe to call from any package's
+// test file regardless of nesting depth — unlike a hand-counted relative path
+// ("../../testdata/..."), it doesn't silently break if either the caller or
+// testdata/ itself moves one level.
 func TestdataPath(elem ...string) string {
 	return filepath.Join(append([]string{repoRoot, "testdata"}, elem...)...)
 }
@@ -68,21 +65,8 @@ type Interaction struct {
 	ResponseBody []byte // nil if the response genuinely had no body
 }
 
-// Load reads a single cassette YAML file from the local filesystem and returns
-// its interactions in recorded order.
-func Load(path string) ([]Interaction, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("cassette: read %s: %w", path, err)
-	}
-
-	return parseCassette(raw, path)
-}
-
-// LoadFS is Load for a cassette read from an fs.FS (e.g. an embed.FS) rather
-// than the local filesystem — used by consumers that pull the corpus in as a
-// Go module (github.com/zereker/opencassette exposes its recordings via
-// embed) instead of a checked-out working tree or git submodule.
+// LoadFS reads a single cassette from an fs.FS (e.g. the embed.FS the
+// opencassette module exposes) and returns its interactions in recorded order.
 func LoadFS(fsys fs.FS, name string) ([]Interaction, error) {
 	raw, err := fs.ReadFile(fsys, name)
 	if err != nil {
@@ -92,8 +76,8 @@ func LoadFS(fsys fs.FS, name string) ([]Interaction, error) {
 	return parseCassette(raw, name)
 }
 
-// parseCassette turns a raw cassette file's bytes into interactions, shared by
-// Load (os) and LoadFS (fs.FS). name is only used for error messages.
+// parseCassette turns a raw cassette file's bytes into interactions. name is
+// only used for error messages.
 func parseCassette(raw []byte, name string) ([]Interaction, error) {
 	raw = gunzipIfNeeded(raw)
 
@@ -194,47 +178,9 @@ func gunzipIfNeeded(b []byte) []byte {
 	return out
 }
 
-// LoadDir walks dir recursively and loads every *.yaml / *.yaml.gz file
-// found. The returned map is keyed by path relative to dir (forward-slash
-// separated), sorted access via Paths for deterministic iteration.
-func LoadDir(dir string) (map[string][]Interaction, error) {
-	out := make(map[string][]Interaction)
-
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if d.IsDir() || (!strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yaml.gz")) {
-			return nil
-		}
-
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-
-		interactions, err := Load(path)
-		if err != nil {
-			return err
-		}
-
-		out[filepath.ToSlash(rel)] = interactions
-
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return out, nil
-}
-
-// LoadDirFS walks an fs.FS (e.g. an embed.FS rooted at a corpus directory) and
-// loads every *.yaml / *.yaml.gz file found, keyed by fs path (already
-// forward-slash separated, relative to the fs root). The fs.FS counterpart to
-// LoadDir — used when the corpus is embedded in a dependency module rather than
-// present as files on disk.
+// LoadDirFS walks an fs.FS (e.g. the embed.FS rooted at a corpus directory the
+// opencassette module exposes) and loads every *.yaml / *.yaml.gz file found,
+// keyed by fs path (forward-slash separated, relative to the fs root).
 func LoadDirFS(fsys fs.FS) (map[string][]Interaction, error) {
 	out := make(map[string][]Interaction)
 
