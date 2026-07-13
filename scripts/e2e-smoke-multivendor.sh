@@ -143,13 +143,18 @@ wait_http "http://127.0.0.1:$GATEWAY_PORT/healthz" 60 || {
 # 4) seed one endpoint + one real api_key per vendor
 # ============================================================================
 echo "[smoke-mv] seed multi-vendor data"
-go run ./scripts/seed-multivendor \
+# Capture stdout: seed-multivendor prints one "<vendor> model=<model> api_key=<key>"
+# line per manifest, which step 5 loops over — so the curl coverage always
+# matches testdata/fieldmatrix/endpoints/ exactly, with no per-vendor blocks
+# to keep in sync by hand.
+SEEDED="$(go run ./scripts/seed-multivendor \
   -dsn "$DSN" \
   -data-key "$DATA_KEY" \
-  -mock-base "http://127.0.0.1:$MOCK_PORT" || {
+  -mock-base "http://127.0.0.1:$MOCK_PORT")" || {
   echo "seed failed" >&2
   exit 1
 }
+echo "$SEEDED"
 
 # repo TTL cache defaults to 30s; see scripts/e2e-smoke.sh's identical note.
 sleep 2
@@ -167,53 +172,30 @@ check_openai_shaped() {
   fi
 }
 
-echo "[smoke-mv] curl openai (/v1/chat/completions)"
-RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
-  -H "Authorization: Bearer sk-mv-openai" -H "Content-Type: application/json" \
-  -d '{"model":"mock-openai-model","messages":[{"role":"user","content":"hi"}]}')"
-CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
-if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (openai): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped openai "$BODY"; fi
+# Every vendor is reachable through the OpenAI client entry point — including
+# the cross-protocol upstreams (anthropic/gemini/cohere/bedrock), which the
+# gateway translates. Loop over what seed-multivendor actually seeded.
+while read -r VENDOR MODEL_KV KEY_KV; do
+  [[ -z "$VENDOR" ]] && continue
+  MODEL="${MODEL_KV#model=}"
+  KEY="${KEY_KV#api_key=}"
 
-echo "[smoke-mv] curl anthropic (/v1/messages)"
+  echo "[smoke-mv] curl $VENDOR (model=$MODEL via /v1/chat/completions)"
+  RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
+    -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+    -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")"
+  CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
+  if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL ($VENDOR): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped "$VENDOR" "$BODY"; fi
+done <<<"$SEEDED"
+
+# The Anthropic *client* protocol (/v1/messages) is its own entry point — the
+# loop above only exercises the OpenAI one, so keep one explicit check here.
+echo "[smoke-mv] curl anthropic client protocol (/v1/messages)"
 RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/messages" \
   -H "Authorization: Bearer sk-mv-anthropic" -H "Content-Type: application/json" \
   -d '{"model":"mock-anthropic-model","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}')"
 CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
-if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (anthropic): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped anthropic "$BODY"; fi
-
-# gemini/cohere are upstream-only (no client-facing protocol -- see CLAUDE.md's
-# "Client Protocol Scope"); clients reach them through the OpenAI chat endpoint.
-echo "[smoke-mv] curl gemini (via /v1/chat/completions)"
-RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
-  -H "Authorization: Bearer sk-mv-gemini" -H "Content-Type: application/json" \
-  -d '{"model":"mock-gemini-model","messages":[{"role":"user","content":"hi"}]}')"
-CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
-if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (gemini): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped gemini "$BODY"; fi
-
-echo "[smoke-mv] curl cohere (via /v1/chat/completions)"
-RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
-  -H "Authorization: Bearer sk-mv-cohere" -H "Content-Type: application/json" \
-  -d '{"model":"mock-cohere-model","messages":[{"role":"user","content":"hi"}]}')"
-CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
-if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (cohere): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped cohere "$BODY"; fi
-
-# azure-openai is also upstream-only client-side (same client-facing OpenAI
-# endpoint; only the upstream URL shape + api-key header differ, both handled
-# entirely on the gateway side).
-echo "[smoke-mv] curl azure-openai (via /v1/chat/completions)"
-RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
-  -H "Authorization: Bearer sk-mv-azure-openai" -H "Content-Type: application/json" \
-  -d '{"model":"mock-azure-openai-model","messages":[{"role":"user","content":"hi"}]}')"
-CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
-if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (azure-openai): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped azure-openai "$BODY"; fi
-
-# bedrock (Converse API) is also upstream-only client-side.
-echo "[smoke-mv] curl bedrock (via /v1/chat/completions)"
-RESP="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
-  -H "Authorization: Bearer sk-mv-bedrock" -H "Content-Type: application/json" \
-  -d '{"model":"mock-bedrock-model","messages":[{"role":"user","content":"hi"}]}')"
-CODE="${RESP##*$'\n'}"; BODY="${RESP%$'\n'*}"
-if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (bedrock): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped bedrock "$BODY"; fi
+if [[ "$CODE" != "200" ]]; then echo "[smoke-mv] FAIL (anthropic /v1/messages): HTTP $CODE: $BODY" >&2; FAIL=1; else check_openai_shaped "anthropic /v1/messages" "$BODY"; fi
 
 if [[ "$FAIL" != "0" ]]; then
   echo "[smoke-mv] one or more vendors FAILED; gateway log (last 30):" >&2
@@ -221,4 +203,4 @@ if [[ "$FAIL" != "0" ]]; then
   exit 1
 fi
 
-echo "[smoke-mv] PASS (openai, anthropic, gemini, cohere, azure-openai, bedrock)"
+echo "[smoke-mv] PASS ($(echo "$SEEDED" | awk '{print $1}' | paste -sd, -))"

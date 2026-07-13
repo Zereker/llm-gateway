@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/translator/anthropic_openai"
 	"github.com/zereker/llm-gateway/internal/translator/openai_anthropic"
+	"github.com/zereker/opencassette/cassette"
 )
 
 // anthropicDirs are every vendored-corpus source that captured real

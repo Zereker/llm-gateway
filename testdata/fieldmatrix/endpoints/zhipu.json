@@ -7,7 +7,7 @@
   "upstream_auth": {"api_key": "sk-upstream-mock-zhipu"},
   "upstream_path": "/v1/chat/completions",
   "reply": {
-    "kind": "opencassette",
+    "kind": "cassette",
     "path": "zhipu/GLM-5.2/openai/nostream/chat_basic.yaml",
     "index": 0
   }

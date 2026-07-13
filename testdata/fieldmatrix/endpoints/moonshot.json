@@ -7,7 +7,7 @@
   "upstream_auth": {"api_key": "sk-upstream-mock-moonshot"},
   "upstream_path": "/v1/chat/completions",
   "reply": {
-    "kind": "opencassette",
+    "kind": "cassette",
     "path": "moonshot/kimi-k2.6/openai/nostream/chat_basic.yaml",
     "index": 0
   }

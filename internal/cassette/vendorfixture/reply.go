@@ -1,28 +1,44 @@
 package vendorfixture
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/zereker/opencassette"
+	"github.com/zereker/opencassette/cassette"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
+	fixturepath "github.com/zereker/llm-gateway/internal/cassette"
 )
 
 // ResolveReply loads the raw upstream response body a scenario's reply points
-// at, from the same three sources both e2e consumers understand — so the
+// at, from the same two sources both e2e consumers understand — so the
 // in-process test (internal/app/gateway) and the real-binary mock upstream
 // (cmd/mockupstream) resolve a manifest's reply identically, from one place:
 //
-//   - "fixture":      testdata/fieldmatrix/upstream/<path>, whole file verbatim
-//   - "cassette":     response body #Index of a third-party cassette, read
-//     from the opencassette module's embedded vendored corpus (Vendored())
-//   - "opencassette": response body #Index of an opencassette-corpus cassette,
-//     read from the module's own recorded corpus (Corpus())
+//   - "cassette": response body #Index of a real recorded cassette from the
+//     opencassette module — looked up in Corpus() (our own recordings) first,
+//     then Vendored() (the third-party corpus). The two trees' top-level
+//     vendor directories are disjoint, so a path is never ambiguous.
+//   - "fixture":  testdata/fieldmatrix/upstream/<path>, whole file verbatim
+//     (a curated/sanitized derivative).
 func ResolveReply(r Reply) ([]byte, error) {
 	switch r.Kind {
+	case "cassette":
+		its, err := cassette.LoadFS(opencassette.Corpus(), r.Path)
+		if errors.Is(err, fs.ErrNotExist) {
+			its, err = cassette.LoadFS(opencassette.Vendored(), r.Path)
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("vendorfixture: %s not found in either opencassette corpus (own or vendored): %w", r.Path, err)
+		}
+
+		return replyBodyAt(its, r)
+
 	case "fixture":
-		path := cassette.TestdataPath("fieldmatrix", "upstream", r.Path)
+		path := fixturepath.TestdataPath("fieldmatrix", "upstream", r.Path)
 
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -30,22 +46,6 @@ func ResolveReply(r Reply) ([]byte, error) {
 		}
 
 		return b, nil
-
-	case "cassette":
-		its, err := cassette.LoadFS(opencassette.Vendored(), r.Path)
-		if err != nil {
-			return nil, err
-		}
-
-		return replyBodyAt(its, r)
-
-	case "opencassette":
-		its, err := cassette.LoadFS(opencassette.Corpus(), r.Path)
-		if err != nil {
-			return nil, err
-		}
-
-		return replyBodyAt(its, r)
 
 	default:
 		return nil, fmt.Errorf("vendorfixture: unknown reply.kind %q", r.Kind)

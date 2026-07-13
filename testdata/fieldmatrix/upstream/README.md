@@ -7,17 +7,10 @@
 | 文件 | 协议 / 形态 | 结构要点 |
 |---|---|---|
 | `chat-openai-compat.json` | OpenAI Chat 非流 | 含 `reasoning_content` 扩展字段 |
-| `chat-openai-compat-stream.sse` | OpenAI Chat 流 | SSE（截取头尾），保留 usage chunk 与 `[DONE]` |
-| `chat-openai-compat-toolcall.json` | OpenAI Chat 非流 | `finish_reason=tool_calls` 的工具调用响应 |
 | `chat-openai-compat-reasoning.json` | OpenAI Chat 非流 | 含 `matched_stop` / `reasoning_tokens` 等厂商扩展字段 |
-| `messages-anthropic-compat.json` | Anthropic Messages 非流 | 含 `thinking` block + `tool_use` |
 | `messages-anthropic-compat-stream.sse` | Anthropic Messages 流 | **厂商变体**：`message_start` 里 `input_tokens=0`，完整 usage 在 `message_delta`（区别于官方在 `message_start`），是 extractor 兼容性回归的关键样本 |
 | `responses-native.json` | OpenAI Responses 非流 | 原生 Responses 响应，含 `reasoning` 输出项与 `status` |
-| `responses-native-stream.sse` | OpenAI Responses 流 | SSE（截取），保留 `response.completed` 的嵌套 usage |
-| `images-openai-compat.json` | Images 生成 | usage 用 `output_tokens` 字段族 + `generated_images` 扩展（URL 已脱敏） |
 | `messages-anthropic-compat-thinking-stream.sse` | Anthropic Messages 流 | extended thinking：`thinking_delta` → `signature_delta`（真实签名），usage 含 `cache_creation`/`service_tier`/`inference_geo` |
-| `messages-anthropic-compat-server-tool-use-stream.sse` | Anthropic Messages 流 | server-side 工具（web search）：`server_tool_use` block + `web_search_tool_result`（结果数组截断到 1 条，`encrypted_content` 已替换为占位），usage 含 `server_tool_use.web_search_requests` 计费维度 |
-| `gemini-native-thought-signature.json` | Gemini generateContent 非流（JSON array 形态） | `functionCall` part 上的 `thoughtSignature`（Gemini 3 对单次函数调用推理链的签名，多轮历史里必须原样带回去）；usage 含 `promptTokensDetails`/`thoughtsTokenCount` |
 
 同目录上一级的 `chat-full.json` / `responses-full.json` / `responses-text.json` 是配套的满参数**请求** fixtures。
 
@@ -25,11 +18,11 @@
 
 ## 来源与许可
 
-`messages-anthropic-compat-thinking-stream.sse` 和 `messages-anthropic-compat-server-tool-use-stream.sse` 两个文件的数据来自 [simonw/llm-anthropic](https://github.com/simonw/llm-anthropic)（Apache License 2.0）的 `tests/cassettes/test_anthropic/test_stream_events_thinking.yaml` / `test_web_search.yaml` VCR cassette，经 gzip 解压 + 截断/脱敏后收录。原始 cassette 里没有 API key（pytest-recording 录制时已排除鉴权头），我们额外把 `web_search_tool_result` 里的 `encrypted_content` 不透明 blob 替换成占位字符串，并把结果数组截断到 1 条以控制文件体积。相关测试用例见 `internal/translator/openai_anthropic/translator_test.go` 里的 `TestStreaming_Thinking` / `TestTranslateResponse_Thinking` / `TestTranslateRequest_ThinkingRoundTrip`（用真实数据内联在测试里,不是从本文件读取）。
+`messages-anthropic-compat-thinking-stream.sse` 的数据来自 [simonw/llm-anthropic](https://github.com/simonw/llm-anthropic)（Apache License 2.0）的 `tests/cassettes/test_anthropic/test_stream_events_thinking.yaml` VCR cassette，经 gzip 解压 + 截断/脱敏后收录（原始 cassette 里没有 API key——pytest-recording 录制时已排除鉴权头）。相关测试用例见 `internal/translator/openai_anthropic/translator_test.go` 里的 `TestStreaming_Thinking` / `TestTranslateResponse_Thinking` / `TestTranslateRequest_ThinkingRoundTrip`（用真实数据内联在测试里,不是从本文件读取）。原始 cassette 全文（含 web search 等本目录已不再保留衍生样本的场景）在 opencassette 模块的 `Vendored()` 语料里。
 
 同一个 cassette 仓库的 `test_image_prompt.yaml` 提供了一张真实的 base64 PNG，用在 `openai_anthropic`/`anthropic_openai`/`openai_gemini`/`openai_cohere` 四个包的 `TestTranslateRequest_Image*` 系列测试里验证多模态图片透传（内联在测试代码中，未单独存成 fixture 文件——它是一张通用图片，不是某个厂商专属数据，跨包复用没问题）。
 
-`gemini-native-thought-signature.json` 的数据来自 [simonw/llm-gemini](https://github.com/simonw/llm-gemini)（Apache License 2.0）的 `tests/cassettes/test_gemini/test_tools_with_gemini_3_thought_signatures.yaml` VCR cassette，经 gzip 解压后原样收录（体积小，未截断；不含 API key）。相关测试见 `internal/translator/openai_gemini/translator_test.go` 里的 `TestTranslateResponse_ThoughtSignature` / `TestTranslateRequest_ThoughtSignatureRoundTrip` / `TestResponseHandler_SSE_ThoughtSignature`（真实签名值内联在测试里）。
+Gemini 3 `thoughtSignature` 的真实数据（来自 [simonw/llm-gemini](https://github.com/simonw/llm-gemini)，Apache License 2.0）内联在 `internal/translator/openai_gemini/translator_test.go` 的 `TestTranslateResponse_ThoughtSignature` / `TestTranslateRequest_ThoughtSignatureRoundTrip` / `TestResponseHandler_SSE_ThoughtSignature` 里；原始 cassette（`test_tools_with_gemini_3_thought_signatures.yaml`）在 opencassette 模块的 `Vendored()` 语料里。
 
 `internal/translator/openai_cohere` 的 tool calling / vision / reasoning 覆盖用真实数据核对，来自 [langchain-ai/langchain-cohere](https://github.com/langchain-ai/langchain-cohere)（MIT License）`libs/cohere/tests/integration_tests/cassettes/` 下的多个 VCR cassette：`test_invoke_tool_calls.yaml` / `test_streaming_tool_call.yaml`（v2/chat 的 tool_calls + 流式 tool-call-start/delta/end 事件形状）、`test_invoke_with_vision_base64.yaml`（image_url 透传）、`test_who_founded_cohere_with_custom_documents.yaml`（citations 的真实字段形状：`sources[].type=document`，无 URL，证实了它确实不能映射到 OpenAI `annotations[].url_citation`——这个设计决策仍待用户拍板，未写代码）、`test_command_a_reasoning_with_tool_call.yaml`（command-a-reasoning-08-2025 的 `{"type":"thinking","thinking":...}` 内容块，Cohere 版的 extended thinking，但不带签名，也不需要在历史里原样带回——这点额外用 Vercel AI SDK 的 Cohere provider 源码（`packages/cohere/src/convert-to-cohere-chat-prompt.ts`，同样丢弃 reasoning 不回传）交叉验证）。相关测试见 `internal/translator/openai_cohere/translator_test.go` 里的 `TestTranslateResponse_Thinking` / `TestCohereStreamTranslate_Thinking`（真实数据内联在测试里）。
 

@@ -18,7 +18,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/tidwall/gjson v1.19.0
-	github.com/zereker/opencassette v0.0.3
+	github.com/zereker/opencassette v0.0.4
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0

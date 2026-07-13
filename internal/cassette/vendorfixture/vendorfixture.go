@@ -25,12 +25,10 @@ import (
 )
 
 // Reply picks which real captured data a mock upstream should hand back for
-// this scenario, all resolved by ResolveReply. Kind "opencassette" reads
-// response body #Index from opencassette.Corpus() (our own purpose-recorded
-// captures, notably for vendors — Zhipu / MiniMax / Moonshot — that have no
-// third-party cassette to borrow); kind "cassette" reads response body #Index
-// from opencassette.Vendored() (the third-party corpus); kind "fixture" reads
-// the whole file verbatim from testdata/fieldmatrix/upstream/Path (a
+// this scenario, all resolved by ResolveReply. Kind "cassette" reads response
+// body #Index from the opencassette module's corpora — Corpus() (our own
+// recordings) first, then Vendored() (third-party); kind "fixture" reads the
+// whole file verbatim from testdata/fieldmatrix/upstream/Path (a
 // curated/sanitized derivative, for vendors where the raw shape needs adapting).
 type Reply struct {
 	Kind  string `json:"kind"`
@@ -108,9 +106,9 @@ func (sc Scenario) validate() error {
 	}
 
 	switch sc.Reply.Kind {
-	case "cassette", "opencassette", "fixture":
+	case "cassette", "fixture":
 	default:
-		return fmt.Errorf("reply.kind must be one of %q/%q/%q, got %q", "cassette", "opencassette", "fixture", sc.Reply.Kind)
+		return fmt.Errorf("reply.kind must be %q or %q, got %q", "cassette", "fixture", sc.Reply.Kind)
 	}
 
 	if sc.Reply.Path == "" {

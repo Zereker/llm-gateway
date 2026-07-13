@@ -75,8 +75,10 @@ loader and exact field shape): vendor / protocol / model / auth type / auth
 payload / which upstream path to route to / which real response to reply with.
 `reply.kind` selects the response source:
 
-- `"opencassette"` — a cassette from `opencassette.Corpus()` (our own recordings).
-- `"cassette"` — a cassette from `opencassette.Vendored()` (third-party corpus).
+- `"cassette"` — a real recorded cassette from the opencassette module, looked
+  up in `Corpus()` (our own recordings) first, then `Vendored()` (third-party);
+  the two trees' top-level vendor directories are disjoint, so a path is never
+  ambiguous.
 - `"fixture"` — a whole file from `fieldmatrix/upstream/` (a curated derivative).
 
 **Consumers**, both reading the *same* files so there is exactly one place that

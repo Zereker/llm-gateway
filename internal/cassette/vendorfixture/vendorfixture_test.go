@@ -48,8 +48,8 @@ func TestLoadDir_RealManifests(t *testing.T) {
 			t.Errorf("expected an opencassette-backed manifest for vendor %q", v)
 			continue
 		}
-		if sc.Reply.Kind != "opencassette" {
-			t.Errorf("%s: reply.kind = %q, want \"opencassette\"", v, sc.Reply.Kind)
+		if sc.Reply.Kind != "cassette" {
+			t.Errorf("%s: reply.kind = %q, want \"cassette\"", v, sc.Reply.Kind)
 		}
 		if sc.Protocol != proto {
 			t.Errorf("%s: protocol = %q, want %q", v, sc.Protocol, proto)
