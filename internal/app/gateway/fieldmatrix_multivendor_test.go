@@ -29,54 +29,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zereker/opencassette"
-
 	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/cassette/vendorfixture"
 	"github.com/zereker/llm-gateway/internal/config"
 	"github.com/zereker/llm-gateway/internal/infra"
 	"github.com/zereker/llm-gateway/internal/repo"
 )
-
-// realCassetteResponse loads interaction index idx's response body from a
-// vendor-cassettes file (relative to testdata/vendor-cassettes/ at the repo
-// root — see cassette.TestdataPath).
-func realCassetteResponse(t *testing.T, relPath string, idx int) []byte {
-	t.Helper()
-	interactions, err := cassette.Load(cassette.TestdataPath("vendor-cassettes", relPath))
-	if err != nil {
-		t.Fatalf("cassette.Load %s: %v", relPath, err)
-	}
-	if idx >= len(interactions) {
-		t.Fatalf("%s: want interaction #%d, only has %d", relPath, idx, len(interactions))
-	}
-	body := interactions[idx].ResponseBody
-	if len(body) == 0 {
-		t.Fatalf("%s: interaction #%d has an empty response body", relPath, idx)
-	}
-	return body
-}
-
-// realOpenCassetteResponse loads interaction index idx's response body from a
-// cassette in the opencassette corpus, read from the embedded corpus the
-// opencassette module ships (opencassette.Corpus(), an fs.FS rooted at
-// corpus/) — so these opencassette-backed vendors seed from a versioned Go
-// dependency, no submodule or checked-out tree required.
-func realOpenCassetteResponse(t *testing.T, relPath string, idx int) []byte {
-	t.Helper()
-	interactions, err := cassette.LoadFS(opencassette.Corpus(), relPath)
-	if err != nil {
-		t.Fatalf("opencassette corpus load %s: %v", relPath, err)
-	}
-	if idx >= len(interactions) {
-		t.Fatalf("%s: want interaction #%d, only has %d", relPath, idx, len(interactions))
-	}
-	body := interactions[idx].ResponseBody
-	if len(body) == 0 {
-		t.Fatalf("%s: interaction #%d has an empty response body", relPath, idx)
-	}
-	return body
-}
 
 // vendorScenario is a vendorfixture.Scenario (vendor/protocol/model/auth —
 // loaded from testdata/fieldmatrix/endpoints/) plus its resolved reply body
@@ -86,23 +44,17 @@ type vendorScenario struct {
 	reply []byte // real captured response body the mock upstream always returns
 }
 
-// resolveReply loads the response body a scenario's manifest points at:
-// "fixture" reads testdata/fieldmatrix/upstream/<path> verbatim; "cassette"
-// reads response body #index from a real VCR file under
-// testdata/vendor-cassettes/<path>.
+// resolveReply loads the raw upstream response body a scenario's manifest
+// points at, via vendorfixture.ResolveReply — the one resolver shared with the
+// real-binary mock upstream (cmd/mockupstream), covering the "fixture",
+// "cassette", and "opencassette" reply kinds.
 func resolveReply(t *testing.T, r vendorfixture.Reply) []byte {
 	t.Helper()
-	switch r.Kind {
-	case "fixture":
-		return readFixtureFile(t, cassette.TestdataPath("fieldmatrix", "upstream", r.Path))
-	case "cassette":
-		return realCassetteResponse(t, r.Path, r.Index)
-	case "opencassette":
-		return realOpenCassetteResponse(t, r.Path, r.Index)
-	default:
-		t.Fatalf("resolveReply: unknown reply.kind %q", r.Kind)
-		return nil
+	body, err := vendorfixture.ResolveReply(r)
+	if err != nil {
+		t.Fatalf("resolveReply: %v", err)
 	}
+	return body
 }
 
 // seedMultiVendorScenarios seeds one account, one quota-eligible subscription
@@ -327,15 +279,6 @@ func TestE2E_MultiVendor_AllProtocols(t *testing.T) {
 			}
 		})
 	}
-}
-
-func readFixtureFile(t *testing.T, path string) []byte {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return b
 }
 
 func truncateForLog(s string) string {
