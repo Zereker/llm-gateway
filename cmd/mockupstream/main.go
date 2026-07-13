@@ -1,8 +1,15 @@
 // Command mockupstream is a fake upstream for E2E tests: it emulates the
-// OpenAI Chat Completions / Anthropic Messages protocols with fixed
-// responses that include usage fields, so the gateway M10 + Flink billing
-// aggregation pipeline can be exercised without depending on real
-// OpenAI/Anthropic keys.
+// OpenAI Chat Completions / Anthropic Messages / Gemini / Cohere / Bedrock
+// protocols, so the gateway M10 + Flink billing aggregation pipeline can be
+// exercised without depending on real vendor keys.
+//
+// At startup it loads the same testdata/fieldmatrix/endpoints manifests the
+// gateway seeds from (see loadRecordedReplies) and, keyed by upstream model,
+// replays each manifest's recorded response — opencassette / vendor-cassettes /
+// fixture, the exact data the in-process e2e (internal/app/gateway) validates —
+// so the real-binary smoke test exercises real captured vendor traffic. A model
+// with no manifest entry falls back to a canned per-protocol response (with
+// usage fields), so the mock still runs standalone for ad-hoc debugging.
 //
 // Routes:
 //
@@ -28,6 +35,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -35,13 +43,84 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/zereker/llm-gateway/internal/cassette"
+	"github.com/zereker/llm-gateway/internal/cassette/vendorfixture"
 )
+
+// recordedReplies maps an upstream model name to the raw recorded response
+// body this mock returns for it, loaded once at startup from the same
+// testdata/fieldmatrix/endpoints manifests the gateway seeds from (see
+// loadRecordedReplies). This makes the real-binary smoke test replay the exact
+// captured vendor data — opencassette / vendor-cassettes / fixture — that the
+// in-process e2e (internal/app/gateway) already validates, instead of a canned
+// per-protocol stub. A model with no manifest entry falls back to the canned
+// response below, so the mock still runs standalone for ad-hoc debugging.
+var recordedReplies map[string][]byte
+
+// loadRecordedReplies builds the model -> recorded-body map from the endpoint
+// manifests. A manifest that can't be loaded or a reply that can't be resolved
+// is logged and skipped (that model then gets the canned response) rather than
+// aborting startup — the mock must still come up for the health check.
+func loadRecordedReplies() map[string][]byte {
+	m := map[string][]byte{}
+
+	scenarios, err := vendorfixture.LoadDir(cassette.TestdataPath("fieldmatrix", "endpoints"))
+	if err != nil {
+		slog.Warn("mockupstream: manifests not loaded; serving canned responses only", "err", err)
+		return m
+	}
+
+	for _, sc := range scenarios {
+		body, err := vendorfixture.ResolveReply(sc.Reply)
+		if err != nil {
+			slog.Warn("mockupstream: reply unresolved; model gets canned response",
+				"vendor", sc.Vendor, "model", sc.Model, "err", err)
+
+			continue
+		}
+
+		m[sc.Model] = body
+	}
+
+	slog.Info("mockupstream: recorded replies loaded", "models", len(m))
+
+	return m
+}
+
+// serveRecorded writes the recorded reply for model and returns true when one
+// exists; otherwise it returns false so the caller falls back to its canned
+// body. The Content-Type mirrors the recorded body's shape (SSE vs JSON), the
+// same sniff the in-process mock upstream uses.
+func serveRecorded(w http.ResponseWriter, model string) bool {
+	if model == "" {
+		return false
+	}
+
+	body, ok := recordedReplies[model]
+	if !ok {
+		return false
+	}
+
+	trimmed := bytes.TrimSpace(body)
+	if bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("data:")) {
+		writeSSEHeaders(w)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+
+	_, _ = w.Write(body)
+
+	return true
+}
 
 func main() {
 	addr := os.Getenv("MOCK_ADDR")
 	if addr == "" {
 		addr = ":9090"
 	}
+
+	recordedReplies = loadRecordedReplies()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -84,6 +163,10 @@ func handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	var req openAIRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json: "+err.Error(), 400)
+		return
+	}
+
+	if serveRecorded(w, req.Model) {
 		return
 	}
 
@@ -190,6 +273,10 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if serveRecorded(w, req.Model) {
+		return
+	}
+
 	model := req.Model
 	if model == "" {
 		model = "claude-3-5-sonnet-20241022"
@@ -280,6 +367,10 @@ func handleGemini(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if serveRecorded(w, model) {
+		return
+	}
+
 	const (
 		prompt     = 10
 		candidates = 6
@@ -341,6 +432,10 @@ func handleCohereChat(w http.ResponseWriter, r *http.Request) {
 	var req cohereRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json: "+err.Error(), 400)
+		return
+	}
+
+	if serveRecorded(w, req.Model) {
 		return
 	}
 
@@ -412,6 +507,10 @@ type converseRequest struct {
 // No signature verification (SigV4) -- the mock accepts any request that
 // parses as JSON.
 func handleBedrockConverse(w http.ResponseWriter, r *http.Request) {
+	if serveRecorded(w, bedrockModelFromPath(r.URL.Path)) {
+		return
+	}
+
 	var req converseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json: "+err.Error(), 400)
@@ -441,6 +540,25 @@ func handleBedrockConverse(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 // helpers
 // =============================================================================
+
+// bedrockModelFromPath extracts the model id from a Converse request path of
+// the form /model/<modelId>/converse (or /converse-stream), so a recorded
+// reply can be keyed by the same model the manifest seeds.
+func bedrockModelFromPath(p string) string {
+	const prefix = "/model/"
+
+	i := strings.Index(p, prefix)
+	if i < 0 {
+		return ""
+	}
+
+	rest := p[i+len(prefix):]
+	if j := strings.Index(rest, "/"); j >= 0 {
+		rest = rest[:j]
+	}
+
+	return rest
+}
 
 func writeJSON(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")

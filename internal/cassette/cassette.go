@@ -31,6 +31,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,19 +68,38 @@ type Interaction struct {
 	ResponseBody []byte // nil if the response genuinely had no body
 }
 
-// Load reads a single cassette YAML file and returns its interactions in
-// recorded order.
+// Load reads a single cassette YAML file from the local filesystem and returns
+// its interactions in recorded order.
 func Load(path string) ([]Interaction, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cassette: read %s: %w", path, err)
 	}
 
+	return parseCassette(raw, path)
+}
+
+// LoadFS is Load for a cassette read from an fs.FS (e.g. an embed.FS) rather
+// than the local filesystem — used by consumers that pull the corpus in as a
+// Go module (github.com/zereker/opencassette exposes its recordings via
+// embed) instead of a checked-out working tree or git submodule.
+func LoadFS(fsys fs.FS, name string) ([]Interaction, error) {
+	raw, err := fs.ReadFile(fsys, name)
+	if err != nil {
+		return nil, fmt.Errorf("cassette: read %s: %w", name, err)
+	}
+
+	return parseCassette(raw, name)
+}
+
+// parseCassette turns a raw cassette file's bytes into interactions, shared by
+// Load (os) and LoadFS (fs.FS). name is only used for error messages.
+func parseCassette(raw []byte, name string) ([]Interaction, error) {
 	raw = gunzipIfNeeded(raw)
 
 	var doc map[string]any
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("cassette: parse %s: %w", path, err)
+		return nil, fmt.Errorf("cassette: parse %s: %w", name, err)
 	}
 
 	if interactions, ok := doc["interactions"].([]any); ok {
@@ -200,6 +220,39 @@ func LoadDir(dir string) (map[string][]Interaction, error) {
 		}
 
 		out[filepath.ToSlash(rel)] = interactions
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
+// LoadDirFS walks an fs.FS (e.g. an embed.FS rooted at a corpus directory) and
+// loads every *.yaml / *.yaml.gz file found, keyed by fs path (already
+// forward-slash separated, relative to the fs root). The fs.FS counterpart to
+// LoadDir — used when the corpus is embedded in a dependency module rather than
+// present as files on disk.
+func LoadDirFS(fsys fs.FS) (map[string][]Interaction, error) {
+	out := make(map[string][]Interaction)
+
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() || (!strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yaml.gz")) {
+			return nil
+		}
+
+		interactions, err := LoadFS(fsys, path)
+		if err != nil {
+			return err
+		}
+
+		out[path] = interactions
 
 		return nil
 	})

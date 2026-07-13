@@ -7,8 +7,8 @@
   "upstream_auth": {"api_key": "sk-upstream-mock-gemini"},
   "upstream_path": "/v1beta/models/mock-gemini-model:generateContent",
   "reply": {
-    "kind": "cassette",
-    "path": "gemini/simonw-llm-gemini/test_tools.yaml",
+    "kind": "opencassette",
+    "path": "google/gemini-2.5-flash/gemini/nostream/content_basic.yaml",
     "index": 0
   }
 }

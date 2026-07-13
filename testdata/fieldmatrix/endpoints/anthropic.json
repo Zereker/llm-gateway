@@ -7,8 +7,8 @@
   "upstream_auth": {"api_key": "sk-upstream-mock-anthropic"},
   "upstream_path": "/v1/messages",
   "reply": {
-    "kind": "cassette",
-    "path": "anthropic/simonw-llm-anthropic/test_tools.yaml",
+    "kind": "opencassette",
+    "path": "aws/claude-opus-4-6/anthropic/nostream/msg_basic.yaml",
     "index": 0
   }
 }

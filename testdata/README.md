@@ -12,12 +12,12 @@ when a file moves.
 
 ```
 testdata/
-├── vendor-cassettes/   real, raw VCR cassettes: third-party-licensed sources (per-source-repo dirs)
-│                       + self-recorded ones (<vendor>/<model>/<protocol>/<stream|nostream>/, see
-│                       scripts/record-cassette and vendor-cassettes/README.md)
-├── record-scenarios/   standard request-body packs record-cassette's batch mode replays against a
-│                       new vendor — SDK-derived, coverage-enforced by internal/cassette/scenario's tests
+├── vendor-cassettes/   real, raw VCR cassettes: third-party-licensed sources (per-source-repo dirs);
+│                       see vendor-cassettes/README.md for provenance/licenses
 └── fieldmatrix/        curated/sanitized fixtures for the gateway's own e2e suite
+
+(Recording new real traffic — a recorder, credential scrubbing, scenario packs — now
+lives in the opencassette project, not here; see the "opencassette corpus" section below.)
     ├── endpoints/      per-vendor endpoint-seed manifests (vendor/protocol/model/auth/reply)
     └── golden/         hand-reviewed exact-match fixtures for internal/cassette/replay's TestGolden* tests
 ```
@@ -46,6 +46,45 @@ detail per source.
 writing a synthetic literal. If the exact shape you need isn't covered yet,
 see that directory's README for how to add a new source.
 
+## opencassette corpus — our own recordings (Go module dependency)
+
+Not a directory here: the opencassette corpus is pulled in as a **Go module**,
+[`github.com/zereker/opencassette`](https://github.com/zereker/opencassette),
+which embeds its recordings (`//go:embed`). `opencassette.Corpus()` returns an
+`fs.FS` rooted at the corpus, so a cassette's name is its
+`<vendor>/<model>/<protocol>/<stream|nostream>/<scenario>.yaml` path.
+
+opencassette is a purpose-built companion project that records real vendor
+traffic against our own scenario packs and, crucially, covers vendors for which
+**no public recorded traffic exists at all** — Zhipu GLM, MiniMax, Moonshot
+Kimi, Volcano ARK — plus AWS Bedrock (Anthropic wire) / Azure (OpenAI +
+Responses) / Google Gemini captures. The on-disk format is pytest-recording's
+`interactions:` plus a provenance `meta:` block, which `internal/cassette`
+reads via `LoadFS` / `LoadDirFS` (the `fs.FS` counterparts of `Load`/`LoadDir`)
+with no special-casing — it ignores the unknown `meta:` key.
+
+Because the corpus is embedded in a versioned dependency, no submodule or
+checked-out tree is needed — a plain `go test` resolves it like any other
+module.
+
+**Consumers** (both wired so a newly-recorded vendor can't land without
+coverage):
+- `internal/cassette/replay`'s `TestReplayOpenCassetteCorpus` — walks
+  `opencassette.Corpus()` and routes every file by its wire-protocol path
+  segment through the matching translator/extractor (openai_anthropic /
+  openai_gemini / the OpenAI + Responses extractors), failing loudly if any
+  file is left unaccounted for.
+- `internal/app/gateway`'s `TestE2E_MultiVendor_AllProtocols` — endpoint
+  manifests with `reply.kind: "opencassette"` (Zhipu/MiniMax/Moonshot on the
+  OpenAI protocol, plus Gemini/Anthropic repointed here) reply with a real
+  captured body from the corpus, so the full middleware chain
+  (auth → routing → translation → billing) runs against our own real data.
+
+vs. `vendor-cassettes/`: that directory is third-party fixtures vendored
+in-tree; opencassette is our own corpus, versioned as an external module and
+pulled in by reference. Both are raw/unmodified real traffic — hand-shaped
+per-scenario derivatives still go in `fieldmatrix/`.
+
 ## `fieldmatrix/` — curated e2e fixtures
 
 Two kinds of file, both purpose-built for `internal/app/gateway`'s own e2e
@@ -66,8 +105,10 @@ anything hand-shaped for one specific test scenario goes in `fieldmatrix/`.
 
 One JSON file per upstream vendor (see `internal/cassette/vendorfixture` for
 the loader and exact field shape): vendor / protocol / model / auth type /
-auth payload / which upstream path to route to / which real response
-(`vendor-cassettes/` or `fieldmatrix/upstream/`) to reply with.
+auth payload / which upstream path to route to / which real response to reply
+with — `reply.kind` selects the source: `"cassette"` (`vendor-cassettes/`),
+`"opencassette"` (the `opencassette/` submodule corpus), or `"fixture"`
+(`fieldmatrix/upstream/`).
 
 **Consumers**, both reading the *same* files so there is exactly one place
 that declares "these are the vendors this gateway supports end-to-end":

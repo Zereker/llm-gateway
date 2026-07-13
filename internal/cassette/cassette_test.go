@@ -4,7 +4,53 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
+
+// TestLoadFS_and_LoadDirFS exercises the fs.FS loaders (the counterparts of
+// Load/LoadDir used to read the opencassette module's embedded corpus) against
+// a tiny in-memory FS, so they're covered without depending on the on-disk
+// corpus or the external module.
+func TestLoadFS_and_LoadDirFS(t *testing.T) {
+	const doc = `interactions:
+- request:
+    method: POST
+    uri: https://example.test/v1/chat/completions
+    body: '{"model":"m","messages":[]}'
+  response:
+    body:
+      string: '{"object":"chat.completion","choices":[{"index":0}]}'
+`
+	fsys := fstest.MapFS{
+		"vendor/model/openai/nostream/basic.yaml": {Data: []byte(doc)},
+		"README.md": {Data: []byte("not a cassette — must be ignored")},
+	}
+
+	its, err := LoadFS(fsys, "vendor/model/openai/nostream/basic.yaml")
+	if err != nil {
+		t.Fatalf("LoadFS: %v", err)
+	}
+	if len(its) != 1 {
+		t.Fatalf("LoadFS: want 1 interaction, got %d", len(its))
+	}
+	if !strings.Contains(string(its[0].RequestBody), `"model":"m"`) {
+		t.Errorf("LoadFS: request body not decoded: %q", its[0].RequestBody)
+	}
+	if !strings.Contains(string(its[0].ResponseBody), "chat.completion") {
+		t.Errorf("LoadFS: response body not decoded: %q", its[0].ResponseBody)
+	}
+
+	all, err := LoadDirFS(fsys)
+	if err != nil {
+		t.Fatalf("LoadDirFS: %v", err)
+	}
+	if len(all) != 1 { // README.md is not *.yaml(.gz) and must be skipped
+		t.Fatalf("LoadDirFS: want 1 cassette, got %d: %v", len(all), SortedKeys(all))
+	}
+	if _, ok := all["vendor/model/openai/nostream/basic.yaml"]; !ok {
+		t.Errorf("LoadDirFS: expected key missing, got %v", SortedKeys(all))
+	}
+}
 
 var vendorRoot = TestdataPath("vendor-cassettes")
 

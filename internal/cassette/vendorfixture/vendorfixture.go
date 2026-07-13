@@ -26,9 +26,13 @@ import (
 
 // Reply picks which real captured data a mock upstream should hand back for
 // this scenario. Kind "cassette" reads response body #Index from a real VCR
-// file under testdata/vendor-cassettes/Path; kind "fixture" reads the whole
-// file verbatim from testdata/fieldmatrix/upstream/Path (a curated/sanitized
-// derivative, for vendors where the raw cassette shape needs adapting first).
+// file under testdata/vendor-cassettes/Path; kind "opencassette" reads
+// response body #Index from a cassette in the opencassette corpus submodule
+// (testdata/opencassette/corpus/Path) — our own purpose-recorded captures,
+// notably for vendors (Zhipu / MiniMax / Moonshot) that have no third-party
+// cassette to borrow; kind "fixture" reads the whole file verbatim from
+// testdata/fieldmatrix/upstream/Path (a curated/sanitized derivative, for
+// vendors where the raw cassette shape needs adapting first).
 type Reply struct {
 	Kind  string `json:"kind"`
 	Path  string `json:"path"`
@@ -105,9 +109,9 @@ func (sc Scenario) validate() error {
 	}
 
 	switch sc.Reply.Kind {
-	case "cassette", "fixture":
+	case "cassette", "opencassette", "fixture":
 	default:
-		return fmt.Errorf("reply.kind must be %q or %q, got %q", "cassette", "fixture", sc.Reply.Kind)
+		return fmt.Errorf("reply.kind must be one of %q/%q/%q, got %q", "cassette", "opencassette", "fixture", sc.Reply.Kind)
 	}
 
 	if sc.Reply.Path == "" {

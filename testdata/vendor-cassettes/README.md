@@ -119,29 +119,16 @@ body = req["body"]  # bytes，可能需要 gzip.decompress
 
 **不要**把这里的文件当成我们自己的 API 测试固件去跑（它们不是为我们的 schema 设计的）；它们是**协议形状的参照**——某个字段该长什么样,拿这里的真实数据核对,而不是凭印象猜。
 
-## 自己录制真实数据（`scripts/record-cassette`）
+## 自己录制真实数据 → 已迁到 opencassette
 
-有些厂商（DeepSeek / 智谱 GLM / MiniMax——两轮系统性搜索确认）在开源社区里**不存在**任何可收录的真实录制数据：各生态要么 mock、要么直接打真实 API（key-gated 不留档）、要么（litellm）录进带 TTL 的 Redis 缓存而非提交文件。对这类厂商，用仓库里的录制工具自己打一次真实 API 录下来：
+有些厂商（DeepSeek / 智谱 GLM / MiniMax / Moonshot / 火山 ARK 等）在开源社区里**不存在**任何可收录的真实录制数据。对这类厂商自己打真实 API 录制的工具链——录制器、凭证脱敏、场景包、authenticity 校验——**已经从本仓库迁到独立项目 [opencassette](https://github.com/zereker/opencassette)**（原 `scripts/record-cassette` + `internal/cassette/recorder` + `internal/cassette/scenario` + `testdata/record-scenarios/` 已随之删除）。
 
-```sh
-echo '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}' > /tmp/req.json
-RECORD_API_KEY=sk-... go run ./scripts/record-cassette \
-  -url https://api.deepseek.com/chat/completions \
-  -body-file /tmp/req.json \
-  -vendor deepseek -model deepseek-chat -name chat_basic
-# -> testdata/vendor-cassettes/deepseek/deepseek-chat/openai/nostream/chat_basic.yaml
-```
-
-- **目录布局由工具自动生成**,自录数据的标准层级是 `<vendor>/<model>/<protocol>/<stream|nostream>/<场景名>.yaml`：vendor/model/场景名来自 flag,protocol 默认 `openai`（`-protocol` 覆盖）,流式桶直接读请求体自己的 `"stream"` 字段,不用重复声明。第三方来源目录（`anthropic/simonw-llm-anthropic/` 这批）**不**套这个层级——它们是按来源仓库原样收录的（单个文件内部常混流式/非流式多次交互,物理上放不进单一桶）,溯源和 LICENSE 都挂在来源目录上,两套布局并存、按"自录 vs 收录"区分。
-- key 只从环境变量读（默认 `RECORD_API_KEY`），不进 shell history；落盘前按 header 名（`authorization`/`x-api-key`/…）**和** key 字面值双重脱敏成 `**REDACTED**`（实现见 `internal/cassette/recorder`，其单测证明写出的文件能被 `cassette.Load` 原样读回）。
-- 认证方式：`-auth bearer`（默认）/ `x-api-key` / `api-key` / `query:<param>`（key 在 URL 上，如 Gemini AI Studio 的 `query:key`）/ `none`；协议要求的额外头用 `-header "anthropic-version: 2023-06-01"`（可重复）。
-- 多轮对话（工具调用回环）：第二次调用加 `-append`，追加到同一个 cassette；多轮场景归属它**第一轮**落进的桶（第二轮常是非流式,文件不会因此搬家——桶分类的是场景,不是单次交互）。
-- 上游返回非 2xx 时**不落盘**（错误响应也是真实数据,但要求操作者看过错误、修好请求重录,而不是把报错默默提交进语料库）。
-- 自录数据没有第三方 LICENSE,在本 README 里记一行"何时、对哪个模型、录了什么"即可。
-- **提交前必须人工通读文件再 grep 一遍**——工具脱敏的是它认识的凭证,响应体里如果回显了别的敏感信息,工具不知道。
+- 录制：`opencassette record --url ... --scenario-dir packs/openai-chat --vendor deepseek --model deepseek-chat`，产物落在 opencassette 的 `corpus/<vendor>/<model>/<protocol>/<stream|nostream>/<场景>.yaml`。
+- llm-gateway 通过 Go module 依赖消费 opencassette 的 corpus（`opencassette.Corpus()` 内嵌 fs.FS），详见本仓库 `testdata/README.md` 的 “opencassette corpus” 一节。
+- 本目录（`vendor-cassettes/`）保留的是**第三方开源项目原样收录**的 cassette；新的自录数据不再进这里，而是进 opencassette 的 corpus。
 
 ## 注意
 
-- 这些 cassette 是第三方项目公开发布、允许再分发的测试固件（Apache 2.0 / MIT），不是我们调用真实 API 录制的（`self-recorded/` 目录除外,见上节）——`testdata/fieldmatrix/upstream/` 里经过脱敏/裁剪的衍生 fixture 才是我们主动整理过的。
+- 这些 cassette 是第三方项目公开发布、允许再分发的测试固件（Apache 2.0 / MIT），不是我们调用真实 API 录制的（自录数据现在在 opencassette）——`testdata/fieldmatrix/upstream/` 里经过脱敏/裁剪的衍生 fixture 才是我们主动整理过的。
 - pytest-recording 录制时已经把鉴权头（`x-api-key`/`authorization`）替换成 `**REDACTED**`，我们额外核对过一遍全部文件，没有发现任何真实密钥、token 或签名 URL。
 - 后续如果又找到新的真实数据源，照这个模式加：新开一个 `<vendor>/<source-repo>/` 目录，把原始 cassette 原样存进去,附上 LICENSE，在这份 README 里补一行说明覆盖了什么、以及我们的实现现状。

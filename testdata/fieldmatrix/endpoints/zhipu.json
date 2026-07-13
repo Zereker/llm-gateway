@@ -1,0 +1,14 @@
+{
+  "vendor": "zhipu",
+  "protocol": "openai",
+  "model": "GLM-5.2",
+  "auth_type": "bearer",
+  "client_api_key": "sk-mv-zhipu",
+  "upstream_auth": {"api_key": "sk-upstream-mock-zhipu"},
+  "upstream_path": "/v1/chat/completions",
+  "reply": {
+    "kind": "opencassette",
+    "path": "zhipu/GLM-5.2/openai/nostream/chat_basic.yaml",
+    "index": 0
+  }
+}
