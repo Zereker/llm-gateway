@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
+	"github.com/zereker/opencassette/cassette"
 )
 
 // openaiDirs are every vendored-corpus source that captured real
@@ -29,9 +29,13 @@ const (
 )
 
 func classifyOpenAIResponse(body []byte) openaiKind {
-	s := strings.TrimSpace(string(body))
+	// Normalize away insignificant whitespace before matching: real vendors
+	// pretty-print (`"object": "response"`, Azure) as often as they minify
+	// (`"object":"response"`, api.openai.com), and this classifier serves both
+	// the langchain vendored corpus and the opencassette one.
+	s := strings.ReplaceAll(strings.TrimSpace(string(body)), " ", "")
 	switch {
-	case strings.HasPrefix(s, "event:") || strings.HasPrefix(s, "data:"):
+	case isSSE(body):
 		switch {
 		case strings.Contains(s, `"object":"chat.completion.chunk"`):
 			return kindChat

@@ -27,10 +27,10 @@ import (
 
 	"github.com/zereker/opencassette"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/translator/openai_anthropic"
 	"github.com/zereker/llm-gateway/internal/translator/openai_gemini"
 	"github.com/zereker/llm-gateway/internal/usage/extractor"
+	"github.com/zereker/opencassette/cassette"
 )
 
 // protocolOf returns the wire-protocol segment of a corpus-relative path
@@ -57,34 +57,6 @@ func hasUsage(body []byte) bool {
 	return bytes.Contains(body, []byte(`"usage":{`)) ||
 		bytes.Contains(body, []byte(`"usage": {`)) ||
 		bytes.Contains(body, []byte("usageMetadata"))
-}
-
-// isSSE reports whether body is a Server-Sent-Events stream (as opposed to a
-// single JSON document) — recognized by a leading event:/data: line.
-func isSSE(body []byte) bool {
-	s := strings.TrimSpace(string(body))
-	return strings.HasPrefix(s, "data:") || strings.HasPrefix(s, "event:")
-}
-
-// looksLikeOpenAIChatBody reports whether body is a Chat Completions response
-// (streaming or not). Tolerant of whitespace — real vendors pretty-print
-// (`"object": "chat.completion"`) as often as they minify — so it can't reuse
-// classifyOpenAIResponse, which pins the minified form the langchain corpus
-// happened to use.
-func looksLikeOpenAIChatBody(body []byte) bool {
-	if isSSE(body) {
-		return bytes.Contains(body, []byte("chat.completion.chunk"))
-	}
-	return bytes.Contains(body, []byte("chat.completion"))
-}
-
-// looksLikeResponsesBody reports whether body is a Responses API response
-// (streaming or not), tolerant of whitespace the same way.
-func looksLikeResponsesBody(body []byte) bool {
-	if isSSE(body) {
-		return bytes.Contains(body, []byte("response."))
-	}
-	return bytes.Contains(body, []byte(`"object"`)) && bytes.Contains(body, []byte("response"))
 }
 
 // hasDoneTerminator reports whether an SSE stream ends with the OpenAI
@@ -223,7 +195,7 @@ func TestReplayOpenCassetteCorpus(t *testing.T) {
 				})
 
 			case "openai":
-				if !looksLikeOpenAIChatBody(body) {
+				if classifyOpenAIResponse(body) != kindChat {
 					continue
 				}
 				examined = true
@@ -246,7 +218,7 @@ func TestReplayOpenCassetteCorpus(t *testing.T) {
 				})
 
 			case "openai-responses":
-				if !looksLikeResponsesBody(body) {
+				if classifyOpenAIResponse(body) != kindResponses {
 					continue
 				}
 				examined = true

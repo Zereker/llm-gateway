@@ -24,9 +24,9 @@ import (
 
 	"github.com/zereker/opencassette"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/translator"
+	"github.com/zereker/opencassette/cassette"
 )
 
 // vendored is the third-party cassette corpus, read from the opencassette
@@ -130,6 +130,13 @@ func assertValidOpenAIChatOutput(t *testing.T, out []byte, label string) {
 	if !sawDone {
 		t.Fatalf("%s: SSE stream never sent data: [DONE]", label)
 	}
+}
+
+// isSSE reports whether body is a Server-Sent-Events stream (as opposed to a
+// single JSON document) — recognized by a leading event:/data: line.
+func isSSE(body []byte) bool {
+	s := strings.TrimSpace(string(body))
+	return strings.HasPrefix(s, "data:") || strings.HasPrefix(s, "event:")
 }
 
 func truncate(b []byte, n int) string {

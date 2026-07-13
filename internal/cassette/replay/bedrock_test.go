@@ -10,9 +10,9 @@ import (
 
 	"github.com/tidwall/gjson"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/protocol/bedrock"
 	"github.com/zereker/llm-gateway/internal/translator/openai_bedrock"
+	"github.com/zereker/opencassette/cassette"
 )
 
 // bedrockDirs are every vendored-corpus source that captured real Bedrock

@@ -3,7 +3,7 @@ package replay
 import (
 	"testing"
 
-	"github.com/zereker/llm-gateway/internal/cassette"
+	"github.com/zereker/opencassette/cassette"
 )
 
 // TestZZZ_Completeness must run after every other test in this package: Go
