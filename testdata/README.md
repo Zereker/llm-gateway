@@ -12,12 +12,12 @@ when a file moves.
 
 ```
 testdata/
-├── vendor-cassettes/   real, raw VCR cassettes: third-party-licensed sources (per-source-repo dirs)
-│                       + self-recorded ones (<vendor>/<model>/<protocol>/<stream|nostream>/, see
-│                       scripts/record-cassette and vendor-cassettes/README.md)
-├── record-scenarios/   standard request-body packs record-cassette's batch mode replays against a
-│                       new vendor — SDK-derived, coverage-enforced by internal/cassette/scenario's tests
+├── vendor-cassettes/   real, raw VCR cassettes: third-party-licensed sources (per-source-repo dirs);
+│                       see vendor-cassettes/README.md for provenance/licenses
 └── fieldmatrix/        curated/sanitized fixtures for the gateway's own e2e suite
+
+(Recording new real traffic — a recorder, credential scrubbing, scenario packs — now
+lives in the opencassette project, not here; see the "opencassette corpus" section below.)
     ├── endpoints/      per-vendor endpoint-seed manifests (vendor/protocol/model/auth/reply)
     └── golden/         hand-reviewed exact-match fixtures for internal/cassette/replay's TestGolden* tests
 ```
