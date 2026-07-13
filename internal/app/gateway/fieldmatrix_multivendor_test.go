@@ -5,11 +5,11 @@ package gateway
 // declared in testdata/fieldmatrix/endpoints/ as **distinct,
 // simultaneously-configured endpoints** with **distinct real API keys**,
 // each routed to its own mock upstream server replaying a real captured
-// response body from testdata/vendor-cassettes/ (see that directory's
-// README for provenance/licenses) — the same real-data corpus
-// internal/cassette/replay already exercises at the translator layer, one
-// level up: full auth + routing + protocol translation + billing, through
-// the real middleware chain, for every vendor at once.
+// response body resolved by vendorfixture.ResolveReply (from the opencassette
+// module's Corpus()/Vendored() corpora, or a fieldmatrix/upstream fixture) —
+// the same real data internal/cassette/replay already exercises at the
+// translator layer, one level up: full auth + routing + protocol translation
+// + billing, through the real middleware chain, for every vendor at once.
 //
 // Which vendors and how (protocol / auth type / which cassette to replay)
 // comes from testdata/fieldmatrix/endpoints/*.json — the same manifests

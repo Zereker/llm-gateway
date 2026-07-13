@@ -11,7 +11,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/translator/openai_anthropic"
 )
 
-// anthropicDirs are every vendor-cassettes source that captured real
+// anthropicDirs are every vendored-corpus source that captured real
 // api.anthropic.com traffic.
 var anthropicDirs = []string{
 	"anthropic/simonw-llm-anthropic",
@@ -69,7 +69,7 @@ func TestReplayAnthropicResponses(t *testing.T) {
 // TestReplayAnthropicResponses, which only checks the shape is valid and
 // would not notice e.g. thinking and answer text getting swapped.
 func TestGoldenAnthropicThinking(t *testing.T) {
-	its, err := cassette.Load(vendorRoot + "/anthropic/simonw-llm-anthropic/test_stream_events_thinking.yaml")
+	its, err := cassette.LoadFS(vendored, "anthropic/simonw-llm-anthropic/test_stream_events_thinking.yaml")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestGoldenAnthropicThinking(t *testing.T) {
 func TestReplayAnthropicRequests(t *testing.T) {
 	tr := anthropic_openai.New()
 	for _, dir := range anthropicDirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
+		files, err := loadVendoredDir(dir)
 		if err != nil {
 			t.Fatalf("LoadDir %s: %v", dir, err)
 		}

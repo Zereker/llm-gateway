@@ -15,7 +15,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/translator/openai_bedrock"
 )
 
-// bedrockDirs are every vendor-cassettes source that captured real Bedrock
+// bedrockDirs are every vendored-corpus source that captured real Bedrock
 // **Converse** API traffic (not InvokeModel — see
 // internal/translator/openai_bedrock's doc comment for why the two need
 // separate translators).
@@ -54,7 +54,7 @@ func TestReplayBedrockResponses(t *testing.T) {
 // valid and would not notice e.g. the tool name and arguments getting
 // swapped, or the finish_reason mapping regressing.
 func TestGoldenBedrockToolCall(t *testing.T) {
-	its, err := cassette.Load(vendorRoot + "/bedrock/langchain-ai-langchain-aws/test_agent_loop[v0].yaml.gz")
+	its, err := cassette.LoadFS(vendored, "bedrock/langchain-ai-langchain-aws/test_agent_loop[v0].yaml.gz")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestReplayBedrockConverseStreaming(t *testing.T) {
 	f := bedrock.Factory{}
 	tr := openai_bedrock.New()
 	for _, dir := range bedrockDirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
+		files, err := loadVendoredDir(dir)
 		if err != nil {
 			t.Fatalf("LoadDir %s: %v", dir, err)
 		}

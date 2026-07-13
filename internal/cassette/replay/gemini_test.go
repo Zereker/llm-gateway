@@ -7,7 +7,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/translator/openai_gemini"
 )
 
-// geminiDirs are every vendor-cassettes source that captured real
+// geminiDirs are every vendored-corpus source that captured real
 // generativelanguage.googleapis.com traffic. Gemini is upstream-only in this
 // gateway (no client-facing Gemini protocol — see CLAUDE.md's "Client
 // Protocol Scope"), so unlike Anthropic there is no reverse-direction

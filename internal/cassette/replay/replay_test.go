@@ -1,5 +1,5 @@
 // Package replay replays every real cassette under
-// testdata/vendor-cassettes/ (repo root) through the actual
+// the vendored corpus (opencassette.Vendored()) through the actual
 // translator / usage-extractor implementations, so the whole vendored real
 // upstream traffic corpus is exercised — not just the hand-picked highlight
 // cases inline in each translator's own tests.
@@ -16,20 +16,39 @@ package replay
 
 import (
 	"encoding/json"
+	"io/fs"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/zereker/opencassette"
 
 	"github.com/zereker/llm-gateway/internal/cassette"
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/translator"
 )
 
-var vendorRoot = cassette.TestdataPath("vendor-cassettes")
+// vendored is the third-party cassette corpus, read from the opencassette
+// module's embedded FS (github.com/zereker/opencassette). It replaces the
+// former on-disk testdata/vendor-cassettes/ tree — same files, same relative
+// paths, now sourced from the versioned dependency instead of a vendored copy.
+var vendored = opencassette.Vendored()
+
+// loadVendoredDir loads every cassette under dir (e.g.
+// "anthropic/simonw-llm-anthropic") within the vendored corpus, keyed relative
+// to dir — the fs.FS equivalent of the old LoadDir(vendorRoot+"/"+dir).
+func loadVendoredDir(dir string) (map[string][]cassette.Interaction, error) {
+	sub, err := fs.Sub(vendored, dir)
+	if err != nil {
+		return nil, err
+	}
+
+	return cassette.LoadDirFS(sub)
+}
 
 // claimed / notApplicable together must account for every file cassette.LoadDir
-// finds under vendorRoot. claimed = "a replay subtest fed at least one
+// finds in the vendored corpus. claimed = "a replay subtest fed at least one
 // interaction from this file through real gateway code". notApplicable =
 // "inspected and consciously out of scope" (e.g. an Embeddings-API cassette —
 // there is no chat/response translator for that), with a reason string so it
@@ -155,7 +174,7 @@ type vendorReplayConfig struct {
 func runResponseReplay(t *testing.T, cfg vendorReplayConfig) {
 	t.Helper()
 	for _, dir := range cfg.dirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
+		files, err := loadVendoredDir(dir)
 		if err != nil {
 			t.Fatalf("LoadDir %s: %v", dir, err)
 		}
@@ -198,7 +217,7 @@ func runResponseReplay(t *testing.T, cfg vendorReplayConfig) {
 func runRequestWellFormedCheck(t *testing.T, dirs []string) {
 	t.Helper()
 	for _, dir := range dirs {
-		files, err := cassette.LoadDir(vendorRoot + "/" + dir)
+		files, err := loadVendoredDir(dir)
 		if err != nil {
 			t.Fatalf("LoadDir %s: %v", dir, err)
 		}

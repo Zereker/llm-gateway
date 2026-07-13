@@ -15,10 +15,10 @@ import (
 // (cmd/mockupstream) resolve a manifest's reply identically, from one place:
 //
 //   - "fixture":      testdata/fieldmatrix/upstream/<path>, whole file verbatim
-//   - "cassette":     response body #Index of a vendor-cassettes VCR file
+//   - "cassette":     response body #Index of a third-party cassette, read
+//     from the opencassette module's embedded vendored corpus (Vendored())
 //   - "opencassette": response body #Index of an opencassette-corpus cassette,
-//     read from the corpus embedded in the opencassette module (no submodule
-//     or checked-out tree needed)
+//     read from the module's own recorded corpus (Corpus())
 func ResolveReply(r Reply) ([]byte, error) {
 	switch r.Kind {
 	case "fixture":
@@ -32,7 +32,7 @@ func ResolveReply(r Reply) ([]byte, error) {
 		return b, nil
 
 	case "cassette":
-		its, err := cassette.Load(cassette.TestdataPath("vendor-cassettes", r.Path))
+		its, err := cassette.LoadFS(opencassette.Vendored(), r.Path)
 		if err != nil {
 			return nil, err
 		}
