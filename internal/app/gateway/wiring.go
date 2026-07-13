@@ -137,9 +137,9 @@ func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.Endpoin
 
 	var store selector.EndpointStatsStore
 	switch cfg.Driver {
-	case "", "inmemory":
+	case "", config.DriverInMemory:
 		store = selector.NewInMemoryStatsStore(decay)
-	case "redis":
+	case config.DriverRedis:
 		store = selector.NewRedisStatsStore(rdb, "llm-gateway:sched", decay, cfg.StatsTTL)
 	default:
 		panic("buildScoring: unknown scoring.driver " + cfg.Driver + " (want inmemory|redis)")
@@ -326,7 +326,7 @@ func buildBudgetGate(cfg config.BudgetConfig) middleware.BudgetGate {
 	switch cfg.Driver {
 	case "", "alwayspass":
 		return middleware.AlwaysPassGate{}
-	case "inmemory":
+	case config.DriverInMemory:
 		return middleware.NewInMemoryBudgetGate(cfg.DefaultBalance)
 	default:
 		panic("unknown budget driver: " + cfg.Driver)

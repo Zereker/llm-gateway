@@ -264,7 +264,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 		// pull traffic out of rotation)
 		Readiness: []router.ReadinessChecker{
 			{Name: "mysql", Check: sqldb.PingContext},
-			{Name: "redis", Check: func(ctx context.Context) error { return rdb.Ping(ctx).Err() }},
+			{Name: config.DriverRedis, Check: func(ctx context.Context) error { return rdb.Ping(ctx).Err() }},
 		},
 	})
 

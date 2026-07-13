@@ -584,7 +584,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Budget.Driver {
-	case "", "alwayspass", "inmemory":
+	case "", "alwayspass", DriverInMemory:
 	default:
 		return fmt.Errorf("budget.driver=%q not supported (use alwayspass|inmemory)", c.Budget.Driver)
 	}
@@ -619,7 +619,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Scoring.Driver {
-	case "", "inmemory", "redis":
+	case "", DriverInMemory, DriverRedis:
 	default:
 		return fmt.Errorf("scoring.driver=%q not supported (use inmemory|redis)", c.Scoring.Driver)
 	}
