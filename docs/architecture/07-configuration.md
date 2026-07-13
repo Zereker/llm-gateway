@@ -43,6 +43,20 @@ database:
   driver: mysql
   dsn: "user:pass@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
   max_open_conns: 50
+
+rate_limit:
+  # M6 counter store: redis (default; fleet-wide counters, required for
+  # multi-replica) | inmemory (process-local counters, identical sliding-window
+  # semantics; single-replica / local dev / tests only -- see docs/04 §5)
+  driver: redis
+
+vendors:
+  # Deployment-local OpenAI-compatible vendor names, registered on the shared
+  # OpenAI Factory at startup -- extends the compiled-in list in
+  # internal/protocol/openai.Aliases() without a rebuild. Endpoint SQL rows can
+  # then use these names as `vendor` with `protocol: openai`. Names colliding
+  # with a built-in non-OpenAI vendor fail startup.
+  openai_compatible: []   # e.g. ["acme-llm"]
   max_idle_conns: 10
   conn_max_lifetime: 30m
 
@@ -250,6 +264,8 @@ Fail-fast is split into two layers, each covering a different class of error:
 - `content_log.driver` only accepts `none|file`; other values (including the legacy `kafka`) fail fast at startup.
 - When `content_log.driver=file`, `file.path` is required.
 - When `content_log.backpressure=block`, `block_timeout > 0` must be configured, to avoid blocking the response path indefinitely.
+- `rate_limit.driver` only accepts `redis|inmemory`.
+- `vendors.openai_compatible` entries must be non-empty, whitespace-free, and unique; collisions with a built-in **non-OpenAI** vendor (anthropic / gemini / cohere / bedrock / azureopenai) are caught at assembly time (`builtin.NewLookup` panics).
 
 **Real connections at startup (inside buildEngine)** -- validates errors "that string checks can't catch":
 

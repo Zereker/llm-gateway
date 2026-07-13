@@ -30,6 +30,20 @@ import (
 //     must maintain for it
 //
 // An unrecognized name panics directly (fail-fast; surfaces config errors at startup).
+// buildRateLimitStore constructs the M6 rate-limit counter store per
+// cfg.RateLimit.Driver: redis (default; fleet-wide counters) or inmemory
+// (process-local counters, single-replica/dev only — see config.RateLimitConfig).
+func buildRateLimitStore(cfg config.RateLimitConfig, rdb *redis.Client) ratelimit.Store {
+	switch cfg.Driver {
+	case "", config.DriverRedis:
+		return ratelimit.NewRedisStore(rdb)
+	case config.DriverInMemory:
+		return ratelimit.NewInMemoryStore()
+	default:
+		panic("unknown rate_limit.driver: " + cfg.Driver)
+	}
+}
+
 func buildPicker(name string) (selector.Picker, *selector.Inflight) {
 	switch name {
 	case "", "weighted_random":
@@ -123,9 +137,9 @@ func buildScoring(cfg config.ScoringConfig, rdb *redis.Client) (selector.Endpoin
 
 	var store selector.EndpointStatsStore
 	switch cfg.Driver {
-	case "", "inmemory":
+	case "", config.DriverInMemory:
 		store = selector.NewInMemoryStatsStore(decay)
-	case "redis":
+	case config.DriverRedis:
 		store = selector.NewRedisStatsStore(rdb, "llm-gateway:sched", decay, cfg.StatsTTL)
 	default:
 		panic("buildScoring: unknown scoring.driver " + cfg.Driver + " (want inmemory|redis)")
@@ -312,7 +326,7 @@ func buildBudgetGate(cfg config.BudgetConfig) middleware.BudgetGate {
 	switch cfg.Driver {
 	case "", "alwayspass":
 		return middleware.AlwaysPassGate{}
-	case "inmemory":
+	case config.DriverInMemory:
 		return middleware.NewInMemoryBudgetGate(cfg.DefaultBalance)
 	default:
 		panic("unknown budget driver: " + cfg.Driver)

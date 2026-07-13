@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,10 +42,41 @@ const DriverFile = "file"
 // matching implementation) can't drift from what Validate accepts here.
 const DriverOpenAI = "openai"
 
+// DriverRedis / DriverInMemory are the shared store-backend driver values
+// across the config's driver: fields (rate_limit, scoring); exported for the
+// same wiring-sync reason as DriverOpenAI.
+const (
+	DriverRedis    = "redis"
+	DriverInMemory = "inmemory"
+)
+
 // selectorFilterWeightedRandom is the default/always-available selector
 // filter name, referenced both in the driver switch and in the default
 // filter chain below.
 const selectorFilterWeightedRandom = "weighted_random"
+
+// validSelectorFilters is the allowlist Validate enforces for
+// selector.filters. It MUST stay in sync with the switch in
+// internal/app/gateway's buildSchedulerFilters — a name accepted here but
+// unknown there panics at startup. That sync is guarded by a test in the
+// gateway package via ValidSelectorFilters.
+var validSelectorFilters = map[string]bool{
+	"cooldown": true, "limit_read": true, selectorFilterWeightedRandom: true,
+	"prefix_cache": true, "busy": true,
+}
+
+// ValidSelectorFilters returns the selector.filters allowlist, for the
+// wiring-consistency test in internal/app/gateway (see validSelectorFilters).
+func ValidSelectorFilters() []string {
+	out := make([]string, 0, len(validSelectorFilters))
+	for k := range validSelectorFilters {
+		out = append(out, k)
+	}
+
+	sort.Strings(out)
+
+	return out
+}
 
 // Config is the root of gateway.yaml.
 //
@@ -54,8 +86,10 @@ type Config struct {
 	Server      ServerConfig      `yaml:"server"`
 	Request     RequestConfig     `yaml:"request"`
 	Paths       PathsConfig       `yaml:"paths"`
-	Database    infra.DBConfig    `yaml:"database"` // schema lives in internal/infra
-	Redis       infra.RedisConfig `yaml:"redis"`    // shared by M6 RateLimit + future cache layers
+	Database    infra.DBConfig    `yaml:"database"`   // schema lives in internal/infra
+	Redis       infra.RedisConfig `yaml:"redis"`      // shared by M6 RateLimit + future cache layers
+	RateLimit   RateLimitConfig   `yaml:"rate_limit"` // M6 rate-limit counter store driver
+	Vendors     VendorsConfig     `yaml:"vendors"`    // deployment-local vendor registrations (no rebuild)
 	UsageEvents UsageEventsConfig `yaml:"usage_events"`
 	Selector    SelectorConfig    `yaml:"selector"`    // M7 endpoint scheduling + cooldown config
 	Budget      BudgetConfig      `yaml:"budget"`      // M4 Budget driver
@@ -72,6 +106,32 @@ type Config struct {
 	// The deployer must use the same KEK when encrypting the endpoints.auth column.
 	// In production this should come from a secret manager — **never commit the real key**.
 	DataKey string `yaml:"data_key"`
+}
+
+// RateLimitConfig selects the M6 rate-limit counter store.
+//
+//	driver:
+//	  redis    — default; counters shared fleet-wide via Redis Lua scripts
+//	             (the only correct choice for multi-replica deployments)
+//	  inmemory — process-local counters with identical sliding-window
+//	             semantics; limits are enforced per replica. For
+//	             single-replica deployments, local development, and tests.
+type RateLimitConfig struct {
+	Driver string `yaml:"driver"`
+}
+
+// VendorsConfig registers deployment-local vendors without a rebuild.
+//
+// OpenAICompatible lists extra vendor names to serve with the shared OpenAI
+// Factory (same /v1/chat/completions wire shape + Bearer auth), on top of the
+// built-in list in internal/protocol/openai.Aliases(). An endpoint SQL row
+// can then use the name as its `vendor` with `protocol: openai`. Names that
+// collide with a built-in non-OpenAI vendor (anthropic / gemini / cohere /
+// bedrock / azureopenai) are rejected at startup — a config alias must never
+// silently shadow a real adapter. Applied at startup only (config is not
+// hot-reloaded).
+type VendorsConfig struct {
+	OpenAICompatible []string `yaml:"openai_compatible"`
 }
 
 // BudgetConfig selects the M4 Budget Gate implementation.
@@ -524,9 +584,28 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Budget.Driver {
-	case "", "alwayspass", "inmemory":
+	case "", "alwayspass", DriverInMemory:
 	default:
 		return fmt.Errorf("budget.driver=%q not supported (use alwayspass|inmemory)", c.Budget.Driver)
+	}
+
+	switch c.RateLimit.Driver {
+	case "", DriverRedis, DriverInMemory:
+	default:
+		return fmt.Errorf("rate_limit.driver=%q not supported (use redis|inmemory)", c.RateLimit.Driver)
+	}
+
+	seenVendor := make(map[string]bool, len(c.Vendors.OpenAICompatible))
+	for _, v := range c.Vendors.OpenAICompatible {
+		if v == "" || strings.ContainsAny(v, " \t") {
+			return fmt.Errorf("vendors.openai_compatible contains invalid name %q (must be non-empty, no whitespace)", v)
+		}
+
+		if seenVendor[v] {
+			return fmt.Errorf("vendors.openai_compatible lists %q twice", v)
+		}
+
+		seenVendor[v] = true
 	}
 
 	switch c.Moderation.Driver {
@@ -540,7 +619,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Scoring.Driver {
-	case "", "inmemory", "redis":
+	case "", DriverInMemory, DriverRedis:
 	default:
 		return fmt.Errorf("scoring.driver=%q not supported (use inmemory|redis)", c.Scoring.Driver)
 	}
@@ -551,9 +630,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("selector.picker=%q not supported (use weighted_random|p2c)", c.Selector.Picker)
 	}
 
-	validFilters := map[string]bool{"cooldown": true, "limit_read": true, selectorFilterWeightedRandom: true, "prefix_cache": true, "busy": true}
 	for _, filter := range c.Selector.Filters {
-		if !validFilters[filter] {
+		if !validSelectorFilters[filter] {
 			return fmt.Errorf("selector.filters contains unsupported value %q", filter)
 		}
 	}
@@ -620,6 +698,10 @@ func (c *Config) ApplyDefaults() {
 
 	if c.Redis.Addr == "" {
 		c.Redis.Addr = "localhost:6379"
+	}
+
+	if c.RateLimit.Driver == "" {
+		c.RateLimit.Driver = DriverRedis
 	}
 
 	if c.UsageEvents.Driver == "" {

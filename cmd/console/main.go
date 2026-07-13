@@ -64,7 +64,7 @@ func run(configPath string) error {
 		return fmt.Errorf("open db: %w", err)
 	}
 
-	store := console.NewStore(sqldb).WithEndpointValidator(endpointcheck.Validator{Catalog: builtin.NewLookup()})
+	store := console.NewStore(sqldb).WithEndpointValidator(endpointcheck.Validator{Catalog: builtin.NewLookup(cfg.Vendors.OpenAICompatible...)})
 
 	// Optional cachebus: if redis.addr is configured, attach a Publisher so
 	// key revocations notify the data plane precisely.

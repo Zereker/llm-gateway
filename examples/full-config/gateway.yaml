@@ -31,6 +31,20 @@ redis:
   db: 0
   password: ""    # Injected from a secret manager in production
 
+rate_limit:
+  # M6 counter store: redis (default; fleet-wide, required for multi-replica)
+  # | inmemory (process-local counters, identical sliding-window semantics;
+  # single-replica / local dev / tests only — see docs/04 §5).
+  driver: redis
+
+vendors:
+  # Deployment-local OpenAI-compatible vendor names, registered on the shared
+  # OpenAI Factory at startup without a rebuild (extends the compiled-in
+  # openai.Aliases() list). Endpoint rows then use the name as `vendor` with
+  # `protocol: openai`. Names colliding with a built-in non-OpenAI vendor
+  # (anthropic/gemini/cohere/bedrock/azureopenai) fail startup.
+  openai_compatible: []   # e.g. ["acme-llm"]
+
 # data_key: the KEK (hex-encoded 32 bytes) used for AES-256-GCM encryption of the endpoints.auth column.
 # When the deployer writes endpoints via SQL, it must encrypt the auth column with this same KEK.
 # **Strict production requirement**: inject from a secret manager / KMS, never commit the real value.

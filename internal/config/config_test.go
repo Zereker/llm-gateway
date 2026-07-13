@@ -218,3 +218,49 @@ func TestApplyDefaults_OnZeroConfig(t *testing.T) {
 		t.Errorf("Database.Driver = %q, want mysql", c.Database.Driver)
 	}
 }
+
+func TestValidate_RateLimitDriver(t *testing.T) {
+	var c Config
+	c.ApplyDefaults()
+
+	if c.RateLimit.Driver != "redis" {
+		t.Fatalf("default rate_limit.driver = %q, want redis", c.RateLimit.Driver)
+	}
+
+	c.RateLimit.Driver = "inmemory"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("inmemory should validate: %v", err)
+	}
+
+	c.RateLimit.Driver = "memcached"
+	if err := c.Validate(); err == nil {
+		t.Fatal("unknown rate_limit.driver must be rejected")
+	}
+}
+
+func TestValidate_VendorsOpenAICompatible(t *testing.T) {
+	base := func() Config {
+		var c Config
+		c.ApplyDefaults()
+
+		return c
+	}
+
+	c := base()
+	c.Vendors.OpenAICompatible = []string{"acme-llm", "foo"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid vendor names should pass: %v", err)
+	}
+
+	for name, bad := range map[string][]string{
+		"duplicate":  {"acme-llm", "acme-llm"},
+		"whitespace": {"has space"},
+		"empty":      {""},
+	} {
+		c := base()
+		c.Vendors.OpenAICompatible = bad
+		if err := c.Validate(); err == nil {
+			t.Fatalf("%s vendor names must be rejected: %v", name, bad)
+		}
+	}
+}
