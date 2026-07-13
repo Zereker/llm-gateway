@@ -76,12 +76,15 @@ func loadRecordedReplies() map[string][]byte {
 		if err != nil {
 			slog.Warn("mockupstream: reply unresolved; model gets canned response",
 				"vendor", sc.Vendor, "model", sc.Model, "err", err)
+
 			continue
 		}
+
 		m[sc.Model] = body
 	}
 
 	slog.Info("mockupstream: recorded replies loaded", "models", len(m))
+
 	return m
 }
 
@@ -93,6 +96,7 @@ func serveRecorded(w http.ResponseWriter, model string) bool {
 	if model == "" {
 		return false
 	}
+
 	body, ok := recordedReplies[model]
 	if !ok {
 		return false
@@ -104,7 +108,9 @@ func serveRecorded(w http.ResponseWriter, model string) bool {
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 	}
+
 	_, _ = w.Write(body)
+
 	return true
 }
 
@@ -540,14 +546,17 @@ func handleBedrockConverse(w http.ResponseWriter, r *http.Request) {
 // reply can be keyed by the same model the manifest seeds.
 func bedrockModelFromPath(p string) string {
 	const prefix = "/model/"
+
 	i := strings.Index(p, prefix)
 	if i < 0 {
 		return ""
 	}
+
 	rest := p[i+len(prefix):]
 	if j := strings.Index(rest, "/"); j >= 0 {
 		rest = rest[:j]
 	}
+
 	return rest
 }
 

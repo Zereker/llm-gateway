@@ -23,10 +23,12 @@ func ResolveReply(r Reply) ([]byte, error) {
 	switch r.Kind {
 	case "fixture":
 		path := cassette.TestdataPath("fieldmatrix", "upstream", r.Path)
+
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("vendorfixture: read fixture %s: %w", r.Path, err)
 		}
+
 		return b, nil
 
 	case "cassette":
@@ -34,6 +36,7 @@ func ResolveReply(r Reply) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		return replyBodyAt(its, r)
 
 	case "opencassette":
@@ -41,6 +44,7 @@ func ResolveReply(r Reply) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		return replyBodyAt(its, r)
 
 	default:
@@ -52,9 +56,11 @@ func replyBodyAt(its []cassette.Interaction, r Reply) ([]byte, error) {
 	if r.Index >= len(its) {
 		return nil, fmt.Errorf("vendorfixture: %s: want interaction #%d, only %d recorded", r.Path, r.Index, len(its))
 	}
+
 	body := its[r.Index].ResponseBody
 	if len(body) == 0 {
 		return nil, fmt.Errorf("vendorfixture: %s#%d: empty response body", r.Path, r.Index)
 	}
+
 	return body, nil
 }
