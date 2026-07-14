@@ -196,12 +196,15 @@ Acceptance gates:
 Semantic/quality-based routing is deliberately deferred until rule-based routing
 has production traces, evaluation data, and an agreed quality signal.
 
-## Milestone 2 — Governed prompt and response policy
+## Milestone 2 — Pluggable policy enforcement
 
-Goal: governance policy is scoped, configurable, auditable, and honest about
-streaming guarantees.
+Goal: make the gateway a vendor-neutral policy enforcement point, not a
+content-safety product. Detection logic, enterprise DLP, and moderation APIs
+remain replaceable engines behind one stable contract.
 
 ### M2.1 — Policy decision contract
+
+Status: complete.
 
 - Evolve the current error-only moderation result into explicit actions:
   `allow`, `deny`, and `redact`.
@@ -209,6 +212,7 @@ streaming guarantees.
 - Define policy binding and precedence for global/account/project/API-key scopes.
 - Preserve the guard-chain extension point and avoid coupling policy evaluation
   to Gin or to a vendor protocol.
+- Define engine failure and unsupported-redaction behavior as fail-closed.
 
 Acceptance gates:
 
@@ -217,13 +221,15 @@ Acceptance gates:
   before/after value;
 - existing moderation configuration has a documented compatibility path.
 
-### M2.2 — Input PII blocking and redaction
+### M2.2 — Request enforcement and mutation execution
 
-- Add structured text extraction for supported request protocols.
-- Implement deterministic PII detectors and configurable redact/deny actions.
+- Add structured text extraction for supported request protocols as an adapter,
+  not as part of the engine contract.
+- Apply engine-provided mutations without making the gateway own detection.
 - Rebuild the upstream request safely after redaction while preserving envelope
   routing fields and protocol translation behavior.
-- Add Console CRUD and policy simulation with synthetic input.
+- Add policy binding persistence, Console CRUD, and simulation with synthetic
+  engine decisions.
 
 Acceptance gates:
 
@@ -232,14 +238,14 @@ Acceptance gates:
 - malformed or unsupported structures have a documented fail-open/fail-closed
   policy.
 
-### M2.3 — Output policy modes
+### M2.3 — Response enforcement modes
 
 - Define `strict-buffered` and `best-effort-streaming` output modes.
 - Add decoded-text accumulation across SSE frames for best-effort scanning.
 - Make strict mode buffer before client delivery and document its latency/memory
   cost.
-- Replace the current OpenAI output-moderation stub only with a bounded,
-  rate-limited implementation.
+- Keep provider moderation and enterprise DLP as adapters; reference engines
+  are examples, not a gateway-owned safety platform.
 
 Acceptance gates:
 

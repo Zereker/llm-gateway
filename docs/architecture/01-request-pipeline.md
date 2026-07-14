@@ -74,16 +74,16 @@ Important constraints:
 | M4 | Budget | `rc.Identity` | abort on gate failure |
 | M5 | ModelService | `rc.Envelope.Model`, primary account pin, `X-Gateway-Fallback-Models` | `rc.ModelService` (primary), `rc.ModelChain` (primary + validated fallbacks) |
 | M6 | Limit | identity, model, quota policy | user-side RPM/RPS pre-deduction; post-side TPM post-deduction |
-| M8 | Moderation | raw request/response stream | optional moderation, defaults to none (after M6: a 429-bound request must not spend an external moderation call) |
+| M8 | Policy Enforcement | trusted identity + request/response content | enforce pluggable `allow`/`deny`/`redact` decisions; legacy moderation is adapted (after M6: a 429-bound request must not spend an external policy call) |
 | — | Cache | request body / prompt | response cache (chat + embedding modalities only); on a hit returns directly and skips M7; a no-op when `cache.enabled=false` |
 | M7 | Schedule | model, group, endpoint candidates | `rc.RoutedModelService`, endpoint, upstream forward, usage, decision |
 | M10 | Tracing | final RC state | metric, usage outbox, schedule trace |
 
-M9 is registered early, but via defer it covers panics from all middleware and handlers after M2; pre middleware (BodyLimit / Timeout) must either not panic themselves or backstop their own panics.
+M9 is registered inside M10 and outside M2 Auth, so its defer covers M2 and every inner middleware/handler. BodyLimit, Timeout, and M1 remain outside M9 and are protected by Gin's global fallback recovery.
 
 **M10 is registered after M1 and before M9** (its finishing logic runs in the post-`c.Next()` onion return phase):
 - If any subsequent middleware aborts (401/429/503) → the finishing logic still runs on the return trip — request metrics /
-  usage events / decision audit have **no blind spots** (an older version registered at the tail of the chain would be
+  usage events / M10-owned decision audit have **no blind spots** (an older version registered at the tail of the chain would be
   entirely skipped by `c.Abort()`, letting things like credential-stuffing / rate-limit storms hide invisibly in the
   request metrics)
 - On panic → the inner M9 recovers first and writes a 500, control flow returns normally, and M10's finishing logic sees the final 500 status

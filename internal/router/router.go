@@ -70,6 +70,9 @@ type Deps struct {
 
 	// M8 Moderation
 	Moderator middleware.Moderator
+	// PolicyEngine is the explicit allow/deny/redact extension point. It takes
+	// precedence over the legacy Moderator when provided.
+	PolicyEngine middleware.PolicyEngine
 
 	// M10 Tracing
 	UsageOutbox UsageOutbox
@@ -93,8 +96,8 @@ type (
 func NewEngine(deps Deps) *gin.Engine {
 	engine := gin.New()
 
-	// Fallback recovery: M9 Recover is mounted after M1, so it doesn't cover
-	// panics from BodyLimit / Timeout (which run before M1) — without this
+	// Fallback recovery: the route-level M9 Recover is mounted inside M10 and
+	// therefore cannot cover BodyLimit / Timeout / M1 — without this global
 	// layer, that class of panic only gets net/http's connection-level
 	// recover, and the client sees a connection reset instead of a 500.
 	// gin.Recovery's 500 doesn't carry our JSON error structure, but it's

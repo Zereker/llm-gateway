@@ -23,13 +23,13 @@ type UsageOutbox interface {
 	Publish(ctx context.Context, evt *usage.OutboxEvent) error
 }
 
-// AuditTracer is the port for M10's internal audit trace — middleware-owned.
+// AuditTracer is the shared middleware port for internal audit events.
 // Deliberately narrowed to a single Log method (ISP); internal/trace.Tracer
 // actually also has StartSpan, but middleware currently only uses Log.
 //
 // Don't confuse this with the OTel TracerProvider: that's distributed
-// tracing; this is the internal audit channel that writes SchedulingDecision
-// to logs / async events (implemented by internal/trace.SlogTracer / OtelTracer).
+// tracing; this is the internal audit channel used by the middleware that owns
+// each event (implemented by internal/trace.SlogTracer / OtelTracer).
 type AuditTracer interface {
 	Log(ctx context.Context, name string, payload any)
 }
@@ -66,7 +66,7 @@ func WithTracer(t AuditTracer) TracingOption {
 }
 
 // Tracing is M10: aggregates metrics + emits metering events + writes the
-// SchedulingDecision trace. Runs after c.Next() (defer pattern).
+// SchedulingDecision trace in the return phase after c.Next().
 //
 // Publish failures don't affect the business response (best-effort).
 // Uses context.Background() (with a timeout) to publish to the Outbox, so

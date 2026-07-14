@@ -17,6 +17,7 @@ This directory is the single source of truth for `llm-gateway`'s architecture an
 | 07 | [configuration](07-configuration.md) | Gateway config schema, environment variable overrides, validation rules |
 | 08 | [observability](08-observability.md) | Logging, metrics, trace, usage events, content log observability contract |
 | 09 | [routing-policy](09-routing-policy.md) | Virtual models, deterministic constraints, policy cache, Console API |
+| 10 | [policy-enforcement](10-policy-enforcement.md) · [中文](10-policy-enforcement.zh-CN.md) | Pluggable decisions, scope precedence, safe audit, legacy compatibility |
 
 ## Architecture Highlights
 

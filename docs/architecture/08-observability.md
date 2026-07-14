@@ -70,6 +70,7 @@ Metric names use the `llm_gateway_` prefix. Histogram buckets are implementation
 | `llm_gateway_ratelimit_fail_open_total` | counter | `scope`, `dimension` | Explicit fail-open occurrences |
 | `llm_gateway_tpm_overflow_total` | counter | `layer`, `dimension` | Times the configured cap was exceeded after TPM post-charge |
 | `llm_gateway_policy_cache_requests_total` | counter | `layer`, `result` | quota policy cache hit/miss/error |
+| `llm_gateway_policy_decisions_total` | counter | `stage`, `action` | Low-cardinality input/output policy decisions; rule and policy IDs stay in audit only |
 | `llm_gateway_usage_tokens_total` | counter | `model`, `routed_model`, `vendor`, `direction` | token usage; `direction` is `input` / `output` (no `total`, to avoid doubling on sum); `source` / `confidence` are not metric labels — kept in the Usage Event and logs to control cardinality |
 | `llm_gateway_usage_publish_total` | counter | `backend`, `result` | Usage Event publish result |
 | `llm_gateway_content_log_publish_total` | counter | `backend`, `result`, `sampled` | Content Log publish result |
@@ -171,6 +172,12 @@ A fallback model switch is marked via a `dispatch.fallback` event on `dispatch.r
 The spans listed above are a chronologically-ordered set of child spans under `gateway.request` (siblings); no nesting hierarchy is mandated — the implementation may decide which spans are parent/child based on actual scope. For example, if `usage.extract` is actually wrapped inside `upstream.call`, make it a child span there, but don't artificially nest spans just to "look tidy." `ratelimit.charge_tpm` / `usage.publish` happen after `c.Next()` (M6 post-side / M10) and should be direct children of `gateway.request`, not children of `upstream.call`.
 
 In streaming responses, the `upstream.call` span covers from the first chunk to the last; TTFT is recorded as the `gen_ai.response.ttft_ms` attribute.
+
+M8 writes every validated policy decision through the shared `AuditTracer` as
+a structured `policy_decision` event. It buffers decisions locally and flushes
+them in M8's post-handler phase after `c.Next()` returns. Its payload is
+`policy.AuditRecord`; raw content, mutation replacement bytes, and engine error
+causes are structurally absent. M10 does not interpret or relay policy state.
 
 ## 5. Usage Event
 

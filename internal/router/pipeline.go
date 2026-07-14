@@ -31,6 +31,14 @@ func llmRouteGroup(engine *gin.Engine, deps Deps) *gin.RouterGroup {
 }
 
 func registerLLMRoute(group *gin.RouterGroup, deps Deps, spec routeSpec) {
+	moderationOptions := []middleware.ModerationOption{
+		middleware.WithModerator(deps.Moderator),
+		middleware.WithPolicyAuditTracer(deps.AuditTracer),
+	}
+	if deps.PolicyEngine != nil {
+		moderationOptions = append(moderationOptions, middleware.WithPolicyEngine(deps.PolicyEngine))
+	}
+
 	handlers := []gin.HandlerFunc{
 		middleware.WithSourceProtocol(spec.Protocol, spec.Modality),
 		middleware.Envelope(deps.Handlers),
@@ -49,12 +57,14 @@ func registerLLMRoute(group *gin.RouterGroup, deps Deps, spec routeSpec) {
 			middleware.WithLimitStore(deps.RateLimitStore),
 			middleware.WithLimitPolicies(deps.QuotaPolicies),
 		),
-		middleware.Moderation(middleware.WithModerator(deps.Moderator)),
+		middleware.Moderation(moderationOptions...),
 	}
 	if spec.Cache != nil {
 		handlers = append(handlers, spec.Cache)
 	}
 
-	handlers = append(handlers, middleware.Schedule(deps.Dispatcher), noopHandler)
+	// Schedule is the terminal handler at the center of the middleware onion.
+	// It writes the response itself; outer middleware resumes on its return.
+	handlers = append(handlers, middleware.Schedule(deps.Dispatcher))
 	group.POST(spec.Path, handlers...)
 }
