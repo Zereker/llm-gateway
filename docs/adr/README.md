@@ -86,4 +86,6 @@ Rollback plan: ...
 
 ## Current ADR index
 
-There are currently no standalone ADRs. Adopted design content is governed by `docs/architecture/`.
+| ADR | Status | Decision |
+|---|---|---|
+| [0001](0001-explainable-virtual-model-routing.md) | Accepted | Resolve virtual-model policy before dispatch |
