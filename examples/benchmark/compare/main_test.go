@@ -3,8 +3,9 @@ package main
 import "testing"
 
 func TestCompare(t *testing.T) {
-	baseline := report{Overhead: []overhead{{Mode: "stream", ThroughputPercent: -10, LatencyP95MS: 2, TTFBP95MS: 1}}}
+	baseline := report{Version: "2", Overhead: []overhead{{Mode: "stream", ThroughputPercent: -10, LatencyP95MS: 2, TTFBP95MS: 1}}}
 	passing := report{
+		Version:    "2",
 		Results:    []result{{Path: "gateway", Mode: "stream"}},
 		Overhead:   []overhead{{Mode: "stream", ThroughputPercent: -20, LatencyP95MS: 6, TTFBP95MS: 5}},
 		Resilience: map[string]bool{"slow_client": true},

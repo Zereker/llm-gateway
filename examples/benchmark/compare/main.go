@@ -12,6 +12,7 @@ import (
 )
 
 type report struct {
+	Version    string          `json:"runner_version"`
 	Results    []result        `json:"results"`
 	Overhead   []overhead      `json:"gateway_minus_direct"`
 	Resilience map[string]bool `json:"resilience"`
@@ -72,6 +73,9 @@ func load(path string) (report, error) {
 
 func compare(baseline, candidate report, absTolerance, relTolerance, throughputTolerance float64) []string {
 	var failures []string
+	if baseline.Version != candidate.Version {
+		failures = append(failures, fmt.Sprintf("runner version %q does not match baseline %q", candidate.Version, baseline.Version))
+	}
 	for _, result := range candidate.Results {
 		if result.ErrorRate > 0 {
 			failures = append(failures, fmt.Sprintf("%s/%s error_rate %.4f > 0", result.Path, result.Mode, result.ErrorRate))
@@ -87,7 +91,9 @@ func compare(baseline, candidate report, absTolerance, relTolerance, throughputT
 	for _, item := range baseline.Overhead {
 		baselineByMode[item.Mode] = item
 	}
+	candidateByMode := make(map[string]overhead, len(candidate.Overhead))
 	for _, current := range candidate.Overhead {
+		candidateByMode[current.Mode] = current
 		reference, ok := baselineByMode[current.Mode]
 		if !ok {
 			failures = append(failures, "baseline missing mode: "+current.Mode)
@@ -98,6 +104,11 @@ func compare(baseline, candidate report, absTolerance, relTolerance, throughputT
 		}
 		failures = appendMetricFailure(failures, current.Mode+" latency_p95_ms", reference.LatencyP95MS, current.LatencyP95MS, absTolerance, relTolerance)
 		failures = appendMetricFailure(failures, current.Mode+" ttfb_p95_ms", reference.TTFBP95MS, current.TTFBP95MS, absTolerance, relTolerance)
+	}
+	for mode := range baselineByMode {
+		if _, ok := candidateByMode[mode]; !ok {
+			failures = append(failures, "candidate missing mode: "+mode)
+		}
 	}
 	return failures
 }
