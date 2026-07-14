@@ -24,8 +24,7 @@ The target architecture focuses on solving:
 
 | Process | Entry point | Responsibility |
 |------|------|------|
-| migrate | `cmd/migrate` | Applies versioned schema migrations before a production rollout |
-| gateway | `cmd/gateway` | Thin data-plane entry; assembly lives in `internal/app/gateway`; validates schema version at startup |
+| gateway | `cmd/gateway` | Thin data-plane entry; applies schema migrations, then assembles the runtime in `internal/app/gateway` |
 | console | `cmd/console` | Control plane: an Admin API (backed by `internal/console`) for managing business data; optional, and the data plane runs without it |
 
 Business data (accounts / api_keys / model_services / endpoints / quota_policies /
@@ -35,10 +34,10 @@ cachebus invalidation that the gateway subscribes to for fast revocation).
 
 Gateway startup sequence:
 
-1. Load `configs/*/gateway.yaml`.
+1. Load the selected `gateway.yaml`.
 2. Initialize the endpoint auth encryption data key.
-3. Open the **SQL DB (required)**, verify that `cmd/migrate` has applied the latest schema version,
-   then run `repo.CheckSchema`; local development may explicitly enable `database.auto_migrate`.
+3. Open the **SQL DB (required)**, apply pending versioned migrations, then run `repo.CheckSchema`;
+   migration and schema validation share a 30-second startup deadline.
 4. Open **Redis (required)**; M6 rate limiting and scheduler cooldown both depend on Redis.
 5. Assemble SQL reader/provider (wrapped in a `repo.CachedXxxReader` TTL LRU layer, see
    [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation)),
@@ -50,8 +49,8 @@ Gateway startup sequence:
 Deployment order:
 
 1. docker stack brings up MySQL + Redis (+ Kafka/Redpanda if using the kafka outbox driver).
-2. Run `cmd/migrate` once, or let the Helm migration Job apply pending versions.
-3. Start gateway, then manage business data through SQL or the optional console.
+2. Start gateway; every replica runs the idempotent migration routine before becoming ready.
+3. Manage business data through SQL or the optional console.
 4. The deployer SQL-INSERTs business data such as accounts, API keys, model services, subscriptions, endpoints,
    and quota policies (the endpoint.auth column must be encrypted with `repo.EncodePayload`,
    and the api_keys.api_key_hash column must be computed with `repo.HashAPIKey` as a SHA-256 hex).
@@ -62,7 +61,7 @@ query against the same DB**. Most records rely on TTL expiry. API-key revocation
 exception: when console cachebus is enabled, it publishes a best-effort targeted invalidation; TTL remains the fallback. See
 [06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details.
 
-Schema changes go through the versioned migrations in `internal/infra`, applied by `cmd/migrate`.
+Schema changes go through the versioned migrations in `internal/infra`, applied during gateway startup.
 Changes must remain backward compatible: first deploy a new gateway with the new schema, letting it create the new tables/columns (keeping old fields);
 only after all gateways have finished upgrading should you drop fields or make breaking changes.
 

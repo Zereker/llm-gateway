@@ -1,0 +1,166 @@
+# gateway.yaml — llm-gateway local startup configuration
+#
+# All fields are optional; when omitted, defaults from internal/config.ApplyDefaults apply.
+# Run:
+#   go run ./cmd/gateway -config ./examples/local/configs/gateway.yaml
+#
+# Prerequisite: start the local stack (mysql + redis + redpanda):
+#   docker compose up -d
+
+server:
+  addr: ":8080"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+database:
+  # Storage for ModelService / Endpoint / APIKey.
+  # MySQL started via docker-compose: root with no password, database name llm_gateway
+  driver: mysql
+  dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+
+redis:
+  # Shared Redis for M6 RateLimit counters + a future hot-path cache.
+  # gateway fail-fasts on ping at startup, so misconfiguration is immediately visible.
+  # Production uses primary/replica or sentinel; local uses the single instance from docker-compose.
+  addr: "localhost:6379"
+  db: 0
+  password: ""
+
+# data_key: the KEK (hex-encoded 32 bytes) used for AES-256-GCM encryption of the endpoints.auth column.
+# The deployer must use the same KEK when writing endpoints.auth via SQL; in prod it's injected from a secret manager.
+# Local dev uses a fixed value for convenience; **must never be used in production**.
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+request:
+  # per-request HTTP defaults (historically named middleware:, but actually unrelated to the M1-M10 chain; see the internal/config RequestConfig docs)
+  body_limit_bytes: 10485760  # 10 MiB; rejected at the router layer before M1
+  timeout: 60s                # gin TimeoutMiddleware's global fallback wrapping the whole M1-M10 chain
+
+budget:
+  # M4 Budget Gate driver:
+  #   alwayspass — default; always allows through (dev / no billing system)
+  #   inmemory   — in-process balance tracking (demo / single primary account; resets on restart since it's in-memory)
+  driver: alwayspass
+  # Initial balance (USD) given to a new user on first appearance when using inmemory. 0 = safe-by-default rejection
+  default_balance: 0
+
+moderation:
+  # M8 Content Moderation driver:
+  #   none   — default; no moderation (pass-through)
+  #   openai — calls the OpenAI /v1/moderations endpoint
+  driver: none
+  # required when using openai; injected from a secret manager in prod
+  # api_key: ""
+  # leave base_url empty to use the official OpenAI endpoint
+  # base_url: ""
+  # Optional regex content guardrail (one link in the guard chain, combined
+  # with the driver's moderator into a Chain); hitting any pattern is a 400
+  # rejection. Empty patterns = this guard is not added.
+  denylist:
+    patterns: []          # e.g. ['(?i)\bpassword\b', '\d{3}-\d{2}-\d{4}']
+    check_output: false   # when true, also scans the response chunk by chunk
+
+selector:
+  # M7 endpoint routing Filter chain (order is execution order; weighted_random must be last)
+  filters: [cooldown, limit_read, weighted_random]
+
+  # Final pick strategy after filters + scoring:
+  #   weighted_random (default) = pure EffectiveWeight-weighted random
+  #   p2c = power-of-two-choices: sample two candidates by weight, take the
+  #         one with fewer pending calls (live-load aware; see docs/03 §4)
+  picker: weighted_random
+
+  # Cooldown duration after an endpoint failure (keyed by ErrorClass; 0 = no cooldown).
+  # When the failed response carries an upstream recovery hint (Retry-After /
+  # rate-limit reset headers), the hint overrides these static TTLs, clamped
+  # to [1s, 10m] (docs/03 §9). A class set to 0s never cools down, hint or not.
+  cooldown:
+    transient: 30s     # upstream 5xx / network error / timeout
+    capacity:  60s     # upstream 429 / overloaded
+    permanent: 5m      # upstream 401 / config error
+    invalid:   0s      # client 400-class; should not cool down the endpoint
+    unknown:   10s     # when it can't be classified
+
+  # Global max attempts; the client's X-Gateway-Max-Attempts header can override (only to a smaller value)
+  max_attempts: 3
+
+  # Session affinity (sticky routing): the client's X-Gateway-Session header carries a
+  # session id, and the gateway pins that session to the same upstream endpoint
+  # (for prefix/KV cache hits). This is soft affinity — the pinned endpoint is
+  # automatically re-selected if it's on cooldown/excluded. Redis-backed (shared across replicas).
+  session_affinity:
+    enabled: false
+    ttl: 10m
+
+cache:
+  # Response cache (after M6, before M7): a hit returns directly and skips the
+  # upstream, saving cost and reducing latency. Redis-backed.
+  # By default only caches non-streaming + temperature=0 deterministic requests;
+  # the client's X-Gateway-Cache: on/off header overrides this.
+  enabled: false
+  ttl: 5m
+  # Semantic cache: hits based on prompt vector similarity (paraphrases also
+  # hit); when enabled it replaces the exact-match cache.
+  semantic:
+    enabled: false
+    threshold: 0.9        # cosine hit threshold
+    max_entries: 500      # entry cap per (protocol|model) namespace
+    embedder:
+      driver: openai      # OpenAI-compatible /v1/embeddings
+      api_key: ""
+      base_url: ""        # empty uses the official OpenAI endpoint
+      model: text-embedding-3-small
+
+scoring:
+  # Runtime Scoring (soft weight adjustment based on per-endpoint runtime quality); off by default. See docs/03 §8.
+  enabled: false
+  driver: inmemory        # inmemory = independent per replica | redis = shared across replicas (use in multi-replica prod)
+  min_samples: 5
+  latency_baseline: 200ms
+  ema_decay: 0.2
+  stats_ttl: 1h           # redis driver only
+
+health:
+  # Active probing of self-hosted endpoints (capabilities.self_hosted=true with
+  # health_probe_endpoint set); off by default. See docs/03 §10.
+  enabled: false
+  interval: 30s
+  timeout: 5s
+  concurrent: 8
+  # recover_cooldown: a successful probe of an endpoint in cooldown releases it
+  # back into rotation before the TTL expires (probe-gated recovery;
+  # release-only — a failed probe never creates or extends a cooldown).
+  recover_cooldown: false
+
+usage_events:
+  # Transactional Outbox Pattern: file is the source of truth (sync commit),
+  # Kafka is the best-effort async broadcast. Commits still succeed even if the
+  # broker is down; an external replay tool reads the file to redeliver missing
+  # events to Kafka (see docs/05 §5 for details).
+  # Name topics as "domain.entity.event.version", decoupled from the producer service name.
+  driver: file_and_kafka
+  file:
+    path: /tmp/llm-gateway-usage.jsonl   # source of truth; rotation handled by external logrotate
+  kafka:
+    brokers: ["localhost:9092"]
+    topic: billing.usage.recorded.v1
+    async: true
+    buffer_size: 1024
+    max_retries: 3
+    # dlq_topic is optional: file is already the source of truth, DLQ is only for
+    # per-message issues (msg too large / schema invalid)
+    dlq_topic: billing.usage.recorded.v1.dlq
+
+content_log:
+  # Content logging channel (docs/05 §2 + docs/08 §6).
+  # gateway only writes to a local JSONL; downstream fan-out (S3 archival / Loki
+  # indexing / Kafka post-hoc content safety review / training data reflow) is
+  # handled by log collectors like fluent-bit / vector — gateway does not embed a
+  # Kafka producer.
+  # Rotation / compression / cleanup of the file itself is handled by external logrotate or the log collector.
+  driver: file
+  sample_rate: 1.0       # full sampling for e2e tests; downsample in prod by account / model / error status
+  buffer_size: 1024
+  backpressure: drop_oldest
+  file:
+    path: /tmp/llm-gateway-content.jsonl

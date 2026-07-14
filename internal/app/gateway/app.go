@@ -3,15 +3,15 @@
 //
 // Usage (minimal quickstart):
 //
-//	go run ./cmd/gateway -config ./configs/local/gateway.yaml
+//	go run ./cmd/gateway -config ./examples/local/configs/gateway.yaml
 //
-// See configs/local/gateway.yaml for gateway.yaml; it has four sections —
+// See examples/local/configs/gateway.yaml for gateway.yaml; it has four sections —
 // server / middleware / database / outbox (apikeys has moved to the DB, so
 // there's no more paths.apikeys).
 //
-// Routing and middleware assembly live in internal/router. Production schema
-// migration is owned by cmd/migrate; this package performs read-only startup
-// checks. Business data can be maintained through SQL or cmd/console.
+// Routing and middleware assembly live in internal/router. Gateway startup
+// applies idempotent schema migrations before serving. Business data can be
+// maintained through SQL or cmd/console.
 //
 // Lifecycle (infra Open + signal handling + reverse-order close) is handled by
 // internal/app/runtime; this file owns dependency assembly only.
@@ -38,6 +38,8 @@ import (
 	"github.com/zereker/llm-gateway/internal/selector"
 )
 
+const schemaStartupTimeout = 30 * time.Second
+
 // Run loads configuration, assembles dependencies and serves until shutdown.
 func Run(configPath string) error {
 	cfg, err := config.Load(configPath)
@@ -63,8 +65,7 @@ func Run(configPath string) error {
 // returns the application Runtime so the caller can Serve or Close it
 // (production) or Close (tests).
 //
-// gateway startup sequence: OpenDB → optional local auto-migrate → migration
-// version check → repo.CheckSchema. Gateway can still start even if the
+// gateway startup sequence: OpenDB → migrate → schema check. Gateway can still start even if the
 // model_service / endpoint / api_key tables are empty — requests will then get
 // 404 / 503 / 401 from M5 / M7 / M2 respectively.
 //
@@ -91,19 +92,18 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 		return nil, nil, fmt.Errorf("infra.Open: %w", err)
 	}
 
-	if cfg.Database.AutoMigrate {
-		slog.Warn("database.auto_migrate is enabled; use cmd/migrate in production")
+	schemaCtx, cancelSchema := context.WithTimeout(context.Background(), schemaStartupTimeout)
+	defer cancelSchema()
 
-		if err = infra.Migrate(context.Background(), sqldb); err != nil {
-			return nil, nil, fmt.Errorf("infra.Migrate: %w", err)
-		}
+	if err = infra.Migrate(schemaCtx, sqldb); err != nil {
+		return nil, nil, fmt.Errorf("infra.Migrate: %w", err)
 	}
 
-	if err = infra.CheckMigrationVersion(context.Background(), sqldb); err != nil {
+	if err = infra.CheckMigrationVersion(schemaCtx, sqldb); err != nil {
 		return nil, nil, err
 	}
 
-	if err = repo.CheckSchema(context.Background(), sqldb); err != nil {
+	if err = repo.CheckSchema(schemaCtx, sqldb); err != nil {
 		return nil, nil, err
 	}
 

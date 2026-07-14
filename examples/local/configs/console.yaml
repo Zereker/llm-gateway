@@ -1,0 +1,44 @@
+# Local configuration for the control plane (Admin API).
+#
+# Relationship to gateway.yaml: **data_key must be identical to the gateway's**
+# — the control plane uses it to encrypt endpoints.auth, and the data plane
+# uses it to decrypt. database points at the same MySQL instance.
+#
+# Production: data_key / admin.tokens / database.dsn are injected from a secret
+# manager, real values are not committed (via LLM_GATEWAY_DATA_KEY /
+# LLM_GATEWAY_CONSOLE_TOKENS / LLM_GATEWAY_DATABASE_DSN).
+server:
+  addr: ":8081"
+  read_header_timeout: 10s
+  shutdown_timeout: 15s
+
+database:
+  # Same MySQL as the gateway; pool sizing uses infra.Open's built-in defaults
+  # (DBConfig only exposes driver / dsn).
+  driver: mysql
+  dsn: "root:@tcp(localhost:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+
+# Optional: if configured, precise invalidation goes through cachebus — revoking
+# a key notifies the data plane to evict in sub-second time, instead of waiting
+# for the data plane's <=30s TTL to expire naturally. Must use the same Redis as
+# the gateway. Leave addr empty (or delete this whole section) to fall back to
+# pure TTL-based revocation.
+redis:
+  addr: "localhost:6379"
+  db: 0
+
+# Must match gateway.yaml's data_key (local dev value; change in prod)
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+admin:
+  # Static bearer tokens + roles (admin = read/write, viewer = read-only; role
+  # defaults to admin if omitted).
+  # In production, injected via LLM_GATEWAY_CONSOLE_TOKENS (comma-separated, all
+  # admin), with a future switch to OIDC.
+  tokens:
+    - token: "dev-admin-token-change-me"
+      role: admin
+      name: "dev-admin"      # optional: used as the actor in audit logs (falls back to role if omitted)
+    - token: "dev-viewer-token"
+      role: viewer
+      name: "dev-viewer"

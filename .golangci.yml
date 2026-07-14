@@ -86,19 +86,20 @@ linters:
           - gocritic
           - wsl_v5
           - goconst
-      # Scripts are one-shot operator tools: log.Fatalf flow is idiomatic
-      # there, so gocritic's exitAfterDefer (a leaked DB conn on a fatal
-      # path, reclaimed by process exit a microsecond later) doesn't apply.
-      - path: ^scripts/
+      # Support and benchmark commands are one-shot operator programs. Their
+      # compact orchestration flow is intentionally different from production
+      # packages; correctness linters remain enabled, while the aggressive
+      # statement-cuddling and operator-program style checks are omitted.
+      - path: ^examples/(support|benchmark)/
         linters:
           - gocritic
           - wsl_v5
-      # cmd/mockupstream is a fake upstream for E2E tests (see its own doc
+      # examples/support/mockupstream is a fake upstream for E2E tests (see its own doc
       # comment) — a test-fixture generator that happens to live outside
       # _test.go because it needs to run as a standalone binary. Its literals
       # are canned response bodies with no round-trip/drift risk (nothing
       # reads them back for comparison), same rationale as the _test.go rule.
-      - path: ^cmd/mockupstream/
+      - path: ^examples/support/mockupstream/
         linters:
           - goconst
 

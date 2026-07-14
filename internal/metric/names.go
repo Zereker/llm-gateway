@@ -8,6 +8,7 @@ package metric
 const (
 	HTTPRequestsTotal          = "llm_gateway_http_requests_total"           // counter: method/route/status/error_class
 	HTTPRequestDurationSeconds = "llm_gateway_http_request_duration_seconds" // histogram: method/route/status/model/routed_model
+	ResponseTTFTSeconds        = "llm_gateway_response_ttft_seconds"         // histogram: model/routed_model/vendor
 	MiddlewareDurationSeconds  = "llm_gateway_middleware_duration_seconds"
 	MiddlewareErrorTotal       = "llm_gateway_middleware_error_total"
 	ContextFieldMissTotal      = "llm_gateway_context_field_miss_total"
@@ -40,15 +41,15 @@ const (
 
 // === Schedule (M7 / docs/03) ===
 const (
-	InvokerAttemptsTotal          = "llm_gateway_invoker_attempts_total"       // model / routed_model / vendor / endpoint_id / attempt_role / result / error_class
-	SelectorCandidates            = "llm_gateway_selector_candidates"          // histogram: model / stage
-	SchedulingDurationSeconds     = "llm_gateway_scheduling_duration_seconds"  // model / attempts
-	EligibilityDurationSeconds    = "llm_gateway_eligibility_duration_seconds" // model
-	SelectorCooldownEnterTotal    = "llm_gateway_selector_cooldown_enter_total"
+	InvokerAttemptsTotal          = "llm_gateway_invoker_attempts_total"        // model / routed_model / vendor / endpoint_id / attempt_role / result / error_class
+	SelectorCandidates            = "llm_gateway_selector_candidates"           // histogram: model / stage
+	SchedulingDurationSeconds     = "llm_gateway_scheduling_duration_seconds"   // model / attempts
+	EligibilityDurationSeconds    = "llm_gateway_eligibility_duration_seconds"  // model
+	SelectorCooldownEnterTotal    = "llm_gateway_selector_cooldown_enter_total" // endpoint_id / vendor / class
 	ScheduleResultTotal           = "llm_gateway_schedule_result_total"
-	SelectorEndpointSelectedTotal = "llm_gateway_selector_endpoint_selected_total"
+	SelectorEndpointSelectedTotal = "llm_gateway_selector_endpoint_selected_total" // endpoint_id / vendor / model
 	SelectorEndpointFilteredTotal = "llm_gateway_selector_endpoint_filtered_total"
-	SelectorEndpointCallTotal     = "llm_gateway_selector_endpoint_call_total"
+	SelectorEndpointCallTotal     = "llm_gateway_selector_endpoint_call_total" // endpoint_id / vendor / model / outcome / class
 )
 
 // === Upstream (docs/03) ===

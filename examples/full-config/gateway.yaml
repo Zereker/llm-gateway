@@ -1,13 +1,13 @@
 # gateway.yaml — full-feature demo for examples/full-config
 #
-# Differences from configs/local/gateway.yaml:
+# Differences from examples/local/configs/gateway.yaml:
 #   - Enables the Kafka outbox (production shape) + keeps the file driver commented out as a fallback
 #   - Explicitly lists all selector filters (including limit_read, which uses redis for rate-limit counting)
 #   - Cooldown is configured per ErrorClass dimension
 #   - A typical multi-model + multi-endpoint setup (data is written via SQL by the deployer; this file only configures runtime behavior)
 #
 # Paired seed file: seed.sql (multiple accounts / model_services / pricing_versions / quota_policies)
-# Startup order: docker compose up -d -> cmd/migrate -> start gateway -> mysql < seed.sql
+# Startup order: make dev-up -> start gateway -> mysql < seed.sql
 
 server:
   addr: ":8080"
@@ -23,7 +23,6 @@ database:
   driver: mysql
   # Production DSN: enable multiStatements + connection pool (internal/infra defaults to maxOpenConns=20)
   dsn: "gateway:CHANGEME@tcp(mysql.internal:3306)/llm_gateway?parseTime=true&charset=utf8mb4&multiStatements=true"
-  auto_migrate: false
 
 redis:
   # In production, configure primary/replica or sentinel; this file only illustrates a single instance. Hard dependency for M6 rate limiting.

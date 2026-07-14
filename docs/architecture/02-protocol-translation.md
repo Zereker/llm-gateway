@@ -420,7 +420,7 @@ that decision.
 emit a `{"type":"thinking","thinking":...}` content block ahead of the
 final text/tool_calls block — Cohere's analog of extended thinking, verified
 against a real captured `command-a-reasoning-08-2025` tool-call response
-(see `testdata/fieldmatrix/upstream/README.md`). It
+(see `internal/cassette/testdata/fieldmatrix/upstream/README.md`). It
 surfaces the same way as Anthropic's, as `message.reasoning_content`
 (non-streaming) or `reasoning_content` delta chunks keyed by content index
 (streaming, since a `content-delta` event repeats only the changed field —
@@ -433,9 +433,9 @@ chain Cohere would reject a subsequent `tool_calls` message without.
 
 **Gemini 3 `thoughtSignature`** (`openai_gemini`): Gemini's per-call analogue
 of Anthropic's thinking signature — an opaque signed blob attached as a
-sibling field on a `functionCall` part (verified against a real captured
-Gemini 3 response, not just the spec — see
-`testdata/fieldmatrix/upstream/gemini-native-thought-signature.json`).
+sibling field on a `functionCall` part. The real captured Gemini 3 value and
+its provenance are preserved in `internal/translator/openai_gemini/translator_test.go`;
+the original cassette is part of opencassette's `Vendored()` corpus.
 Surfaced as `tool_calls[].thought_signature` on the OpenAI-shaped response
 and replayed onto the same part when that tool call is echoed back in
 history. Unlike Anthropic's single thinking block, this is per-call, so it

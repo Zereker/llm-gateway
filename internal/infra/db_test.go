@@ -2,8 +2,14 @@ package infra
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
+	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 )
 
 // mysqlDSN reads the environment variable; t.Skip if unset. All infra tests
@@ -78,6 +84,86 @@ func TestMigrate_Idempotent(t *testing.T) {
 		if !ok {
 			t.Errorf("table %q not created (got %v)", n, tables)
 		}
+	}
+}
+
+func TestMigrate_ConcurrentReplicas(t *testing.T) {
+	dsn := mysqlDSN(t)
+	parsed, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("parse MYSQL_DSN: %v", err)
+	}
+
+	adminCfg := *parsed
+	adminCfg.DBName = ""
+	admin, err := sqlx.Connect("mysql", adminCfg.FormatDSN())
+	if err != nil {
+		t.Fatalf("connect without database: %v", err)
+	}
+	defer func() { _ = admin.Close() }()
+
+	database := fmt.Sprintf("llm_gateway_migrate_%d", time.Now().UnixNano())
+	if _, err = admin.Exec("CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
+		t.Fatalf("create isolated migration database: %v", err)
+	}
+	defer func() {
+		if _, dropErr := admin.Exec("DROP DATABASE `" + database + "`"); dropErr != nil {
+			t.Errorf("drop isolated migration database: %v", dropErr)
+		}
+	}()
+
+	replicaCfg := *parsed
+	replicaCfg.DBName = database
+	const replicas = 4
+	dbs := make([]*sqlx.DB, 0, replicas)
+	for range replicas {
+		db, openErr := Open(DBConfig{Driver: DriverMySQL, DSN: replicaCfg.FormatDSN()})
+		if openErr != nil {
+			t.Fatalf("open replica database: %v", openErr)
+		}
+		dbs = append(dbs, db)
+	}
+	defer func() {
+		for _, db := range dbs {
+			_ = db.Close()
+		}
+	}()
+
+	start := make(chan struct{})
+	errs := make(chan error, replicas)
+	var wg sync.WaitGroup
+	for _, db := range dbs {
+		wg.Add(1)
+		go func(db *sqlx.DB) {
+			defer wg.Done()
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			errs <- Migrate(ctx, db)
+		}(db)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent Migrate: %v", err)
+		}
+	}
+	if t.Failed() {
+		return
+	}
+
+	if err = CheckMigrationVersion(context.Background(), dbs[0]); err != nil {
+		t.Fatalf("CheckMigrationVersion: %v", err)
+	}
+	var versions int
+	if err = dbs[0].Get(&versions, `SELECT COUNT(*) FROM schema_migrations`); err != nil {
+		t.Fatalf("count schema migrations: %v", err)
+	}
+	if versions != latestSchemaVersion {
+		t.Fatalf("schema_migrations rows = %d, want %d", versions, latestSchemaVersion)
 	}
 }
 

@@ -7,25 +7,26 @@
 package cassette
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 )
 
-// repoRoot is computed once from this source file's own location —
-// internal/cassette/cassette.go is exactly two directories below the repo
-// root, so this is stable no matter which package imports it or what
-// directory `go test` happened to set as the working directory.
-var repoRoot = func() string {
+// testdataRoot is computed from this package's source location, so callers do
+// not depend on their working directory or on the repository's outer layout.
+var testdataRoot = func() string {
 	_, thisFile, _, _ := runtime.Caller(0)
-	return filepath.Dir(filepath.Dir(filepath.Dir(thisFile))) // .../internal/cassette/cassette.go -> internal/cassette -> internal -> repo root
+	return filepath.Join(filepath.Dir(thisFile), "testdata")
 }()
 
-// TestdataPath returns an absolute path to testdata/<elem...> at the repo
-// root (e.g. TestdataPath("fieldmatrix", "endpoints") ->
-// "<repo>/testdata/fieldmatrix/endpoints"). Safe to call from any package's
-// test file regardless of nesting depth — unlike a hand-counted relative path
-// ("../../testdata/..."), it doesn't silently break if either the caller or
-// testdata/ itself moves one level.
+// TestdataPath returns an absolute path below internal/cassette/testdata. It is
+// safe to call from any package regardless of the test runner's working
+// directory. Standalone binaries can override the location with
+// LLM_GATEWAY_TESTDATA_DIR.
 func TestdataPath(elem ...string) string {
-	return filepath.Join(append([]string{repoRoot, "testdata"}, elem...)...)
+	if root := os.Getenv("LLM_GATEWAY_TESTDATA_DIR"); root != "" {
+		return filepath.Join(append([]string{root}, elem...)...)
+	}
+
+	return filepath.Join(append([]string{testdataRoot}, elem...)...)
 }

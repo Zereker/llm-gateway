@@ -1,0 +1,175 @@
+name: llm-gateway-quickstart
+
+x-app-build: &app-build
+  context: ../..
+  dockerfile: examples/quickstart/Dockerfile
+  args:
+    GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: llm_gateway
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - quickstart-mysql:/var/lib/mysql
+    healthcheck:
+      # Use TCP explicitly: localhost may select MySQL's Unix socket and report
+      # ready a moment before other containers can connect over the network.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "--silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - quickstart-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  mockupstream:
+    build:
+      <<: *app-build
+      target: mockupstream
+    environment:
+      MOCK_ADDR: ":9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9090/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  gateway:
+    build:
+      <<: *app-build
+      target: gateway
+    command: ["-config", "/etc/llm-gateway/gateway.yaml"]
+    volumes:
+      - ./configs/gateway.yaml:/etc/llm-gateway/gateway.yaml:ro
+      - quickstart-gateway-data:/var/lib/llm-gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mockupstream:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  seed:
+    build:
+      <<: *app-build
+      target: seed
+    command:
+      - -dsn
+      - root:@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4
+      - -data-key
+      - 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - -upstream
+      - http://mockupstream:9090/v1/chat/completions
+      - -name
+      - quickstart-openai-fixture
+      - -api-key
+      - sk-quickstart-llm-gateway
+      - -model
+      - mock-openai-model
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: "no"
+
+  console:
+    build:
+      <<: *app-build
+      target: console
+    command: ["-config", "/etc/llm-gateway/console.yaml"]
+    volumes:
+      - ./configs/console.yaml:/etc/llm-gateway/console.yaml:ro
+    ports:
+      - "8081:8081"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8081/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ../../deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../deploy/observability/alerts.yaml:/etc/prometheus/rules/alerts.yaml:ro
+      - quickstart-prometheus:/prometheus
+    ports:
+      - "9091:9090"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9090/-/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.0.2
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../../deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../deploy/observability/dashboard.json:/var/lib/grafana/dashboards/llm-gateway.json:ro
+      - quickstart-grafana:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/api/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  quickstart-mysql:
+  quickstart-redis:
+  quickstart-gateway-data:
+  quickstart-prometheus:
+  quickstart-grafana:

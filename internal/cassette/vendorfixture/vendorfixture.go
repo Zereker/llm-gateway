@@ -1,18 +1,18 @@
 // Package vendorfixture loads per-vendor endpoint-seed manifests from
-// testdata/fieldmatrix/endpoints/ (repo root) — one JSON file per vendor,
+// internal/cassette/testdata/fieldmatrix/endpoints/ — one JSON file per vendor,
 // declaring exactly the fields that differ between vendors when seeding a
 // business-data endpoint: vendor / protocol / model / auth type / auth
 // payload / the upstream path it should be routed to, plus which real
 // captured response to reply with.
 //
 // This is the single source of truth both consumers seed from:
-//   - scripts/seed-multivendor: seeds real MySQL rows for a real cmd/gateway
-//   - cmd/mockupstream black-box run.
+//   - examples/support/seed-fieldmatrix: seeds real MySQL rows for a real cmd/gateway
+//   - examples/support/mockupstream black-box run.
 //   - internal/app/gateway's TestE2E_MultiVendor_AllProtocols: seeds the same
 //     shape in-process against an httptest mock.
 //
 // Adding a new vendor to *both* is one new JSON file here — see any existing
-// file for the shape, and cmd/mockupstream's doc comment for which
+// file for the shape, and examples/support/mockupstream's doc comment for which
 // UpstreamPath values it actually serves.
 package vendorfixture
 
@@ -28,7 +28,7 @@ import (
 // this scenario, all resolved by ResolveReply. Kind "cassette" reads response
 // body #Index from the opencassette module's corpora — Corpus() (our own
 // recordings) first, then Vendored() (third-party); kind "fixture" reads the
-// whole file verbatim from testdata/fieldmatrix/upstream/Path (a
+// whole file verbatim from internal/cassette/testdata/fieldmatrix/upstream/Path (a
 // curated/sanitized derivative, for vendors where the raw shape needs adapting).
 type Reply struct {
 	Kind  string `json:"kind"`

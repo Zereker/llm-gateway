@@ -9,7 +9,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/cassette"
 )
 
-// updateGolden regenerates fixtures under testdata/fieldmatrix/golden/
+// updateGolden regenerates fixtures under internal/cassette/testdata/fieldmatrix/golden/
 // instead of comparing against them -- run as
 //
 //	UPDATE_GOLDEN=1 go test ./internal/cassette/replay/... -run TestGolden

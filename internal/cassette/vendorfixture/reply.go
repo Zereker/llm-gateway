@@ -15,13 +15,13 @@ import (
 // ResolveReply loads the raw upstream response body a scenario's reply points
 // at, from the same two sources both e2e consumers understand — so the
 // in-process test (internal/app/gateway) and the real-binary mock upstream
-// (cmd/mockupstream) resolve a manifest's reply identically, from one place:
+// (examples/support/mockupstream) resolve a manifest's reply identically, from one place:
 //
 //   - "cassette": response body #Index of a real recorded cassette from the
 //     opencassette module — looked up in Corpus() (our own recordings) first,
 //     then Vendored() (the third-party corpus). The two trees' top-level
 //     vendor directories are disjoint, so a path is never ambiguous.
-//   - "fixture":  testdata/fieldmatrix/upstream/<path>, whole file verbatim
+//   - "fixture":  internal/cassette/testdata/fieldmatrix/upstream/<path>, whole file verbatim
 //     (a curated/sanitized derivative).
 func ResolveReply(r Reply) ([]byte, error) {
 	switch r.Kind {

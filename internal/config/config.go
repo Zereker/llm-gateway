@@ -11,7 +11,7 @@
 // the "process's own settings" read once at startup (listen address, timeouts,
 // DB connections, log paths, etc.).
 //
-// Example: configs/local/gateway.yaml.
+// Example: examples/local/configs/gateway.yaml.
 package config
 
 import (
@@ -438,21 +438,6 @@ func Load(path string) (*Config, error) {
 	}
 
 	return c, nil
-}
-
-// LoadDatabase reads only the database startup settings needed by cmd/migrate.
-// It still parses the complete YAML strictly, but does not validate unrelated
-// runtime drivers such as moderation or outbox.
-func LoadDatabase(path string) (infra.DBConfig, error) {
-	c, err := decode(path)
-	if err != nil {
-		return infra.DBConfig{}, err
-	}
-
-	c.ApplyEnv()
-	c.ApplyDefaults()
-
-	return c.Database, nil
 }
 
 func decode(path string) (*Config, error) {
