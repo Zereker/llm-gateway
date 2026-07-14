@@ -9,11 +9,12 @@
 #   GO_VERSION  Go toolchain version (defaults to match go.mod)
 
 ARG GO_VERSION=1.25
+ARG BASE_IMAGE_REGISTRY=docker.io/library
 
 # =============================================================================
 # builder
 # =============================================================================
-FROM golang:${GO_VERSION}-alpine AS builder
+FROM ${BASE_IMAGE_REGISTRY}/golang:${GO_VERSION}-alpine AS builder
 
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
@@ -41,7 +42,7 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/console      ./cmd/console && \
 # =============================================================================
 # console
 # =============================================================================
-FROM alpine:3.20 AS console
+FROM ${BASE_IMAGE_REGISTRY}/alpine:3.20 AS console
 WORKDIR /app
 COPY --from=builder /out/console /app/console
 EXPOSE 8081
@@ -51,7 +52,7 @@ CMD ["-config", "/etc/llm-gateway/console.yaml"]
 # =============================================================================
 # gateway
 # =============================================================================
-FROM alpine:3.20 AS gateway
+FROM ${BASE_IMAGE_REGISTRY}/alpine:3.20 AS gateway
 WORKDIR /app
 COPY --from=builder /out/gateway /app/gateway
 EXPOSE 8080
@@ -61,7 +62,7 @@ CMD ["-config", "/etc/llm-gateway/gateway.yaml"]
 # =============================================================================
 # mockupstream
 # =============================================================================
-FROM alpine:3.20 AS mockupstream
+FROM ${BASE_IMAGE_REGISTRY}/alpine:3.20 AS mockupstream
 WORKDIR /app
 COPY --from=builder /out/mockupstream /app/mockupstream
 COPY internal/cassette/testdata/fieldmatrix /app/testdata/fieldmatrix
@@ -72,7 +73,7 @@ ENTRYPOINT ["/app/mockupstream"]
 # =============================================================================
 # seed (one-shot and idempotent)
 # =============================================================================
-FROM alpine:3.20 AS seed
+FROM ${BASE_IMAGE_REGISTRY}/alpine:3.20 AS seed
 WORKDIR /app
 COPY --from=builder /out/seed-demo /app/seed-demo
 ENTRYPOINT ["/app/seed-demo"]

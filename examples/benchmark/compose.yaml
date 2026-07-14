@@ -4,11 +4,12 @@ x-benchmark-build: &benchmark-build
   context: ../..
   dockerfile: examples/benchmark/Dockerfile
   args:
+    BASE_IMAGE_REGISTRY: ${BASE_IMAGE_REGISTRY:-docker.io/library}
     GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
 
 services:
   mysql:
-    image: mysql:8.0
+    image: ${CONTAINER_REGISTRY:-docker.io}/library/mysql:8.0
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
       MYSQL_DATABASE: llm_gateway
@@ -20,7 +21,7 @@ services:
       retries: 30
 
   redis:
-    image: redis:7-alpine
+    image: ${CONTAINER_REGISTRY:-docker.io}/library/redis:7-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -43,6 +44,7 @@ services:
       dockerfile: Dockerfile
       target: gateway
       args:
+        BASE_IMAGE_REGISTRY: ${BASE_IMAGE_REGISTRY:-docker.io/library}
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     command: ["-config", "/etc/llm-gateway/gateway.yaml"]
     volumes:

@@ -23,6 +23,9 @@ make quickstart-observe
 Open Prometheus at `http://localhost:9091` and Grafana at
 `http://localhost:3000` (`admin` / `admin`). The quickstart pins its Prometheus and
 Grafana images in `examples/quickstart/compose.yaml` for reproducibility.
+The command also produces non-streaming and streaming traffic, verifies that
+Prometheus scraped request, latency, and TTFT metrics, and confirms through the
+Grafana API that the runtime dashboard was provisioned.
 
 ## Setup Steps
 

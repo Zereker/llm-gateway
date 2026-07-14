@@ -12,7 +12,7 @@ self-hosted models. It is designed as a control plane plus data plane, not as a
 thin reverse proxy.
 
 [Quick start](#quick-start) · [Architecture](docs/architecture/) ·
-[Roadmap](docs/ROADMAP.md) · [Benchmark](examples/benchmark/) ·
+[Roadmap](docs/ROADMAP.md) · [Examples](examples/) · [Benchmark](examples/benchmark/) ·
 [中文说明](README.zh-CN.md)
 
 ## Why llm-gateway

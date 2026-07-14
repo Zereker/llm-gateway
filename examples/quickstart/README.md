@@ -12,4 +12,5 @@ make down
 
 The stack uses fixed development credentials and the repository's cassette
 fixtures; it never calls a real model provider. See the root README for the API
-key and request example.
+key and request example. Docker Hub and the Go module proxy can be replaced for
+restricted networks; see the shared [registry configuration](../README.md#registry-configuration).
