@@ -247,8 +247,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Start and verify the documented one-command quickstart
-        run: make -C examples/quickstart up
+      - name: Start and verify the documented quickstart with observability
+        run: make -C examples/quickstart observe
       - name: Tear down quickstart
         if: always()
         run: make -C examples/quickstart down

@@ -42,9 +42,13 @@ import (
 	"github.com/zereker/llm-gateway/internal/cassette/vendorfixture"
 )
 
-// recordedReplies maps an upstream model name to the raw recorded response
-// body this mock returns for it.
-var recordedReplies map[string][]byte
+// recordedReplies maps an upstream model name to its recorded non-streaming
+// response. recordedStreamReplies contains a streaming recording when the
+// fixture set has one for the same model.
+var (
+	recordedReplies       map[string][]byte
+	recordedStreamReplies map[string][]byte
+)
 
 // loadRecordedReplies builds the model -> recorded-body map from the endpoint
 // manifests. A manifest that can't be loaded or a reply that can't be resolved
@@ -76,11 +80,26 @@ func loadRecordedReplies() map[string][]byte {
 	return m
 }
 
+func loadRecordedStreamReplies() map[string][]byte {
+	// The OpenAI quickstart fixture has a curated OpenAI-compatible streaming
+	// golden alongside its non-streaming upstream response. Keeping both under
+	// the same model lets the black-box quickstart exercise the real streaming
+	// path without introducing a synthetic provider implementation.
+	body, err := os.ReadFile(cassette.TestdataPath("fieldmatrix", "golden", "anthropic-thinking.txt"))
+	if err != nil {
+		slog.Warn("mockupstream: streaming recording not loaded", "err", err)
+		return nil
+	}
+
+	return map[string][]byte{"mock-openai-model": body}
+}
+
 // serveRecorded writes the recorded reply for model, or a 404 naming the
 // models this mock does serve. The Content-Type mirrors the recorded body's
 // shape (SSE vs JSON).
-func serveRecorded(w http.ResponseWriter, model string) {
+func serveRecorded(w http.ResponseWriter, model string, stream bool) {
 	body, ok := recordedReplies[model]
+	replayAsStream := false
 	if !ok {
 		known := make([]string, 0, len(recordedReplies))
 		for k := range recordedReplies {
@@ -92,6 +111,12 @@ func serveRecorded(w http.ResponseWriter, model string) {
 
 		return
 	}
+	if stream {
+		if streamBody, exists := recordedStreamReplies[model]; exists {
+			body = streamBody
+			replayAsStream = true
+		}
+	}
 
 	trimmed := bytes.TrimSpace(body)
 	if bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("data:")) {
@@ -101,6 +126,24 @@ func serveRecorded(w http.ResponseWriter, model string) {
 		w.Header().Set("Content-Type", "application/json")
 	}
 
+	if replayAsStream {
+		// Preserve SSE framing and a measurable time-to-first-token. A single
+		// immediate Write can complete within the gateway's millisecond timing
+		// resolution and would not exercise streaming observability.
+		time.Sleep(5 * time.Millisecond)
+		for _, event := range bytes.SplitAfter(body, []byte("\n\n")) {
+			if len(event) == 0 {
+				continue
+			}
+			_, _ = w.Write(event)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return
+	}
+
 	_, _ = w.Write(body)
 }
 
@@ -108,14 +151,15 @@ func serveRecorded(w http.ResponseWriter, model string) {
 // request body (OpenAI / Azure OpenAI / Anthropic / Cohere).
 func serveByBodyModel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	serveRecorded(w, req.Model)
+	serveRecorded(w, req.Model, req.Stream)
 }
 
 // serveGemini extracts the model from a generateContent path
@@ -130,7 +174,7 @@ func serveGemini(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	serveRecorded(w, model)
+	serveRecorded(w, model, strings.Contains(r.URL.Path, ":streamGenerateContent"))
 }
 
 // serveBedrock extracts the model id from a Converse path
@@ -149,7 +193,7 @@ func serveBedrock(w http.ResponseWriter, r *http.Request) {
 		model = rest
 	}
 
-	serveRecorded(w, model)
+	serveRecorded(w, model, strings.HasSuffix(r.URL.Path, "/converse-stream"))
 }
 
 func main() {
@@ -159,6 +203,7 @@ func main() {
 	}
 
 	recordedReplies = loadRecordedReplies()
+	recordedStreamReplies = loadRecordedStreamReplies()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {

@@ -23,7 +23,7 @@
 services:
 
   mysql:
-    image: mysql:8.0
+    image: ${CONTAINER_REGISTRY:-docker.io}/library/mysql:8.0
     restart: unless-stopped
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
@@ -44,7 +44,7 @@ services:
       retries: 20
 
   redis:
-    image: redis:7-alpine
+    image: ${CONTAINER_REGISTRY:-docker.io}/library/redis:7-alpine
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -57,7 +57,7 @@ services:
       retries: 20
 
   redpanda:
-    image: redpandadata/redpanda:latest
+    image: ${CONTAINER_REGISTRY:-docker.io}/redpandadata/redpanda:latest
     restart: unless-stopped
     command:
       - redpanda
@@ -86,7 +86,7 @@ services:
 
   redpanda-init:
     # one-shot: pre-creates the topic used for billing (the gateway outbox's delivery target)
-    image: redpandadata/redpanda:latest
+    image: ${CONTAINER_REGISTRY:-docker.io}/redpandadata/redpanda:latest
     depends_on:
       redpanda:
         condition: service_healthy

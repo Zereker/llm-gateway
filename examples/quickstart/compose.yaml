@@ -4,11 +4,12 @@ x-app-build: &app-build
   context: ../..
   dockerfile: examples/quickstart/Dockerfile
   args:
+    BASE_IMAGE_REGISTRY: ${BASE_IMAGE_REGISTRY:-docker.io/library}
     GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
 
 services:
   mysql:
-    image: mysql:8.0
+    image: ${CONTAINER_REGISTRY:-docker.io}/library/mysql:8.0
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
       MYSQL_DATABASE: llm_gateway
@@ -28,7 +29,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: ${CONTAINER_REGISTRY:-docker.io}/library/redis:7-alpine
     volumes:
       - quickstart-redis:/data
     healthcheck:
@@ -122,7 +123,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v3.12.0
+    image: ${CONTAINER_REGISTRY:-docker.io}/prom/prometheus:v3.12.0
     profiles: [observability]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -144,7 +145,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:13.0.2
+    image: ${CONTAINER_REGISTRY:-docker.io}/grafana/grafana:13.0.2
     profiles: [observability]
     environment:
       GF_SECURITY_ADMIN_USER: admin

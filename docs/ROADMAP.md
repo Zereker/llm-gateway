@@ -14,7 +14,7 @@ not count as delivery.
 |---|---|
 | M0.1 Product narrative | Complete |
 | M0.2 One-command local demo | Complete |
-| M0.3 Operational dashboard | In progress |
+| M0.3 Operational dashboard | Complete |
 | M0.4 Reproducible performance proof | In progress |
 | M1 Explainable policy routing | Planned |
 | M2 Governed prompt and response policy | Planned |
@@ -88,8 +88,8 @@ Acceptance gates:
 
 ### M0.2 — One-command local demo
 
-- Add a demo Compose profile (or a dedicated demo compose file) containing
-  MySQL, Redis, gateway, console, mock upstream, migration, and idempotent seed.
+- Add a Quickstart Compose profile containing MySQL, Redis, gateway, console,
+  mock upstream, gateway-owned schema migration, and idempotent seed.
 - Give the demo stable, non-secret development credentials.
 - Provide one command that reaches a ready state without manual SQL.
 - Print the Console URL, API key, and a copyable request after startup.

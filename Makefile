@@ -3,6 +3,7 @@
 
 DEV_COMPOSE = docker compose -p llm-gateway-dev -f examples/local/compose.yaml
 MYSQL_DSN ?= root:@tcp(localhost:3306)/llm_gateway_test?parseTime=true&charset=utf8mb4
+BASE_IMAGE_REGISTRY ?= docker.io/library
 
 .PHONY: dev-up dev-stop dev-clean
 dev-up: ## Start local MySQL, Redis, and Redpanda
@@ -29,7 +30,7 @@ build: ## Build the two production commands
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway ./cmd/gateway
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-console ./cmd/console
 docker-build: ## Build the production gateway image
-	docker build --build-arg GOPROXY="$$(go env GOPROXY)" --target gateway -t llm-gateway:local .
+	docker build --build-arg BASE_IMAGE_REGISTRY="$(BASE_IMAGE_REGISTRY)" --build-arg GOPROXY="$$(go env GOPROXY)" --target gateway -t llm-gateway:local .
 
 .PHONY: run-gateway run-console run-mockupstream
 run-gateway: ## Run the data plane with the local development config

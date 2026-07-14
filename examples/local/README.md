@@ -26,3 +26,5 @@ delivery. Credentials in this directory are development-only.
 Production templates and deployment assets live under [`deploy/`](../../deploy/).
 The self-contained evaluator experience lives under
 [`examples/quickstart/`](../quickstart/).
+Registry and Go proxy overrides are documented in the shared
+[examples guide](../README.md#registry-configuration).

@@ -3,6 +3,8 @@
 The benchmark compares the same deterministic LLM-like upstream directly and
 through `llm-gateway`. The runner and upstream are versioned Go source in this
 directory; no host load-generator version or real provider is involved.
+Registry and Go proxy overrides are documented in the shared
+[examples guide](../README.md#registry-configuration).
 
 ```sh
 make benchmark
