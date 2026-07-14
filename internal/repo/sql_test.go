@@ -28,6 +28,7 @@ func truncateAll(db *sqlx.DB) error {
 
 	for _, table := range []string{
 		"pricing_versions",
+		"routing_cost_profiles",
 		"routing_policies",
 		"account_model_subscriptions",
 		"endpoints",

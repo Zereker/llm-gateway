@@ -47,6 +47,8 @@ const (
 	// KindRoutingPolicy invalidates compiled virtual-model policy snapshots.
 	// Key is informational; global changes require a coarse cache purge.
 	KindRoutingPolicy Kind = "routing_policy"
+	// KindRoutingCost invalidates routing-only operator-cost snapshots.
+	KindRoutingCost Kind = "routing_cost"
 )
 
 // Invalidation is a single invalidation message. Wire format: `<kind>:<key>`.

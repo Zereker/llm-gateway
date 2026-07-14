@@ -5,8 +5,12 @@ package routingpolicy
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zereker/llm-gateway/internal/domain"
 )
@@ -23,12 +27,29 @@ type SubscriptionChecker interface {
 	HasModel(ctx context.Context, accountID string, modelServiceID int64) (bool, error)
 }
 
+type CostReader interface {
+	GetActive(ctx context.Context, modelServiceID int64) (*domain.RoutingCostProfile, error)
+}
+
+type EndpointTelemetry struct {
+	LatencyMs   float64   `json:"latency_ms"`
+	SuccessRate float64   `json:"success_rate"`
+	SampleCount uint32    `json:"sample_count"`
+	Updated     time.Time `json:"updated_at"`
+}
+
+type TelemetryReader interface {
+	ForModel(ctx context.Context, model, group string) ([]EndpointTelemetry, error)
+}
+
 type Input struct {
 	RequestedModel string
 	AccountID      string
 	ProjectID      string
 	Region         string
 	Modality       domain.Modality
+	Group          string
+	DecisionKey    string
 }
 
 type Resolution struct {
@@ -40,10 +61,24 @@ type Resolver struct {
 	policies      PolicyReader
 	catalog       ModelCatalog
 	subscriptions SubscriptionChecker
+	costs         CostReader
+	telemetry     TelemetryReader
+	now           func() time.Time
 }
 
-func NewResolver(policies PolicyReader, catalog ModelCatalog, subscriptions SubscriptionChecker) *Resolver {
-	return &Resolver{policies: policies, catalog: catalog, subscriptions: subscriptions}
+type Option func(*Resolver)
+
+func WithObjectives(costs CostReader, telemetry TelemetryReader) Option {
+	return func(r *Resolver) { r.costs, r.telemetry = costs, telemetry }
+}
+
+func NewResolver(policies PolicyReader, catalog ModelCatalog, subscriptions SubscriptionChecker, opts ...Option) *Resolver {
+	r := &Resolver{policies: policies, catalog: catalog, subscriptions: subscriptions, now: time.Now}
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	return r
 }
 
 func (r *Resolver) Resolve(ctx context.Context, in Input) (Resolution, error) {
@@ -120,19 +155,34 @@ func (r *Resolver) Resolve(ctx context.Context, in Input) (Resolution, error) {
 		resolved[candidate.Model] = model
 	}
 
-	// Higher weights are preferred; equal weights retain configured order.
+	if objectiveEnabled(policy.Objectives) {
+		if err := r.score(ctx, in, policy, &decision); err != nil {
+			return failedWithPolicy(in.RequestedModel, policy, domain.RoutingReasonPolicyUnavailable), err
+		}
+	}
+
+	// Objective score wins when configured; weight and configured order remain
+	// deterministic tie-breakers and preserve M1.2 behavior when disabled.
 	sort.SliceStable(decision.Candidates, func(i, j int) bool {
 		left, right := decision.Candidates[i], decision.Candidates[j]
 		if left.Eligible != right.Eligible {
 			return left.Eligible
 		}
 
-		if left.Eligible && left.Weight != right.Weight {
-			return left.Weight > right.Weight
+		if left.Eligible {
+			if left.Score != nil && right.Score != nil && left.Score.TotalScore != right.Score.TotalScore {
+				return left.Score.TotalScore > right.Score.TotalScore
+			}
+
+			if left.Weight != right.Weight {
+				return left.Weight > right.Weight
+			}
 		}
 
 		return left.Order < right.Order
 	})
+
+	applyExploration(in, policy, decision.Candidates)
 
 	chain := make([]*domain.ModelService, 0, len(resolved))
 	for order := range decision.Candidates {
@@ -163,6 +213,10 @@ func validatePolicy(policy *domain.RoutingPolicy, requested string) error {
 		return fmt.Errorf("routing policy: max_attempts cannot be negative")
 	}
 
+	if err := validateObjectives(policy.Objectives); err != nil {
+		return err
+	}
+
 	for i, candidate := range policy.Candidates {
 		if candidate.Model == "" {
 			return fmt.Errorf("routing policy: candidate %d model is required", i)
@@ -170,6 +224,196 @@ func validatePolicy(policy *domain.RoutingPolicy, requested string) error {
 	}
 
 	return nil
+}
+
+func objectiveEnabled(o domain.RoutingObjectives) bool {
+	return o.LatencyWeight > 0 || o.CostWeight > 0
+}
+
+func validateObjectives(o domain.RoutingObjectives) error {
+	if o.ExplorationPermille > 1000 {
+		return fmt.Errorf("routing policy: exploration_permille cannot exceed 1000")
+	}
+
+	if o.LatencyWeight > 0 && o.TargetLatencyMs == 0 {
+		return fmt.Errorf("routing policy: target_latency_ms is required when latency_weight is set")
+	}
+
+	if o.CostWeight > 0 && o.TargetCostMicrousd == 0 {
+		return fmt.Errorf("routing policy: target_cost_microusd is required when cost_weight is set")
+	}
+
+	if o.CostWeight > 0 && o.EstimatedInputTokens == 0 && o.EstimatedOutputTokens == 0 {
+		return fmt.Errorf("routing policy: estimated token volume is required when cost_weight is set")
+	}
+
+	return nil
+}
+
+const neutralScore = 0.5
+
+func (r *Resolver) score(ctx context.Context, in Input, policy *domain.RoutingPolicy, decision *domain.ModelRoutingDecision) error {
+	o := policy.Objectives
+
+	minSamples := o.MinTelemetrySamples
+	if minSamples == 0 {
+		minSamples = 5
+	}
+
+	maxAge := time.Duration(o.TelemetryMaxAgeSeconds) * time.Second
+	if maxAge == 0 {
+		maxAge = 5 * time.Minute
+	}
+
+	for i := range decision.Candidates {
+		candidate := &decision.Candidates[i]
+		if !candidate.Eligible {
+			continue
+		}
+
+		explanation := &domain.RoutingScoreExplanation{
+			LatencySource: domain.RoutingSignalNotConfigured, LatencyScore: neutralScore,
+			CostSource: domain.RoutingSignalNotConfigured, CostScore: neutralScore,
+		}
+
+		if o.LatencyWeight > 0 {
+			explanation.LatencySource = domain.RoutingSignalMissing
+			if r.telemetry != nil {
+				snapshots, err := r.telemetry.ForModel(ctx, candidate.Model, in.Group)
+				if err != nil {
+					return fmt.Errorf("resolve candidate %q telemetry: %w", candidate.Model, err)
+				}
+
+				applyTelemetry(explanation, snapshots, r.now(), maxAge, minSamples, o.TargetLatencyMs)
+			}
+		}
+
+		if o.CostWeight > 0 {
+			explanation.CostSource = domain.RoutingSignalMissing
+			if r.costs != nil {
+				profile, err := r.costs.GetActive(ctx, candidate.ModelServiceID)
+				if err != nil {
+					return fmt.Errorf("resolve candidate %q cost: %w", candidate.Model, err)
+				}
+
+				if profile != nil {
+					explanation.CostSource = domain.RoutingSignalConfigured
+					explanation.CostProfile = &profile.Ref
+					explanation.EstimatedMicrousd = estimatedCost(profile, o.EstimatedInputTokens, o.EstimatedOutputTokens)
+					explanation.CostScore = ratioScore(float64(o.TargetCostMicrousd), float64(explanation.EstimatedMicrousd))
+				}
+			}
+		}
+
+		weighted := float64(o.LatencyWeight)*explanation.LatencyScore + float64(o.CostWeight)*explanation.CostScore
+		explanation.TotalScore = weighted / float64(o.LatencyWeight+o.CostWeight)
+		candidate.Score = explanation
+	}
+
+	return nil
+}
+
+func applyTelemetry(out *domain.RoutingScoreExplanation, snapshots []EndpointTelemetry, now time.Time, maxAge time.Duration, minSamples uint32, target uint32) {
+	var latency, success float64
+
+	var samples uint32
+
+	var latest time.Time
+
+	staleSeen := false
+	for _, snapshot := range snapshots {
+		if snapshot.SampleCount < minSamples {
+			continue
+		}
+
+		if snapshot.Updated.IsZero() || now.Sub(snapshot.Updated) > maxAge {
+			staleSeen = true
+
+			continue
+		}
+
+		latency += snapshot.LatencyMs * float64(snapshot.SampleCount)
+		success += snapshot.SuccessRate * float64(snapshot.SampleCount)
+		samples += snapshot.SampleCount
+
+		if snapshot.Updated.After(latest) {
+			latest = snapshot.Updated
+		}
+	}
+
+	if samples == 0 {
+		if staleSeen {
+			out.LatencySource = domain.RoutingSignalStale
+		}
+
+		return
+	}
+
+	out.LatencySource = domain.RoutingSignalObserved
+	out.LatencyMs = latency / float64(samples)
+	out.SuccessRate = clamp01(success / float64(samples))
+	out.TelemetrySamples = samples
+	out.TelemetryUpdatedAt = latest.UTC().Format(time.RFC3339Nano)
+	out.LatencyScore = ratioScore(float64(target), out.LatencyMs) * out.SuccessRate
+}
+
+func estimatedCost(profile *domain.RoutingCostProfile, inputTokens, outputTokens uint32) uint64 {
+	cost := (float64(profile.InputMicrousdPerMillionToken)*float64(inputTokens) +
+		float64(profile.OutputMicrousdPerMillionToken)*float64(outputTokens)) / 1_000_000
+
+	return uint64(math.Ceil(cost))
+}
+
+func ratioScore(target, actual float64) float64 {
+	if actual <= 0 {
+		return 1
+	}
+
+	return clamp01(target / actual)
+}
+
+func clamp01(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+
+	if value > 1 {
+		return 1
+	}
+
+	return value
+}
+
+func applyExploration(in Input, policy *domain.RoutingPolicy, candidates []domain.RoutingCandidateDecision) {
+	if policy.Objectives.ExplorationPermille == 0 || in.DecisionKey == "" {
+		return
+	}
+
+	eligible := 0
+	for eligible < len(candidates) && candidates[eligible].Eligible {
+		eligible++
+	}
+
+	if eligible < 2 {
+		return
+	}
+
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(policy.Ref.ID + "\x00" + strconv.FormatUint(policy.Ref.Version, 10) + "\x00" + in.AccountID + "\x00" + in.DecisionKey))
+
+	value := h.Sum64()
+	if value%1000 >= uint64(policy.Objectives.ExplorationPermille) {
+		return
+	}
+
+	selected := 1 + int((value/1000)%uint64(eligible-1))
+	picked := candidates[selected]
+	copy(candidates[1:selected+1], candidates[0:selected])
+
+	candidates[0] = picked
+	if candidates[0].Score != nil {
+		candidates[0].Score.ExplorationChosen = true
+	}
 }
 
 func constraintReason(

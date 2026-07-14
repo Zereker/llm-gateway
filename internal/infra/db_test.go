@@ -69,12 +69,12 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if err := db.Select(&tables,
 		`SELECT table_name FROM information_schema.tables
 		 WHERE table_schema = DATABASE()
-		   AND table_name IN ('model_services', 'endpoints', 'api_keys', 'pricing_versions')
+		   AND table_name IN ('model_services', 'endpoints', 'api_keys', 'pricing_versions', 'routing_cost_profiles')
 		 ORDER BY table_name`,
 	); err != nil {
 		t.Fatalf("query tables: %v", err)
 	}
-	want := map[string]bool{"model_services": false, "endpoints": false, "api_keys": false, "pricing_versions": false}
+	want := map[string]bool{"model_services": false, "endpoints": false, "api_keys": false, "pricing_versions": false, "routing_cost_profiles": false}
 	for _, n := range tables {
 		if _, ok := want[n]; ok {
 			want[n] = true

@@ -21,6 +21,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/endpointcheck"
 	"github.com/zereker/llm-gateway/internal/infra"
 	"github.com/zereker/llm-gateway/internal/repo"
+	"github.com/zereker/llm-gateway/internal/routingpolicy"
 )
 
 const (
@@ -55,7 +56,7 @@ func newTestEngine(t *testing.T) (*gin.Engine, *sqlx.DB) {
 		t.Fatalf("fk off: %v", err)
 	}
 	for _, table := range []string{
-		"pricing_versions", "routing_policies", "account_model_subscriptions", "api_keys",
+		"pricing_versions", "routing_cost_profiles", "routing_policies", "account_model_subscriptions", "api_keys",
 		"endpoints", "model_services", "accounts", "quota_policies",
 	} {
 		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
@@ -80,11 +81,20 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	if code, body := do(t, engine, "POST", "/admin/subscriptions", SubscriptionInput{AccountID: "a1", ModelServiceID: modelID}, true); code != 201 {
 		t.Fatalf("subscribe: code=%d body=%v", code, body)
 	}
+	code, cost := do(t, engine, "POST", "/admin/routing-costs", RoutingCostInput{
+		ModelServiceID: modelID, InputMicrousdPerMillionToken: 100, OutputMicrousdPerMillionToken: 200,
+	}, true)
+	if code != 201 || cost["routing_cost"].(map[string]any)["version"].(float64) != 1 {
+		t.Fatalf("publish routing cost: code=%d body=%v", code, cost)
+	}
 
 	policy := RoutingPolicyInput{
 		Scope:        domain.RoutingScope{Kind: domain.RoutingScopeAccount, ID: "a1"},
 		VirtualModel: "fast-chat", MaxAttempts: 2,
 		Candidates: []domain.RoutingPolicyCandidate{{Model: "small", Weight: 100}},
+		Objectives: domain.RoutingObjectives{LatencyWeight: 2, CostWeight: 1, TargetLatencyMs: 100,
+			TargetCostMicrousd: 1, EstimatedInputTokens: 1000, EstimatedOutputTokens: 500,
+			MinTelemetrySamples: 1, TelemetryMaxAgeSeconds: 60},
 	}
 	code, created := do(t, engine, "POST", "/admin/routing-policies", policy, true)
 	if code != 201 {
@@ -106,6 +116,9 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	chat := domain.ModalityChat
 	code, dryRun := do(t, engine, "POST", "/admin/routing-policies/dry-run", RoutingDryRunInput{
 		AccountID: "a1", RequestedModel: "fast-chat", Modality: &chat,
+		Telemetry: map[string][]routingpolicy.EndpointTelemetry{"small": {{
+			LatencyMs: 80, SuccessRate: 1, SampleCount: 10, Updated: time.Now().UTC(),
+		}}},
 	}, true)
 	if code != 200 {
 		t.Fatalf("dry-run: code=%d body=%v", code, dryRun)
@@ -113,6 +126,14 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	chain := dryRun["model_chain"].([]any)
 	if len(chain) != 1 || chain[0] != "small" {
 		t.Fatalf("dry-run chain=%v", chain)
+	}
+	decision := dryRun["decision"].(map[string]any)
+	score := decision["candidates"].([]any)[0].(map[string]any)["score"].(map[string]any)
+	if score["latency_source"] != "observed" || score["cost_source"] != "configured" {
+		t.Fatalf("dry-run score=%v", score)
+	}
+	if code, listedCosts := do(t, engine, "GET", "/admin/routing-costs", nil, true); code != 200 || len(listedCosts["routing_costs"].([]any)) != 1 {
+		t.Fatalf("list routing costs: code=%d body=%v", code, listedCosts)
 	}
 
 	code, listed := do(t, engine, "GET", "/admin/routing-policies", nil, true)

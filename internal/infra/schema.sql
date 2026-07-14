@@ -14,6 +14,7 @@
 --
 --   model_services             -- global model catalog (no account_id)
 --   endpoints                  -- global upstream connection points (no account_id; BYOK is future v0.x+)
+--   routing_cost_profiles      -- immutable routing-only operator-cost snapshots
 --   quota_policies             -- rate-limit policies (referenced by accounts and api_keys, N:M shared)
 --
 -- **Design highlights**:
@@ -31,7 +32,7 @@
 -- v0.x accepts this limitation.
 --
 -- **Schema load order matters**: FK dependencies determine the CREATE order:
---   quota_policies -> accounts -> model_services -> endpoints
+--   quota_policies -> accounts -> model_services -> routing_cost_profiles -> endpoints
 --                  -> account_model_subscriptions -> api_keys -> pricing_versions
 -- DROP order is the reverse (child tables must be dropped before their parent tables).
 
@@ -159,6 +160,31 @@ CREATE TABLE IF NOT EXISTS routing_policies (
     UNIQUE KEY uk_routing_scope_version (scope_kind, scope_id, virtual_model, version),
     INDEX idx_routing_resolve (virtual_model, scope_kind, scope_id, enabled, version),
     INDEX idx_deleted_at (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =====================================================================
+-- routing_cost_profiles: compact, immutable operator-cost snapshots
+--
+-- These values exist only for routing optimization. They are deliberately
+-- separate from account pricing, discounts, settlement, and invoices.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS routing_cost_profiles (
+    id                                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    profile_id                          VARCHAR(64) NOT NULL,
+    version                             BIGINT UNSIGNED NOT NULL,
+    model_service_id                    BIGINT UNSIGNED NOT NULL,
+    input_microusd_per_million_tokens   BIGINT UNSIGNED NOT NULL,
+    output_microusd_per_million_tokens  BIGINT UNSIGNED NOT NULL,
+    enabled                             TINYINT(1) NOT NULL DEFAULT 1,
+    created_by                          VARCHAR(128) NOT NULL DEFAULT '',
+    created_at                          TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at                          TIMESTAMP(6) NULL DEFAULT NULL,
+
+    UNIQUE KEY uk_routing_cost_version (profile_id, version),
+    UNIQUE KEY uk_routing_cost_model_version (model_service_id, version),
+    INDEX idx_routing_cost_active (model_service_id, enabled, version),
+    INDEX idx_deleted_at (deleted_at),
+    CONSTRAINT fk_routing_cost_model FOREIGN KEY (model_service_id) REFERENCES model_services(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================

@@ -121,6 +121,8 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 				AccountID:      rc.Identity.AccountID,
 				Region:         c.GetHeader(HeaderGatewayRegion),
 				Modality:       rc.Envelope.Modality,
+				Group:          rc.Identity.Group,
+				DecisionKey:    rc.RequestID,
 			})
 			rc.ModelRoutingDecision = &resolution.Decision
 			recordRoutingDecision(&resolution.Decision)

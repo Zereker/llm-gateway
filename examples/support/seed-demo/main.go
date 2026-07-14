@@ -137,19 +137,36 @@ func seed(ctx context.Context, db *sqlx.DB, spec seedSpec) error {
 		return fmt.Errorf("subscriptions: %w", err)
 	}
 
-	// 5) one account-scoped virtual model used by the product quickstart.
+	// 5) routing-only cost snapshot (independent from account billing price).
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO routing_cost_profiles
+		  (profile_id, version, model_service_id, input_microusd_per_million_tokens,
+		   output_microusd_per_million_tokens, enabled, created_by)
+		VALUES ('rcp_e2e_model', 1, ?, 150000, 600000, 1, 'seed-demo')
+		ON DUPLICATE KEY UPDATE enabled=1`, msID); err != nil {
+		return fmt.Errorf("routing_cost_profiles: %w", err)
+	}
+
+	// 6) one account-scoped virtual model used by the product quickstart.
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO routing_policies
 		  (policy_id, version, scope_kind, scope_id, virtual_model, rule_json, enabled, created_by)
 		VALUES
 		  ('rp_e2e_fast_chat', 1, 'account', 'e2e-acme', 'fast-chat',
-		   JSON_OBJECT('max_attempts', 2, 'candidates',
+		   JSON_OBJECT('max_attempts', 2,
+		     'objectives', JSON_OBJECT(
+		       'latency_weight', 2, 'cost_weight', 1,
+		       'target_latency_ms', 500, 'target_cost_microusd', 500,
+		       'estimated_input_tokens', 1000, 'estimated_output_tokens', 500,
+		       'min_telemetry_samples', 5, 'telemetry_max_age_seconds', 300,
+		       'exploration_permille', 50),
+		     'candidates',
 		     JSON_ARRAY(JSON_OBJECT('model', ?, 'weight', 100))), 1, 'seed-demo')
 		ON DUPLICATE KEY UPDATE enabled=1`, model); err != nil {
 		return fmt.Errorf("routing_policies: %w", err)
 	}
 
-	// 6) endpoint
+	// 7) endpoint
 	// anthropic-protocol upstreams authenticate via the x-api-key header;
 	// everything else here is bearer.
 	var auth repo.AuthConfig
@@ -186,7 +203,7 @@ func seed(ctx context.Context, db *sqlx.DB, spec seedSpec) error {
 		return fmt.Errorf("endpoints: %w", err)
 	}
 
-	// 7) api_key — store the sha256 hex hash of the plaintext (e.g. sk-test-alice)
+	// 8) api_key — store the sha256 hex hash of the plaintext (e.g. sk-test-alice)
 	hash := repo.HashAPIKey(apiKey)
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO api_keys
