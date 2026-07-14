@@ -99,6 +99,7 @@ func loadRecordedStreamReplies() map[string][]byte {
 // shape (SSE vs JSON).
 func serveRecorded(w http.ResponseWriter, model string, stream bool) {
 	body, ok := recordedReplies[model]
+	replayAsStream := false
 	if !ok {
 		known := make([]string, 0, len(recordedReplies))
 		for k := range recordedReplies {
@@ -113,6 +114,7 @@ func serveRecorded(w http.ResponseWriter, model string, stream bool) {
 	if stream {
 		if streamBody, exists := recordedStreamReplies[model]; exists {
 			body = streamBody
+			replayAsStream = true
 		}
 	}
 
@@ -122,6 +124,24 @@ func serveRecorded(w http.ResponseWriter, model string, stream bool) {
 		w.Header().Set("Cache-Control", "no-cache")
 	} else {
 		w.Header().Set("Content-Type", "application/json")
+	}
+
+	if replayAsStream {
+		// Preserve SSE framing and a measurable time-to-first-token. A single
+		// immediate Write can complete within the gateway's millisecond timing
+		// resolution and would not exercise streaming observability.
+		time.Sleep(5 * time.Millisecond)
+		for _, event := range bytes.SplitAfter(body, []byte("\n\n")) {
+			if len(event) == 0 {
+				continue
+			}
+			_, _ = w.Write(event)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return
 	}
 
 	_, _ = w.Write(body)
