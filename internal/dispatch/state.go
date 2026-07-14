@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"encoding/json"
 	"strconv"
 	"time"
 
@@ -160,7 +161,34 @@ func (s *state) Group() string { return s.in.Identity.Group }
 
 // Envelope is used by InvokerFactory.For (includes RawBytes) and by
 // filterEligible.
-func (s *state) Envelope() *domain.RequestEnvelope { return s.in.Envelope }
+func (s *state) Envelope() *domain.RequestEnvelope {
+	envelope := s.in.Envelope
+
+	model := s.CurrentModelName()
+	if envelope == nil || model == "" || model == envelope.Model {
+		return envelope
+	}
+
+	copy := *envelope
+	copy.Model = model
+
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(envelope.RawBytes, &body); err != nil {
+		return &copy
+	}
+
+	encodedModel, err := json.Marshal(model)
+	if err != nil {
+		return &copy
+	}
+
+	body["model"] = encodedModel
+	if raw, err := json.Marshal(body); err == nil {
+		copy.RawBytes = raw
+	}
+
+	return &copy
+}
 
 // Handlers is used by dispatcher.step — Input's request-level Handler
 // lookup port (needed by both filterEligible and the dispatcher's handler

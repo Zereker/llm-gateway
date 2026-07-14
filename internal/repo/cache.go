@@ -73,6 +73,7 @@ func (c *TTLCache[K, V]) Get(key K) (V, bool) { return c.inner.Get(key) }
 func (c *TTLCache[K, V]) Set(key K, val V)    { c.inner.Add(key, val) }
 func (c *TTLCache[K, V]) Delete(key K)        { c.inner.Remove(key) }
 func (c *TTLCache[K, V]) Len() int            { return c.inner.Len() }
+func (c *TTLCache[K, V]) Purge()              { c.inner.Purge() }
 
 // loaderTimeout is the hard cap for a loader (one SQL point lookup / short list query).
 //

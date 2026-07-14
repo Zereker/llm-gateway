@@ -24,7 +24,8 @@ type State struct {
 	RoutedModelService *domain.ModelService
 	Endpoint           *domain.Endpoint
 
-	Usage              *domain.Usage
-	Error              *domain.AdapterError
-	SchedulingDecision *domain.SchedulingDecision
+	Usage                *domain.Usage
+	Error                *domain.AdapterError
+	ModelRoutingDecision *domain.ModelRoutingDecision
+	SchedulingDecision   *domain.SchedulingDecision
 }

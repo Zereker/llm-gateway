@@ -11,6 +11,7 @@ import (
 
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/requeststate"
+	"github.com/zereker/llm-gateway/internal/routingpolicy"
 )
 
 // attachM5Inputs sets up the post-M3 state (Identity + Envelope shell).
@@ -25,6 +26,88 @@ func attachM5Inputs(model, account string) gin.HandlerFunc {
 			RawBytes:       []byte(`{"model":"` + model + `"}`),
 		}
 		c.Next()
+	}
+}
+
+type stubVirtualResolver struct {
+	resolution routingpolicy.Resolution
+	err        error
+	input      routingpolicy.Input
+}
+
+func (s *stubVirtualResolver) Resolve(_ context.Context, in routingpolicy.Input) (routingpolicy.Resolution, error) {
+	s.input = in
+	return s.resolution, s.err
+}
+
+func TestModelServiceResolvesVirtualModelAndIgnoresLegacyFallbackHeader(t *testing.T) {
+	policy := domain.RoutingPolicyRef{ID: "rp_fast", Version: 2, Scope: domain.RoutingScope{Kind: domain.RoutingScopeAccount, ID: "acc1"}}
+	resolver := &stubVirtualResolver{resolution: routingpolicy.Resolution{
+		Decision: domain.ModelRoutingDecision{
+			RequestedModel: "fast-chat", VirtualModel: true, Outcome: domain.RoutingOutcomeResolved,
+			Reason: domain.RoutingReasonVirtualPolicyMatched, Policy: &policy,
+		},
+		Chain: []*domain.ModelService{{ID: 2, Model: "small"}, {ID: 3, Model: "large"}},
+	}}
+
+	var rc *requeststate.State
+	r := newGinTest(
+		TraceContext(), Recover(), attachM5Inputs("fast-chat", "acc1"),
+		ModelService(
+			WithModelCatalog(mapCatalog{items: map[string]*domain.ModelService{}}),
+			WithSubscriptionChecker(mapSubs{}),
+			WithVirtualModelResolver(resolver),
+		),
+	)
+	r.POST("/x", func(c *gin.Context) { rc = GetRequestContext(c); c.Status(200) })
+	req := httptest.NewRequest("POST", "/x", nil)
+	req.Header.Set(HeaderGatewayFallbackModels, "caller-controlled")
+	req.Header.Set(HeaderGatewayRegion, "cn-north")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := extractChainModels(rc); !sliceEq(got, []string{"small", "large"}) {
+		t.Fatalf("chain=%v", got)
+	}
+	if resolver.input.Region != "cn-north" || resolver.input.Modality != domain.ModalityChat {
+		t.Fatalf("resolver input=%+v", resolver.input)
+	}
+	if rc.ModelRoutingDecision == nil || !rc.ModelRoutingDecision.VirtualModel {
+		t.Fatalf("routing decision=%+v", rc.ModelRoutingDecision)
+	}
+}
+
+func TestModelServiceVirtualModelRejections(t *testing.T) {
+	tests := []struct {
+		name       string
+		resolution routingpolicy.Resolution
+		err        error
+		status     int
+		code       string
+	}{
+		{name: "missing policy", resolution: routingpolicy.Resolution{Decision: domain.ModelRoutingDecision{Reason: domain.RoutingReasonNoPolicy}}, status: 404, code: domain.ErrCodeVirtualModelPolicyNotFound},
+		{name: "no eligible", resolution: routingpolicy.Resolution{Decision: domain.ModelRoutingDecision{Reason: domain.RoutingReasonNoEligibleCandidate}}, status: 403, code: domain.ErrCodeNoEligibleCandidate},
+		{name: "dependency", resolution: routingpolicy.Resolution{Decision: domain.ModelRoutingDecision{Reason: domain.RoutingReasonPolicyUnavailable}}, err: errors.New("db down"), status: 503, code: domain.ErrCodeDependencyUnavailable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := &stubVirtualResolver{resolution: tc.resolution, err: tc.err}
+			r := newGinTest(TraceContext(), Recover(), attachM5Inputs("fast-chat", "acc1"),
+				ModelService(
+					WithModelCatalog(mapCatalog{items: map[string]*domain.ModelService{}}),
+					WithSubscriptionChecker(mapSubs{}),
+					WithVirtualModelResolver(resolver),
+				))
+			r.POST("/x", func(c *gin.Context) { c.Status(200) })
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+			if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.code) {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

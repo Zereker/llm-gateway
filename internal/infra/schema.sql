@@ -136,6 +136,32 @@ CREATE TABLE IF NOT EXISTS model_aliases (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================================
+-- routing_policies: immutable versions of virtual-model routing rules
+--
+-- One enabled version is selected by scope precedence (account, then global).
+-- rule_json contains typed candidates and deterministic constraints. Updating
+-- or rolling back publishes a new monotonically increasing version.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS routing_policies (
+    id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    policy_id     VARCHAR(64)  NOT NULL,
+    version       BIGINT UNSIGNED NOT NULL,
+    scope_kind    VARCHAR(16)  NOT NULL,
+    scope_id      VARCHAR(64)  NOT NULL DEFAULT '',
+    virtual_model VARCHAR(191) NOT NULL,
+    rule_json     JSON         NOT NULL,
+    enabled       TINYINT(1)   NOT NULL DEFAULT 1,
+    created_by    VARCHAR(128) NOT NULL DEFAULT '',
+    created_at    TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at    TIMESTAMP(6) NULL DEFAULT NULL,
+
+    UNIQUE KEY uk_routing_policy_version (policy_id, version),
+    UNIQUE KEY uk_routing_scope_version (scope_kind, scope_id, virtual_model, version),
+    INDEX idx_routing_resolve (virtual_model, scope_kind, scope_id, enabled, version),
+    INDEX idx_deleted_at (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =====================================================================
 -- account_model_subscriptions: N:M visibility table between primary accounts and model_services
 --
 -- A primary account that requests a model it hasn't subscribed to -> M5 returns
@@ -291,4 +317,3 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at  TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-

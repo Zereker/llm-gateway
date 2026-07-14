@@ -2,12 +2,41 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/zereker/llm-gateway/internal/domain"
 )
+
+func TestStateEnvelopeRewritesRequestedVirtualModelForCurrentCandidate(t *testing.T) {
+	in := newTestInput("small", "large")
+	in.Envelope.Model = "fast-chat"
+	in.Envelope.RawBytes = []byte(`{"model":"fast-chat","messages":[]}`)
+	s := newState(in, 3)
+
+	assertModel := func(want string) {
+		t.Helper()
+		envelope := s.Envelope()
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(envelope.RawBytes, &body); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Model != want || body.Model != want {
+			t.Fatalf("envelope model=%q body model=%q, want %q", envelope.Model, body.Model, want)
+		}
+	}
+
+	assertModel("small")
+	s.SetModel(&domain.ModelService{ID: 2, Model: "large"})
+	assertModel("large")
+	if in.Envelope.Model != "fast-chat" {
+		t.Fatalf("original envelope mutated: %+v", in.Envelope)
+	}
+}
 
 // TestState_RecordSkipsExcludeOnClassUnknown is a unit-level regression:
 // ClassUnknown (dependency failure / classification blind spot) must not add

@@ -24,18 +24,20 @@ const (
 // code; message is for humans and must not be used as a programmatic
 // decision basis.
 const (
-	ErrCodeRateLimitExceeded     = "rate_limit_exceeded"
-	ErrCodeInvalidRequest        = "invalid_request"
-	ErrCodeNoEndpointAvailable   = "no_endpoint_available"
-	ErrCodeModelNotFound         = "model_not_found"
-	ErrCodeModelNotSubscribed    = "model_not_subscribed"
-	ErrCodeUnauthorized          = "unauthorized"
-	ErrCodeBudgetInactive        = "budget_inactive"
-	ErrCodeContentRejected       = "content_rejected"
-	ErrCodeUpstreamError         = "upstream_error"
-	ErrCodeInternalError         = "internal_error"
-	ErrCodeDependencyUnavailable = "dependency_unavailable"
-	ErrCodeClientClosedRequest   = "client_closed_request"
+	ErrCodeRateLimitExceeded          = "rate_limit_exceeded"
+	ErrCodeInvalidRequest             = "invalid_request"
+	ErrCodeNoEndpointAvailable        = "no_endpoint_available"
+	ErrCodeModelNotFound              = "model_not_found"
+	ErrCodeModelNotSubscribed         = "model_not_subscribed"
+	ErrCodeVirtualModelPolicyNotFound = "virtual_model_policy_not_found"
+	ErrCodeNoEligibleCandidate        = "no_eligible_candidate"
+	ErrCodeUnauthorized               = "unauthorized"
+	ErrCodeBudgetInactive             = "budget_inactive"
+	ErrCodeContentRejected            = "content_rejected"
+	ErrCodeUpstreamError              = "upstream_error"
+	ErrCodeInternalError              = "internal_error"
+	ErrCodeDependencyUnavailable      = "dependency_unavailable"
+	ErrCodeClientClosedRequest        = "client_closed_request"
 )
 
 // AdapterError is the gateway's unified internal error structure.

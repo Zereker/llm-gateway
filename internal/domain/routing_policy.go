@@ -27,6 +27,34 @@ type RoutingPolicyRef struct {
 	Scope   RoutingScope `json:"scope"`
 }
 
+// RoutingPolicy is one immutable policy snapshot loaded on the request path.
+type RoutingPolicy struct {
+	Ref          RoutingPolicyRef         `json:"ref"`
+	VirtualModel string                   `json:"virtual_model"`
+	MaxAttempts  int                      `json:"max_attempts,omitempty"`
+	Constraints  RoutingConstraints       `json:"constraints,omitempty"`
+	Candidates   []RoutingPolicyCandidate `json:"candidates"`
+}
+
+// RoutingConstraints are policy-wide hard filters. Empty fields do not
+// constrain candidates; deny always wins over allow.
+type RoutingConstraints struct {
+	Regions     []string   `json:"regions,omitempty"`
+	Modalities  []Modality `json:"modalities,omitempty"`
+	AllowModels []string   `json:"allow_models,omitempty"`
+	DenyModels  []string   `json:"deny_models,omitempty"`
+}
+
+// RoutingPolicyCandidate is a concrete model configured by a route policy.
+// Candidate constraints narrow the policy-wide constraints and never widen
+// subscriptions or allow lists.
+type RoutingPolicyCandidate struct {
+	Model      string     `json:"model"`
+	Weight     uint32     `json:"weight,omitempty"`
+	Regions    []string   `json:"regions,omitempty"`
+	Modalities []Modality `json:"modalities,omitempty"`
+}
+
 // RoutingCandidateSource explains why a model entered candidate evaluation.
 type RoutingCandidateSource string
 

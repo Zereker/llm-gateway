@@ -90,7 +90,7 @@ func Open(cfg DBConfig) (*sqlx.DB, error) {
 //go:embed schema.sql
 var schemaFS embed.FS
 
-const latestSchemaVersion = 2
+const latestSchemaVersion = 3
 
 // Migrate applies pending, versioned schema migrations during gateway startup.
 //
@@ -142,6 +142,18 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 		}
 
 		if err := recordMigration(ctx, db, 2); err != nil {
+			return err
+		}
+	}
+
+	if !applied[3] {
+		// schema.sql is idempotent. Reapplying it creates tables added after the
+		// original base migration without duplicating existing business data.
+		if err := applyBaseSchema(ctx, db); err != nil {
+			return err
+		}
+
+		if err := recordMigration(ctx, db, 3); err != nil {
 			return err
 		}
 	}

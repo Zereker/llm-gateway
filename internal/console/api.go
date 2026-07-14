@@ -45,6 +45,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/quota-policies", api.listQuotaPolicies)
 		admin.GET("/pricing", api.listPricing)
 		admin.GET("/model-aliases", api.listModelAliases)
+		admin.GET("/routing-policies", api.listRoutingPolicies)
 		admin.GET("/audit", requireAdmin, api.listAudit) // audit is admin-only
 
 		// Writes: admin only. Enforcement is method-driven at the group level
@@ -62,9 +63,77 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.POST("/pricing", api.publishPrice)
 		admin.POST("/model-aliases", api.createModelAlias)
 		admin.DELETE("/model-aliases/:alias", api.deleteModelAlias)
+		admin.POST("/routing-policies", api.publishRoutingPolicy)
+		admin.POST("/routing-policies/dry-run", api.dryRunRoutingPolicy)
+		admin.DELETE("/routing-policies/:policyID", api.disableRoutingPolicy)
 	}
 
 	return engine
+}
+
+// =============================================================================
+// Virtual-model routing policies
+// =============================================================================
+
+func (a *api) publishRoutingPolicy(c *gin.Context) {
+	var in RoutingPolicyInput
+	if !bind(c, &in) {
+		return
+	}
+
+	view, err := a.store.PublishRoutingPolicy(c.Request.Context(), in, c.GetString(ctxActorKey))
+	if err != nil {
+		var invalid *InvalidRoutingPolicyError
+		if errors.As(err, &invalid) {
+			abortError(c, http.StatusBadRequest, "routing_policy_invalid", invalid.Reason)
+			return
+		}
+
+		writeStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"routing_policy": view})
+}
+
+func (a *api) listRoutingPolicies(c *gin.Context) {
+	rows, err := a.store.ListRoutingPolicies(c.Request.Context())
+	if err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"routing_policies": rows})
+}
+
+func (a *api) disableRoutingPolicy(c *gin.Context) {
+	if err := a.store.DisableRoutingPolicy(c.Request.Context(), c.Param("policyID")); err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{statusKey: "disabled"})
+}
+
+func (a *api) dryRunRoutingPolicy(c *gin.Context) {
+	var in RoutingDryRunInput
+	if !bind(c, &in) {
+		return
+	}
+
+	if in.AccountID == "" || in.RequestedModel == "" || in.Modality == nil {
+		abortError(c, http.StatusBadRequest, "invalid_argument", "account_id, requested_model, and modality are required")
+		return
+	}
+
+	resolution, err := a.store.DryRunRoutingPolicy(c.Request.Context(), in)
+	if err != nil {
+		writeStoreErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"decision": resolution.Decision, "model_chain": resolution.Decision.EligibleModels()})
 }
 
 // Note: usage/metering aggregation is deliberately kept out of the control

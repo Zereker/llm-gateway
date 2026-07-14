@@ -77,12 +77,13 @@ After it finishes:
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer sk-quickstart-llm-gateway" \
   -H "Content-Type: application/json" \
-  -d '{"model":"mock-openai-model","messages":[{"role":"user","content":"Hi!"}]}'
+  -d '{"model":"fast-chat","messages":[{"role":"user","content":"Hi!"}]}'
 
 make -C examples/quickstart down
 ```
 
-The quickstart uses the bundled mock upstream and development-only credentials. It
+`fast-chat` is an account-scoped virtual model that the seeded routing policy
+resolves to the concrete mock model. The quickstart uses the bundled mock upstream and development-only credentials. It
 does not call or require a real model provider. Its Compose file, Dockerfile,
 configuration, and lifecycle commands are isolated in [`examples/quickstart`](examples/quickstart/).
 

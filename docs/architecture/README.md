@@ -16,6 +16,7 @@ This directory is the single source of truth for `llm-gateway`'s architecture an
 | 06 | [pluggable-infra](06-pluggable-infra.md) | Injection points for DB, Redis, Kafka, OTel, budget, and moderation |
 | 07 | [configuration](07-configuration.md) | Gateway config schema, environment variable overrides, validation rules |
 | 08 | [observability](08-observability.md) | Logging, metrics, trace, usage events, content log observability contract |
+| 09 | [routing-policy](09-routing-policy.md) | Virtual models, deterministic constraints, policy cache, Console API |
 
 ## Architecture Highlights
 

@@ -75,11 +75,12 @@ make -C examples/quickstart up
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer sk-quickstart-llm-gateway" \
   -H "Content-Type: application/json" \
-  -d '{"model":"mock-openai-model","messages":[{"role":"user","content":"你好！"}]}'
+  -d '{"model":"fast-chat","messages":[{"role":"user","content":"你好！"}]}'
 
 make -C examples/quickstart down
 ```
 
+`fast-chat` 是账户级虚拟模型，初始化的路由策略会将其解析到具体 Mock 模型。
 Quickstart 使用仓库自带的 Mock 上游和仅供开发的固定凭据，不会调用真实模型供应商。
 它的 Compose、Dockerfile、配置和生命周期命令均收口在
 [`examples/quickstart`](examples/quickstart/) 中。

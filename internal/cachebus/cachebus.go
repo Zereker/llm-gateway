@@ -44,6 +44,9 @@ type Kind string
 const (
 	// KindAPIKey: Key is api_key_hash (SHA-256 hex).
 	KindAPIKey Kind = "apikey"
+	// KindRoutingPolicy invalidates compiled virtual-model policy snapshots.
+	// Key is informational; global changes require a coarse cache purge.
+	KindRoutingPolicy Kind = "routing_policy"
 )
 
 // Invalidation is a single invalidation message. Wire format: `<kind>:<key>`.
