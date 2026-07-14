@@ -11,7 +11,40 @@ import (
 
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/moderation"
+	"github.com/zereker/llm-gateway/internal/policy"
 )
+
+type policyEngineFunc func(context.Context, policy.EvaluationInput) (policy.Decision, error)
+
+func (f policyEngineFunc) Evaluate(ctx context.Context, input policy.EvaluationInput) (policy.Decision, error) {
+	return f(ctx, input)
+}
+
+type capturedPolicyAudit struct {
+	name    string
+	payload any
+}
+
+type capturePolicyAuditTracer struct {
+	logs []capturedPolicyAudit
+}
+
+func (t *capturePolicyAuditTracer) Log(_ context.Context, name string, payload any) {
+	t.logs = append(t.logs, capturedPolicyAudit{name: name, payload: payload})
+}
+
+func middlewarePolicyDecision(action policy.Action) policy.Decision {
+	decision := policy.Decision{
+		Action: action,
+		Policy: policy.PolicyRef{ID: "middleware-test", Version: 1, Scope: policy.Scope{Kind: policy.ScopeGlobal}},
+		RuleID: "test-rule", ReasonCode: "test-reason",
+	}
+	if action == policy.ActionRedact {
+		decision.Mutations = []policy.Mutation{{ID: "mask", Kind: policy.MutationRedact, Target: "request.body", Replacement: []byte("secret")}}
+	}
+
+	return decision
+}
 
 // attachEnvelopeFor attaches an Envelope to the RC for Moderation tests
 func attachEnvelopeFor(model string) gin.HandlerFunc {
@@ -102,6 +135,104 @@ func TestModeration_CheckInputReject_400_Invalid(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "profanity") {
 		t.Errorf("body should wrap moderator err: %s", w.Body.String())
+	}
+}
+
+func TestModerationPolicyEngineAllowRecordsInputAndOutputAudit(t *testing.T) {
+	tracer := &capturePolicyAuditTracer{}
+	engine := policyEngineFunc(func(_ context.Context, input policy.EvaluationInput) (policy.Decision, error) {
+		if input.Model != "gpt-4o" || input.Modality != domain.ModalityChat {
+			t.Fatalf("input metadata=%+v", input)
+		}
+
+		return middlewarePolicyDecision(policy.ActionAllow), nil
+	})
+	r := newGinTest(TraceContext(), Recover(), attachEnvelopeFor("gpt-4o"), Moderation(
+		WithPolicyEngine(engine),
+		WithPolicyAuditTracer(tracer),
+	))
+	r.POST("/x", func(c *gin.Context) {
+		mod := moderation.FromContext(c.Request.Context())
+		if mod == nil {
+			t.Fatal("output policy adapter was not injected")
+		}
+		if err := mod.CheckOutput(c.Request.Context(), []byte("clean")); err != nil {
+			t.Fatal(err)
+		}
+		if len(tracer.logs) != 0 {
+			t.Fatalf("policy audits must flush after c.Next: %+v", tracer.logs)
+		}
+		c.Status(200)
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(tracer.logs) != 2 {
+		t.Fatalf("audits=%+v", tracer.logs)
+	}
+	inputAudit, inputOK := tracer.logs[0].payload.(policy.AuditRecord)
+	outputAudit, outputOK := tracer.logs[1].payload.(policy.AuditRecord)
+	if tracer.logs[0].name != "policy_decision" || tracer.logs[1].name != "policy_decision" ||
+		!inputOK || !outputOK || inputAudit.Stage != policy.StageInput || outputAudit.Stage != policy.StageOutput {
+		t.Fatalf("audits=%+v", tracer.logs)
+	}
+}
+
+func TestModerationPolicyEngineDeniesWithoutLeakingInternalReason(t *testing.T) {
+	tracer := &capturePolicyAuditTracer{}
+	engine := policyEngineFunc(func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+		decision := middlewarePolicyDecision(policy.ActionDeny)
+		decision.ReasonCode = "private-rule-name"
+
+		return decision, nil
+	})
+	r := newGinTest(TraceContext(), Recover(), attachEnvelopeFor("x"), Moderation(
+		WithPolicyEngine(engine),
+		WithPolicyAuditTracer(tracer),
+	))
+	r.POST("/x", func(c *gin.Context) { c.Status(200) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+	if w.Code != 400 || strings.Contains(w.Body.String(), "private-rule-name") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(tracer.logs) != 1 {
+		t.Fatalf("deny audit was not flushed: %+v", tracer.logs)
+	}
+	audit, ok := tracer.logs[0].payload.(policy.AuditRecord)
+	if !ok || audit.Action != policy.ActionDeny || audit.ReasonCode != "private-rule-name" {
+		t.Fatalf("deny audit=%+v", tracer.logs[0])
+	}
+}
+
+func TestModerationPolicyEngineFailuresAreClosed(t *testing.T) {
+	tests := map[string]policyEngineFunc{
+		"engine error": func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+			return policy.Decision{}, errors.New("dependency failed")
+		},
+		"invalid decision": func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+			return policy.Decision{}, nil
+		},
+		"redact without executor": func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+			return middlewarePolicyDecision(policy.ActionRedact), nil
+		},
+	}
+
+	for name, engine := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := newGinTest(TraceContext(), Recover(), attachEnvelopeFor("x"), Moderation(WithPolicyEngine(engine)))
+			r.POST("/x", func(c *gin.Context) { c.Status(200) })
+
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+			if w.Code != 503 {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

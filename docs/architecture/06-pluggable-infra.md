@@ -423,14 +423,20 @@ downstream billing system) or implement an external accounting `BudgetGate` (sha
 
 When adding a new external accounting system, implement middleware's `BudgetGate` interface, and inject it via an option in `cmd/gateway`.
 
-## 10. Moderation
+## 10. Policy enforcement and moderation compatibility
 
-M8 Moderation is replaceable:
+M8's primary extension point is `policy.Engine`, injected with
+`middleware.WithPolicyEngine`. It returns explicit `allow`, `deny`, or
+`redact` decisions; see [policy enforcement](10-policy-enforcement.md).
+
+The existing moderation configuration remains replaceable and compatible:
 
 - `none`: default, skips moderation.
 - `openai`: calls the OpenAI moderation API, requires `moderation.api_key`.
 
-When the moderator returned is nil, M8 is pass-through.
+Legacy `Moderator` implementations are wrapped by `moderation.LegacyEngine`.
+When neither engine nor moderator is supplied, M8 is pass-through. A directly
+supplied policy engine takes precedence over the legacy moderator.
 
 ## 11. Recording / Usage Events
 

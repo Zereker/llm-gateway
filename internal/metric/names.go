@@ -26,6 +26,11 @@ const (
 	BudgetCheckTotal = "llm_gateway_budget_check_total"
 )
 
+// === Policy enforcement (M8) ===
+const (
+	PolicyDecisionsTotal = "llm_gateway_policy_decisions_total" // stage / action
+)
+
 // === RateLimit (M6) ===
 const (
 	RateLimitCheckTotal     = "llm_gateway_rate_limit_check_total"

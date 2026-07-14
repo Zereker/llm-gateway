@@ -8,12 +8,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// noopHandler lets gin route the request here, but the actual response is
-// written by the M7 Schedule middleware; by the time control reaches this
-// handler the whole middleware chain has already run, so there's nothing
-// left to do.
-func noopHandler(c *gin.Context) {}
-
 // ReadinessChecker is a single readiness dependency check (SQL ping / Redis
 // ping). During cmd assembly, db.PingContext / redis.Ping are wrapped into
 // this signature and injected into Deps.Readiness.

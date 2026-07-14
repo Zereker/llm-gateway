@@ -12,8 +12,9 @@ import (
 
 // Recover is M9: catches panics + falls back to writing out rc.Error.
 //
-// Must be registered right after M1 (before c.Next()), so its defer can cover
-// the entire chain.
+// It is mounted inside M10 Tracing and outside the business middleware
+// (Auth onward). Its defer therefore recovers the inner chain first, allowing
+// M10's return phase to observe the final 500 response.
 //
 // The response body uniformly uses the ErrorResponse{Code,Message,Class,
 // Details,RequestID,TraceID} shape from docs/01 §8 + docs/08 §7.
