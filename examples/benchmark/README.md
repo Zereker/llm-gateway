@@ -1,5 +1,7 @@
 # Reproducible gateway benchmark
 
+**[View the rendered reference baseline →](baselines/README.md)**
+
 The benchmark compares the same deterministic LLM-like upstream directly and
 through `llm-gateway`. The runner and upstream are versioned Go source in this
 directory; no host load-generator version or real provider is involved.
@@ -24,8 +26,14 @@ and gateway paths:
 - slow-client completion, client cancellation, and upstream mid-stream failure
   checks.
 
-The report is printed and written to `results/latest.json`. `make benchmark`
-then compares it with [`baselines/reference.json`](baselines/reference.json).
+The report is printed and written to `results/latest.json`, with a rendered
+summary in `results/summary.md`. `make benchmark` then compares it with the
+[machine-readable reference](baselines/reference.json). The versioned
+[baseline summary](baselines/README.md) displays the same data on GitHub. Each
+report records the measured runtime environment (`GOOS`, `GOARCH`, Go version,
+available CPUs, and the configured concurrency); these values are not
+hard-coded. A versioned baseline therefore retains the environment of the run
+that produced it.
 Any request error or resilience failure is fatal. The default performance gate
 allows the larger of 20 ms or 100% of the baseline p95 overhead, plus 40
 percentage points of throughput movement. This is intentionally tolerant of

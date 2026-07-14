@@ -259,12 +259,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Measure gateway overhead and check the reference baseline
         run: make benchmark
+      - name: Publish benchmark summary
+        if: always()
+        run: test ! -f examples/benchmark/results/summary.md || cat examples/benchmark/results/summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-report
-          path: examples/benchmark/results/latest.json
+          path: |
+            examples/benchmark/results/latest.json
+            examples/benchmark/results/summary.md
           if-no-files-found: ignore
       - name: Tear down benchmark
         if: always()
