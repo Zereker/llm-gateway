@@ -21,6 +21,8 @@ func CheckSchema(ctx context.Context, db *sqlx.DB) error {
 		"accounts",
 		"model_services",
 		"routing_policies",
+		"policy_definitions",
+		"policy_bindings",
 		"routing_cost_profiles",
 		"endpoints",
 		"account_model_subscriptions",

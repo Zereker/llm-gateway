@@ -150,7 +150,7 @@ Use this workflow when developing Go processes on the host instead of using the
 self-contained quickstart. Gateway startup applies versioned schema migrations
 before accepting traffic.
 Business data (model_services / endpoints / api_keys / pricing / quota_policies /
-subscriptions / accounts) can be managed by SQL or the optional `cmd/console`
+routing policies / enforcement policies and bindings / subscriptions / accounts) can be managed by SQL or the optional `cmd/console`
 control-plane API; the data plane does not depend on the console.
 
 ```sh

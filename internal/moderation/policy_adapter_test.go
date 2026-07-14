@@ -1,6 +1,7 @@
 package moderation
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -57,6 +58,19 @@ func TestLegacyEngineCompatibility(t *testing.T) {
 	}
 }
 
+func TestLegacyEngineAttributesDecisionToResolvedPolicy(t *testing.T) {
+	selected := policy.PolicyRef{ID: "pii", Version: 3, Scope: policy.Scope{Kind: policy.ScopeAccount, ID: "acct"}}
+	decision, err := NewLegacyEngine(stubGuard{}).Evaluate(context.Background(), policy.EvaluationInput{
+		Stage: policy.StageInput, Policy: &selected,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Policy != selected {
+		t.Fatalf("policy = %+v, want selected policy %+v", decision.Policy, selected)
+	}
+}
+
 func TestPolicyModeratorEnforcesAndRecordsDecisions(t *testing.T) {
 	if NewPolicyModerator(nil, policy.EvaluationInput{}, nil) != nil {
 		t.Fatal("nil engine should produce nil moderator")
@@ -64,7 +78,7 @@ func TestPolicyModeratorEnforcesAndRecordsDecisions(t *testing.T) {
 
 	var audits []policy.AuditRecord
 	engine := engineFunc(func(_ context.Context, input policy.EvaluationInput) (policy.Decision, error) {
-		if string(input.Content.Bytes) == "deny" {
+		if bytes.Contains(input.Content.Bytes, []byte("deny")) {
 			return policyDecision(policy.ActionDeny), nil
 		}
 

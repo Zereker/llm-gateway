@@ -145,7 +145,7 @@ docs/architecture/    ── 设计文档（00-overview 至 08-observability）
 当你需要在宿主机运行 Go 进程参与开发时使用这套流程，而不是完整 Quickstart。
 Gateway 会在接收流量前自动、幂等地执行版本化 schema migration。
 业务数据（model_services / endpoints / api_keys / pricing / quota_policies /
-subscriptions / accounts）既可以直接通过 SQL 维护，也可以使用可选的
+路由策略 / 执行策略及绑定 / subscriptions / accounts）既可以直接通过 SQL 维护，也可以使用可选的
 `cmd/console` 控制面；数据面不依赖 console。
 
 ```sh

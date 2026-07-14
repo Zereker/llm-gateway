@@ -260,6 +260,21 @@ func (s *state) SetModel(ms *domain.ModelService) {
 // successful Stream; everything goes into s.outcome, never touching RC
 // directly (dispatch is decoupled from RC).
 func (s *state) ApplyStream(rep StreamReport) {
+	if rep.Err != nil && !rep.Committed && rep.Prewrite != nil {
+		result := OutcomeDepFail
+		if rep.Prewrite.Class == ClassInvalid {
+			result = OutcomeInvalid
+		}
+
+		s.outcome = Outcome{
+			Result: result, Class: rep.Prewrite.Class, HTTPCode: rep.Prewrite.HTTPCode,
+			Reason: rep.Prewrite.Reason, StreamErr: rep.Err, Usage: rep.Usage,
+		}
+		s.finalize()
+
+		return
+	}
+
 	routed := s.currentModel()
 
 	usage := rep.Usage

@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/zereker/llm-gateway/internal/policy"
 )
 
 // statusKey is the JSON field every mutation/health handler below reports its
@@ -47,6 +49,8 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/model-aliases", api.listModelAliases)
 		admin.GET("/routing-policies", api.listRoutingPolicies)
 		admin.GET("/routing-costs", api.listRoutingCosts)
+		admin.GET("/policies", api.listEnforcementPolicies)
+		admin.GET("/policy-bindings", api.listPolicyBindings)
 		admin.GET("/audit", requireAdmin, api.listAudit) // audit is admin-only
 
 		// Writes: admin only. Enforcement is method-driven at the group level
@@ -68,9 +72,115 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.POST("/routing-costs", api.publishRoutingCost)
 		admin.POST("/routing-policies/dry-run", api.dryRunRoutingPolicy)
 		admin.DELETE("/routing-policies/:policyID", api.disableRoutingPolicy)
+		admin.POST("/policies", api.publishEnforcementPolicy)
+		admin.POST("/policies/simulate", api.simulateEnforcementPolicy)
+		admin.DELETE("/policies/:policyID", api.disableEnforcementPolicy)
+		admin.POST("/policy-bindings", api.bindEnforcementPolicy)
+		admin.DELETE("/policy-bindings/:scopeKind", api.deletePolicyBinding)
 	}
 
 	return engine
+}
+
+func (a *api) publishEnforcementPolicy(c *gin.Context) {
+	var in EnforcementPolicyInput
+	if !bind(c, &in) {
+		return
+	}
+
+	view, err := a.store.PublishEnforcementPolicy(c.Request.Context(), in, c.GetString(ctxActorKey))
+	if err != nil {
+		writePolicyStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"policy": view})
+}
+
+func (a *api) listEnforcementPolicies(c *gin.Context) {
+	rows, err := a.store.ListEnforcementPolicies(c.Request.Context())
+	if err != nil {
+		writeStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"policies": rows})
+}
+
+func (a *api) disableEnforcementPolicy(c *gin.Context) {
+	if err := a.store.DisableEnforcementPolicy(c.Request.Context(), c.Param("policyID")); err != nil {
+		writeStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{statusKey: "disabled"})
+}
+
+func (a *api) bindEnforcementPolicy(c *gin.Context) {
+	var in PolicyBindingInput
+	if !bind(c, &in) {
+		return
+	}
+
+	if err := a.store.BindEnforcementPolicy(c.Request.Context(), in, c.GetString(ctxActorKey)); err != nil {
+		writePolicyStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{statusKey: "bound"})
+}
+
+func (a *api) listPolicyBindings(c *gin.Context) {
+	rows, err := a.store.ListPolicyBindings(c.Request.Context())
+	if err != nil {
+		writeStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"policy_bindings": rows})
+}
+
+func (a *api) deletePolicyBinding(c *gin.Context) {
+	scope := policy.Scope{Kind: policy.ScopeKind(c.Param("scopeKind")), ID: c.Query("scope_id")}
+	if err := a.store.DeletePolicyBinding(c.Request.Context(), scope); err != nil {
+		writePolicyStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{statusKey: "deleted"})
+}
+
+func (a *api) simulateEnforcementPolicy(c *gin.Context) {
+	var in PolicySimulationInput
+	if !bind(c, &in) {
+		return
+	}
+
+	result, err := a.store.SimulateEnforcementPolicy(c.Request.Context(), in)
+	if err != nil {
+		writePolicyStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"result": result})
+}
+
+func writePolicyStoreErr(c *gin.Context, err error) {
+	var invalid *InvalidEnforcementPolicyError
+	if errors.As(err, &invalid) {
+		abortError(c, http.StatusBadRequest, "policy_invalid", invalid.Reason)
+
+		return
+	}
+
+	writeStoreErr(c, err)
 }
 
 func (a *api) publishRoutingCost(c *gin.Context) {

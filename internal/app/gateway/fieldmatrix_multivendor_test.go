@@ -82,6 +82,7 @@ func seedMultiVendorScenarios(t *testing.T, dsn string, scenarios []vendorScenar
 		t.Fatalf("disable FK checks: %v", err)
 	}
 	for _, table := range []string{
+		"policy_bindings", "policy_definitions",
 		"pricing_versions", "account_model_subscriptions", "api_keys",
 		"endpoints", "model_services", "accounts", "quota_policies",
 	} {

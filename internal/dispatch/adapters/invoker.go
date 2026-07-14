@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/invoker"
 	"github.com/zereker/llm-gateway/internal/moderation"
+	"github.com/zereker/llm-gateway/internal/policy"
 	"github.com/zereker/llm-gateway/internal/protocol"
 )
 
@@ -121,11 +123,28 @@ func (r *invokerResult) StreamTo(ctx context.Context, w http.ResponseWriter) dis
 	stream := moderation.WrapStream(ctx, r.handler.NewResponseStream())
 	fwd := r.sender.Forward(ctx, w, r.ep, r.response, stream)
 
-	return dispatch.StreamReport{
-		Usage:  fwd.Usage,
-		Err:    fwd.FeedErr,
-		TTFTMs: fwd.TTFTMs,
+	report := dispatch.StreamReport{
+		Usage:        fwd.Usage,
+		Err:          fwd.FeedErr,
+		TTFTMs:       fwd.TTFTMs,
+		Committed:    fwd.Committed,
+		LocalFailure: errors.Is(fwd.FeedErr, moderation.ErrPolicyEnforcement),
 	}
+	if fwd.FeedErr != nil && !fwd.Committed {
+		reason := "response stream processing failed"
+		if report.LocalFailure {
+			reason = "response policy enforcement failed"
+		}
+
+		report.Prewrite = &dispatch.Verdict{Stage: dispatch.StageStream, Class: dispatch.ClassTransient, HTTPCode: 503, Reason: reason}
+		if errors.Is(fwd.FeedErr, policy.ErrDenied) {
+			report.Prewrite.Class = dispatch.ClassInvalid
+			report.Prewrite.HTTPCode = 400
+			report.Prewrite.Reason = "content rejected by response policy"
+		}
+	}
+
+	return report
 }
 
 func (r *invokerResult) Close() error {

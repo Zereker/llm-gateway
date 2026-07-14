@@ -60,7 +60,7 @@
 
 <script>
 "use strict";
-const TABS = ["Endpoints","API Keys","Accounts","Models","Aliases","Policies","Pricing","Audit"];
+const TABS = ["Endpoints","API Keys","Accounts","Models","Aliases","Policies","Governance","Pricing","Audit"];
 let TOKEN = sessionStorage.getItem("tok") || "";
 let active = "Endpoints";
 
@@ -99,7 +99,7 @@ function renderNav(){
 function show(tab){
   active=tab; renderNav();
   const v=$("#view"); v.innerHTML="<div class='empty'>loading…</div>";
-  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Aliases":viewAliases,"Policies":viewPolicies,"Pricing":viewPricing,"Audit":viewAudit})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
+  ({"Endpoints":viewEndpoints,"API Keys":viewKeys,"Accounts":viewAccounts,"Models":viewModels,"Aliases":viewAliases,"Policies":viewPolicies,"Governance":viewGovernance,"Pricing":viewPricing,"Audit":viewAudit})[tab]().catch(e=>{v.innerHTML="";toast(e.message,"bad")});
 }
 
 function table(cols,rows,rowFn){
@@ -239,6 +239,51 @@ async function viewPolicies(){
     el("td",{class:"mono"},JSON.stringify(p.rule)),el("td",{},onoff(p.enabled)),
     el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete policy "+p.name+"?")){try{await api("DELETE","/admin/quota-policies/"+p.id);toast("deleted","ok");show("Policies")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
   v.append(card);
+}
+
+// ---- Prompt / response governance ----
+async function viewGovernance(){
+  const [{policies},{policy_bindings}]=await Promise.all([api("GET","/admin/policies"),api("GET","/admin/policy-bindings")]);
+  const v=$("#view"); v.innerHTML="";
+
+  const pid=el("input",{placeholder:"policy_id (blank creates a new policy)"}), name=el("input",{placeholder:"name"});
+  const input=el("select",{},el("option",{value:"true"},"enabled"),el("option",{value:"false"},"disabled"));
+  const mode=el("select",{},...[["disabled","disabled"],["strict_buffered","strict buffered"],["best_effort_streaming","best-effort streaming"]].map(x=>el("option",{value:x[0]},x[1])));
+  const max=el("input",{type:"number",value:"4194304",min:"1"});
+  v.append(el("div",{class:"card"},el("h2",{},"Publish enforcement policy"),
+    el("div",{class:"hint",style:"margin-bottom:8px"},"Definitions are immutable. Reusing policy_id publishes the next version."),
+    el("div",{class:"grid"},el("label",{},"policy_id",pid),el("label",{},"name",name),el("label",{},"input enforcement",input),el("label",{},"output guarantee",mode),el("label",{},"strict buffer bytes",max)),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/admin/policies",{policy_id:pid.value,name:name.value,input_enabled:input.value==="true",output_mode:mode.value,max_buffer_bytes:Number(max.value)});toast("policy published","ok");show("Governance")}catch(e){toast(e.message,"bad")}}},"Publish"))));
+
+  const defs=el("div",{class:"card"},el("h2",{},"Enforcement policies ("+(policies||[]).length+")"));
+  defs.append(table(["Policy","Version","Name","Input","Output","Buffer","Enabled",""],policies,p=>el("tr",{},
+    el("td",{class:"mono"},p.policy_id),el("td",{class:"mono"},String(p.version)),el("td",{},p.name),el("td",{},p.input_enabled?"enforce":"skip"),
+    el("td",{class:"mono"},p.output_mode),el("td",{class:"mono"},String(p.max_buffer_bytes)),el("td",{},onoff(p.enabled)),
+    el("td",{},p.enabled?el("button",{class:"danger",onclick:async()=>{if(confirm("Disable every active version of "+p.policy_id+"?")){try{await api("DELETE","/admin/policies/"+encodeURIComponent(p.policy_id));toast("disabled","ok");show("Governance")}catch(e){toast(e.message,"bad")}}}},"Disable"):""))));
+  v.append(defs);
+
+  const scope=el("select",{},...[["global","global"],["account","account"],["api_key","API key"]].map(x=>el("option",{value:x[0]},x[1])));
+  const scopeID=el("input",{placeholder:"empty for global; trusted account/key ID otherwise"});
+  const selected=el("select"); (policies||[]).filter(p=>p.enabled).forEach(p=>selected.append(el("option",{value:p.policy_id+"|"+p.version},p.policy_id+"@"+p.version+" · "+p.name)));
+  v.append(el("div",{class:"card"},el("h2",{},"Bind policy"),
+    el("div",{class:"hint",style:"margin-bottom:8px"},"Runtime precedence: API key → project (reserved) → account → global. Bindings select a complete policy; they are not merged."),
+    el("div",{class:"grid"},el("label",{},"scope",scope),el("label",{},"scope ID",scopeID),el("label",{},"policy version",selected)),
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{const [id,version]=(selected.value||"").split("|");await api("POST","/admin/policy-bindings",{scope:{kind:scope.value,id:scope.value==="global"?"":scopeID.value},policy_id:id,policy_version:Number(version)});toast("policy bound","ok");show("Governance")}catch(e){toast(e.message,"bad")}}},"Bind"))));
+
+  const bindings=el("div",{class:"card"},el("h2",{},"Active bindings ("+(policy_bindings||[]).length+")"));
+  bindings.append(table(["Scope","Scope ID","Policy","Version",""],policy_bindings,b=>el("tr",{},el("td",{class:"mono"},b.scope.kind),el("td",{class:"mono"},b.scope.id||"—"),el("td",{class:"mono"},b.policy_id),el("td",{class:"mono"},String(b.policy_version)),
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete this binding?")){try{await api("DELETE","/admin/policy-bindings/"+encodeURIComponent(b.scope.kind)+"?scope_id="+encodeURIComponent(b.scope.id||""));toast("binding deleted","ok");show("Governance")}catch(e){toast(e.message,"bad")}}}},"Delete")))));
+  v.append(bindings);
+
+  const proto=el("select",{},...[["openai","OpenAI"],["responses","Responses"],["anthropic","Anthropic"],["gemini","Gemini"]].map(x=>el("option",{value:x[0]},x[1])));
+  const action=el("select",{},...[["allow","allow"],["deny","deny"],["redact","redact"]].map(x=>el("option",{value:x[0]},x[1])));
+  const target=el("input",{value:"/messages/0/content",placeholder:"RFC 6901 JSON Pointer"}), replacement=el("input",{value:"[REDACTED]",placeholder:"replacement"});
+  const body=el("textarea",{rows:"6",style:"width:100%;font-family:ui-monospace,monospace"}); body.value='{"model":"gpt-4o","messages":[{"role":"user","content":"secret"}]}';
+  const result=el("textarea",{rows:"6",readonly:"",style:"width:100%;font-family:ui-monospace,monospace"});
+  v.append(el("div",{class:"card"},el("h2",{},"Simulate synthetic decision"),
+    el("div",{class:"hint",style:"margin-bottom:8px"},"Runs the gateway mutation executor only; it does not send content to an external detector or upstream model."),
+    el("div",{class:"grid"},el("label",{},"protocol",proto),el("label",{},"decision",action),el("label",{},"mutation target",target),el("label",{},"replacement",replacement)),
+    el("div",{style:"margin-top:10px"},body),el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{const parsed=JSON.parse(body.value), d={action:action.value,policy:{id:"console/simulation",version:1,scope:{kind:"global"}},rule_id:"synthetic",reason_code:"console_simulation"};if(action.value==="redact")d.mutations=[{id:"synthetic-mask",kind:"redact",target:target.value,replacement:replacement.value}];const r=await api("POST","/admin/policies/simulate",{protocol:proto.value,modality:"chat",stage:"input",body:parsed,decision:d});result.value=JSON.stringify(r.result,null,2)}catch(e){toast(e.message,"bad")}}},"Simulate")),result));
 }
 
 // ---- Pricing (append-only) ----

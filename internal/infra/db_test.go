@@ -185,6 +185,8 @@ func TestMigrate_TableShape(t *testing.T) {
 		t.Fatalf("disable FK checks: %v", err)
 	}
 	for _, table := range []string{
+		"policy_bindings",
+		"policy_definitions",
 		"pricing_versions",
 		"account_model_subscriptions",
 		"endpoints",

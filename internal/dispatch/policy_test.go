@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -129,6 +130,20 @@ func TestState_FinalizeStreamedFillsLastAsSuccess(t *testing.T) {
 	}
 	if atts[1].Outcome != domain.AttemptSuccess {
 		t.Fatalf("attempt[1] = %s, want success", atts[1].Outcome)
+	}
+}
+
+func TestStateApplyStreamPrecommitPolicyDenial(t *testing.T) {
+	s := newState(newTestInput("gpt-4"), 1)
+	s.ApplyStream(StreamReport{
+		Err: errors.New("denied"),
+		Prewrite: &Verdict{Stage: StageStream, Class: ClassInvalid, HTTPCode: 400,
+			Reason: "content rejected by response policy"},
+	})
+
+	out := s.Outcome()
+	if out.Result != OutcomeInvalid || out.HTTPCode != 400 || out.StreamErr == nil || out.Decision == nil {
+		t.Fatalf("outcome = %+v, want precommit invalid response", out)
 	}
 }
 

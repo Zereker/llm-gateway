@@ -20,6 +20,12 @@ func (f policyEngineFunc) Evaluate(ctx context.Context, input policy.EvaluationI
 	return f(ctx, input)
 }
 
+type policyResolverFunc func(context.Context, policy.Subject) (*policy.Definition, error)
+
+func (f policyResolverFunc) Resolve(ctx context.Context, subject policy.Subject) (*policy.Definition, error) {
+	return f(ctx, subject)
+}
+
 type capturedPolicyAudit struct {
 	name    string
 	payload any
@@ -204,8 +210,25 @@ func TestModerationPolicyEngineDeniesWithoutLeakingInternalReason(t *testing.T) 
 		t.Fatalf("deny audit was not flushed: %+v", tracer.logs)
 	}
 	audit, ok := tracer.logs[0].payload.(policy.AuditRecord)
-	if !ok || audit.Action != policy.ActionDeny || audit.ReasonCode != "private-rule-name" {
+	if !ok || audit.Action != policy.ActionDeny || audit.ReasonCode != "private-rule-name" || audit.Enforcement != policy.EnforcementDenied {
 		t.Fatalf("deny audit=%+v", tracer.logs[0])
+	}
+}
+
+func TestModerationExplicitEngineDoesNotExposeDecisionCause(t *testing.T) {
+	secret := "detector matched customer card 4111"
+	engine := policyEngineFunc(func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+		decision := middlewarePolicyDecision(policy.ActionDeny)
+		decision.Cause = errors.New(secret)
+
+		return decision, nil
+	})
+	r := newGinTest(TraceContext(), Recover(), attachEnvelopeFor("x"), Moderation(WithPolicyEngine(engine)))
+	r.POST("/x", func(c *gin.Context) { c.Status(200) })
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+	if w.Code != 400 || strings.Contains(w.Body.String(), secret) || !strings.Contains(w.Body.String(), "content rejected by policy") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -233,6 +256,62 @@ func TestModerationPolicyEngineFailuresAreClosed(t *testing.T) {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestModerationAppliesInputRedactionBeforeDownstream(t *testing.T) {
+	definition := &policy.Definition{
+		Ref:  policy.PolicyRef{ID: "pii", Version: 2, Scope: policy.Scope{Kind: policy.ScopeAccount, ID: "a1"}},
+		Name: "PII", InputEnabled: true, OutputMode: policy.OutputDisabled,
+	}
+	resolver := policyResolverFunc(func(context.Context, policy.Subject) (*policy.Definition, error) {
+		return definition, nil
+	})
+	engine := policyEngineFunc(func(_ context.Context, input policy.EvaluationInput) (policy.Decision, error) {
+		if len(input.Segments) != 1 || input.Segments[0].Target != "/messages/0/content" {
+			t.Fatalf("segments=%+v", input.Segments)
+		}
+		decision := middlewarePolicyDecision(policy.ActionRedact)
+		decision.Mutations[0].Target = "/messages/0/content"
+		decision.Mutations[0].Replacement = []byte("card [MASKED]")
+
+		return decision, nil
+	})
+	r := newGinTest(TraceContext(), Recover(), attachEnvelopeFor("gpt-4o"), func(c *gin.Context) {
+		rc := GetRequestContext(c)
+		rc.Identity.AccountID = "a1"
+		rc.Envelope.RawBytes = []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"card 4111"}]}`)
+		c.Next()
+	}, Moderation(WithPolicyEngine(engine), WithPolicyResolver(resolver)))
+	r.POST("/x", func(c *gin.Context) {
+		body := string(GetRequestContext(c).Envelope.RawBytes)
+		if strings.Contains(body, "4111") || !strings.Contains(body, "[MASKED]") {
+			t.Fatalf("downstream body=%s", body)
+		}
+		c.Status(200)
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+	if w.Code != 200 || w.Header().Get(HeaderGatewayPolicyOutputMode) != string(policy.OutputDisabled) ||
+		w.Header().Get(HeaderGatewayPolicyID) != "pii@2" {
+		t.Fatalf("status=%d headers=%v body=%s", w.Code, w.Header(), w.Body.String())
+	}
+}
+
+func TestModerationBoundPolicyWithoutEngineFailsClosed(t *testing.T) {
+	resolver := policyResolverFunc(func(context.Context, policy.Subject) (*policy.Definition, error) {
+		return &policy.Definition{
+			Ref:  policy.PolicyRef{ID: "p", Version: 1, Scope: policy.Scope{Kind: policy.ScopeGlobal}},
+			Name: "bound", InputEnabled: true, OutputMode: policy.OutputDisabled,
+		}, nil
+	})
+	r := newGinTest(TraceContext(), Recover(), attachEnvelopeFor("x"), Moderation(WithPolicyResolver(resolver)))
+	r.POST("/x", func(c *gin.Context) { c.Status(200) })
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
+	if w.Code != 503 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

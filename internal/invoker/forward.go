@@ -41,9 +41,10 @@ var chunkBufPool = sync.Pool{
 // (buffer-then-translate / empty upstream response / handler produces no
 // output during Feed).
 type ForwardResult struct {
-	Usage   *domain.Usage
-	FeedErr error
-	TTFTMs  int64
+	Usage     *domain.Usage
+	FeedErr   error
+	TTFTMs    int64
+	Committed bool
 }
 
 // startTimeCtxKey is the context key used to inject the "request start
@@ -108,21 +109,19 @@ func (s *Sender) Forward(
 ) ForwardResult {
 	defer func() { _ = resp.Body.Close() }()
 
-	copyHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	flush(w)
-
 	bufPtr := chunkBufPool.Get().(*[]byte)
 	defer chunkBufPool.Put(bufPtr)
 
 	startTime := requestStartTime(ctx, time.Now())
 	tw := &streamWriter{
-		inner:     w,
-		stream:    stream,
-		ctx:       ctx,
-		ep:        ep,
-		hooks:     s.hooks,
-		startTime: startTime,
+		inner:      w,
+		stream:     stream,
+		ctx:        ctx,
+		ep:         ep,
+		hooks:      s.hooks,
+		startTime:  startTime,
+		headers:    resp.Header,
+		statusCode: resp.StatusCode,
 	}
 	_, feedErr := io.CopyBuffer(tw, resp.Body, *bufPtr)
 
@@ -134,13 +133,27 @@ func (s *Sender) Forward(
 			tw.ttftMs = time.Since(startTime).Milliseconds()
 		}
 
+		if !tw.committed {
+			copyHeaders(w.Header(), resp.Header)
+			w.WriteHeader(resp.StatusCode)
+		}
+
 		_, _ = w.Write(finalOut)
+		tw.committed = true
+
 		flush(w)
 		s.hooks.fireClientChunk(ctx, ep, finalOut)
 	}
 
 	if feedErr == nil && fErr != nil {
 		feedErr = fErr
+	}
+
+	if feedErr == nil && !tw.committed {
+		copyHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+
+		tw.committed = true
 	}
 
 	// docs/05 §3: a stream that did not complete cleanly publishes its
@@ -153,7 +166,7 @@ func (s *Sender) Forward(
 		usage.Confidence = domain.UsageConfidenceApproximate
 	}
 
-	return ForwardResult{Usage: usage, FeedErr: feedErr, TTFTMs: tw.ttftMs}
+	return ForwardResult{Usage: usage, FeedErr: feedErr, TTFTMs: tw.ttftMs, Committed: tw.committed}
 }
 
 // streamWriter feeds an upstream chunk into protocol.ResponseStream.Feed,
@@ -168,13 +181,16 @@ func (s *Sender) Forward(
 // contract requires ("the entire input was consumed"). When Feed errors, it
 // returns (0, err) so CopyBuffer stops immediately.
 type streamWriter struct {
-	inner     http.ResponseWriter
-	stream    protocol.ResponseStream
-	ctx       context.Context
-	ep        *domain.Endpoint
-	hooks     hookSet
-	startTime time.Time
-	ttftMs    int64 // filled once the first non-empty client chunk is written; 0 = not captured
+	inner      http.ResponseWriter
+	stream     protocol.ResponseStream
+	ctx        context.Context
+	ep         *domain.Endpoint
+	hooks      hookSet
+	startTime  time.Time
+	headers    http.Header
+	statusCode int
+	ttftMs     int64 // filled once the first non-empty client chunk is written; 0 = not captured
+	committed  bool
 }
 
 func (tw *streamWriter) Write(chunk []byte) (int, error) {
@@ -186,6 +202,12 @@ func (tw *streamWriter) Write(chunk []byte) (int, error) {
 	}
 
 	if len(out) > 0 {
+		if !tw.committed {
+			copyHeaders(tw.inner.Header(), tw.headers)
+			tw.inner.WriteHeader(tw.statusCode)
+			tw.committed = true
+		}
+
 		if _, werr := tw.inner.Write(out); werr != nil {
 			return 0, werr
 		}

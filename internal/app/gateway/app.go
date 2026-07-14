@@ -127,6 +127,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 
 	var routingCosts *repo.CachedRoutingCostReader
 
+	var enforcementPolicies *repo.CachedPolicyDefinitionReader
+
 	// Fast revocation: subscribe to the control plane's cachebus invalidation
 	// channel and evict precisely on apikey invalidation events — this shrinks
 	// the "key already revoked but data plane still has it cached" window from
@@ -143,6 +145,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 
 		if inv.Kind == cachebus.KindRoutingCost && routingCosts != nil {
 			routingCosts.EvictAll()
+		}
+
+		if inv.Kind == cachebus.KindPolicy && enforcementPolicies != nil {
+			enforcementPolicies.EvictAll()
 		}
 	}).Start(context.Background()); subErr != nil {
 		slog.Warn("cachebus subscribe failed; falling back to TTL-only invalidation", "err", subErr)
@@ -191,6 +197,9 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	domainEndpoints := repo.NewDomainEndpointReader(endpointReader)
 	routingCosts = repo.NewCachedRoutingCostReader(
 		repo.NewSQLRoutingCostReader(sqldb), 256, cacheTTL, cacheMetrics,
+	)
+	enforcementPolicies = repo.NewCachedPolicyDefinitionReader(
+		repo.NewSQLPolicyDefinitionReader(sqldb), 10240, cacheTTL, cacheMetrics,
 	)
 	virtualModels := routingpolicy.NewResolver(routingPolicies, catalog, subs,
 		routingpolicy.WithObjectives(routingCosts, routingpolicy.NewSelectorTelemetryReader(domainEndpoints, stats)),
@@ -275,7 +284,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 		EmbeddingCache: buildEmbeddingCache(cfg.Cache, rdb),
 
 		// M8 Moderation
-		Moderator: buildModerator(cfg.Moderation),
+		Moderator:      buildModerator(cfg.Moderation),
+		PolicyResolver: enforcementPolicies,
 
 		// M10 Tracing
 		UsageOutbox: outbox,

@@ -28,6 +28,7 @@ The target architecture focuses on solving:
 | console | `cmd/console` | Control plane: an Admin API (backed by `internal/console`) for managing business data; optional, and the data plane runs without it |
 
 Business data (accounts / api_keys / model_services / endpoints / quota_policies /
+policy_definitions / policy_bindings /
 subscriptions / pricing_versions) is maintained directly via SQL INSERT/UPDATE/DELETE by the deployer;
 the separate `cmd/console` control-plane binary is an additional way to manage it (it can also publish
 cachebus invalidation that the gateway subscribes to for fast revocation).

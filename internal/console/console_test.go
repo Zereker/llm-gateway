@@ -20,6 +20,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/endpointcheck"
 	"github.com/zereker/llm-gateway/internal/infra"
+	"github.com/zereker/llm-gateway/internal/policy"
 	"github.com/zereker/llm-gateway/internal/repo"
 	"github.com/zereker/llm-gateway/internal/routingpolicy"
 )
@@ -56,6 +57,7 @@ func newTestEngine(t *testing.T) (*gin.Engine, *sqlx.DB) {
 		t.Fatalf("fk off: %v", err)
 	}
 	for _, table := range []string{
+		"policy_bindings", "policy_definitions",
 		"pricing_versions", "routing_cost_profiles", "routing_policies", "account_model_subscriptions", "api_keys",
 		"endpoints", "model_services", "accounts", "quota_policies",
 	} {
@@ -189,6 +191,54 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	}
 	if code, body := do(t, engine, "DELETE", "/admin/routing-policies/"+policyID, nil, true); code != 200 {
 		t.Fatalf("disable: code=%d body=%v", code, body)
+	}
+}
+
+func TestConsoleEnforcementPolicyLifecycleBindingAndSimulation(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	if code, body := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
+		t.Fatalf("create account: code=%d body=%v", code, body)
+	}
+	code, created := do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{
+		Name: "PII strict", InputEnabled: true, OutputMode: policy.OutputStrictBuffered, MaxBufferBytes: 2048,
+	}, true)
+	if code != 201 {
+		t.Fatalf("publish: code=%d body=%v", code, created)
+	}
+	view := created["policy"].(map[string]any)
+	policyID := view["policy_id"].(string)
+	if code, body := do(t, engine, "POST", "/admin/policy-bindings", PolicyBindingInput{
+		Scope: policy.Scope{Kind: policy.ScopeAccount, ID: "a1"}, PolicyID: policyID, PolicyVersion: 1,
+	}, true); code != 201 {
+		t.Fatalf("bind: code=%d body=%v", code, body)
+	}
+	if code, listed := do(t, engine, "GET", "/admin/policy-bindings", nil, true); code != 200 || len(listed["policy_bindings"].([]any)) != 1 {
+		t.Fatalf("bindings: code=%d body=%v", code, listed)
+	}
+
+	decision := PolicySimulationDecision{
+		Action: policy.ActionRedact,
+		Policy: policy.PolicyRef{ID: policyID, Version: 1, Scope: policy.Scope{Kind: policy.ScopeAccount, ID: "a1"}},
+		RuleID: "pii.card", ReasonCode: "card_detected",
+		Mutations: []PolicySimulationMutation{{ID: "m1", Kind: policy.MutationRedact, Target: "/messages/0/content", Replacement: "[MASKED]"}},
+	}
+	code, simulated := do(t, engine, "POST", "/admin/policies/simulate", PolicySimulationInput{
+		Protocol: domain.ProtoOpenAI, Modality: domain.ModalityChat, Stage: policy.StageInput,
+		Body: json.RawMessage(`{"model":"x","messages":[{"content":"4111"}]}`), Decision: decision,
+	}, true)
+	if code != 200 {
+		t.Fatalf("simulate: code=%d body=%v", code, simulated)
+	}
+	result := simulated["result"].(map[string]any)
+	if result["allowed"] != true || result["audit"].(map[string]any)["enforcement"] != "applied" {
+		t.Fatalf("simulation=%v", result)
+	}
+
+	if code, body := do(t, engine, "DELETE", "/admin/policies/"+policyID, nil, true); code != 200 {
+		t.Fatalf("disable: code=%d body=%v", code, body)
+	}
+	if code, listed := do(t, engine, "GET", "/admin/policy-bindings", nil, true); code != 200 || len(listed["policy_bindings"].([]any)) != 0 {
+		t.Fatalf("disable must remove active bindings: code=%d body=%v", code, listed)
 	}
 }
 

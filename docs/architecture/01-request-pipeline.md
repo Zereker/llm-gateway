@@ -81,6 +81,12 @@ Important constraints:
 
 M9 is registered inside M10 and outside M2 Auth, so its defer covers M2 and every inner middleware/handler. BodyLimit, Timeout, and M1 remain outside M9 and are protected by Gin's global fallback recovery.
 
+M8 resolves the effective immutable policy using trusted API-key/account
+identity, applies input mutations before M7 sees the envelope, installs the
+output controller, then records enforcement results after `c.Next()` returns.
+Strict output buffering therefore remains owned by M8 even though the actual
+stream decorator executes inside invoker forwarding.
+
 **M10 is registered after M1 and before M9** (its finishing logic runs in the post-`c.Next()` onion return phase):
 - If any subsequent middleware aborts (401/429/503) → the finishing logic still runs on the return trip — request metrics /
   usage events / M10-owned decision audit have **no blind spots** (an older version registered at the tail of the chain would be

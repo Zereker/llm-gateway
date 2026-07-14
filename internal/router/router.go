@@ -9,6 +9,7 @@ import (
 
 	"github.com/zereker/llm-gateway/internal/dispatch"
 	"github.com/zereker/llm-gateway/internal/middleware"
+	"github.com/zereker/llm-gateway/internal/policy"
 	"github.com/zereker/llm-gateway/internal/protocol"
 	"github.com/zereker/llm-gateway/internal/ratelimit"
 )
@@ -73,6 +74,8 @@ type Deps struct {
 	// PolicyEngine is the explicit allow/deny/redact extension point. It takes
 	// precedence over the legacy Moderator when provided.
 	PolicyEngine middleware.PolicyEngine
+	// PolicyResolver selects the most-specific persisted enforcement policy.
+	PolicyResolver policy.Resolver
 
 	// M10 Tracing
 	UsageOutbox UsageOutbox
