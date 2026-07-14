@@ -83,7 +83,7 @@ services:
     build:
       <<: *benchmark-build
       target: compare
-    command: ["-baseline", "/baselines/reference.json", "-candidate", "/results/latest.json"]
+    command: ["-baseline", "/baselines/reference.json", "-candidate", "/results/latest.json", "-summary", "/results/summary.md"]
     volumes:
       - ./baselines:/baselines:ro
-      - ./results:/results:ro
+      - ./results:/results

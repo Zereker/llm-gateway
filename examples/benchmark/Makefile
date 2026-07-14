@@ -17,6 +17,8 @@ check: ## Compare results/latest.json with the versioned reference
 
 baseline: measure ## Replace the reference baseline with the latest local result
 	cp results/latest.json baselines/reference.json
+	$(COMPOSE) run --build --rm --no-deps compare -baseline /baselines/reference.json -candidate /baselines/reference.json -summary /results/baseline.md -title "Reference Performance Baseline"
+	cp results/baseline.md baselines/README.md
 
 down: ## Remove benchmark containers and volumes
 	$(COMPOSE) down -v
