@@ -77,13 +77,17 @@ const (
 //
 // See docs/architecture/05-metering-billing.md §4 for field provenance.
 type UsageMeta struct {
-	AccountID    string `json:"account_id"` // parent account pin / billing subject (written by M2)
-	Model        string `json:"model"`      // actually-routed model; takes RoutedModelService.Model on cross-model fallback
-	Vendor       string `json:"vendor"`     // endpoint vendor
-	EndpointID   string `json:"endpoint_id"`
-	SubAccountID string `json:"sub_account_id"` // sub-account / operator
-	APIKeyID     string `json:"api_key_id"`
-	ServiceID    string `json:"service_id,omitempty"` // model_services.service_id (a renamable string)
+	AccountID            string `json:"account_id"` // parent account pin / billing subject (written by M2)
+	Model                string `json:"model"`      // actually-routed model; takes RoutedModelService.Model on cross-model fallback
+	Vendor               string `json:"vendor"`     // endpoint vendor
+	EndpointID           string `json:"endpoint_id"`
+	SubAccountID         string `json:"sub_account_id"` // sub-account / operator
+	APIKeyID             string `json:"api_key_id"`
+	ServiceID            string `json:"service_id,omitempty"` // model_services.service_id (a renamable string)
+	RequestedModel       string `json:"requested_model,omitempty"`
+	RoutingPolicyID      string `json:"routing_policy_id,omitempty"`
+	RoutingPolicyVersion uint64 `json:"routing_policy_version,omitempty"`
+	RoutingReason        string `json:"routing_reason,omitempty"`
 
 	// ModelServiceID — downstream billing uses (account_id, model_service_id,
 	// rule_class, StartTime) to hit the idx_active_lookup index on

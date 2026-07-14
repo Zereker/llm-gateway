@@ -5,12 +5,36 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/requeststate"
 	"github.com/zereker/llm-gateway/internal/usage"
 )
+
+func TestFillUsageMetaRecordsExplainableModelRouting(t *testing.T) {
+	rc := &requeststate.State{
+		StartTime:          time.Now().Add(-time.Second),
+		Envelope:           &domain.RequestEnvelope{Model: "fast-chat"},
+		Identity:           domain.UserIdentity{AccountID: "a1"},
+		Usage:              &domain.Usage{},
+		RoutedModelService: &domain.ModelService{ID: 7, Model: "small"},
+		ModelRoutingDecision: &domain.ModelRoutingDecision{
+			Reason: domain.RoutingReasonVirtualPolicyMatched,
+			Policy: &domain.RoutingPolicyRef{ID: "rp_fast", Version: 4},
+		},
+	}
+
+	fillUsageMeta(context.Background(), rc, time.Now(), 1000)
+	meta := rc.Usage.Meta
+	if meta.RequestedModel != "fast-chat" || meta.Model != "small" ||
+		meta.RoutingPolicyID != "rp_fast" || meta.RoutingPolicyVersion != 4 ||
+		meta.RoutingReason != string(domain.RoutingReasonVirtualPolicyMatched) {
+		t.Fatalf("usage meta=%+v", meta)
+	}
+}
 
 // stubOutbox captures published events.
 type stubOutbox struct {

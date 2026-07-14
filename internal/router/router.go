@@ -40,8 +40,9 @@ type Deps struct {
 	BudgetGate middleware.BudgetGate
 
 	// M5 ModelService
-	ModelCatalog        middleware.ModelCatalog
-	SubscriptionChecker middleware.SubscriptionChecker
+	ModelCatalog         middleware.ModelCatalog
+	SubscriptionChecker  middleware.SubscriptionChecker
+	VirtualModelResolver middleware.VirtualModelResolver
 
 	// M6 Limit (user-side RPM/RPS + TPM)
 	RateLimitStore ratelimit.Store

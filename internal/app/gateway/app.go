@@ -35,6 +35,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/ratelimit"
 	"github.com/zereker/llm-gateway/internal/repo"
 	"github.com/zereker/llm-gateway/internal/router"
+	"github.com/zereker/llm-gateway/internal/routingpolicy"
 	"github.com/zereker/llm-gateway/internal/selector"
 )
 
@@ -122,6 +123,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 		repo.NewSQLAPIKeyProvider(sqldb), 10240, 30*time.Second, cacheMetrics,
 	)
 
+	var routingPolicies *repo.CachedRoutingPolicyReader
+
 	// Fast revocation: subscribe to the control plane's cachebus invalidation
 	// channel and evict precisely on apikey invalidation events — this shrinks
 	// the "key already revoked but data plane still has it cached" window from
@@ -130,6 +133,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	if stop, subErr := cachebus.NewSubscriber(rdb, "", func(inv cachebus.Invalidation) {
 		if inv.Kind == cachebus.KindAPIKey {
 			apikeyProvider.Evict(inv.Key)
+		}
+
+		if inv.Kind == cachebus.KindRoutingPolicy && routingPolicies != nil {
+			routingPolicies.EvictAll()
 		}
 	}).Start(context.Background()); subErr != nil {
 		slog.Warn("cachebus subscribe failed; falling back to TTL-only invalidation", "err", subErr)
@@ -169,6 +176,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	subs := adaptSubscriptions(repo.NewCachedSubscriptionProvider(
 		repo.NewSQLSubscriptionProvider(sqldb), 10240, cacheTTL, cacheMetrics,
 	))
+	routingPolicies = repo.NewCachedRoutingPolicyReader(
+		repo.NewSQLRoutingPolicyReader(sqldb), 1024, cacheTTL, cacheMetrics,
+	)
+	virtualModels := routingpolicy.NewResolver(routingPolicies, catalog, subs)
 
 	endpointReader := repo.NewCachedEndpointReader(
 		repo.NewSQLEndpointReader(sqldb), 1024, 4096, cacheTTL, cacheMetrics,
@@ -238,8 +249,9 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 		BudgetGate: buildBudgetGate(cfg.Budget),
 
 		// M5 ModelService
-		ModelCatalog:        catalog,
-		SubscriptionChecker: subs,
+		ModelCatalog:         catalog,
+		SubscriptionChecker:  subs,
+		VirtualModelResolver: virtualModels,
 
 		// M6 Limit
 		RateLimitStore: rateStore,

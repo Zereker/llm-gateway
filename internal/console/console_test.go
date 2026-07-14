@@ -55,7 +55,7 @@ func newTestEngine(t *testing.T) (*gin.Engine, *sqlx.DB) {
 		t.Fatalf("fk off: %v", err)
 	}
 	for _, table := range []string{
-		"pricing_versions", "account_model_subscriptions", "api_keys",
+		"pricing_versions", "routing_policies", "account_model_subscriptions", "api_keys",
 		"endpoints", "model_services", "accounts", "quota_policies",
 	} {
 		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
@@ -67,6 +67,61 @@ func newTestEngine(t *testing.T) (*gin.Engine, *sqlx.DB) {
 	}
 
 	return NewEngine(newTestStore(db), []Token{{Value: testToken, Role: RoleAdmin}}), db
+}
+
+func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
+	engine, _ := newTestEngine(t)
+
+	if code, body := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
+		t.Fatalf("create account: code=%d body=%v", code, body)
+	}
+	_, first := do(t, engine, "POST", "/admin/model-services", ModelServiceInput{ServiceID: "local/small", Model: "small"}, true)
+	modelID := int64(first["id"].(float64))
+	if code, body := do(t, engine, "POST", "/admin/subscriptions", SubscriptionInput{AccountID: "a1", ModelServiceID: modelID}, true); code != 201 {
+		t.Fatalf("subscribe: code=%d body=%v", code, body)
+	}
+
+	policy := RoutingPolicyInput{
+		Scope:        domain.RoutingScope{Kind: domain.RoutingScopeAccount, ID: "a1"},
+		VirtualModel: "fast-chat", MaxAttempts: 2,
+		Candidates: []domain.RoutingPolicyCandidate{{Model: "small", Weight: 100}},
+	}
+	code, created := do(t, engine, "POST", "/admin/routing-policies", policy, true)
+	if code != 201 {
+		t.Fatalf("publish: code=%d body=%v", code, created)
+	}
+	view := created["routing_policy"].(map[string]any)
+	policyID := view["policy_id"].(string)
+	if view["version"].(float64) != 1 {
+		t.Fatalf("created policy=%v", view)
+	}
+
+	policy.PolicyID = policyID
+	policy.MaxAttempts = 1
+	code, created = do(t, engine, "POST", "/admin/routing-policies", policy, true)
+	if code != 201 || created["routing_policy"].(map[string]any)["version"].(float64) != 2 {
+		t.Fatalf("publish v2: code=%d body=%v", code, created)
+	}
+
+	chat := domain.ModalityChat
+	code, dryRun := do(t, engine, "POST", "/admin/routing-policies/dry-run", RoutingDryRunInput{
+		AccountID: "a1", RequestedModel: "fast-chat", Modality: &chat,
+	}, true)
+	if code != 200 {
+		t.Fatalf("dry-run: code=%d body=%v", code, dryRun)
+	}
+	chain := dryRun["model_chain"].([]any)
+	if len(chain) != 1 || chain[0] != "small" {
+		t.Fatalf("dry-run chain=%v", chain)
+	}
+
+	code, listed := do(t, engine, "GET", "/admin/routing-policies", nil, true)
+	if code != 200 || len(listed["routing_policies"].([]any)) != 2 {
+		t.Fatalf("list: code=%d body=%v", code, listed)
+	}
+	if code, body := do(t, engine, "DELETE", "/admin/routing-policies/"+policyID, nil, true); code != 200 {
+		t.Fatalf("disable: code=%d body=%v", code, body)
+	}
 }
 
 // newTestStore mirrors cmd/console's production wiring: the endpoint validator

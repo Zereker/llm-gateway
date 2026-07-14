@@ -75,7 +75,7 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 			Identity:           rc.Identity,
 			ModelChain:         rc.ModelChain,
 			Handlers:           HandlersFrom(rc),
-			AttemptCapOverride: c.GetHeader(HeaderGatewayMaxAttempts),
+			AttemptCapOverride: effectiveAttemptOverride(c.GetHeader(HeaderGatewayMaxAttempts), rc.ModelRoutingDecision),
 			SessionKey:         c.GetHeader(HeaderGatewaySession),
 		}
 
@@ -104,6 +104,19 @@ func Schedule(d *dispatch.Dispatcher) gin.HandlerFunc {
 
 		abortByOutcome(c, out)
 	}
+}
+
+func effectiveAttemptOverride(header string, decision *domain.ModelRoutingDecision) string {
+	if decision == nil || decision.MaxAttempts <= 0 {
+		return header
+	}
+
+	policyMax := decision.MaxAttempts
+	if headerMax, err := strconv.Atoi(header); err == nil && headerMax > 0 && headerMax < policyMax {
+		return header
+	}
+
+	return strconv.Itoa(policyMax)
 }
 
 // applyOutcomeToRC maps fields produced by dispatch back onto RC (dispatch is

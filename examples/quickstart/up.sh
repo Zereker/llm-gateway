@@ -58,7 +58,7 @@ response="$(curl -fsS --max-time 15 \
   -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Authorization: Bearer ${API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"model":"mock-openai-model","messages":[{"role":"user","content":"Hello from the llm-gateway demo"}]}')"
+  -d '{"model":"fast-chat","messages":[{"role":"user","content":"Hello from the llm-gateway demo"}]}')"
 
 if [[ ",${COMPOSE_PROFILES:-}," == *",observability,"* ]]; then
   echo "[quickstart] generating streaming traffic for TTFT metrics"
@@ -92,7 +92,7 @@ if [[ ",${COMPOSE_PROFILES:-}," == *",observability,"* ]]; then
 fi
 echo
 echo "Try it again:"
-echo "  curl http://localhost:8080/v1/chat/completions -H 'Authorization: Bearer ${API_KEY}' -H 'Content-Type: application/json' -d '{\"model\":\"mock-openai-model\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi!\"}]}'"
+echo "  curl http://localhost:8080/v1/chat/completions -H 'Authorization: Bearer ${API_KEY}' -H 'Content-Type: application/json' -d '{\"model\":\"fast-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi!\"}]}'"
 echo
 echo "Response preview (${#response} bytes):"
 if (( ${#response} > 600 )); then

@@ -9,6 +9,8 @@ import (
 	"go.opentelemetry.io/otel"
 
 	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/metric"
+	"github.com/zereker/llm-gateway/internal/routingpolicy"
 )
 
 // ModelCatalog is used by M5: looks up the global catalog by model string.
@@ -37,6 +39,12 @@ func (f modelServiceOptionFunc) apply(c *modelServiceConfig) { f(c) }
 type modelServiceConfig struct {
 	catalog       ModelCatalog
 	subscriptions SubscriptionChecker
+	resolver      VirtualModelResolver
+}
+
+// VirtualModelResolver resolves names absent from the concrete model catalog.
+type VirtualModelResolver interface {
+	Resolve(context.Context, routingpolicy.Input) (routingpolicy.Resolution, error)
 }
 
 // WithModelCatalog injects a ModelCatalog implementation. Required.
@@ -47,6 +55,10 @@ func WithModelCatalog(c ModelCatalog) ModelServiceOption {
 // WithSubscriptionChecker injects a SubscriptionChecker implementation. Required.
 func WithSubscriptionChecker(s SubscriptionChecker) ModelServiceOption {
 	return modelServiceOptionFunc(func(cfg *modelServiceConfig) { cfg.subscriptions = s })
+}
+
+func WithVirtualModelResolver(r VirtualModelResolver) ModelServiceOption {
+	return modelServiceOptionFunc(func(cfg *modelServiceConfig) { cfg.resolver = r })
 }
 
 // ModelService is M5: rc.Envelope.Model → catalog → verify subscription → rc.ModelService.
@@ -103,6 +115,46 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 			return
 		}
 
+		if ms == nil && cfg.resolver != nil {
+			resolution, resolveErr := cfg.resolver.Resolve(ctx, routingpolicy.Input{
+				RequestedModel: rc.Envelope.Model,
+				AccountID:      rc.Identity.AccountID,
+				Region:         c.GetHeader(HeaderGatewayRegion),
+				Modality:       rc.Envelope.Modality,
+			})
+			rc.ModelRoutingDecision = &resolution.Decision
+			recordRoutingDecision(&resolution.Decision)
+
+			if resolveErr != nil {
+				slog.ErrorContext(ctx, "m5: virtual model resolution failed", "err", resolveErr)
+				abortWithCode(c, 503, domain.ErrTransient, domain.ErrCodeDependencyUnavailable,
+					"routing policy unavailable")
+
+				return
+			}
+
+			if resolution.Decision.Reason == domain.RoutingReasonNoPolicy {
+				abortWithCode(c, 404, domain.ErrInvalid, domain.ErrCodeVirtualModelPolicyNotFound,
+					"virtual model policy not found: "+rc.Envelope.Model)
+
+				return
+			}
+
+			if len(resolution.Chain) == 0 {
+				abortWithCode(c, 403, domain.ErrPermanent, domain.ErrCodeNoEligibleCandidate,
+					"no eligible model candidate")
+
+				return
+			}
+
+			rc.ModelService = resolution.Chain[0]
+			rc.ModelChain = resolution.Chain
+
+			c.Next()
+
+			return
+		}
+
 		if ms == nil {
 			abortWithCode(c, 404, domain.ErrInvalid, domain.ErrCodeModelNotFound,
 				"model not found: "+rc.Envelope.Model)
@@ -129,7 +181,55 @@ func ModelService(opts ...ModelServiceOption) gin.HandlerFunc {
 		rc.ModelService = ms
 		rc.ModelChain = resolveModelChain(ctx, cfg, ms, rc.Identity.AccountID,
 			parseFallbackModels(c, rc.Envelope.Model))
+		rc.ModelRoutingDecision = concreteRoutingDecision(rc.Envelope.Model, rc.ModelChain)
+		recordRoutingDecision(rc.ModelRoutingDecision)
 		c.Next()
+	}
+}
+
+func recordRoutingDecision(decision *domain.ModelRoutingDecision) {
+	if decision == nil {
+		return
+	}
+
+	scope := "none"
+	if decision.Policy != nil {
+		scope = string(decision.Policy.Scope.Kind)
+	}
+
+	metric.Inc(metric.RoutingDecisionsTotal,
+		"outcome", string(decision.Outcome),
+		"reason", string(decision.Reason),
+		"scope_kind", scope,
+	)
+}
+
+func concreteRoutingDecision(requested string, chain []*domain.ModelService) *domain.ModelRoutingDecision {
+	candidates := make([]domain.RoutingCandidateDecision, 0, len(chain))
+	for i, model := range chain {
+		source := domain.RoutingCandidateRequested
+
+		reason := domain.RoutingReasonConcreteModel
+		if i > 0 {
+			source = domain.RoutingCandidateLegacyHeader
+			reason = domain.RoutingReasonLegacyFallbackAccepted
+		}
+
+		candidates = append(candidates, domain.RoutingCandidateDecision{
+			ModelServiceID: model.ID,
+			Model:          model.Model,
+			Source:         source,
+			Eligible:       true,
+			Reason:         reason,
+			Order:          i,
+		})
+	}
+
+	return &domain.ModelRoutingDecision{
+		RequestedModel: requested,
+		Outcome:        domain.RoutingOutcomeResolved,
+		Reason:         domain.RoutingReasonConcreteModel,
+		Candidates:     candidates,
 	}
 }
 

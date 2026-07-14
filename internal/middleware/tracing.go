@@ -175,6 +175,10 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 		if rc.SchedulingDecision != nil && cfg.tracer != nil {
 			cfg.tracer.Log(ctx, "scheduling_decision", rc.SchedulingDecision)
 		}
+
+		if rc.ModelRoutingDecision != nil && cfg.tracer != nil {
+			cfg.tracer.Log(ctx, "model_routing_decision", rc.ModelRoutingDecision)
+		}
 	}
 }
 
@@ -197,6 +201,18 @@ func fillUsageMeta(ctx context.Context, rc *requeststate.State, endTime time.Tim
 	m.AccountID = rc.Identity.AccountID
 	m.SubAccountID = rc.Identity.SubAccountID
 	m.APIKeyID = rc.Identity.APIKeyID
+
+	if rc.Envelope != nil {
+		m.RequestedModel = rc.Envelope.Model
+	}
+
+	if rc.ModelRoutingDecision != nil {
+		m.RoutingReason = string(rc.ModelRoutingDecision.Reason)
+		if rc.ModelRoutingDecision.Policy != nil {
+			m.RoutingPolicyID = rc.ModelRoutingDecision.Policy.ID
+			m.RoutingPolicyVersion = rc.ModelRoutingDecision.Policy.Version
+		}
+	}
 
 	// The routed model (docs/05 §4); differs from the requested model on fallback
 	routed := rc.RoutedModelService

@@ -176,6 +176,10 @@ type UsageMeta struct {
     SubAccountID      string
     APIKeyID          string
     ServiceID         string
+    RequestedModel    string
+    RoutingPolicyID   string
+    RoutingPolicyVersion uint64
+    RoutingReason     string
     ModelServiceID    int64       // pricing lookup fingerprint; same source as ServiceID's RoutedModelService
     ServiceUpdateTime time.Time   // snapshot of model_services.updated_at
     RequestID         string
@@ -195,6 +199,7 @@ Field origins:
 | `TraceID` | `TraceIDFromCtx(c.Request.Context())` |
 | `AccountID` / `SubAccountID` / `APIKeyID` | M2 `rc.Identity` |
 | `Model` / `ServiceID` / `ModelServiceID` / `ServiceUpdateTime` | M7 `rc.RoutedModelService`, equal to M5 `rc.ModelService` when there was no fallback |
+| `RequestedModel` / `RoutingPolicyID` / `RoutingPolicyVersion` / `RoutingReason` | M5 `rc.ModelRoutingDecision`; policy fields are empty for concrete requests |
 | `Vendor` / `EndpointID` | M7 `rc.Endpoint` |
 | `StartTime` | M1 `rc.StartTime` |
 | `EndTime` / `TotalLatency` | M10 current time |

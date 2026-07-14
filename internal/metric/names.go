@@ -50,6 +50,7 @@ const (
 	SelectorEndpointSelectedTotal = "llm_gateway_selector_endpoint_selected_total" // endpoint_id / vendor / model
 	SelectorEndpointFilteredTotal = "llm_gateway_selector_endpoint_filtered_total"
 	SelectorEndpointCallTotal     = "llm_gateway_selector_endpoint_call_total" // endpoint_id / vendor / model / outcome / class
+	RoutingDecisionsTotal         = "llm_gateway_routing_decisions_total"      // outcome / reason / scope_kind
 )
 
 // === Upstream (docs/03) ===
