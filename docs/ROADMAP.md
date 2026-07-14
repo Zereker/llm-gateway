@@ -15,7 +15,7 @@ not count as delivery.
 | M0.1 Product narrative | Complete |
 | M0.2 One-command local demo | Complete |
 | M0.3 Operational dashboard | Complete |
-| M0.4 Reproducible performance proof | In progress |
+| M0.4 Reproducible performance proof | Complete |
 | M1 Explainable policy routing | Planned |
 | M2 Governed prompt and response policy | Planned |
 | M3 Enterprise identity and hierarchy | Deferred pending product need |

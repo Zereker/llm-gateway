@@ -253,6 +253,23 @@ jobs:
         if: always()
         run: make -C examples/quickstart down
 
+  product-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Measure gateway overhead and check the reference baseline
+        run: make benchmark
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: examples/benchmark/results/latest.json
+          if-no-files-found: ignore
+      - name: Tear down benchmark
+        if: always()
+        run: make benchmark-down
+
   deployment:
     runs-on: ubuntu-latest
     steps:

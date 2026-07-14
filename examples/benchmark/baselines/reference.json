@@ -1,0 +1,124 @@
+{
+  "runner_version": "2",
+  "generated_at": "2026-07-14T09:51:26Z",
+  "environment": {
+    "arch": "arm64",
+    "commit": "e28cd6296263",
+    "concurrency": 20,
+    "cpus": 4,
+    "go": "go1.25.12",
+    "os": "linux",
+    "requests_per_case": 200,
+    "upstream_chunk_delay_ms": 10,
+    "upstream_chunks": 8,
+    "upstream_first_token_delay_ms": 50,
+    "upstream_nonstream_delay_ms": 20
+  },
+  "results": [
+    {
+      "path": "direct",
+      "mode": "nonstream",
+      "requests": 200,
+      "errors": 0,
+      "error_rate": 0,
+      "requests_per_second": 939.292,
+      "latency_p50_ms": 21.119,
+      "latency_p95_ms": 21.887,
+      "latency_p99_ms": 21.98,
+      "ttfb_p50_ms": 21.091,
+      "ttfb_p95_ms": 21.865,
+      "ttfb_p99_ms": 21.933,
+      "mean_bytes": 244,
+      "peak_active_requests": 20,
+      "peak_active_streams": 0
+    },
+    {
+      "path": "gateway",
+      "mode": "nonstream",
+      "requests": 200,
+      "errors": 0,
+      "error_rate": 0,
+      "requests_per_second": 790.907,
+      "latency_p50_ms": 24.364,
+      "latency_p95_ms": 29.621,
+      "latency_p99_ms": 29.833,
+      "ttfb_p50_ms": 23.113,
+      "ttfb_p95_ms": 29.012,
+      "ttfb_p99_ms": 29.092,
+      "mean_bytes": 244,
+      "peak_active_requests": 20,
+      "peak_active_streams": 0,
+      "gateway_resources": {
+        "cpu_seconds": 0.12,
+        "peak_resident_bytes": 44433408,
+        "peak_go_heap_bytes": 12328336
+      }
+    },
+    {
+      "path": "direct",
+      "mode": "stream",
+      "requests": 200,
+      "errors": 0,
+      "error_rate": 0,
+      "requests_per_second": 143.644,
+      "latency_p50_ms": 138.956,
+      "latency_p95_ms": 142.071,
+      "latency_p99_ms": 142.351,
+      "ttfb_p50_ms": 51.649,
+      "ttfb_p95_ms": 55.166,
+      "ttfb_p99_ms": 55.217,
+      "mean_bytes": 1102,
+      "peak_active_requests": 20,
+      "peak_active_streams": 20
+    },
+    {
+      "path": "gateway",
+      "mode": "stream",
+      "requests": 200,
+      "errors": 0,
+      "error_rate": 0,
+      "requests_per_second": 140.765,
+      "latency_p50_ms": 141.295,
+      "latency_p95_ms": 146.345,
+      "latency_p99_ms": 149.423,
+      "ttfb_p50_ms": 55.018,
+      "ttfb_p95_ms": 57.869,
+      "ttfb_p99_ms": 60.044,
+      "mean_bytes": 1102,
+      "peak_active_requests": 20,
+      "peak_active_streams": 20,
+      "gateway_resources": {
+        "cpu_seconds": 0.32,
+        "peak_resident_bytes": 46247936,
+        "peak_go_heap_bytes": 13448592
+      }
+    }
+  ],
+  "gateway_minus_direct": [
+    {
+      "mode": "nonstream",
+      "throughput_percent": -15.798,
+      "latency_p50_ms": 3.245,
+      "latency_p95_ms": 7.734,
+      "latency_p99_ms": 7.853,
+      "ttfb_p50_ms": 2.022,
+      "ttfb_p95_ms": 7.147,
+      "ttfb_p99_ms": 7.159
+    },
+    {
+      "mode": "stream",
+      "throughput_percent": -2.004,
+      "latency_p50_ms": 2.339,
+      "latency_p95_ms": 4.274,
+      "latency_p99_ms": 7.072,
+      "ttfb_p50_ms": 3.369,
+      "ttfb_p95_ms": 2.703,
+      "ttfb_p99_ms": 4.827
+    }
+  ],
+  "resilience": {
+    "client_disconnect_cancels": true,
+    "mid_stream_failure_detected": true,
+    "slow_client_completes": true
+  }
+}

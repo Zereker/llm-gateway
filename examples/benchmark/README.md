@@ -17,9 +17,19 @@ and gateway paths:
 - non-streaming and streaming throughput;
 - p50/p95/p99 end-to-end latency;
 - p50/p95/p99 time to first byte;
-- error count and mean response bytes;
+- error count, error rate, mean response bytes, and peak active requests/streams;
+- gateway-minus-direct throughput, latency, and first-byte overhead;
+- Gateway CPU seconds, peak resident memory, and peak Go heap sampled from its
+  Prometheus process metrics;
 - slow-client completion, client cancellation, and upstream mid-stream failure
   checks.
+
+The report is printed and written to `results/latest.json`. `make benchmark`
+then compares it with [`baselines/reference.json`](baselines/reference.json).
+Any request error or resilience failure is fatal. The default performance gate
+allows the larger of 20 ms or 100% of the baseline p95 overhead, plus 40
+percentage points of throughput movement. This is intentionally tolerant of
+shared CI runners.
 
 The deterministic upstream waits 20 ms for non-streaming responses. Streams
 wait 50 ms before the first chunk, then produce eight chunks 10 ms apart. This
@@ -27,11 +37,18 @@ makes the gateway delta visible independently of provider variance.
 
 ## Publishing a baseline
 
-Capture the JSON together with the commit SHA, Docker/host CPU limits, and an
-idle-machine note. Compare gateway-minus-direct values from the same run; do
-not compare raw gateway latency between dissimilar hosts. A regression gate
-should be introduced only after several CI runs establish variance bounds.
+Use the lower-level targets when investigating or intentionally updating the
+reference:
 
-This first harness reports client-observed behavior. Container CPU and memory
-should be captured with `docker stats` alongside a published result until the
-project has a stable CI runner allocation.
+```sh
+make -C examples/benchmark measure   # write results/latest.json
+make -C examples/benchmark check     # compare with the checked-in baseline
+make -C examples/benchmark baseline  # deliberately replace the baseline
+```
+
+The checked-in reference records its commit, Go version, architecture, CPU
+count, concurrency, request count, and deterministic upstream delays. Compare
+gateway-minus-direct values from the same run; raw latency and resource values
+from dissimilar hosts are diagnostic rather than directly comparable. Tighten
+the comparator flags only after a stable runner has established narrower
+variance bounds.

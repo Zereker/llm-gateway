@@ -73,4 +73,17 @@ services:
     build:
       <<: *benchmark-build
       target: runner
-    command: ["-direct", "http://upstream:9092/v1/chat/completions", "-gateway", "http://gateway:8080/v1/chat/completions", "-api-key", "sk-benchmark-llm-gateway", "-requests", "200", "-concurrency", "20"]
+    command: ["-direct", "http://upstream:9092/v1/chat/completions", "-gateway", "http://gateway:8080/v1/chat/completions", "-gateway-metrics", "http://gateway:8080/metrics", "-api-key", "sk-benchmark-llm-gateway", "-requests", "200", "-concurrency", "20", "-output", "/results/latest.json"]
+    environment:
+      BENCHMARK_COMMIT_SHA: ${BENCHMARK_COMMIT_SHA:-unknown}
+    volumes:
+      - ./results:/results
+
+  compare:
+    build:
+      <<: *benchmark-build
+      target: compare
+    command: ["-baseline", "/baselines/reference.json", "-candidate", "/results/latest.json"]
+    volumes:
+      - ./baselines:/baselines:ro
+      - ./results:/results:ro
