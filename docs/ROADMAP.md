@@ -16,7 +16,9 @@ not count as delivery.
 | M0.2 One-command local demo | Complete |
 | M0.3 Operational dashboard | Complete |
 | M0.4 Reproducible performance proof | Complete |
-| M1 Explainable policy routing | Planned |
+| M1.1 Routing policy ADR and domain contract | Complete |
+| M1.2 Rule-based virtual models | Planned |
+| M1.3 Latency and cost objectives | Planned |
 | M2 Governed prompt and response policy | Planned |
 | M3 Enterprise identity and hierarchy | Deferred pending product need |
 
