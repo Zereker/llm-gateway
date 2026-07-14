@@ -28,7 +28,8 @@ const (
 
 // === Policy enforcement (M8) ===
 const (
-	PolicyDecisionsTotal = "llm_gateway_policy_decisions_total" // stage / action
+	PolicyDecisionsTotal   = "llm_gateway_policy_decisions_total"   // stage / action
+	PolicyEnforcementTotal = "llm_gateway_policy_enforcement_total" // stage / action / result
 )
 
 // === RateLimit (M6) ===

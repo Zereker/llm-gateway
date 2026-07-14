@@ -162,6 +162,45 @@ CREATE TABLE IF NOT EXISTS routing_policies (
     INDEX idx_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Immutable policy-enforcement definitions. Detection remains an external
+-- policy.Engine concern; these rows configure gateway enforcement guarantees.
+CREATE TABLE IF NOT EXISTS policy_definitions (
+    id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    policy_id        VARCHAR(64)  NOT NULL,
+    version          BIGINT UNSIGNED NOT NULL,
+    name             VARCHAR(128) NOT NULL,
+    input_enabled    TINYINT(1)   NOT NULL DEFAULT 1,
+    output_mode      VARCHAR(32)  NOT NULL DEFAULT 'disabled',
+    max_buffer_bytes INT UNSIGNED NOT NULL DEFAULT 4194304,
+    enabled          TINYINT(1)   NOT NULL DEFAULT 1,
+    created_by       VARCHAR(128) NOT NULL DEFAULT '',
+    created_at       TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at       TIMESTAMP(6) NULL DEFAULT NULL,
+    UNIQUE KEY uk_policy_definition_version (policy_id, version),
+    INDEX idx_policy_definition_enabled (policy_id, enabled, version),
+    INDEX idx_deleted_at (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One active binding per trusted scope. Rebinding is an explicit control-plane
+-- operation; the referenced definition itself remains immutable.
+CREATE TABLE IF NOT EXISTS policy_bindings (
+    id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    scope_kind     VARCHAR(16)  NOT NULL,
+    scope_id       VARCHAR(64)  NOT NULL DEFAULT '',
+    policy_id      VARCHAR(64)  NOT NULL,
+    policy_version BIGINT UNSIGNED NOT NULL,
+    enabled        TINYINT(1)   NOT NULL DEFAULT 1,
+    created_by     VARCHAR(128) NOT NULL DEFAULT '',
+    created_at     TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at     TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    deleted_at     TIMESTAMP(6) NULL DEFAULT NULL,
+    UNIQUE KEY uk_policy_binding_scope (scope_kind, scope_id),
+    INDEX idx_policy_binding_resolve (scope_kind, scope_id, enabled),
+    INDEX idx_policy_binding_definition (policy_id, policy_version),
+    CONSTRAINT fk_policy_binding_definition FOREIGN KEY (policy_id, policy_version)
+        REFERENCES policy_definitions(policy_id, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =====================================================================
 -- routing_cost_profiles: compact, immutable operator-cost snapshots
 --

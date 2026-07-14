@@ -483,6 +483,27 @@ func TestDispatcher_StreamErrorReportedAndNotMarkedSuccess(t *testing.T) {
 	}
 }
 
+func TestDispatcher_LocalPolicyFailureDoesNotPenalizeEndpoint(t *testing.T) {
+	ep := newTestEP(1)
+	sel := newFakeSelector(selResp{ep: ep})
+	res := successResult(&domain.Usage{Total: 10}, 5)
+	res.streamRep.Err = errors.New("response policy denied")
+	res.streamRep.LocalFailure = true
+	res.streamRep.Committed = true
+
+	d := New(
+		WithCandidates(fakeCandidates{}), WithSelector(sel),
+		WithInvokerFactory(newFakeInvokerFactory(res)),
+		WithCap(HeaderAttemptCap{Default: 3}), WithRetry(DefaultRetry{}),
+		WithFallback(ModelChainFallback{}),
+	)
+	out := d.Dispatch(context.Background(), httptest.NewRecorder(), newTestInput("gpt-4"))
+
+	if out.Result != OutcomeStreamed || len(sel.reports) != 1 || sel.reports[0].Class != ClassSuccess {
+		t.Fatalf("outcome=%+v reports=%+v; local enforcement must not affect endpoint health", out, sel.reports)
+	}
+}
+
 // Client actively disconnects mid-stream (request ctx canceled): the status
 // code was already written, but the endpoint is healthy — we must not add a
 // stream-transient report to penalize the endpoint (triggering cooldown) just

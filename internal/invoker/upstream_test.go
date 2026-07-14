@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/policy"
 	"github.com/zereker/llm-gateway/internal/protocol"
 	"github.com/zereker/llm-gateway/internal/translator"
 )
@@ -377,6 +378,32 @@ func TestForward_StripsContentLength(t *testing.T) {
 	}
 	if w.Header().Get("X-Custom") != "v" {
 		t.Fatalf("X-Custom lost")
+	}
+}
+
+type rejectingResponseStream struct{ err error }
+
+func (s rejectingResponseStream) Feed([]byte) ([]byte, error) { return nil, s.err }
+func (s rejectingResponseStream) Flush() ([]byte, *domain.Usage, error) {
+	return nil, nil, nil
+}
+
+func TestForward_PrecommitPolicyFailureDoesNotWriteUpstreamHeadersOrStatus(t *testing.T) {
+	sender := newSender(t, &fakeFactory{meta: protocol.Metadata{Vendor: "fakev"}}, openAIIdentityTranslator(), domain.ProtoOpenAI)
+	resp := &http.Response{
+		StatusCode: 202,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Upstream": []string{"set"}},
+		Body:       io.NopCloser(strings.NewReader("sensitive")),
+	}
+	w := httptest.NewRecorder()
+
+	res := sender.Forward(context.Background(), w, &domain.Endpoint{ID: 99}, resp, rejectingResponseStream{err: policy.ErrDenied})
+
+	if !errors.Is(res.FeedErr, policy.ErrDenied) || res.Committed {
+		t.Fatalf("result = %+v, want uncommitted policy denial", res)
+	}
+	if w.Body.Len() != 0 || w.Header().Get("X-Upstream") != "" || w.Header().Get("Content-Type") != "" {
+		t.Fatalf("precommit failure leaked response state: code=%d headers=%v body=%q", w.Code, w.Header(), w.Body.String())
 	}
 }
 

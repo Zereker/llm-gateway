@@ -71,6 +71,7 @@ Metric names use the `llm_gateway_` prefix. Histogram buckets are implementation
 | `llm_gateway_tpm_overflow_total` | counter | `layer`, `dimension` | Times the configured cap was exceeded after TPM post-charge |
 | `llm_gateway_policy_cache_requests_total` | counter | `layer`, `result` | quota policy cache hit/miss/error |
 | `llm_gateway_policy_decisions_total` | counter | `stage`, `action` | Low-cardinality input/output policy decisions; rule and policy IDs stay in audit only |
+| `llm_gateway_policy_enforcement_total` | counter | `stage`, `action`, `result` | Enforcement outcome (`allowed`, `denied`, `applied`, `failed`) without content or policy IDs |
 | `llm_gateway_usage_tokens_total` | counter | `model`, `routed_model`, `vendor`, `direction` | token usage; `direction` is `input` / `output` (no `total`, to avoid doubling on sum); `source` / `confidence` are not metric labels — kept in the Usage Event and logs to control cardinality |
 | `llm_gateway_usage_publish_total` | counter | `backend`, `result` | Usage Event publish result |
 | `llm_gateway_content_log_publish_total` | counter | `backend`, `result`, `sampled` | Content Log publish result |
@@ -177,7 +178,8 @@ M8 writes every validated policy decision through the shared `AuditTracer` as
 a structured `policy_decision` event. It buffers decisions locally and flushes
 them in M8's post-handler phase after `c.Next()` returns. Its payload is
 `policy.AuditRecord`; raw content, mutation replacement bytes, and engine error
-causes are structurally absent. M10 does not interpret or relay policy state.
+causes are structurally absent. The record carries both the engine action and
+the gateway enforcement result. M10 does not interpret or relay policy state.
 
 ## 5. Usage Event
 

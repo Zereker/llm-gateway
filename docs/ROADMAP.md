@@ -18,8 +18,8 @@ not count as delivery.
 | M0.4 Reproducible performance proof | Complete |
 | M1.1 Routing policy ADR and domain contract | Complete |
 | M1.2 Rule-based virtual models | Complete |
-| M1.3 Latency and cost objectives | Planned |
-| M2 Governed prompt and response policy | Planned |
+| M1.3 Latency and cost objectives | Complete |
+| M2 Governed prompt and response policy | Complete |
 | M3 Enterprise identity and hierarchy | Deferred pending product need |
 
 ## Product position
@@ -223,6 +223,8 @@ Acceptance gates:
 
 ### M2.2 — Request enforcement and mutation execution
 
+Status: complete.
+
 - Add structured text extraction for supported request protocols as an adapter,
   not as part of the engine contract.
 - Apply engine-provided mutations without making the gateway own detection.
@@ -239,6 +241,8 @@ Acceptance gates:
   policy.
 
 ### M2.3 — Response enforcement modes
+
+Status: complete.
 
 - Define `strict-buffered` and `best-effort-streaming` output modes.
 - Add decoded-text accumulation across SSE frames for best-effort scanning.
@@ -291,8 +295,8 @@ Work proceeds in this order:
 6. M2.1 governance contract
 
 Milestone 3 is not started until a concrete multi-tenant product requirement
-exists. M1.3 and M2.2/M2.3 can proceed after their respective contracts and may
-be prioritized using production feedback.
+exists. M0 through M2 are complete; subsequent work is prioritized using
+production feedback.
 
 ## Definition of done for roadmap work
 

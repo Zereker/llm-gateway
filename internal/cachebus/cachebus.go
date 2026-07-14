@@ -49,6 +49,8 @@ const (
 	KindRoutingPolicy Kind = "routing_policy"
 	// KindRoutingCost invalidates routing-only operator-cost snapshots.
 	KindRoutingCost Kind = "routing_cost"
+	// KindPolicy invalidates policy-enforcement definitions and bindings.
+	KindPolicy Kind = "policy"
 )
 
 // Invalidation is a single invalidation message. Wire format: `<kind>:<key>`.

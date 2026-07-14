@@ -19,11 +19,13 @@ package middleware
 // Naming convention: all gateway custom headers use the X-Gateway-* prefix, to
 // distinguish them from vendor / client headers.
 const (
-	HeaderGatewayTimeout        = "X-Gateway-Timeout"
-	HeaderGatewayMaxAttempts    = "X-Gateway-Max-Attempts"
-	HeaderGatewayFallbackModels = "X-Gateway-Fallback-Models"
-	HeaderGatewayRegion         = "X-Gateway-Region"
-	HeaderGatewaySession        = "X-Gateway-Session"
+	HeaderGatewayPolicyOutputMode = "X-Gateway-Policy-Output-Mode"
+	HeaderGatewayPolicyID         = "X-Gateway-Policy-ID"
+	HeaderGatewayTimeout          = "X-Gateway-Timeout"
+	HeaderGatewayMaxAttempts      = "X-Gateway-Max-Attempts"
+	HeaderGatewayFallbackModels   = "X-Gateway-Fallback-Models"
+	HeaderGatewayRegion           = "X-Gateway-Region"
+	HeaderGatewaySession          = "X-Gateway-Session"
 	// X-Gateway-Cache (request): off = don't read/write the cache for this
 	// request; on = force caching (even if temperature≠0, client accepts the
 	// non-determinism risk). Default: only caches deterministic requests

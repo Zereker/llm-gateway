@@ -193,12 +193,15 @@ type Result interface {
 
 // StreamReport is Result.StreamTo's return value.
 //
-// **Failure semantics**: once streaming has started (headers already
-// written), no error can roll back the status code; Err is only for
-// logging / metrics / writing to rc.Error — the client sees a truncated
-// stream.
+// **Failure semantics**: Committed means headers or bytes already reached the
+// client and an error can only truncate the stream. Before commit, Prewrite
+// carries the client-visible gateway verdict. LocalFailure distinguishes
+// gateway policy failures from endpoint health failures.
 type StreamReport struct {
-	Usage  *domain.Usage
-	Err    error
-	TTFTMs int64
+	Usage        *domain.Usage
+	Err          error
+	TTFTMs       int64
+	Committed    bool
+	Prewrite     *Verdict
+	LocalFailure bool
 }

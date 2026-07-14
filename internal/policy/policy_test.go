@@ -149,3 +149,28 @@ func TestPolicyRefValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDefinitionValidate(t *testing.T) {
+	valid := Definition{
+		Ref:  PolicyRef{ID: "p", Version: 1, Scope: Scope{Kind: ScopeGlobal}},
+		Name: "default", InputEnabled: true, OutputMode: OutputStrictBuffered,
+		MaxBufferBytes: 1024,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*Definition){
+		"name":             func(d *Definition) { d.Name = "" },
+		"mode":             func(d *Definition) { d.OutputMode = "unknown" },
+		"buffer":           func(d *Definition) { d.MaxBufferBytes = -1 },
+		"buffer too large": func(d *Definition) { d.MaxBufferBytes = MaxBufferBytes + 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			definition := valid
+			mutate(&definition)
+			if err := definition.Validate(); err == nil {
+				t.Fatal("Validate succeeded")
+			}
+		})
+	}
+}

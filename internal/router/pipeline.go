@@ -34,6 +34,7 @@ func registerLLMRoute(group *gin.RouterGroup, deps Deps, spec routeSpec) {
 	moderationOptions := []middleware.ModerationOption{
 		middleware.WithModerator(deps.Moderator),
 		middleware.WithPolicyAuditTracer(deps.AuditTracer),
+		middleware.WithPolicyResolver(deps.PolicyResolver),
 	}
 	if deps.PolicyEngine != nil {
 		moderationOptions = append(moderationOptions, middleware.WithPolicyEngine(deps.PolicyEngine))

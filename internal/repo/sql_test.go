@@ -27,6 +27,8 @@ func truncateAll(db *sqlx.DB) error {
 	defer func() { _, _ = db.Exec(`SET FOREIGN_KEY_CHECKS = 1`) }()
 
 	for _, table := range []string{
+		"policy_bindings",
+		"policy_definitions",
 		"pricing_versions",
 		"routing_cost_profiles",
 		"routing_policies",

@@ -377,6 +377,8 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("disable FK checks: %v", err)
 	}
 	for _, table := range []string{
+		"policy_bindings",
+		"policy_definitions",
 		"pricing_versions",
 		"account_model_subscriptions",
 		"api_keys",

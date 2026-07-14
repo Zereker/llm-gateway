@@ -515,6 +515,10 @@ Gateway startup owns schema changes; business rows are maintained by deployer SQ
 - accounts
 - api_keys
 - quota_policies
+- routing_policies
+- routing_cost_profiles
+- policy_definitions
+- policy_bindings
 - model_services
 - account_model_subscriptions
 - endpoints

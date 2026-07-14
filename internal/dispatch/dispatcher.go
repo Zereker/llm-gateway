@@ -326,7 +326,9 @@ func (d *Dispatcher) step(ctx context.Context, w http.ResponseWriter, s *state) 
 			// the *upstream* broke the connection do we send a supplementary
 			// StageStream transient verdict to override it. A client
 			// disconnect keeps the success verdict and isn't penalized.
-			if isClientAbort(ctx, rep.Err) {
+			if rep.LocalFailure {
+				span.SetAttribute("stream.abort", "local_enforcement")
+			} else if isClientAbort(ctx, rep.Err) {
 				span.SetAttribute("stream.abort", "client")
 			} else {
 				sv := Verdict{

@@ -27,6 +27,20 @@ const (
 	ActionRedact Action = "redact"
 )
 
+type OutputMode string
+
+const (
+	OutputDisabled            OutputMode = "disabled"
+	OutputStrictBuffered      OutputMode = "strict_buffered"
+	OutputBestEffortStreaming OutputMode = "best_effort_streaming"
+)
+
+const (
+	DefaultMaxBufferBytes       = 4 << 20
+	MaxBufferBytes              = 64 << 20
+	DefaultStreamingWindowBytes = 64 << 10
+)
+
 type ScopeKind string
 
 const (
@@ -62,12 +76,21 @@ type Content struct {
 	Streaming bool   `json:"streaming,omitempty"`
 }
 
+// TextSegment is a protocol adapter's runtime-only view of a mutable text
+// node. Target is an RFC 6901 JSON Pointer into the client-facing document.
+type TextSegment struct {
+	Target string `json:"target"`
+	Text   []byte `json:"-"`
+}
+
 type EvaluationInput struct {
 	Stage    Stage           `json:"stage"`
 	Subject  Subject         `json:"subject"`
 	Model    string          `json:"model,omitempty"`
 	Modality domain.Modality `json:"modality,omitempty"`
 	Content  Content         `json:"content"`
+	Segments []TextSegment   `json:"-"`
+	Policy   *PolicyRef      `json:"policy,omitempty"`
 
 	// Request preserves the typed, protocol-neutral envelope for legacy
 	// adapters. New engines should consume Content and typed metadata.
@@ -106,12 +129,34 @@ type AuditMutation struct {
 }
 
 type AuditRecord struct {
-	Stage      Stage           `json:"stage"`
-	Action     Action          `json:"action"`
-	Policy     PolicyRef       `json:"policy"`
-	RuleID     string          `json:"rule_id"`
-	ReasonCode string          `json:"reason_code"`
-	Mutations  []AuditMutation `json:"mutations,omitempty"`
+	Stage       Stage             `json:"stage"`
+	Action      Action            `json:"action"`
+	Policy      PolicyRef         `json:"policy"`
+	RuleID      string            `json:"rule_id"`
+	ReasonCode  string            `json:"reason_code"`
+	Mutations   []AuditMutation   `json:"mutations,omitempty"`
+	Enforcement EnforcementStatus `json:"enforcement"`
+}
+
+type EnforcementStatus string
+
+const (
+	EnforcementAllowed EnforcementStatus = "allowed"
+	EnforcementDenied  EnforcementStatus = "denied"
+	EnforcementApplied EnforcementStatus = "applied"
+	EnforcementFailed  EnforcementStatus = "failed"
+)
+
+type Definition struct {
+	Ref            PolicyRef  `json:"ref"`
+	Name           string     `json:"name"`
+	InputEnabled   bool       `json:"input_enabled"`
+	OutputMode     OutputMode `json:"output_mode"`
+	MaxBufferBytes int        `json:"max_buffer_bytes"`
+}
+
+type Resolver interface {
+	Resolve(ctx context.Context, subject Subject) (*Definition, error)
 }
 
 type Engine interface {
@@ -184,6 +229,38 @@ func (d Decision) SafeAudit(stage Stage) AuditRecord {
 		Stage: stage, Action: d.Action, Policy: d.Policy, RuleID: d.RuleID,
 		ReasonCode: d.ReasonCode, Mutations: mutations,
 	}
+}
+
+func (r AuditRecord) WithEnforcement(status EnforcementStatus) AuditRecord {
+	r.Enforcement = status
+
+	return r
+}
+
+func (d Definition) Validate() error {
+	if err := d.Ref.Validate(); err != nil {
+		return err
+	}
+
+	if d.Name == "" {
+		return errors.New("policy definition: name is required")
+	}
+
+	switch d.OutputMode {
+	case OutputDisabled, OutputStrictBuffered, OutputBestEffortStreaming:
+	default:
+		return fmt.Errorf("policy definition: invalid output mode %q", d.OutputMode)
+	}
+
+	if d.MaxBufferBytes < 0 {
+		return errors.New("policy definition: max_buffer_bytes cannot be negative")
+	}
+
+	if d.MaxBufferBytes > MaxBufferBytes {
+		return fmt.Errorf("policy definition: max_buffer_bytes exceeds %d", MaxBufferBytes)
+	}
+
+	return nil
 }
 
 type Binding struct {

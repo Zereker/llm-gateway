@@ -27,8 +27,11 @@ import (
 	"sync/atomic"
 
 	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/policy"
 	"github.com/zereker/llm-gateway/internal/protocol"
 )
+
+var ErrPolicyEnforcement = errors.New("moderation: policy enforcement failed")
 
 // Moderator is the content moderation port.
 //
@@ -39,6 +42,14 @@ import (
 type Moderator interface {
 	CheckInput(ctx context.Context, env *domain.RequestEnvelope) error
 	CheckOutput(ctx context.Context, chunk []byte) error
+}
+
+type OutputController interface {
+	Moderator
+	OutputMode() policy.OutputMode
+	MaxBufferBytes() int
+	EnforceOutput(ctx context.Context, content []byte, final bool) ([]byte, error)
+	RecordOutputFailure(reasonCode string)
 }
 
 // =============================================================================
@@ -93,7 +104,86 @@ func WrapStream(ctx context.Context, inner protocol.ResponseStream) protocol.Res
 		return inner
 	}
 
+	if controller, ok := mod.(OutputController); ok && controller.OutputMode() == policy.OutputStrictBuffered {
+		return &strictModeratedStream{inner: inner, controller: controller, ctx: ctx, maxBytes: controller.MaxBufferBytes()}
+	}
+
 	return &moderatedStream{inner: inner, mod: mod, ctx: ctx}
+}
+
+type strictModeratedStream struct {
+	inner      protocol.ResponseStream
+	controller OutputController
+	ctx        context.Context
+	buffer     []byte
+	maxBytes   int
+	violated   atomic.Bool
+}
+
+func (h *strictModeratedStream) Feed(chunk []byte) ([]byte, error) {
+	if h.violated.Load() {
+		return nil, ErrViolated
+	}
+
+	out, err := h.inner.Feed(chunk)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.append(out); err != nil {
+		h.violated.Store(true)
+		h.controller.RecordOutputFailure("strict_buffer_limit_exceeded")
+
+		return nil, fmt.Errorf("%w: %w", ErrPolicyEnforcement, err)
+	}
+
+	return nil, nil
+}
+
+func (h *strictModeratedStream) Flush() ([]byte, *domain.Usage, error) {
+	final, usage, err := h.inner.Flush()
+	if err != nil {
+		return nil, usage, err
+	}
+
+	if h.violated.Load() {
+		return nil, usage, ErrViolated
+	}
+
+	if err := h.append(final); err != nil {
+		h.violated.Store(true)
+		h.controller.RecordOutputFailure("strict_buffer_limit_exceeded")
+
+		return nil, usage, fmt.Errorf("%w: %w", ErrPolicyEnforcement, err)
+	}
+
+	enforced, err := h.controller.EnforceOutput(h.ctx, h.buffer, true)
+	if err != nil {
+		h.violated.Store(true)
+
+		return nil, usage, fmt.Errorf("%w: strict output: %w", ErrPolicyEnforcement, err)
+	}
+
+	return enforced, usage, nil
+}
+
+func (h *strictModeratedStream) append(chunk []byte) error {
+	if len(chunk) == 0 {
+		return nil
+	}
+
+	limit := h.maxBytes
+	if limit <= 0 {
+		limit = policy.DefaultMaxBufferBytes
+	}
+
+	if len(h.buffer) > limit-len(chunk) {
+		return fmt.Errorf("policy: strict output exceeds %d byte buffer", limit)
+	}
+
+	h.buffer = append(h.buffer, chunk...)
+
+	return nil
 }
 
 // moderatedStream decorator: inserts a Moderator.CheckOutput call right after inner's Feed.
@@ -106,16 +196,11 @@ func WrapStream(ctx context.Context, inner protocol.ResponseStream) protocol.Res
 // the client will actually see", not the raw upstream chunk (the translator
 // may have reshaped it).
 //
-// **Under streaming, CheckOutput's input is a single SSE frame**: the out
-// produced by each Feed call is usually one frame (data: {...}\n\n). This
-// means substring/regex-based guards can only catch patterns that fall within
-// a single frame under streaming; patterns split across frames (tokens each
-// forming their own frame, with framing bytes in between) can't be scanned —
-// even buffering across chunks can't reassemble them. A hard guarantee
-// requires the non-streaming path — Flush submits the entire body for
-// checking at once. This is an inherent constraint of streaming content
-// moderation (bytes already sent can't be recalled), not something this
-// decorator alone can fix; see the DenylistGuard type doc for details.
+// Legacy Moderators inspect each translated chunk independently. A
+// PolicyModerator in best-effort mode instead accumulates decoded text across
+// SSE frames, but bytes already sent before a later violation cannot be
+// recalled. Strict mode uses strictModeratedStream and releases no bytes until
+// full-response evaluation succeeds.
 type moderatedStream struct {
 	inner    protocol.ResponseStream
 	mod      Moderator
@@ -138,7 +223,7 @@ func (h *moderatedStream) Feed(chunk []byte) ([]byte, error) {
 	if len(out) > 0 {
 		if mErr := h.mod.CheckOutput(h.ctx, out); mErr != nil {
 			h.violated.Store(true)
-			return nil, fmt.Errorf("moderation: output violated: %w", mErr)
+			return nil, fmt.Errorf("%w: output: %w", ErrPolicyEnforcement, mErr)
 		}
 	}
 
@@ -162,7 +247,7 @@ func (h *moderatedStream) Flush() ([]byte, *domain.Usage, error) {
 	if len(finalOut) > 0 {
 		if mErr := h.mod.CheckOutput(h.ctx, finalOut); mErr != nil {
 			h.violated.Store(true)
-			return nil, usage, fmt.Errorf("moderation: output violated (flush): %w", mErr)
+			return nil, usage, fmt.Errorf("%w: output flush: %w", ErrPolicyEnforcement, mErr)
 		}
 	}
 
