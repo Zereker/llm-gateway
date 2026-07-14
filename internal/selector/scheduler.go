@@ -146,6 +146,7 @@ func (s *defaultScheduler) chosen(ep *domain.Endpoint) *domain.Endpoint {
 	if s.cfg.Inflight != nil && ep != nil {
 		s.cfg.Inflight.Inc(ep.ID)
 	}
+
 	if ep != nil {
 		metric.Inc(metric.SelectorEndpointSelectedTotal,
 			"endpoint_id", strconv.FormatInt(ep.ID, 10),
@@ -197,6 +198,7 @@ func (s *defaultScheduler) Report(ctx context.Context, ep *domain.Endpoint, resu
 	if result.Class == ClassSuccess {
 		outcome = "success"
 	}
+
 	metric.Inc(metric.SelectorEndpointCallTotal,
 		"endpoint_id", strconv.FormatInt(ep.ID, 10),
 		"vendor", ep.Vendor,

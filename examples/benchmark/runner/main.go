@@ -99,7 +99,7 @@ func run(client *http.Client, path, url, key, mode string, stream bool, count, c
 		go func() {
 			defer wg.Done()
 			for range jobs {
-				samples <- requestOnce(client, context.Background(), url, key, stream, "benchmark")
+				samples <- requestOnce(context.Background(), client, url, key, stream, "benchmark")
 			}
 		}()
 	}
@@ -117,7 +117,7 @@ func run(client *http.Client, path, url, key, mode string, stream bool, count, c
 	return summarize(path, mode, all, elapsed)
 }
 
-func requestOnce(client *http.Client, ctx context.Context, url, key string, stream bool, prompt string) sample {
+func requestOnce(ctx context.Context, client *http.Client, url, key string, stream bool, prompt string) sample {
 	body, _ := json.Marshal(map[string]any{"model": "benchmark-model", "stream": stream, "messages": []map[string]string{{"role": "user", "content": prompt}}})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -134,12 +134,12 @@ func requestOnce(client *http.Client, ctx context.Context, url, key string, stre
 	n, firstErr := resp.Body.Read(buf)
 	ttfb := time.Since(start)
 	rest, readErr := io.ReadAll(resp.Body)
-	data := append(buf[:n], rest...)
+	buf = append(buf[:n], rest...)
 	ok := resp.StatusCode/100 == 2 && (firstErr == nil || firstErr == io.EOF) && readErr == nil
 	if stream {
-		ok = ok && bytes.Contains(data, []byte("[DONE]"))
+		ok = ok && bytes.Contains(buf, []byte("[DONE]"))
 	}
-	return sample{Duration: time.Since(start), TTFB: ttfb, Bytes: int64(len(data)), OK: ok}
+	return sample{Duration: time.Since(start), TTFB: ttfb, Bytes: int64(len(buf)), OK: ok}
 }
 
 func summarize(path, mode string, samples []sample, elapsed time.Duration) result {
@@ -204,7 +204,7 @@ func disconnect(client *http.Client, url, key string) bool {
 }
 
 func midStreamFailure(client *http.Client, url, key string) bool {
-	s := requestOnce(client, context.Background(), url, key, true, "mid-stream-failure")
+	s := requestOnce(context.Background(), client, url, key, true, "mid-stream-failure")
 	return !s.OK && s.Bytes > 0
 }
 
