@@ -124,12 +124,12 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        # -p 1: the SQL suite TRUNCATEs shared tables between cases (see CLAUDE.md),
+        # -p 1: the SQL suite TRUNCATEs shared tables between cases,
         # so packages must not run concurrently against the same database.
         #
         # Coverage is scoped to internal/... packages with their own test
         # files (matches `make cover`; see its comment) rather than a plain
-        # ./... pattern -- cmd/* and scripts/* have none by design, and a
+        # ./... pattern -- cmd/* and examples/support/* have none by design, and a
         # package with zero test files of its own can only get attributed
         # coverage via a covdata merge across other packages' test binaries,
         # which isn't worth the fragility for packages that were never
@@ -150,21 +150,21 @@ jobs:
   smoke-multivendor:
     runs-on: ubuntu-latest
     # Real-binary, black-box integration test: actual compiled cmd/gateway +
-    # cmd/mockupstream processes talking over real network round trips (not
+    # examples/support/mockupstream processes talking over real network round trips (not
     # gin's in-process test harness) — one endpoint + one real API key per
-    # upstream vendor, seeded from testdata/fieldmatrix/endpoints/*.json
+    # upstream vendor, seeded from internal/cassette/testdata/fieldmatrix/endpoints/*.json
     # (currently openai/anthropic/gemini/cohere/azure-openai) via
-    # scripts/seed-multivendor, then
+    # examples/support/seed-fieldmatrix, then
     # curled through cmd/gateway for real. Complements the `go` job's
     # in-process TestE2E_MultiVendor_AllProtocols, which exercises the same
     # manifests without a real listening process. See
-    # scripts/e2e-smoke-multivendor.sh's doc comment for the full step list.
+    # examples/support/e2e/smoke-multivendor.sh's doc comment for the full step list.
     services:
       mysql:
         image: mysql:8.0
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
-          # matches configs/local/gateway.yaml's dsn (database name "llm_gateway",
+          # matches examples/local/configs/gateway.yaml's dsn (database name "llm_gateway",
           # not "llm_gateway_test" -- that name is reserved for the `go` job's
           # SQL test suite, which TRUNCATEs tables between cases).
           MYSQL_DATABASE: llm_gateway
@@ -241,17 +241,17 @@ jobs:
           EOF
           go run /tmp/create_kafka_topics.go
       - name: Multi-vendor smoke test
-        run: ./scripts/e2e-smoke-multivendor.sh --no-docker-stack
+        run: ./examples/support/e2e/smoke-multivendor.sh --no-docker-stack
 
-  product-demo:
+  product-quickstart:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Start and verify the documented one-command demo
-        run: make -C examples/demo up
-      - name: Tear down demo
+      - name: Start and verify the documented one-command quickstart
+        run: make -C examples/quickstart up
+      - name: Tear down quickstart
         if: always()
-        run: make -C examples/demo down
+        run: make -C examples/quickstart down
 
   deployment:
     runs-on: ubuntu-latest
@@ -261,10 +261,8 @@ jobs:
       - name: Build gateway image
         run: docker build --target gateway -t llm-gateway:ci .
       - name: Helm lint
-        run: helm lint examples/k8s/llm-gateway
+        run: helm lint deploy/helm/llm-gateway
       - name: Render Helm chart
-        run: helm template test examples/k8s/llm-gateway > /tmp/llm-gateway.yaml
+        run: helm template test deploy/helm/llm-gateway > /tmp/llm-gateway.yaml
       - name: Image command smoke test
         run: docker run --rm --entrypoint /app/gateway llm-gateway:ci -h
-      - name: Migrate binary present in image
-        run: docker run --rm --entrypoint /bin/sh llm-gateway:ci -c "test -x /app/migrate && echo migrate-binary-ok"

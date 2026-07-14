@@ -59,32 +59,32 @@ roadmap items; they are not presented as completed features.
 
 ## Quick start
 
-Run the self-contained demo with Docker. It starts MySQL, Redis, the gateway,
+Run the self-contained quickstart with Docker. It starts MySQL, Redis, the gateway,
 the Web Console, a mock LLM upstream, migration, and idempotent seed data:
 
 ```sh
-make -C examples/demo up
+make -C examples/quickstart up
 ```
 
 The command verifies a real request through the gateway and prints the response.
 After it finishes:
 
 - Gateway: `http://localhost:8080`
-- Console: `http://localhost:8081` using token `demo-admin-token`
-- Demo API key: `sk-demo-llm-gateway`
+- Console: `http://localhost:8081` using token `quickstart-admin-token`
+- Demo API key: `sk-quickstart-llm-gateway`
 
 ```sh
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-demo-llm-gateway" \
+  -H "Authorization: Bearer sk-quickstart-llm-gateway" \
   -H "Content-Type: application/json" \
   -d '{"model":"mock-openai-model","messages":[{"role":"user","content":"Hi!"}]}'
 
-make -C examples/demo down
+make -C examples/quickstart down
 ```
 
-The demo uses the bundled mock upstream and development-only credentials. It
+The quickstart uses the bundled mock upstream and development-only credentials. It
 does not call or require a real model provider. Its Compose file, Dockerfile,
-configuration, and lifecycle commands are isolated in [`examples/demo`](examples/demo/).
+configuration, and lifecycle commands are isolated in [`examples/quickstart`](examples/quickstart/).
 
 ## Status
 
@@ -138,33 +138,28 @@ internal/app/gateway  ── composition root: assembles data-plane dependencies
 internal/builtin      ── the single built-in vendor/translator registration entry
 cmd/gateway           ── thin data-plane process entry
 cmd/console           ── optional control-plane Admin API
-cmd/migrate           ── versioned database migration command
-cmd/mockupstream      ── dev/test fake upstream
-scripts/{e2e-smoke,seed-e2e}                       single-vendor end-to-end smoke test
-scripts/{e2e-smoke-multivendor,seed-multivendor}   multi-vendor end-to-end smoke test (see testdata/fieldmatrix/endpoints/)
-docs/architecture/    design docs (00-overview through 08-observability)
-configs/              per-environment config (local / prod / docker)
+examples/             ── quickstart, local stack, benchmark, configs, and support programs
+deploy/               ── supported Helm, production config, and observability assets
+docs/architecture/    ── design docs (00-overview through 08-observability)
 ```
 
 ## Manual local development
 
 Use this workflow when developing Go processes on the host instead of using the
-self-contained demo. Run `make run-migrate` before the gateway in production.
-The bundled local and Docker configs enable `database.auto_migrate` for
-development convenience.
+self-contained quickstart. Gateway startup applies versioned schema migrations
+before accepting traffic.
 Business data (model_services / endpoints / api_keys / pricing / quota_policies /
 subscriptions / accounts) can be managed by SQL or the optional `cmd/console`
 control-plane API; the data plane does not depend on the console.
 
 ```sh
 # 1. Start the local stack (MySQL + Redis + Redpanda) via Docker.
-make stack
-# (or: docker compose up -d)
+make dev-up
+# (or: docker compose -f examples/local/compose.yaml up -d)
 
-# 2. Migrate and start gateway (local config also auto-migrates idempotently).
-make run-migrate
+# 2. Start gateway; schema migration is automatic and idempotent.
 make run-gateway
-# (or: go run ./cmd/gateway -config ./configs/local/gateway.yaml)
+# (or: go run ./cmd/gateway -config ./examples/local/configs/gateway.yaml)
 
 # 3. Insert a model_service + endpoint + api_key directly via SQL.
 #    Example seed: see examples/full-config/seed.sql
@@ -218,13 +213,11 @@ its own paths and explicitly lists its middleware chain.
 
 ### Configuration files
 
-Per-environment configs live under [`configs/`](configs/) (see
-[`configs/README.md`](configs/README.md)).
+Local host-process configs live in [`examples/local/configs`](examples/local/configs/). The supported
+production template lives in [`deploy/configs`](deploy/configs/), while each
+quickstart or benchmark owns its scenario-specific configuration.
 
-A single environment directory contains one file:
-- `gateway.yaml` — server / middleware / database / redis / outbox
-
-Business data lives in MySQL. `cmd/migrate` applies versioned schema changes;
+Business data lives in MySQL. Gateway startup applies versioned schema changes;
 CRUD can use SQL directly or `cmd/console`. The repo layer
 caches reads in-process with a TTL LRU (default ~30s), so updates become
 visible within the TTL window. API-key revocation additionally supports

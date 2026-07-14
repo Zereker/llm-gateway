@@ -2,7 +2,7 @@ package gateway
 
 // Multi-vendor field-matrix e2e: unlike fieldmatrix_test.go's single seeded
 // endpoint (mutated in place per test), this seeds every upstream vendor
-// declared in testdata/fieldmatrix/endpoints/ as **distinct,
+// declared in internal/cassette/testdata/fieldmatrix/endpoints/ as **distinct,
 // simultaneously-configured endpoints** with **distinct real API keys**,
 // each routed to its own mock upstream server replaying a real captured
 // response body resolved by vendorfixture.ResolveReply (from the opencassette
@@ -12,8 +12,8 @@ package gateway
 // + billing, through the real middleware chain, for every vendor at once.
 //
 // Which vendors and how (protocol / auth type / which cassette to replay)
-// comes from testdata/fieldmatrix/endpoints/*.json — the same manifests
-// scripts/seed-multivendor reads to seed a real MySQL instance for a
+// comes from internal/cassette/testdata/fieldmatrix/endpoints/*.json — the same manifests
+// examples/support/seed-fieldmatrix reads to seed a real MySQL instance for a
 // real-binary black-box run (see internal/cassette/vendorfixture's doc
 // comment). Adding a vendor to both is one new JSON file, not a Go edit.
 
@@ -37,7 +37,7 @@ import (
 )
 
 // vendorScenario is a vendorfixture.Scenario (vendor/protocol/model/auth —
-// loaded from testdata/fieldmatrix/endpoints/) plus its resolved reply body
+// loaded from internal/cassette/testdata/fieldmatrix/endpoints/) plus its resolved reply body
 // (loaded per the manifest's "reply" field — see resolveReply).
 type vendorScenario struct {
 	vendorfixture.Scenario
@@ -46,7 +46,7 @@ type vendorScenario struct {
 
 // resolveReply loads the raw upstream response body a scenario's manifest
 // points at, via vendorfixture.ResolveReply — the one resolver shared with the
-// real-binary mock upstream (cmd/mockupstream), covering the "fixture",
+// real-binary mock upstream (examples/support/mockupstream), covering the "fixture",
 // "cassette", and "opencassette" reply kinds.
 func resolveReply(t *testing.T, r vendorfixture.Reply) []byte {
 	t.Helper()
@@ -187,7 +187,7 @@ func min(a, b int) int {
 
 // TestE2E_MultiVendor_AllProtocols is the "full system" check the real
 // vendor-cassette corpus exists for: one distinct endpoint + one distinct
-// real API key per vendor in testdata/fieldmatrix/endpoints/, all seeded and
+// real API key per vendor in internal/cassette/testdata/fieldmatrix/endpoints/, all seeded and
 // live at once, each routed to its own mock upstream replaying a real
 // captured response — proving auth, model-based routing, protocol
 // translation, and billing all work correctly per-vendor without one

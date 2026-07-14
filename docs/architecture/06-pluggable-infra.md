@@ -350,7 +350,7 @@ Unit tests can use a fake store / fake CooldownManager, but only within the test
 
 ## 8. Repo Cache: deployer SQL → gateway Data Propagation
 
-`cmd/migrate` applies versioned schema changes; business rows are maintained by SQL or the optional console.
+Gateway startup applies versioned schema changes; business rows are maintained by SQL or the optional console.
 The gateway's data plane is **100% read-only** against MySQL — no INSERT / UPDATE / DELETE.
 The propagation bridge between the two sides doesn't need a real-time invalidation channel (Debezium /
 outbox table, etc.) — it's enough for the repo layer to fall back on an in-process
@@ -504,7 +504,7 @@ In-flight requests that exceed the shutdown timeout get interrupted, and this is
 
 ## 14. Admin Boundary
 
-`cmd/migrate` owns schema changes; business rows are maintained by deployer SQL or console. The following tables are within that maintenance scope:
+Gateway startup owns schema changes; business rows are maintained by deployer SQL or console. The following tables are within that maintenance scope:
 
 - accounts
 - api_keys

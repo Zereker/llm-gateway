@@ -56,9 +56,8 @@ const (
 // which lands directly on the *Config.Database field. The DSN must carry
 // `parseTime=true`, otherwise reading time.Time fields will error.
 type DBConfig struct {
-	Driver      Driver `yaml:"driver"`
-	DSN         string `yaml:"dsn"`
-	AutoMigrate bool   `yaml:"auto_migrate"`
+	Driver Driver `yaml:"driver"`
+	DSN    string `yaml:"dsn"`
 }
 
 // Open opens a *sqlx.DB per cfg and verifies it with a ping.
@@ -93,9 +92,7 @@ var schemaFS embed.FS
 
 const latestSchemaVersion = 2
 
-// Migrate applies pending, versioned schema migrations. Production should run
-// this through cmd/migrate (or a deployment Job); gateway auto-migration is a
-// local-development compatibility option only.
+// Migrate applies pending, versioned schema migrations during gateway startup.
 //
 // schema.sql is written entirely with IF NOT EXISTS / DEFAULT so it can
 // be run repeatedly; a single call at boot is enough.
@@ -168,7 +165,7 @@ func applyBaseSchema(ctx context.Context, db *sqlx.DB) error {
 }
 
 func recordMigration(ctx context.Context, db *sqlx.DB, version int) error {
-	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT IGNORE INTO schema_migrations (version) VALUES (?)`, version); err != nil {
 		return fmt.Errorf("infra: record schema migration %d: %w", version, err)
 	}
 
@@ -180,7 +177,7 @@ func recordMigration(ctx context.Context, db *sqlx.DB, version int) error {
 func CheckMigrationVersion(ctx context.Context, db *sqlx.DB) error {
 	var version int
 	if err := db.GetContext(ctx, &version, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`); err != nil {
-		return fmt.Errorf("infra: schema migration state unavailable; run the migrate binary (cmd/migrate): %w", err)
+		return fmt.Errorf("infra: schema migration state unavailable: %w", err)
 	}
 	// Require the DB to be at least this binary's version; a NEWER DB is fine.
 	// Migrations are additive (expand-contract: new tables/columns via
@@ -189,7 +186,7 @@ func CheckMigrationVersion(ctx context.Context, db *sqlx.DB) error {
 	// zero-downtime rolling upgrades possible: migrate to vN+1 first, old vN
 	// pods keep serving, new vN+1 pods roll in — neither crashes.
 	if version < latestSchemaVersion {
-		return fmt.Errorf("infra: schema version %d is older than required %d; run the migrate binary (cmd/migrate)", version, latestSchemaVersion)
+		return fmt.Errorf("infra: schema version %d is older than required %d", version, latestSchemaVersion)
 	}
 
 	return nil

@@ -9,8 +9,8 @@ import (
 
 // geminiDirs are every vendored-corpus source that captured real
 // generativelanguage.googleapis.com traffic. Gemini is upstream-only in this
-// gateway (no client-facing Gemini protocol — see CLAUDE.md's "Client
-// Protocol Scope"), so unlike Anthropic there is no reverse-direction
+// gateway (no client-facing Gemini protocol; see the protocol translation
+// architecture document), so unlike Anthropic there is no reverse-direction
 // translator to replay request bodies through; only the response direction
 // (openai_gemini) applies.
 var geminiDirs = []string{

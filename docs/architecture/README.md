@@ -20,7 +20,7 @@ This directory is the single source of truth for `llm-gateway`'s architecture an
 ## Architecture Highlights
 
 - The data plane is `cmd/gateway`; a separate `cmd/console` control-plane binary (Admin API, backed by `internal/console`) is also available. Business data is managed via direct SQL, and the console is an optional additional way to manage it — the data plane never depends on it.
-- Catalog, endpoint, API key, subscription, and quota policy data live in SQL; `cmd/migrate` applies versioned schema changes and gateway startup performs read-only version/schema checks.
+- Catalog, endpoint, API key, subscription, and quota policy data live in SQL; gateway startup applies versioned schema changes before validating the resulting schema.
 - The gateway depends on Redis for M6 rate limiting and scheduler cooldowns.
 - SQL writes propagate to the gateway through the [repo in-process TTL LRU cache](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) (default 30s) rather than querying the same tables per request; the data plane is 100% read-only, so the TTL window is sufficient.
 - Client-facing entry points cover OpenAI Chat, Anthropic Messages, OpenAI Responses, Images, Audio, and Embeddings routes; Gemini is supported as an upstream protocol only and is not exposed as a client entry point.

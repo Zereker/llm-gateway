@@ -1,0 +1,130 @@
+# values.yaml — default values for the llm-gateway Helm chart
+#
+# Deployment model: multiple gateway replicas + shared MySQL + Redis (external dependencies).
+# MySQL / Redis / Kafka are not bundled — in production, use cloud-managed services (RDS / ElastiCache /
+# MSK) or a separate Helm chart deployment, so this chart doesn't need to manage stateful infra.
+# No control-plane binary is included — business data is maintained directly via SQL by the deployer.
+
+image:
+  repository: ghcr.io/zereker/llm-gateway
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Gateway data plane
+gateway:
+  replicaCount: 3
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  # HPA scales based on CPU; long-lived streaming chat connections don't use much CPU but do consume goroutines — consider adding a custom metric
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+
+  # Health probes: /healthz is available immediately after pod startup; /readyz depends on db/redis ping
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 30
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+  # gateway.yaml is injected via ConfigMap into /etc/llm-gateway/gateway.yaml
+  config:
+    server:
+      addr: ":8080"
+      read_header_timeout: 10s
+      shutdown_timeout: 30s
+    request:
+      body_limit_bytes: 10485760
+      timeout: 120s
+    # database / redis are injected from secrets (DSN includes the password)
+    usage_events:
+      driver: file_and_kafka  # Production recommendation: file is the source of truth + Kafka broadcasts asynchronously
+      file:
+        path: /var/log/llm-gateway/usage.jsonl
+      kafka:
+        brokers: ["kafka:9092"]
+        topic: billing.usage.recorded.v1
+        async: true
+        dlq_topic: billing.usage.recorded.v1.dlq
+    selector:
+      filters: [cooldown, limit_read, weighted_random]
+      max_attempts: 3
+      cooldown:
+        transient: 30s
+        capacity:  60s
+        permanent: 5m
+        invalid:   0s
+        unknown:   10s
+    budget:
+      driver: alwayspass  # When integrating a production billing system, change to inmemory / redis-backed
+    moderation:
+      driver: none        # Set to openai to enable; api_key is injected from a secret
+    trace:
+      driver: otel
+      endpoint: otel-collector:4317
+      service_name: llm-gateway
+
+# Ingress (gateway data plane)
+ingress:
+  enabled: false  # Off by default; enable in production as needed
+  className: nginx
+  annotations: {}
+    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+  hosts:
+    - host: llm-gateway.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: llm-gateway-tls
+    #   hosts: [llm-gateway.example.com]
+
+# Secret fields — values must be provided before deployment (override via --set or a separate secret yaml)
+# **Do not commit real values into this file**
+secrets:
+  # MySQL DSN: root:pwd@tcp(mysql:3306)/llm_gateway?...
+  databaseDSN: "root:CHANGEME@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+  # Redis password (empty = no password)
+  redisPassword: ""
+  redisAddr: "redis:6379"
+  # AES-256-GCM KEK, hex 32 bytes (the deployer must use this same KEK when writing endpoints.auth)
+  dataKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  # OpenAI moderation key (needed when moderation.driver=openai)
+  moderationApiKey: ""
+
+# Pod security / scheduling
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

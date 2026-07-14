@@ -5,8 +5,8 @@ through `llm-gateway`. The runner and upstream are versioned Go source in this
 directory; no host load-generator version or real provider is involved.
 
 ```sh
-make -C examples/benchmark run
-make -C examples/benchmark down
+make benchmark
+make benchmark-down
 ```
 
 Each run prints a JSON report containing environment metadata and, for direct

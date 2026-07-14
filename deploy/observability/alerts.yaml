@@ -1,0 +1,153 @@
+# deploy/observability/alerts.yaml
+#
+# Prometheus alert rules for llm-gateway.
+#
+# Naming convention: the consts in internal/metric/names.go directly use the Prometheus-native underscore form
+# (e.g. llm_gateway_http_request_duration_seconds); this file references those exact literal names.
+# Units follow Prometheus's recommended base SI units (_seconds, not _ms).
+#
+# Usage: add this file to the rule_files: list in prometheus.yml, then restart prometheus to load it.
+# Pair it with Alertmanager to receive alerts and route them to PD / Slack based on severity / team labels.
+
+groups:
+  - name: llm-gateway-availability
+    interval: 30s
+    rules:
+
+      - alert: AiGatewayUpstreamHighErrorRate
+        expr: |
+          sum(rate(llm_gateway_invoker_requests_total{result="error"}[5m]))
+            /
+          clamp_min(sum(rate(llm_gateway_invoker_requests_total[5m])), 0.001)
+            > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          team: ai-platform
+        annotations:
+          summary: "llm-gateway: upstream error rate > 10%"
+          description: |
+            Over the past 5 minutes, more than 10% of upstream calls failed.
+            Check upstream vendor status / network / quota.
+
+      - alert: AiGatewayUpstreamCallFailing
+        expr: |
+          sum(rate(llm_gateway_selector_endpoint_call_total{outcome="fail"}[2m]))
+            /
+          clamp_min(sum(rate(llm_gateway_selector_endpoint_call_total[2m])), 0.001)
+            > 0.30
+        for: 3m
+        labels:
+          severity: critical
+          team: ai-platform
+        annotations:
+          summary: "llm-gateway: > 30% upstream calls failing"
+          description: |
+            Over the past 2 minutes, more than 30% of upstream calls failed (any endpoint / any vendor).
+            Possible causes: all upstreams down simultaneously / DNS error / network partition.
+
+  - name: llm-gateway-latency
+    interval: 30s
+    rules:
+
+      - alert: AiGatewayHttpLatencyP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum by(le) (rate(llm_gateway_http_request_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          team: ai-platform
+        annotations:
+          summary: "llm-gateway: HTTP p99 latency > 5s"
+          description: "p99 = {{ $value | humanizeDuration }}"
+
+      - alert: AiGatewayUpstreamLatencyP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum by(le, vendor) (rate(llm_gateway_invoker_duration_seconds_bucket[5m]))
+          ) > 8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "llm-gateway: upstream p99 latency > 8s (vendor={{ $labels.vendor }})"
+
+  - name: llm-gateway-rate-limit
+    interval: 30s
+    rules:
+
+      - alert: AiGatewayRateLimitHighRejection
+        expr: |
+          sum by(scope) (rate(llm_gateway_ratelimit_decisions_total{result="violated"}[5m]))
+            /
+          clamp_min(sum by(scope) (rate(llm_gateway_ratelimit_decisions_total[5m])), 0.001)
+            > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "llm-gateway: rate limit rejecting > 20% (scope={{ $labels.scope }})"
+          description: |
+            Over the past 5 minutes, rate limiting rejected more than 20% of requests. Possible causes: a client traffic burst / quota configured too low.
+            Check the quota_policies configuration for the corresponding scope.
+
+  - name: llm-gateway-cooldown
+    interval: 1m
+    rules:
+
+      - alert: AiGatewayCooldownStorm
+        expr: sum(rate(llm_gateway_selector_cooldown_enter_total[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "llm-gateway: > 5 endpoints/sec entering cooldown"
+          description: "A large number of endpoints are entering cooldown. Check for widespread upstream issues or an overly aggressive cooldown threshold"
+
+  - name: llm-gateway-budget-moderation
+    interval: 1m
+    rules:
+
+      - alert: AiGatewayBudgetCheckFailing
+        expr: sum(rate(llm_gateway_budget_check_total{result="error"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "llm-gateway: budget service erroring out"
+          description: "Budget Gate calls are erroring out heavily. Is the billing system down?"
+
+  - name: llm-gateway-process
+    interval: 30s
+    rules:
+
+      - alert: AiGatewayPanicSeen
+        expr: rate(llm_gateway_panic_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "llm-gateway: panic recovered (any goroutine)"
+          description: |
+            M9 Recover caught a panic. Check the logs for the stack trace; every panic should be tracked down and fixed.
+
+      - alert: AiGatewayUsageBusBacklog
+        expr: |
+          sum(rate(llm_gateway_usage_publish_total{result=~"error|exhausted"}[5m]))
+            +
+          sum(rate(llm_gateway_outbox_dropped_total[5m]))
+            +
+          sum(rate(llm_gateway_outbox_file_error_total[5m]))
+            +
+          sum(rate(llm_gateway_outbox_kafka_publish_error_total[5m]))
+            > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "llm-gateway: usage outbox dropping events"
+          description: |
+            Writing usage events to file / kafka is failing. Check disk space / kafka broker health.
+            Lost usage events mean incomplete billing data.

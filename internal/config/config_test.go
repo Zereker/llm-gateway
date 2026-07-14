@@ -192,10 +192,11 @@ func TestValidate_RejectsUnknownDrivers(t *testing.T) {
 
 func TestBundledGatewayConfigsParseStrictly(t *testing.T) {
 	for _, path := range []string{
-		"../../configs/local/gateway.yaml",
-		"../../configs/docker/gateway.yaml",
-		"../../configs/prod/gateway.yaml",
+		"../../examples/local/configs/gateway.yaml",
+		"../../deploy/configs/gateway.yaml",
 		"../../examples/full-config/gateway.yaml",
+		"../../examples/quickstart/configs/gateway.yaml",
+		"../../examples/benchmark/config/gateway.yaml",
 	} {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
 			if _, err := Load(path); err != nil {

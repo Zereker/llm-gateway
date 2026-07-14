@@ -14,7 +14,7 @@ import (
 //
 // **The schema of record lives in internal/infra/schema.sql**; the `db:` tags here
 // only describe column names for sqlx. No gorm tags — the gateway is a
-// read-only data plane, doesn't use AutoMigrate, and DDL evolves via SQL only.
+// read-only repository layer; schema evolution is owned by gateway startup.
 //
 // JSON columns are handled two ways:
 //   - **known structure** (EndpointCapabilities / AuthConfig / RoutingConfig /

@@ -1,0 +1,74 @@
+name: llm-gateway-benchmark
+
+x-benchmark-build: &benchmark-build
+  context: ../..
+  dockerfile: examples/benchmark/Dockerfile
+  args:
+    GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: llm_gateway
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--default-authentication-plugin=mysql_native_password"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "--silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  upstream:
+    build:
+      <<: *benchmark-build
+      target: upstream
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9092/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: gateway
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    command: ["-config", "/etc/llm-gateway/gateway.yaml"]
+    volumes:
+      - ./config/gateway.yaml:/etc/llm-gateway/gateway.yaml:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      upstream:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  seed:
+    build:
+      <<: *benchmark-build
+      target: seed
+    command: ["-dsn", "root:@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4", "-data-key", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "-upstream", "http://upstream:9092/v1/chat/completions", "-name", "benchmark-upstream", "-api-key", "sk-benchmark-llm-gateway", "-model", "benchmark-model"]
+
+  runner:
+    build:
+      <<: *benchmark-build
+      target: runner
+    command: ["-direct", "http://upstream:9092/v1/chat/completions", "-gateway", "http://gateway:8080/v1/chat/completions", "-api-key", "sk-benchmark-llm-gateway", "-requests", "200", "-concurrency", "20"]

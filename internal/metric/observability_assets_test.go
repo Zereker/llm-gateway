@@ -45,8 +45,8 @@ func TestObservabilityAssetsReferenceEmittedMetrics(t *testing.T) {
 	}
 
 	assets := []string{
-		filepath.Join(root, "examples", "prometheus", "alerts.yaml"),
-		filepath.Join(root, "examples", "prometheus", "dashboard.json"),
+		filepath.Join(root, "deploy", "observability", "alerts.yaml"),
+		filepath.Join(root, "deploy", "observability", "dashboard.json"),
 	}
 	for _, asset := range assets {
 		for _, name := range metricLiteralPattern.FindAllString(readFile(t, asset), -1) {
@@ -65,7 +65,7 @@ func TestGrafanaDashboardIsProvisionableJSON(t *testing.T) {
 		Title  string            `json:"title"`
 		Panels []json.RawMessage `json:"panels"`
 	}
-	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(root, "examples", "prometheus", "dashboard.json"))), &dashboard); err != nil {
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(root, "deploy", "observability", "dashboard.json"))), &dashboard); err != nil {
 		t.Fatalf("decode dashboard: %v", err)
 	}
 	if dashboard.UID == "" || dashboard.Title == "" || len(dashboard.Panels) < 8 {

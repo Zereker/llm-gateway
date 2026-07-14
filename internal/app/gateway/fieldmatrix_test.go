@@ -3,7 +3,7 @@ package gateway
 // Field-matrix e2e tests: full-parameter requests through the real middleware
 // chain against an echoing upstream, asserting the gateway forwards every
 // top-level field untouched (or, for the translated path, the documented
-// subset). The fixtures under testdata/fieldmatrix/ were converged against a
+// subset). The fixtures under internal/cassette/testdata/fieldmatrix/ were converged against a
 // live OpenAI-compatible vendor: every field in them is accepted by at least
 // one real upstream, so a field the gateway drops or mangles is a gateway
 // defect, not a vendor quirk.
@@ -25,7 +25,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/repo"
 )
 
-// loadFixture reads a testdata/fieldmatrix JSON body and its parsed map form.
+// loadFixture reads an internal/cassette/testdata/fieldmatrix JSON body and its parsed map form.
 func loadFixture(t *testing.T, name string) ([]byte, map[string]any) {
 	t.Helper()
 
@@ -43,7 +43,7 @@ func loadFixture(t *testing.T, name string) ([]byte, map[string]any) {
 }
 
 // upstreamFixture reads a captured real-vendor response body from
-// testdata/fieldmatrix/upstream (see the README there for provenance).
+// internal/cassette/testdata/fieldmatrix/upstream (see the README there for provenance).
 func upstreamFixture(t *testing.T, name string) []byte {
 	t.Helper()
 

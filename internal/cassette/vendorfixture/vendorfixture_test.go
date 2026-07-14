@@ -7,7 +7,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/cassette/vendorfixture"
 )
 
-// TestLoadDir_RealManifests loads the actual testdata/fieldmatrix/endpoints
+// TestLoadDir_RealManifests loads the actual internal/cassette/testdata/fieldmatrix/endpoints
 // manifest set and asserts every file parses and validates — a copy-pasted
 // manifest with a bad reply.kind or a missing field fails here loudly (naming
 // the file) instead of only surfacing inside the MYSQL-gated e2e test, which

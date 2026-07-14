@@ -341,7 +341,7 @@ func (h *responseHandler) translateAnthropicEvent(out *bytes.Buffer, data []byte
 		case "thinking_delta":
 			// Streamed incrementally under reasoning_content, matching how
 			// OpenAI-compatible reasoning-model vendors already stream it
-			// (see testdata/fieldmatrix/upstream/chat-openai-compat-reasoning.json).
+			// (see internal/cassette/testdata/fieldmatrix/upstream/chat-openai-compat-reasoning.json).
 			if ev.Delta.Thinking != "" {
 				h.writeChunk(out, map[string]any{"reasoning_content": ev.Delta.Thinking}, "")
 			}
@@ -565,7 +565,7 @@ type openAIInboundMessage struct {
 	// thinking block through the OpenAI wire shape (see buildAssistantMessage
 	// and translateResponse) — reasoning_content matches the field name real
 	// OpenAI-compatible vendors already expose (see
-	// testdata/fieldmatrix/upstream/chat-openai-compat-reasoning.json);
+	// internal/cassette/testdata/fieldmatrix/upstream/chat-openai-compat-reasoning.json);
 	// reasoning_signature is Anthropic-specific, needed because Anthropic
 	// rejects a tool_use block in history without a preceding *signed*
 	// thinking block once extended thinking was enabled for that turn.

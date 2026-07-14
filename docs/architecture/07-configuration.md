@@ -14,9 +14,8 @@ scheduling, and plugin drivers; and `cmd/console` (the control plane), a separat
 business data. This document describes `gateway.yaml`; the console carries its own config.
 
 The gateway requires a SQL DB and Redis to start. Kafka is only required when the outbox driver is set
-to `kafka` / `async_kafka` / `file_and_kafka`. Production runs `cmd/migrate` before rollout; gateway
-startup performs read-only migration-version and schema checks. Local configuration may explicitly
-enable `database.auto_migrate`.
+to `kafka` / `async_kafka` / `file_and_kafka`. Gateway startup applies pending versioned migrations
+before validating the resulting schema.
 
 The repo layer uses an in-process TTL LRU cache (`internal/repo/cache.go` + `internal/repo/cached.go`). Most
 records rely on TTL; API-key revocation optionally uses best-effort cachebus invalidation. See
@@ -227,10 +226,12 @@ Field descriptions:
 
 ## 3. Schema migration
 
-`cmd/migrate` applies pending versions and records them in `schema_migrations`.
-The Helm chart runs one migration Job per release revision. Gateway replicas do not require DDL
-permissions; they only verify that the latest version is present. Destructive changes still use an
-expand/migrate/contract rollout and must complete before incompatible application code -- see
+Gateway startup applies pending versions and records them in `schema_migrations`.
+Migration operations are idempotent and safe when replicas start concurrently. The gateway database
+user therefore requires DDL permissions. Migration plus schema validation is bounded by a 30-second
+startup deadline, so metadata-lock contention fails startup instead of hanging indefinitely.
+Destructive changes still use an expand/migrate/contract
+rollout and must complete before incompatible application code -- see
 [00 §3 process startup order](./00-overview.md#3-running-processes).
 
 ## 4. Environment variable overrides
@@ -283,7 +284,7 @@ Fail-fast is split into two layers, each covering a different class of error:
 Adding a new config field requires synchronized changes to:
 
 - The struct, defaults, and validation in `internal/config`.
-- `configs/local`, `configs/prod`, K8s values / configmap.
+- `examples/local/configs`, `deploy/configs`, K8s values / configmap.
 - This document.
 - Any architecture chapters covering the related behavior, e.g. scheduler, rate limit, metering.
 

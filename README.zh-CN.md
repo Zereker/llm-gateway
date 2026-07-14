@@ -58,31 +58,31 @@
 
 ## 快速开始
 
-使用 Docker 运行完整 Demo。它会启动 MySQL、Redis、Gateway、Web Console、
+使用 Docker 运行完整 Quickstart。它会启动 MySQL、Redis、Gateway、Web Console、
 Mock LLM 上游，并自动完成数据库迁移和幂等初始化：
 
 ```sh
-make -C examples/demo up
+make -C examples/quickstart up
 ```
 
 命令会通过 Gateway 发起一次真实请求并打印响应。启动完成后：
 
 - Gateway：`http://localhost:8080`
-- Console：`http://localhost:8081`，Token 为 `demo-admin-token`
-- Demo API Key：`sk-demo-llm-gateway`
+- Console：`http://localhost:8081`，Token 为 `quickstart-admin-token`
+- Demo API Key：`sk-quickstart-llm-gateway`
 
 ```sh
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-demo-llm-gateway" \
+  -H "Authorization: Bearer sk-quickstart-llm-gateway" \
   -H "Content-Type: application/json" \
   -d '{"model":"mock-openai-model","messages":[{"role":"user","content":"你好！"}]}'
 
-make -C examples/demo down
+make -C examples/quickstart down
 ```
 
-Demo 使用仓库自带的 Mock 上游和仅供开发的固定凭据，不会调用真实模型供应商。
+Quickstart 使用仓库自带的 Mock 上游和仅供开发的固定凭据，不会调用真实模型供应商。
 它的 Compose、Dockerfile、配置和生命周期命令均收口在
-[`examples/demo`](examples/demo/) 中。
+[`examples/quickstart`](examples/quickstart/) 中。
 
 ## 状态
 
@@ -134,32 +134,27 @@ internal/app/gateway  ── 数据面 composition root
 internal/builtin      ── 内置 vendor / translator 的唯一注册入口
 cmd/gateway           ── 精简的数据面进程入口
 cmd/console           ── 可选控制面 Admin API
-cmd/migrate           ── 版本化数据库迁移命令
-cmd/mockupstream      ── dev/test 假上游
-scripts/{e2e-smoke,seed-e2e}                       单 vendor 端到端烟测
-scripts/{e2e-smoke-multivendor,seed-multivendor}   多 vendor 端到端烟测（见 testdata/fieldmatrix/endpoints/）
-docs/architecture/    设计文档（00-overview 至 08-observability）
-configs/              per-environment 配置（local / prod / docker）
+examples/             ── Quickstart、本地环境、性能基准、配置与配套程序
+deploy/               ── 正式支持的 Helm、生产配置与可观测性资产
+docs/architecture/    ── 设计文档（00-overview 至 08-observability）
 ```
 
 ## 本地开发流程
 
-当你需要在宿主机运行 Go 进程参与开发时使用这套流程，而不是完整 Demo。
-生产环境应先运行 `make run-migrate`。local/docker 配置为了开发便利显式开启
-`database.auto_migrate`。
+当你需要在宿主机运行 Go 进程参与开发时使用这套流程，而不是完整 Quickstart。
+Gateway 会在接收流量前自动、幂等地执行版本化 schema migration。
 业务数据（model_services / endpoints / api_keys / pricing / quota_policies /
 subscriptions / accounts）既可以直接通过 SQL 维护，也可以使用可选的
 `cmd/console` 控制面；数据面不依赖 console。
 
 ```sh
 # 1. 通过 Docker 启动本地 stack（MySQL + Redis + Redpanda）。
-make stack
-# （或者：docker compose up -d）
+make dev-up
+# （或者：docker compose -f examples/local/compose.yaml up -d）
 
-# 2. 执行迁移并启动 gateway（local 配置也会幂等地自动迁移）。
-make run-migrate
+# 2. 启动 gateway，schema migration 会自动执行。
 make run-gateway
-# （或者：go run ./cmd/gateway -config ./configs/local/gateway.yaml）
+# （或者：go run ./cmd/gateway -config ./examples/local/configs/gateway.yaml）
 
 # 3. 直接用 SQL 插入一条 model_service + endpoint + api_key。
 #    示例 seed 见 examples/full-config/seed.sql
@@ -211,13 +206,10 @@ Gateway 默认监听 `:8080`。用仓库自带的配置时：
 
 ### 配置文件
 
-各环境的配置放在 [`configs/`](configs/) 下（见
-[`configs/README.md`](configs/README.md)）。
+宿主机本地开发配置位于 [`examples/local/configs`](examples/local/configs/)，正式生产模板位于
+[`deploy/configs`](deploy/configs/)。Quickstart 和 Benchmark 各自拥有场景配置。
 
-单个环境目录下只有一个文件：
-- `gateway.yaml` —— server / middleware / database / redis / outbox
-
-业务数据存在 MySQL 里，`cmd/migrate` 负责版本化 schema 迁移；增删改查可使用 SQL
+业务数据存在 MySQL 里，Gateway 启动时负责版本化 schema 迁移；增删改查可使用 SQL
 或 `cmd/console`。repo 层用进程内 TTL LRU 缓存读操作（默认约 30s）；API Key
 撤销还支持 best-effort cachebus 主动失效，将传播时间缩短到秒内。
 

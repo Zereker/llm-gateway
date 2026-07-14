@@ -4,7 +4,7 @@
 //
 // Usage:
 //
-//	go run ./cmd/console -config ./configs/local/console.yaml
+//	go run ./cmd/console -config ./examples/local/configs/console.yaml
 //
 // Decoupled from the data plane (cmd/gateway) **only through MySQL** — the
 // control plane writes, and the data plane reads through its TTL cache.
@@ -32,7 +32,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "./configs/local/console.yaml", "path to console YAML config")
+	configPath := flag.String("config", "./examples/local/configs/console.yaml", "path to console YAML config")
 
 	flag.Parse()
 

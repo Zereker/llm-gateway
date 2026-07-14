@@ -1,6 +1,6 @@
 # examples/full-config — Full-featured config example
 
-Unlike the "minimal starting point" of `configs/local/`, this directory demonstrates a **production-shaped** configuration:
+Unlike the "minimal starting point" of `examples/local/configs/`, this directory demonstrates a **production-shaped** configuration:
 Kafka outbox + multiple models + multiple endpoints + multiple quota_policies + pricing_version.
 
 ## Files
@@ -47,9 +47,9 @@ Handling of encrypted / hash columns:
 After data is written, the gateway gradually picks up the new values through the repo layer's in-process TTL LRU cache (30s by default).
 Most changes propagate by TTL. API-key revocation can additionally use console cachebus for best-effort fast invalidation.
 
-## Differences from configs/local
+## Differences from examples/local/configs
 
-| Dimension | configs/local | examples/full-config |
+| Dimension | examples/local/configs | examples/full-config |
 |---|---|---|
 | outbox | file (JSONL append) | kafka |
 | middleware.timeout | 60s | 120s |
@@ -59,7 +59,7 @@ Most changes propagate by TTL. API-key revocation can additionally use console c
 
 ## Troubleshooting
 
-- **gateway startup reports "schema check failed"**: run `cmd/migrate` before starting gateway
+- **gateway startup reports a migration error**: verify the database user has DDL permissions
 - **request returns 401**: check whether `api_keys.api_key_hash` matches the client's `Authorization` header
   as computed by `repo.HashAPIKey()`
 - **request returns 503 "no endpoint succeeded"**: check whether the endpoint's auth/routing are paired correctly,
