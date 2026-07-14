@@ -1,6 +1,9 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // RoutingScopeKind identifies where a virtual-model policy is owned. Project
 // is part of the contract but is not active until identity/RBAC provides a
@@ -33,7 +36,64 @@ type RoutingPolicy struct {
 	VirtualModel string                   `json:"virtual_model"`
 	MaxAttempts  int                      `json:"max_attempts,omitempty"`
 	Constraints  RoutingConstraints       `json:"constraints,omitempty"`
+	Objectives   RoutingObjectives        `json:"objectives,omitempty"`
 	Candidates   []RoutingPolicyCandidate `json:"candidates"`
+}
+
+// RoutingObjectives configures bounded, explainable optimization after hard
+// constraints have run. Weights are relative (not percentages); both zero
+// preserves the M1.2 weight-only ordering.
+type RoutingObjectives struct {
+	LatencyWeight          uint32 `json:"latency_weight,omitempty"`
+	CostWeight             uint32 `json:"cost_weight,omitempty"`
+	TargetLatencyMs        uint32 `json:"target_latency_ms,omitempty"`
+	TargetCostMicrousd     uint64 `json:"target_cost_microusd,omitempty"`
+	EstimatedInputTokens   uint32 `json:"estimated_input_tokens,omitempty"`
+	EstimatedOutputTokens  uint32 `json:"estimated_output_tokens,omitempty"`
+	MinTelemetrySamples    uint32 `json:"min_telemetry_samples,omitempty"`
+	TelemetryMaxAgeSeconds uint32 `json:"telemetry_max_age_seconds,omitempty"`
+	ExplorationPermille    uint32 `json:"exploration_permille,omitempty"`
+}
+
+// RoutingCostProfileRef identifies an immutable routing-only cost snapshot.
+// It is intentionally distinct from customer pricing and billing rules.
+type RoutingCostProfileRef struct {
+	ID      string `json:"id"`
+	Version uint64 `json:"version"`
+}
+
+type RoutingCostProfile struct {
+	Ref                           RoutingCostProfileRef `json:"ref"`
+	ModelServiceID                int64                 `json:"model_service_id"`
+	InputMicrousdPerMillionToken  uint64                `json:"input_microusd_per_million_tokens"`
+	OutputMicrousdPerMillionToken uint64                `json:"output_microusd_per_million_tokens"`
+}
+
+type RoutingSignalSource string
+
+const (
+	RoutingSignalNotConfigured RoutingSignalSource = "not_configured"
+	RoutingSignalObserved      RoutingSignalSource = "observed"
+	RoutingSignalConfigured    RoutingSignalSource = "configured"
+	RoutingSignalMissing       RoutingSignalSource = "missing_neutral"
+	RoutingSignalStale         RoutingSignalSource = "stale_neutral"
+)
+
+// RoutingScoreExplanation contains every dynamic input used by objective
+// scoring. Scores are bounded to [0,1].
+type RoutingScoreExplanation struct {
+	LatencySource      RoutingSignalSource    `json:"latency_source"`
+	LatencyMs          float64                `json:"latency_ms,omitempty"`
+	SuccessRate        float64                `json:"success_rate,omitempty"`
+	TelemetrySamples   uint32                 `json:"telemetry_samples,omitempty"`
+	TelemetryUpdatedAt string                 `json:"telemetry_updated_at,omitempty"`
+	LatencyScore       float64                `json:"latency_score"`
+	CostSource         RoutingSignalSource    `json:"cost_source"`
+	EstimatedMicrousd  uint64                 `json:"estimated_microusd,omitempty"`
+	CostProfile        *RoutingCostProfileRef `json:"cost_profile,omitempty"`
+	CostScore          float64                `json:"cost_score"`
+	TotalScore         float64                `json:"total_score"`
+	ExplorationChosen  bool                   `json:"exploration_chosen,omitempty"`
 }
 
 // RoutingConstraints are policy-wide hard filters. Empty fields do not
@@ -98,13 +158,14 @@ const (
 // RoutingCandidateDecision records both accepted and rejected candidates. It
 // never contains credentials, prompt content, or a free-form rejection message.
 type RoutingCandidateDecision struct {
-	ModelServiceID int64                  `json:"model_service_id,omitempty"`
-	Model          string                 `json:"model"`
-	Source         RoutingCandidateSource `json:"source"`
-	Eligible       bool                   `json:"eligible"`
-	Reason         RoutingReasonCode      `json:"reason"`
-	Order          int                    `json:"order"`
-	Weight         uint32                 `json:"weight,omitempty"`
+	ModelServiceID int64                    `json:"model_service_id,omitempty"`
+	Model          string                   `json:"model"`
+	Source         RoutingCandidateSource   `json:"source"`
+	Eligible       bool                     `json:"eligible"`
+	Reason         RoutingReasonCode        `json:"reason"`
+	Order          int                      `json:"order"`
+	Weight         uint32                   `json:"weight,omitempty"`
+	Score          *RoutingScoreExplanation `json:"score,omitempty"`
 }
 
 // ModelRoutingDecision is produced before dispatch. Eligible candidates in
@@ -154,6 +215,18 @@ func (d ModelRoutingDecision) Validate() error {
 		if candidate.Model == "" || candidate.Source == "" || candidate.Reason == "" {
 			return fmt.Errorf("routing decision: candidate %d is incomplete", i)
 		}
+
+		if candidate.Score != nil {
+			score := candidate.Score
+			if score.LatencySource == "" || score.CostSource == "" ||
+				!boundedScore(score.LatencyScore) || !boundedScore(score.CostScore) || !boundedScore(score.TotalScore) {
+				return fmt.Errorf("routing decision: candidate %d score is invalid", i)
+			}
+
+			if score.CostProfile != nil && (score.CostProfile.ID == "" || score.CostProfile.Version == 0) {
+				return fmt.Errorf("routing decision: candidate %d cost profile is invalid", i)
+			}
+		}
 	}
 
 	if d.Outcome == RoutingOutcomeResolved && len(d.EligibleModels()) == 0 {
@@ -161,4 +234,8 @@ func (d ModelRoutingDecision) Validate() error {
 	}
 
 	return nil
+}
+
+func boundedScore(score float64) bool {
+	return !math.IsNaN(score) && !math.IsInf(score, 0) && score >= 0 && score <= 1
 }

@@ -30,6 +30,7 @@ type routingPolicyRow struct {
 type routingPolicyRule struct {
 	MaxAttempts int                             `json:"max_attempts,omitempty"`
 	Constraints domain.RoutingConstraints       `json:"constraints,omitempty"`
+	Objectives  domain.RoutingObjectives        `json:"objectives,omitempty"`
 	Candidates  []domain.RoutingPolicyCandidate `json:"candidates"`
 }
 
@@ -83,6 +84,7 @@ func (r *SQLRoutingPolicyReader) GetEffective(
 		VirtualModel: row.VirtualModel,
 		MaxAttempts:  rule.MaxAttempts,
 		Constraints:  rule.Constraints,
+		Objectives:   rule.Objectives,
 		Candidates:   rule.Candidates,
 	}, nil
 }

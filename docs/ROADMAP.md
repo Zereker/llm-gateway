@@ -159,6 +159,8 @@ Acceptance gates:
 
 ### M1.2 — Rule-based virtual models
 
+Status: complete.
+
 - Persist virtual-model policies and candidate order/weight.
 - Resolve a virtual model to a validated model chain under the caller's account
   permissions.
@@ -175,6 +177,8 @@ Acceptance gates:
 - policy updates follow the documented cache consistency contract.
 
 ### M1.3 — Latency and cost objectives
+
+Status: complete.
 
 - Reuse selector runtime statistics for observed health and latency.
 - Introduce a compact versioned routing cost profile, separate from billing

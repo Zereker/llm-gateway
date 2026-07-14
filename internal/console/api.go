@@ -46,6 +46,7 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.GET("/pricing", api.listPricing)
 		admin.GET("/model-aliases", api.listModelAliases)
 		admin.GET("/routing-policies", api.listRoutingPolicies)
+		admin.GET("/routing-costs", api.listRoutingCosts)
 		admin.GET("/audit", requireAdmin, api.listAudit) // audit is admin-only
 
 		// Writes: admin only. Enforcement is method-driven at the group level
@@ -64,11 +65,46 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 		admin.POST("/model-aliases", api.createModelAlias)
 		admin.DELETE("/model-aliases/:alias", api.deleteModelAlias)
 		admin.POST("/routing-policies", api.publishRoutingPolicy)
+		admin.POST("/routing-costs", api.publishRoutingCost)
 		admin.POST("/routing-policies/dry-run", api.dryRunRoutingPolicy)
 		admin.DELETE("/routing-policies/:policyID", api.disableRoutingPolicy)
 	}
 
 	return engine
+}
+
+func (a *api) publishRoutingCost(c *gin.Context) {
+	var in RoutingCostInput
+	if !bind(c, &in) {
+		return
+	}
+
+	view, err := a.store.PublishRoutingCost(c.Request.Context(), in, c.GetString(ctxActorKey))
+	if err != nil {
+		var invalid *InvalidRoutingCostError
+		if errors.As(err, &invalid) {
+			abortError(c, http.StatusBadRequest, "routing_cost_invalid", invalid.Reason)
+
+			return
+		}
+
+		writeStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"routing_cost": view})
+}
+
+func (a *api) listRoutingCosts(c *gin.Context) {
+	rows, err := a.store.ListRoutingCosts(c.Request.Context())
+	if err != nil {
+		writeStoreErr(c, err)
+
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"routing_costs": rows})
 }
 
 // =============================================================================

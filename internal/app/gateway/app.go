@@ -115,7 +115,7 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	}
 
 	// Prometheus counter for the repo TTL LRU cache (hit / miss / error per
-	// table). The 5 cached wrappers share this single metrics instance; no
+	// table). Cached wrappers share this single metrics instance; no
 	// reporting happens when it's nil.
 	cacheMetrics := newRepoCacheMetrics()
 
@@ -124,6 +124,8 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	)
 
 	var routingPolicies *repo.CachedRoutingPolicyReader
+
+	var routingCosts *repo.CachedRoutingCostReader
 
 	// Fast revocation: subscribe to the control plane's cachebus invalidation
 	// channel and evict precisely on apikey invalidation events — this shrinks
@@ -137,6 +139,10 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 
 		if inv.Kind == cachebus.KindRoutingPolicy && routingPolicies != nil {
 			routingPolicies.EvictAll()
+		}
+
+		if inv.Kind == cachebus.KindRoutingCost && routingCosts != nil {
+			routingCosts.EvictAll()
 		}
 	}).Start(context.Background()); subErr != nil {
 		slog.Warn("cachebus subscribe failed; falling back to TTL-only invalidation", "err", subErr)
@@ -179,12 +185,16 @@ func buildEngine(cfg *config.Config) (engine *gin.Engine, srv *appRuntime.Runtim
 	routingPolicies = repo.NewCachedRoutingPolicyReader(
 		repo.NewSQLRoutingPolicyReader(sqldb), 1024, cacheTTL, cacheMetrics,
 	)
-	virtualModels := routingpolicy.NewResolver(routingPolicies, catalog, subs)
-
 	endpointReader := repo.NewCachedEndpointReader(
 		repo.NewSQLEndpointReader(sqldb), 1024, 4096, cacheTTL, cacheMetrics,
 	)
 	domainEndpoints := repo.NewDomainEndpointReader(endpointReader)
+	routingCosts = repo.NewCachedRoutingCostReader(
+		repo.NewSQLRoutingCostReader(sqldb), 256, cacheTTL, cacheMetrics,
+	)
+	virtualModels := routingpolicy.NewResolver(routingPolicies, catalog, subs,
+		routingpolicy.WithObjectives(routingCosts, routingpolicy.NewSelectorTelemetryReader(domainEndpoints, stats)),
+	)
 
 	// Startup-time endpoint config scan (docs/00 §3 step 6): protocol typos /
 	// unregistered vendor / unreachable translator / metadata URL / quirks

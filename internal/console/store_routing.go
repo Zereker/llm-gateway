@@ -23,6 +23,7 @@ type RoutingPolicyInput struct {
 	VirtualModel string                          `json:"virtual_model"`
 	MaxAttempts  int                             `json:"max_attempts,omitempty"`
 	Constraints  domain.RoutingConstraints       `json:"constraints,omitempty"`
+	Objectives   domain.RoutingObjectives        `json:"objectives,omitempty"`
 	Candidates   []domain.RoutingPolicyCandidate `json:"candidates"`
 }
 
@@ -37,6 +38,7 @@ type RoutingPolicyView struct {
 	VirtualModel string                          `json:"virtual_model"`
 	MaxAttempts  int                             `json:"max_attempts,omitempty"`
 	Constraints  domain.RoutingConstraints       `json:"constraints,omitempty"`
+	Objectives   domain.RoutingObjectives        `json:"objectives,omitempty"`
 	Candidates   []domain.RoutingPolicyCandidate `json:"candidates"`
 	Enabled      bool                            `json:"enabled"`
 	CreatedBy    string                          `json:"created_by,omitempty"`
@@ -58,6 +60,7 @@ type routingPolicyStoreRow struct {
 type routingPolicyStoreRule struct {
 	MaxAttempts int                             `json:"max_attempts,omitempty"`
 	Constraints domain.RoutingConstraints       `json:"constraints,omitempty"`
+	Objectives  domain.RoutingObjectives        `json:"objectives,omitempty"`
 	Candidates  []domain.RoutingPolicyCandidate `json:"candidates"`
 }
 
@@ -88,6 +91,7 @@ func (s *Store) PublishRoutingPolicy(ctx context.Context, in RoutingPolicyInput,
 	rule, err := json.Marshal(routingPolicyStoreRule{
 		MaxAttempts: in.MaxAttempts,
 		Constraints: in.Constraints,
+		Objectives:  in.Objectives,
 		Candidates:  in.Candidates,
 	})
 	if err != nil {
@@ -122,7 +126,7 @@ func (s *Store) PublishRoutingPolicy(ctx context.Context, in RoutingPolicyInput,
 
 	return RoutingPolicyView{
 		PolicyID: in.PolicyID, Version: version, Scope: in.Scope, VirtualModel: in.VirtualModel,
-		MaxAttempts: in.MaxAttempts, Constraints: in.Constraints, Candidates: in.Candidates,
+		MaxAttempts: in.MaxAttempts, Constraints: in.Constraints, Objectives: in.Objectives, Candidates: in.Candidates,
 		Enabled: true, CreatedBy: actor, CreatedAt: time.Now().UTC(),
 	}, nil
 }
@@ -168,6 +172,22 @@ func (s *Store) validateRoutingPolicyInput(ctx context.Context, in RoutingPolicy
 
 	if in.MaxAttempts < 0 {
 		return &InvalidRoutingPolicyError{Reason: "max_attempts cannot be negative"}
+	}
+
+	if in.Objectives.ExplorationPermille > 1000 {
+		return &InvalidRoutingPolicyError{Reason: "exploration_permille cannot exceed 1000"}
+	}
+
+	if in.Objectives.LatencyWeight > 0 && in.Objectives.TargetLatencyMs == 0 {
+		return &InvalidRoutingPolicyError{Reason: "target_latency_ms is required when latency_weight is set"}
+	}
+
+	if in.Objectives.CostWeight > 0 && in.Objectives.TargetCostMicrousd == 0 {
+		return &InvalidRoutingPolicyError{Reason: "target_cost_microusd is required when cost_weight is set"}
+	}
+
+	if in.Objectives.CostWeight > 0 && in.Objectives.EstimatedInputTokens == 0 && in.Objectives.EstimatedOutputTokens == 0 {
+		return &InvalidRoutingPolicyError{Reason: "estimated token volume is required when cost_weight is set"}
 	}
 
 	switch in.Scope.Kind {
@@ -255,7 +275,8 @@ func (s *Store) ListRoutingPolicies(ctx context.Context) ([]RoutingPolicyView, e
 			Scope:        domain.RoutingScope{Kind: domain.RoutingScopeKind(row.ScopeKind), ID: row.ScopeID},
 			VirtualModel: row.VirtualModel, MaxAttempts: rule.MaxAttempts,
 			Constraints: rule.Constraints, Candidates: rule.Candidates,
-			Enabled: row.Enabled, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt,
+			Objectives: rule.Objectives,
+			Enabled:    row.Enabled, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt,
 		})
 	}
 
@@ -286,11 +307,14 @@ func (s *Store) DisableRoutingPolicy(ctx context.Context, policyID string) error
 }
 
 type RoutingDryRunInput struct {
-	AccountID      string           `json:"account_id"`
-	ProjectID      string           `json:"project_id,omitempty"`
-	RequestedModel string           `json:"requested_model"`
-	Region         string           `json:"region,omitempty"`
-	Modality       *domain.Modality `json:"modality"`
+	AccountID      string                                       `json:"account_id"`
+	ProjectID      string                                       `json:"project_id,omitempty"`
+	RequestedModel string                                       `json:"requested_model"`
+	Region         string                                       `json:"region,omitempty"`
+	Modality       *domain.Modality                             `json:"modality"`
+	Group          string                                       `json:"group,omitempty"`
+	DecisionKey    string                                       `json:"decision_key,omitempty"`
+	Telemetry      map[string][]routingpolicy.EndpointTelemetry `json:"telemetry,omitempty"`
 }
 
 func (s *Store) DryRunRoutingPolicy(ctx context.Context, in RoutingDryRunInput) (routingpolicy.Resolution, error) {
@@ -300,7 +324,8 @@ func (s *Store) DryRunRoutingPolicy(ctx context.Context, in RoutingDryRunInput) 
 
 	catalog := repo.NewDomainModelReader(repo.NewSQLModelServiceReader(s.db))
 	subscriptions := consoleSubscriptionChecker{inner: repo.NewSQLSubscriptionProvider(s.db)}
-	resolver := routingpolicy.NewResolver(repo.NewSQLRoutingPolicyReader(s.db), catalog, subscriptions)
+	resolver := routingpolicy.NewResolver(repo.NewSQLRoutingPolicyReader(s.db), catalog, subscriptions,
+		routingpolicy.WithObjectives(repo.NewSQLRoutingCostReader(s.db), dryRunTelemetry(in.Telemetry)))
 
 	return resolver.Resolve(ctx, routingpolicy.Input{
 		RequestedModel: in.RequestedModel,
@@ -308,7 +333,15 @@ func (s *Store) DryRunRoutingPolicy(ctx context.Context, in RoutingDryRunInput) 
 		ProjectID:      in.ProjectID,
 		Region:         in.Region,
 		Modality:       *in.Modality,
+		Group:          in.Group,
+		DecisionKey:    in.DecisionKey,
 	})
+}
+
+type dryRunTelemetry map[string][]routingpolicy.EndpointTelemetry
+
+func (d dryRunTelemetry) ForModel(_ context.Context, model, _ string) ([]routingpolicy.EndpointTelemetry, error) {
+	return d[model], nil
 }
 
 type consoleSubscriptionChecker struct{ inner repo.SubscriptionProvider }
