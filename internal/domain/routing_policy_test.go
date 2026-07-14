@@ -66,3 +66,47 @@ func TestRejectedRoutingDecisionMayHaveNoEligibleCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestModelRoutingDecisionRejectsMalformedResolverOutput(t *testing.T) {
+	valid := ModelRoutingDecision{
+		RequestedModel: "fast-chat",
+		VirtualModel:   true,
+		Outcome:        RoutingOutcomeResolved,
+		Reason:         RoutingReasonVirtualPolicyMatched,
+		Policy:         &RoutingPolicyRef{ID: "route-fast-chat", Version: 1, Scope: RoutingScope{Kind: RoutingScopeGlobal}},
+		Candidates: []RoutingCandidateDecision{
+			{Model: "gpt-4o-mini", Source: RoutingCandidatePolicy, Eligible: true, Reason: RoutingReasonVirtualPolicyMatched},
+		},
+	}
+
+	tests := map[string]func(*ModelRoutingDecision){
+		"missing requested model": func(d *ModelRoutingDecision) { d.RequestedModel = "" },
+		"missing outcome":         func(d *ModelRoutingDecision) { d.Outcome = "" },
+		"missing reason":          func(d *ModelRoutingDecision) { d.Reason = "" },
+		"missing policy ID":       func(d *ModelRoutingDecision) { d.Policy.ID = "" },
+		"missing policy version":  func(d *ModelRoutingDecision) { d.Policy.Version = 0 },
+		"missing candidate model": func(d *ModelRoutingDecision) { d.Candidates[0].Model = "" },
+		"missing candidate source": func(d *ModelRoutingDecision) {
+			d.Candidates[0].Source = ""
+		},
+		"missing candidate reason": func(d *ModelRoutingDecision) {
+			d.Candidates[0].Reason = ""
+		},
+		"resolved without eligible candidate": func(d *ModelRoutingDecision) {
+			d.Candidates[0].Eligible = false
+		},
+	}
+
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			decision := valid
+			policy := *valid.Policy
+			decision.Policy = &policy
+			decision.Candidates = append([]RoutingCandidateDecision(nil), valid.Candidates...)
+			mutate(&decision)
+			if err := decision.Validate(); err == nil {
+				t.Fatal("Validate() succeeded for malformed decision")
+			}
+		})
+	}
+}
