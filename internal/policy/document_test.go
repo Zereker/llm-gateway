@@ -103,6 +103,129 @@ func TestJSONDocumentAdapterAppliesMutationsAtomically(t *testing.T) {
 	}
 }
 
+func TestJSONDocumentAdapterRejectsUnsupportedDocuments(t *testing.T) {
+	adapter := JSONDocumentAdapter{}
+	for name, body := range map[string][]byte{
+		"malformed":     []byte(`{"messages":`),
+		"trailing":      []byte(`{} {}`),
+		"non object":    []byte(`[]`),
+		"empty content": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := adapter.Extract(body, domain.ProtoOpenAI, domain.ModalityChat); !errors.Is(err, ErrUnsupportedDocument) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
+func TestJSONDocumentAdapterExtractsEmbeddingAndMixedContent(t *testing.T) {
+	adapter := JSONDocumentAdapter{}
+	tests := []struct {
+		name     string
+		body     string
+		modality domain.Modality
+		want     map[string]string
+	}{
+		{
+			name: "embedding array", modality: domain.ModalityEmbedding,
+			body: `{"input":["first","",17,"second"]}`,
+			want: map[string]string{"/input/0": "first", "/input/3": "second"},
+		},
+		{
+			name: "input variants", modality: domain.ModalityChat,
+			body: `{"input":"plain","text":"top","content":["nested",7,{"text":"block"}],"choices":[7,{"delta":{"content":"delta"}}]}`,
+			want: map[string]string{
+				"/input": "plain", "/text": "top", "/content/0": "nested",
+				"/content/2/text": "block", "/choices/1/delta/content": "delta",
+			},
+		},
+		{
+			name: "malformed provider containers", modality: domain.ModalityChat,
+			body: `{"messages":[7,{}],"choices":{},"contents":[7,{"parts":[8,{}, {"text":"ok"}]}],"candidates":[8,{}, {"content":{"parts":[{"text":"candidate"}]}}],"output":[8,{"text":"out"}]}`,
+			want: map[string]string{
+				"/contents/1/parts/2/text": "ok", "/candidates/2/content/parts/0/text": "candidate", "/output/1/text": "out",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			segments, err := adapter.Extract([]byte(tc.body), domain.ProtoOpenAI, tc.modality)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make(map[string]string, len(segments))
+			for _, segment := range segments {
+				got[segment.Target] = string(segment.Text)
+			}
+			for target, want := range tc.want {
+				if got[target] != want {
+					t.Fatalf("target %s=%q want %q; all=%v", target, got[target], want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestJSONDocumentAdapterApplyNoMutationsPreservesDocument(t *testing.T) {
+	body := []byte(`{"input":"hello","count":1}`)
+	rebuilt, err := (JSONDocumentAdapter{}).Apply(body, domain.ProtoOpenAI, domain.ModalityChat, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(rebuilt) || !strings.Contains(string(rebuilt), `"input":"hello"`) {
+		t.Fatalf("rebuilt=%s", rebuilt)
+	}
+}
+
+func TestJSONPointerHelpersAndFailures(t *testing.T) {
+	parts, err := parsePointer(`/a~1b/c~0d`)
+	if err != nil || len(parts) != 2 || parts[0] != "a/b" || parts[1] != "c~d" {
+		t.Fatalf("parts=%v err=%v", parts, err)
+	}
+	if escaped := escapePointer("a~/b"); escaped != "a~0~1b" {
+		t.Fatalf("escaped=%q", escaped)
+	}
+	for _, pointer := range []string{"", "missing-slash"} {
+		if _, err := parsePointer(pointer); !errors.Is(err, ErrInvalidMutation) {
+			t.Fatalf("parsePointer(%q) err=%v", pointer, err)
+		}
+	}
+
+	tests := []struct {
+		name    string
+		doc     any
+		pointer string
+	}{
+		{"empty pointer", map[string]any{"x": "y"}, ""},
+		{"missing map child", map[string]any{}, "/missing/value"},
+		{"bad array traversal", []any{"x"}, "/bad/value"},
+		{"array traversal range", []any{"x"}, "/2/value"},
+		{"scalar traversal", map[string]any{"x": "text"}, "/x/value"},
+		{"map leaf not text", map[string]any{"x": 1}, "/x"},
+		{"array leaf invalid", []any{"x"}, "/bad"},
+		{"array leaf range", []any{"x"}, "/2"},
+		{"array leaf not text", []any{1}, "/0"},
+		{"scalar leaf", "text", "/x"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := setPointer(tc.doc, tc.pointer, "replacement"); !errors.Is(err, ErrInvalidMutation) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+
+	doc := map[string]any{"items": []any{"first"}}
+	if err := setPointer(doc, "/items/0", "changed"); err != nil {
+		t.Fatal(err)
+	}
+	if doc["items"].([]any)[0] != "changed" {
+		t.Fatalf("doc=%v", doc)
+	}
+}
+
 func mapsValues(values map[string]string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {

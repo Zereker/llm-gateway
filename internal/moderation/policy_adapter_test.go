@@ -123,3 +123,70 @@ func TestPolicyModeratorFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicyModeratorInputFailuresAndAudit(t *testing.T) {
+	for name, engine := range map[string]engineFunc{
+		"engine error": func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+			return policy.Decision{}, errors.New("unavailable")
+		},
+		"invalid decision": func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+			return policy.Decision{}, nil
+		},
+		"redaction unsupported": func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+			return policyDecision(policy.ActionRedact), nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			moderator := NewPolicyModerator(engine, policy.EvaluationInput{}, nil)
+			if err := moderator.CheckInput(context.Background(), nil); err == nil {
+				t.Fatal("CheckInput succeeded")
+			}
+		})
+	}
+}
+
+type documentAdapterStub struct {
+	extracted []policy.TextSegment
+	rebuilt   []byte
+	applyErr  error
+}
+
+func (a documentAdapterStub) Extract([]byte, domain.Protocol, domain.Modality) ([]policy.TextSegment, error) {
+	return a.extracted, nil
+}
+
+func (a documentAdapterStub) Apply([]byte, domain.Protocol, domain.Modality, []policy.Mutation) ([]byte, error) {
+	return a.rebuilt, a.applyErr
+}
+
+func TestPolicyModeratorCustomAdapterAndRedactionFailureAudit(t *testing.T) {
+	var audits []policy.AuditRecord
+	applyErr := errors.New("cannot rebuild")
+	moderator := NewPolicyModerator(
+		engineFunc(func(_ context.Context, input policy.EvaluationInput) (policy.Decision, error) {
+			if len(input.Segments) != 1 || input.Segments[0].Target != "/custom" {
+				t.Fatalf("segments=%+v", input.Segments)
+			}
+			return policyDecision(policy.ActionRedact), nil
+		}),
+		policy.EvaluationInput{Policy: &policy.PolicyRef{ID: "selected", Version: 2, Scope: policy.Scope{Kind: policy.ScopeGlobal}}},
+		func(record policy.AuditRecord) { audits = append(audits, record) },
+		WithDocumentAdapter(documentAdapterStub{
+			extracted: []policy.TextSegment{{Target: "/custom", Text: []byte("secret")}},
+			applyErr:  applyErr,
+		}),
+		WithOutputMode(policy.OutputStrictBuffered, 32),
+	)
+	controller := moderator.(OutputController)
+	if _, err := controller.EnforceOutput(context.Background(), []byte(`{"custom":"secret"}`), true); !errors.Is(err, applyErr) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(audits) != 1 || audits[0].Enforcement != policy.EnforcementFailed {
+		t.Fatalf("audits=%+v", audits)
+	}
+
+	controller.RecordOutputFailure("synthetic_failure")
+	if len(audits) != 2 || audits[1].Policy.ID != "selected" || audits[1].ReasonCode != "synthetic_failure" {
+		t.Fatalf("audits=%+v", audits)
+	}
+}

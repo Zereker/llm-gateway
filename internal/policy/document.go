@@ -18,6 +18,8 @@ var (
 	ErrInvalidMutation     = errors.New("policy: invalid mutation")
 )
 
+const documentTextKey = "text"
+
 type DocumentAdapter interface {
 	Extract(body []byte, protocol domain.Protocol, modality domain.Modality) ([]TextSegment, error)
 	Apply(body []byte, protocol domain.Protocol, modality domain.Modality, mutations []Mutation) ([]byte, error)
@@ -66,7 +68,7 @@ func (JSONDocumentAdapter) Extract(body []byte, _ domain.Protocol, modality doma
 		}
 	}
 
-	if value, exists := root["text"]; exists {
+	if value, exists := root[documentTextKey]; exists {
 		addString("/text", value)
 	}
 
@@ -105,7 +107,7 @@ func collectChoices(value any, path string, out *[]TextSegment) {
 			continue
 		}
 
-		if text, exists := choice["text"]; exists {
+		if text, exists := choice[documentTextKey]; exists {
 			collectText(text, path+"/"+strconv.Itoa(i)+"/text", out, false)
 		}
 
@@ -168,7 +170,7 @@ func collectGeminiContents(value any, path string, out *[]TextSegment, indexed b
 				continue
 			}
 
-			if text, exists := partObject["text"]; exists {
+			if text, exists := partObject[documentTextKey]; exists {
 				collectText(text, itemPath+"/parts/"+strconv.Itoa(j)+"/text", out, false)
 			}
 		}
@@ -269,7 +271,7 @@ func collectInput(value any, path string, out *[]TextSegment) {
 					collectText(content, itemPath+"/content", out, true)
 				}
 
-				if text, exists := object["text"]; exists {
+				if text, exists := object[documentTextKey]; exists {
 					collectText(text, itemPath+"/text", out, false)
 				}
 
@@ -300,7 +302,7 @@ func collectText(value any, path string, out *[]TextSegment, nested bool) {
 				continue
 			}
 
-			for _, key := range []string{"text", "content"} {
+			for _, key := range []string{documentTextKey, "content"} {
 				if child, exists := object[key]; exists {
 					collectText(child, itemPath+"/"+key, out, true)
 				}

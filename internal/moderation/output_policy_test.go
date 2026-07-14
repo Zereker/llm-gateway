@@ -10,11 +10,99 @@ import (
 	"github.com/zereker/llm-gateway/internal/policy"
 )
 
-type passthroughPolicyStream struct{ final []byte }
+type passthroughPolicyStream struct {
+	final    []byte
+	feedErr  error
+	flushErr error
+}
 
-func (s *passthroughPolicyStream) Feed(chunk []byte) ([]byte, error) { return chunk, nil }
+func (s *passthroughPolicyStream) Feed(chunk []byte) ([]byte, error) { return chunk, s.feedErr }
 func (s *passthroughPolicyStream) Flush() ([]byte, *domain.Usage, error) {
-	return s.final, nil, nil
+	return s.final, nil, s.flushErr
+}
+
+func TestStrictBufferedStreamFailureAndTerminalBranches(t *testing.T) {
+	allow := engineFunc(func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
+		return policyDecision(policy.ActionAllow), nil
+	})
+	controller := NewPolicyModerator(allow, policy.EvaluationInput{}, nil, WithOutputMode(policy.OutputStrictBuffered, 4))
+
+	feedFailure := WrapStream(ContextWithModerator(context.Background(), controller), &passthroughPolicyStream{feedErr: errors.New("feed")})
+	if _, err := feedFailure.Feed([]byte("x")); err == nil {
+		t.Fatal("inner Feed error was ignored")
+	}
+
+	flushFailure := WrapStream(ContextWithModerator(context.Background(), controller), &passthroughPolicyStream{flushErr: errors.New("flush")})
+	if _, _, err := flushFailure.Flush(); err == nil {
+		t.Fatal("inner Flush error was ignored")
+	}
+
+	finalOverflow := WrapStream(ContextWithModerator(context.Background(), controller), &passthroughPolicyStream{final: []byte("12345")})
+	if _, _, err := finalOverflow.Flush(); !errors.Is(err, ErrPolicyEnforcement) {
+		t.Fatalf("final overflow err=%v", err)
+	}
+	if _, _, err := finalOverflow.Flush(); !errors.Is(err, ErrViolated) {
+		t.Fatalf("flush after violation err=%v", err)
+	}
+
+	feedOverflow := WrapStream(ContextWithModerator(context.Background(), controller), &passthroughPolicyStream{})
+	if _, err := feedOverflow.Feed([]byte("12345")); !errors.Is(err, ErrPolicyEnforcement) {
+		t.Fatalf("feed overflow err=%v", err)
+	}
+	if _, err := feedOverflow.Feed([]byte("x")); !errors.Is(err, ErrViolated) {
+		t.Fatalf("feed after violation err=%v", err)
+	}
+}
+
+func TestModeratedStreamFlushAndContextBranches(t *testing.T) {
+	inner := &passthroughPolicyStream{final: []byte("clean")}
+	var nilContext context.Context
+	if ContextWithModerator(context.Background(), nil) == nil || FromContext(nilContext) != nil {
+		t.Fatal("nil context/moderator handling failed")
+	}
+	if WrapStream(nilContext, inner) != inner || WrapStream(context.Background(), inner) != inner {
+		t.Fatal("stream without moderator should remain unwrapped")
+	}
+
+	clean := WrapStream(ContextWithModerator(context.Background(), stubGuard{}), inner)
+	if out, _, err := clean.Flush(); err != nil || string(out) != "clean" {
+		t.Fatalf("clean flush out=%q err=%v", out, err)
+	}
+
+	flushErr := errors.New("flush")
+	broken := WrapStream(ContextWithModerator(context.Background(), stubGuard{}), &passthroughPolicyStream{flushErr: flushErr})
+	if _, _, err := broken.Flush(); !errors.Is(err, flushErr) {
+		t.Fatalf("inner flush err=%v", err)
+	}
+
+	denied := WrapStream(ContextWithModerator(context.Background(), stubGuard{outErr: policy.ErrDenied}), inner)
+	if _, _, err := denied.Flush(); !errors.Is(err, ErrPolicyEnforcement) {
+		t.Fatalf("denied flush err=%v", err)
+	}
+	if _, _, err := denied.Flush(); !errors.Is(err, ErrViolated) {
+		t.Fatalf("flush after denial err=%v", err)
+	}
+}
+
+func TestOutputTextAccumulatorInputFormatsAndWindow(t *testing.T) {
+	a := outputTextAccumulator{maxBytes: 6}
+	if got := string(a.Push([]byte(`{"text":"abcdef"}`))); got != "abcdef" {
+		t.Fatalf("standalone JSON=%q", got)
+	}
+	if got := string(a.Push([]byte("plain-text"))); got != "n-text" {
+		t.Fatalf("rolling plain window=%q", got)
+	}
+
+	a = outputTextAccumulator{maxBytes: 20}
+	chunk := []byte("event: message\r\ndata: [DONE]\r\n\r\ndata: {not-json}\r\n\r\n")
+	if got := a.Push(chunk); len(got) != 0 {
+		t.Fatalf("control/malformed frames produced text=%q", got)
+	}
+
+	a = outputTextAccumulator{maxBytes: 4}
+	if got := string(a.Push([]byte("data: incomplete payload"))); got != "load" {
+		t.Fatalf("oversized pending window=%q", got)
+	}
 }
 
 func TestStrictBufferedWithholdsAndRedactsCompleteJSON(t *testing.T) {

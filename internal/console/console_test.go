@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -239,6 +240,129 @@ func TestConsoleEnforcementPolicyLifecycleBindingAndSimulation(t *testing.T) {
 	}
 	if code, listed := do(t, engine, "GET", "/admin/policy-bindings", nil, true); code != 200 || len(listed["policy_bindings"].([]any)) != 0 {
 		t.Fatalf("disable must remove active bindings: code=%d body=%v", code, listed)
+	}
+}
+
+func TestConsoleEnforcementPolicyValidationVersioningAndDelete(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	if code, body := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
+		t.Fatalf("create account: code=%d body=%v", code, body)
+	}
+
+	if code, body := do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{}, true); code != 400 {
+		t.Fatalf("invalid definition: code=%d body=%v", code, body)
+	}
+	if code, body := do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{
+		Name: "oversized", OutputMode: policy.OutputStrictBuffered, MaxBufferBytes: policy.MaxBufferBytes + 1,
+	}, true); code != 400 {
+		t.Fatalf("oversized definition: code=%d body=%v", code, body)
+	}
+
+	code, created := do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{
+		PolicyID: "governance", Name: "v1", InputEnabled: true, OutputMode: policy.OutputDisabled,
+	}, true)
+	if code != 201 || created["policy"].(map[string]any)["version"] != float64(1) {
+		t.Fatalf("publish v1: code=%d body=%v", code, created)
+	}
+	code, created = do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{
+		PolicyID: "governance", Name: "v2", OutputMode: policy.OutputBestEffortStreaming,
+	}, true)
+	if code != 201 || created["policy"].(map[string]any)["version"] != float64(2) {
+		t.Fatalf("publish v2: code=%d body=%v", code, created)
+	}
+	if code, listed := do(t, engine, "GET", "/admin/policies", nil, true); code != 200 || len(listed["policies"].([]any)) != 2 {
+		t.Fatalf("list versions: code=%d body=%v", code, listed)
+	}
+
+	invalidBindings := []PolicyBindingInput{
+		{Scope: policy.Scope{Kind: policy.ScopeGlobal, ID: "not-empty"}, PolicyID: "governance", PolicyVersion: 2},
+		{Scope: policy.Scope{Kind: policy.ScopeProject, ID: "p1"}, PolicyID: "governance", PolicyVersion: 2},
+		{Scope: policy.Scope{Kind: policy.ScopeKind("unknown")}, PolicyID: "governance", PolicyVersion: 2},
+		{Scope: policy.Scope{Kind: policy.ScopeAccount, ID: "missing"}, PolicyID: "governance", PolicyVersion: 2},
+		{Scope: policy.Scope{Kind: policy.ScopeAPIKey, ID: "missing"}, PolicyID: "governance", PolicyVersion: 2},
+		{Scope: policy.Scope{Kind: policy.ScopeGlobal}, PolicyID: "missing", PolicyVersion: 1},
+		{Scope: policy.Scope{Kind: policy.ScopeGlobal}},
+	}
+	for _, binding := range invalidBindings {
+		if code, body := do(t, engine, "POST", "/admin/policy-bindings", binding, true); code != 400 {
+			t.Fatalf("invalid binding %+v: code=%d body=%v", binding, code, body)
+		}
+	}
+
+	binding := PolicyBindingInput{Scope: policy.Scope{Kind: policy.ScopeGlobal}, PolicyID: "governance", PolicyVersion: 2}
+	if code, body := do(t, engine, "POST", "/admin/policy-bindings", binding, true); code != 201 {
+		t.Fatalf("bind global: code=%d body=%v", code, body)
+	}
+	if code, body := do(t, engine, "DELETE", "/admin/policy-bindings/global", nil, true); code != 200 {
+		t.Fatalf("delete global binding: code=%d body=%v", code, body)
+	}
+	if code, body := do(t, engine, "DELETE", "/admin/policy-bindings/global", nil, true); code != 404 {
+		t.Fatalf("delete missing binding: code=%d body=%v", code, body)
+	}
+	if code, body := do(t, engine, "DELETE", "/admin/policies/missing", nil, true); code != 404 {
+		t.Fatalf("disable missing policy: code=%d body=%v", code, body)
+	}
+}
+
+func TestConsoleEnforcementPolicySimulationActionsAndValidation(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	ref := policy.PolicyRef{ID: "simulation", Version: 1, Scope: policy.Scope{Kind: policy.ScopeGlobal}}
+	body := json.RawMessage(`{"messages":[{"content":"secret"}]}`)
+
+	for _, action := range []policy.Action{policy.ActionAllow, policy.ActionDeny} {
+		code, response := do(t, engine, "POST", "/admin/policies/simulate", PolicySimulationInput{
+			Protocol: domain.ProtoOpenAI, Modality: domain.ModalityChat, Stage: policy.StageOutput, Body: body,
+			Decision: PolicySimulationDecision{Action: action, Policy: ref, RuleID: "r", ReasonCode: "synthetic"},
+		}, true)
+		if code != 200 || response["result"].(map[string]any)["allowed"] != (action == policy.ActionAllow) {
+			t.Fatalf("simulate %s: code=%d body=%v", action, code, response)
+		}
+	}
+
+	code, response := do(t, engine, "POST", "/admin/policies/simulate", PolicySimulationInput{
+		Protocol: domain.ProtoOpenAI, Modality: domain.ModalityChat, Stage: policy.StageOutput, Body: body,
+		Decision: PolicySimulationDecision{
+			Action: policy.ActionRedact, Policy: ref, RuleID: "r", ReasonCode: "synthetic",
+			Mutations: []PolicySimulationMutation{{ID: "m", Kind: policy.MutationRedact, Target: "/messages/0/content", Replacement: "[MASKED]"}},
+		},
+	}, true)
+	if code != 200 || !strings.Contains(toJSON(response), "[MASKED]") {
+		t.Fatalf("simulate output redact: code=%d body=%v", code, response)
+	}
+
+	invalid := PolicySimulationInput{
+		Protocol: domain.ProtoOpenAI, Modality: domain.ModalityChat, Stage: policy.Stage("invalid"), Body: body,
+		Decision: PolicySimulationDecision{Action: policy.ActionAllow, Policy: ref, RuleID: "r", ReasonCode: "synthetic"},
+	}
+	if code, response := do(t, engine, "POST", "/admin/policies/simulate", invalid, true); code != 400 {
+		t.Fatalf("invalid simulation stage: code=%d body=%v", code, response)
+	}
+	invalid.Stage = policy.StageInput
+	invalid.Decision.Action = policy.ActionRedact
+	if code, response := do(t, engine, "POST", "/admin/policies/simulate", invalid, true); code != 400 {
+		t.Fatalf("invalid redact decision: code=%d body=%v", code, response)
+	}
+}
+
+func TestConsoleEnforcementPolicyStorageFailuresReturn500(t *testing.T) {
+	engine, db := newTestEngine(t)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, request := range []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{"GET", "/admin/policies", nil},
+		{"GET", "/admin/policy-bindings", nil},
+		{"POST", "/admin/policies", EnforcementPolicyInput{Name: "p", OutputMode: policy.OutputDisabled}},
+		{"POST", "/admin/policy-bindings", PolicyBindingInput{Scope: policy.Scope{Kind: policy.ScopeGlobal}, PolicyID: "p", PolicyVersion: 1}},
+	} {
+		if code, response := do(t, engine, request.method, request.path, request.body, true); code != 500 {
+			t.Fatalf("%s %s: code=%d body=%v", request.method, request.path, code, response)
+		}
 	}
 }
 

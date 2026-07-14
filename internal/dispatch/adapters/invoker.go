@@ -123,6 +123,10 @@ func (r *invokerResult) StreamTo(ctx context.Context, w http.ResponseWriter) dis
 	stream := moderation.WrapStream(ctx, r.handler.NewResponseStream())
 	fwd := r.sender.Forward(ctx, w, r.ep, r.response, stream)
 
+	return forwardResultToStreamReport(fwd)
+}
+
+func forwardResultToStreamReport(fwd invoker.ForwardResult) dispatch.StreamReport {
 	report := dispatch.StreamReport{
 		Usage:        fwd.Usage,
 		Err:          fwd.FeedErr,
