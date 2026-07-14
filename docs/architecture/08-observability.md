@@ -55,10 +55,14 @@ Metric names use the `llm_gateway_` prefix. Histogram buckets are implementation
 |------|------|--------|------|
 | `llm_gateway_http_requests_total` | counter | `method`, `route`, `status`, `error_class` | Total HTTP requests |
 | `llm_gateway_http_request_duration_seconds` | histogram | `method`, `route`, `status`, `model`, `routed_model` | Gateway end-to-end latency |
+| `llm_gateway_response_ttft_seconds` | histogram | `model`, `routed_model`, `vendor` | Time to first client-visible response chunk for streaming responses |
 | `llm_gateway_invoker_requests_total` | counter | `vendor`, `endpoint_id`, `model`, `endpoint_protocol`, `result`, `error_class` | Total upstream requests |
 | `llm_gateway_invoker_duration_seconds` | histogram | `vendor`, `endpoint_id`, `model`, `result`, `error_class` | Upstream call latency |
 | `llm_gateway_selector_attempts_total` | counter | `model`, `routed_model`, `vendor`, `endpoint_id`, `attempt_role`, `result`, `error_class` | endpoint attempt stats |
 | `llm_gateway_selector_candidates` | histogram | `model`, `stage` | Candidate count; stage is list/eligible/cooldown/quota |
+| `llm_gateway_selector_endpoint_selected_total` | counter | `endpoint_id`, `vendor`, `model` | Endpoint selections |
+| `llm_gateway_selector_endpoint_call_total` | counter | `endpoint_id`, `vendor`, `model`, `outcome`, `class` | Endpoint attempt results |
+| `llm_gateway_selector_cooldown_enter_total` | counter | `endpoint_id`, `vendor`, `class` | Successful transitions into cooldown |
 | `llm_gateway_scheduling_duration_seconds` | histogram | `model`, `attempts` | Total time for scheduling filter / pick / report |
 | `llm_gateway_eligibility_duration_seconds` | histogram | `model` | Eligibility filtering time |
 | `llm_gateway_ratelimit_decisions_total` | counter | `scope`, `dimension`, `result` | Client-side and endpoint-side rate limit decisions |

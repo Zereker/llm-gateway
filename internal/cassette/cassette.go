@@ -7,6 +7,7 @@
 package cassette
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 )
@@ -27,5 +28,9 @@ var repoRoot = func() string {
 // ("../../testdata/..."), it doesn't silently break if either the caller or
 // testdata/ itself moves one level.
 func TestdataPath(elem ...string) string {
+	if root := os.Getenv("LLM_GATEWAY_TESTDATA_DIR"); root != "" {
+		return filepath.Join(append([]string{root}, elem...)...)
+	}
+
 	return filepath.Join(append([]string{repoRoot, "testdata"}, elem...)...)
 }

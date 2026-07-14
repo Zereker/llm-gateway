@@ -243,6 +243,16 @@ jobs:
       - name: Multi-vendor smoke test
         run: ./scripts/e2e-smoke-multivendor.sh --no-docker-stack
 
+  product-demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start and verify the documented one-command demo
+        run: make -C examples/demo up
+      - name: Tear down demo
+        if: always()
+        run: make -C examples/demo down
+
   deployment:
     runs-on: ubuntu-latest
     steps:

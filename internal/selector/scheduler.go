@@ -3,8 +3,10 @@ package selector
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/zereker/llm-gateway/internal/domain"
+	"github.com/zereker/llm-gateway/internal/metric"
 )
 
 // Config holds the dependencies for constructing the default Scheduler.
@@ -144,6 +146,13 @@ func (s *defaultScheduler) chosen(ep *domain.Endpoint) *domain.Endpoint {
 	if s.cfg.Inflight != nil && ep != nil {
 		s.cfg.Inflight.Inc(ep.ID)
 	}
+	if ep != nil {
+		metric.Inc(metric.SelectorEndpointSelectedTotal,
+			"endpoint_id", strconv.FormatInt(ep.ID, 10),
+			"vendor", ep.Vendor,
+			"model", ep.Model,
+		)
+	}
 
 	return ep
 }
@@ -184,8 +193,26 @@ func (s *defaultScheduler) Report(ctx context.Context, ep *domain.Endpoint, resu
 		s.cfg.Stats.Record(ctx, ep.ID, result)
 	}
 
+	outcome := "fail"
+	if result.Class == ClassSuccess {
+		outcome = "success"
+	}
+	metric.Inc(metric.SelectorEndpointCallTotal,
+		"endpoint_id", strconv.FormatInt(ep.ID, 10),
+		"vendor", ep.Vendor,
+		"model", ep.Model,
+		"outcome", outcome,
+		"class", result.Class.String(),
+	)
+
 	// failure + retryable → cooldown
 	if result.Class.IsRetryable() && result.Class != ClassUnknown && s.cfg.Cooldown != nil {
-		_ = s.cfg.Cooldown.Mark(ctx, ep.ID, result.Class, result.RetryAfter)
+		if err := s.cfg.Cooldown.Mark(ctx, ep.ID, result.Class, result.RetryAfter); err == nil {
+			metric.Inc(metric.SelectorCooldownEnterTotal,
+				"endpoint_id", strconv.FormatInt(ep.ID, 10),
+				"vendor", ep.Vendor,
+				"class", result.Class.String(),
+			)
+		}
 	}
 }

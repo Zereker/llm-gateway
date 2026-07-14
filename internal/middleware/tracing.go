@@ -128,6 +128,14 @@ func Tracing(opts ...TracingOption) gin.HandlerFunc {
 
 		if rc.Usage != nil {
 			fillUsageMeta(ctx, rc, now, elapsed.Milliseconds())
+			if rc.Usage.Meta.TTFTMs > 0 {
+				metric.Observe(metric.ResponseTTFTSeconds, float64(rc.Usage.Meta.TTFTMs)/1000,
+					"model", model,
+					"routed_model", routedModel,
+					"vendor", rc.Usage.Meta.Vendor,
+				)
+			}
+
 			// usage tokens metric
 			metric.Add(metric.UsageTokensTotal, float64(rc.Usage.Input),
 				"model", model, "routed_model", routedModel,

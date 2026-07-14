@@ -1,0 +1,49 @@
+# Self-contained local product demo. All credentials are development-only.
+server:
+  addr: ":8080"
+  read_header_timeout: 10s
+  shutdown_timeout: 15s
+
+database:
+  driver: mysql
+  dsn: "root:@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+  auto_migrate: true
+
+redis:
+  addr: "redis:6379"
+  db: 0
+
+data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+request:
+  body_limit_bytes: 10485760
+  timeout: 60s
+
+budget:
+  driver: alwayspass
+
+moderation:
+  driver: none
+
+selector:
+  filters: [cooldown, limit_read, weighted_random]
+  cooldown:
+    transient: 5s
+    capacity: 10s
+    permanent: 30s
+    invalid: 0s
+    unknown: 5s
+  max_attempts: 3
+
+usage_events:
+  driver: file
+  file:
+    path: /var/lib/llm-gateway/usage.jsonl
+
+content_log:
+  driver: file
+  sample_rate: 1.0
+  buffer_size: 256
+  backpressure: drop_oldest
+  file:
+    path: /var/lib/llm-gateway/content.jsonl

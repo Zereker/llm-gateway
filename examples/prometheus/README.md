@@ -1,12 +1,28 @@
 # examples/prometheus — Monitoring & Alerting Configuration
 
-llm-gateway ships its own `/metrics` endpoint (Prometheus exposition format); this directory provides recommended alert / dashboard templates.
+llm-gateway ships a Prometheus `/metrics` endpoint. This directory contains a
+provisioned dashboard, alert rules, and the scrape configuration used by the demo.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `alerts.yaml` | Alertmanager alert rules (grouped by availability / latency / rate limiting / cooldown / billing) |
+| `dashboard.json` | Grafana dashboard for traffic, latency, TTFT, routing, token usage, and delivery health |
+| `prometheus.yml` | Demo scrape and rule configuration |
+| `grafana/provisioning/` | Auto-provisioned Prometheus datasource and dashboard provider |
+
+## Run the complete stack
+
+From the repository root:
+
+```sh
+make -C examples/demo observe
+```
+
+Open Prometheus at `http://localhost:9091` and Grafana at
+`http://localhost:3000` (`admin` / `admin`). The demo pins its Prometheus and
+Grafana images in `examples/demo/compose.yaml` for reproducibility.
 
 ## Setup Steps
 
@@ -54,8 +70,8 @@ route:
 
 ## Metric Naming Convention
 
-llm-gateway names metrics as `llm_gateway.<component>.<name>` (see `internal/metric/names.go`);
-when landed in Prometheus, `.` becomes `_`, so the alert expressions here all use the underscore form.
+Metric names use the Prometheus-native `llm_gateway_<component>_<name>` form
+(see `internal/metric/names.go`).
 
 Label dimensions: `vendor` / `model` / `class` / `endpoint_id` / `result` / `scope`,
 which appear on different parts of a metric depending on context. Check the Inc/Observe calls in `internal/metric/recorder.go` to confirm.
@@ -67,18 +83,11 @@ The alert thresholds are empirical values; tune them for your workload:
 | Alert | Default Threshold | When to Adjust |
 |---|---|---|
 | UpstreamHighErrorRate | 10% / 5min | Lower to 5% for low tolerance / raise to 20% for high tolerance |
-| HttpLatencyP99High | 5000ms | Raise to 30000ms for long streaming output scenarios |
+| HttpLatencyP99High | 5s | Raise to 30s for long streaming output scenarios |
 | RateLimitHighRejection | 20% / 5min | Raise to 50% to reduce noise in scenarios with frequent, known rate limiting |
 | CooldownStorm | 5 ep/sec | Lower to 2 when the endpoint pool is small (< 10) |
 
-## Dashboard
-
-dashboard.json is left empty (schema differs across Grafana versions; build your own panels based on the alerts).
-Recommended panel dimensions:
-
-- Total RPS (broken down by vendor / model)
-- End-to-end p50 / p99 latency
-- Error rate stacked by ErrorClass
-- Endpoint cooldown status timeline
-- Usage outbox publish lag
-- Cost overview (by model)
+Cost is intentionally not computed in Prometheus: pricing is mutable business
+data and belongs in the metering pipeline. The dashboard focuses on operational
+signals with bounded labels; do not add API keys, account IDs, request IDs, or
+raw model input as metric labels.

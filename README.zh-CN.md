@@ -4,16 +4,93 @@
 
 [![codecov](https://codecov.io/gh/Zereker/llm-gateway/graph/badge.svg)](https://codecov.io/gh/Zereker/llm-gateway)
 
-一个基于 Go 实现的网关，将 LLM API 请求路由到多个上游供应商
-（OpenAI、Anthropic、Google、AWS Bedrock、自建的 vLLM / Ollama 等），
-对外统一暴露 OpenAI 兼容接口。
+**面向企业 LLM 流量、策略感知、兼容 OpenAI 的运行时网关。**
+
+`llm-gateway` 为平台团队提供统一的运行时治理点，在托管模型与自建模型之上
+集中处理认证、路由、配额、内容治理、计量、审计和可观测性。它采用控制面与
+数据面分离的设计，而不是一个简单的反向代理。
+
+[快速开始](#快速开始) · [架构文档](docs/architecture/) ·
+[演进路线](docs/ROADMAP.md) · [性能基准](examples/benchmark/) ·
+[English](README.md)
+
+## 为什么选择 llm-gateway
+
+- **统一客户端契约：** OpenAI、Anthropic 等请求协议进入同一条路由流水线，
+  并可转换为不同的上游协议。
+- **可靠的模型流量治理：** 能力过滤、配额预占、P2C、冷却、成功率/延迟评分、
+  重试以及显式跨模型 fallback。
+- **受治理的访问：** 账号订阅、API Key 与账号双层配额、输入/输出 moderation、
+  内容日志和用量事件。
+- **独立控制面：** 可选 Console 管理模型、Endpoint、密钥、策略、价格和审计，
+  但不成为数据面的运行依赖。
+- **默认可运维：** Prometheus 指标、结构化 Trace、就绪探针、上游凭证加密，
+  以及可插拔 SQL/Redis/Kafka 基础设施。
+
+```text
+应用 / SDK
+    │  OpenAI / Anthropic 兼容 API
+    ▼
+┌──────────────────── llm-gateway 数据面 ─────────────────────┐
+│ 认证 → Catalog → 配额 → Moderation → Dispatch → 用量 / Trace │
+│                                      │                      │
+│                          过滤 → 评分 → 重试/fallback         │
+└──────────────────────────────────────┼──────────────────────┘
+                                       ▼
+                  OpenAI · Anthropic · Gemini · Bedrock
+                  OpenAI 兼容服务 · vLLM · Ollama
+
+             Console 控制面 ── MySQL ── 数据面缓存
+```
+
+## 当前能力
+
+| 领域 | 已实现能力 |
+|---|---|
+| API | OpenAI Chat/Responses、Anthropic Messages、Embedding、图片、音频 |
+| 上游 | OpenAI 兼容服务、Anthropic、Gemini/Vertex、Bedrock、Cohere、Azure OpenAI |
+| 路由 | weighted/P2C、并发感知、冷却、动态评分、重试、显式模型 fallback |
+| 治理 | API Key 认证、账号订阅、双层配额、moderation chain、内容日志、写操作审计 |
+| 运维 | Admin API + Web Console、Prometheus、OTel/slog Trace、用量 Outbox、Helm 示例 |
+
+规则驱动的 Virtual Model、带作用域的 Prompt Policy 和企业身份体系仍属于演进
+路线，不作为当前已完成功能宣传。
+
+## 快速开始
+
+使用 Docker 运行完整 Demo。它会启动 MySQL、Redis、Gateway、Web Console、
+Mock LLM 上游，并自动完成数据库迁移和幂等初始化：
+
+```sh
+make -C examples/demo up
+```
+
+命令会通过 Gateway 发起一次真实请求并打印响应。启动完成后：
+
+- Gateway：`http://localhost:8080`
+- Console：`http://localhost:8081`，Token 为 `demo-admin-token`
+- Demo API Key：`sk-demo-llm-gateway`
+
+```sh
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-demo-llm-gateway" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"mock-openai-model","messages":[{"role":"user","content":"你好！"}]}'
+
+make -C examples/demo down
+```
+
+Demo 使用仓库自带的 Mock 上游和仅供开发的固定凭据，不会调用真实模型供应商。
+它的 Compose、Dockerfile、配置和生命周期命令均收口在
+[`examples/demo`](examples/demo/) 中。
 
 ## 状态
 
-一个 LLM API 网关的 Go 实现。架构目标记录在
-[`docs/architecture`](docs/architecture/) 中。
+核心数据面、控制面和多供应商协议路径已经实现。架构契约记录在
+[`docs/architecture`](docs/architecture/) 中；产品演进与验收标准记录在
+[`roadmap`](docs/ROADMAP.md) 中。
 
-## 数据面结构
+## 数据面内部结构
 
 ```
 HTTP request
@@ -65,8 +142,9 @@ docs/architecture/    设计文档（00-overview 至 08-observability）
 configs/              per-environment 配置（local / prod / docker）
 ```
 
-## 快速开始
+## 本地开发流程
 
+当你需要在宿主机运行 Go 进程参与开发时使用这套流程，而不是完整 Demo。
 生产环境应先运行 `make run-migrate`。local/docker 配置为了开发便利显式开启
 `database.auto_migrate`。
 业务数据（model_services / endpoints / api_keys / pricing / quota_policies /
