@@ -87,6 +87,47 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	if code != 201 || cost["routing_cost"].(map[string]any)["version"].(float64) != 1 {
 		t.Fatalf("publish routing cost: code=%d body=%v", code, cost)
 	}
+	profileID := cost["routing_cost"].(map[string]any)["profile_id"].(string)
+
+	for name, input := range map[string]RoutingCostInput{
+		"empty cost":     {ModelServiceID: modelID},
+		"missing model":  {ModelServiceID: modelID + 999, InputMicrousdPerMillionToken: 1},
+		"wrong owner ID": {ProfileID: "rcp_other", ModelServiceID: modelID, InputMicrousdPerMillionToken: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if code, body := do(t, engine, "POST", "/admin/routing-costs", input, true); code != 400 {
+				t.Fatalf("code=%d body=%v", code, body)
+			}
+		})
+	}
+
+	code, cost = do(t, engine, "POST", "/admin/routing-costs", RoutingCostInput{
+		ProfileID: profileID, ModelServiceID: modelID,
+		InputMicrousdPerMillionToken: 90, OutputMicrousdPerMillionToken: 180,
+	}, true)
+	if code != 201 || cost["routing_cost"].(map[string]any)["version"].(float64) != 2 {
+		t.Fatalf("publish routing cost v2: code=%d body=%v", code, cost)
+	}
+
+	basePolicy := RoutingPolicyInput{
+		Scope:        domain.RoutingScope{Kind: domain.RoutingScopeAccount, ID: "a1"},
+		VirtualModel: "invalid-objective", Candidates: []domain.RoutingPolicyCandidate{{Model: "small"}},
+	}
+	invalidObjectives := map[string]domain.RoutingObjectives{
+		"exploration overflow": {ExplorationPermille: 1001},
+		"latency target":       {LatencyWeight: 1},
+		"cost target":          {CostWeight: 1, EstimatedInputTokens: 1},
+		"cost estimate":        {CostWeight: 1, TargetCostMicrousd: 1},
+	}
+	for name, objectives := range invalidObjectives {
+		t.Run(name, func(t *testing.T) {
+			input := basePolicy
+			input.Objectives = objectives
+			if code, body := do(t, engine, "POST", "/admin/routing-policies", input, true); code != 400 {
+				t.Fatalf("code=%d body=%v", code, body)
+			}
+		})
+	}
 
 	policy := RoutingPolicyInput{
 		Scope:        domain.RoutingScope{Kind: domain.RoutingScopeAccount, ID: "a1"},
@@ -114,6 +155,12 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	}
 
 	chat := domain.ModalityChat
+	if code, body := do(t, engine, "POST", "/admin/routing-policies/dry-run", RoutingDryRunInput{
+		AccountID: "a1", RequestedModel: "fast-chat",
+	}, true); code != 400 {
+		t.Fatalf("invalid dry-run: code=%d body=%v", code, body)
+	}
+
 	code, dryRun := do(t, engine, "POST", "/admin/routing-policies/dry-run", RoutingDryRunInput{
 		AccountID: "a1", RequestedModel: "fast-chat", Modality: &chat,
 		Telemetry: map[string][]routingpolicy.EndpointTelemetry{"small": {{
@@ -132,7 +179,7 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	if score["latency_source"] != "observed" || score["cost_source"] != "configured" {
 		t.Fatalf("dry-run score=%v", score)
 	}
-	if code, listedCosts := do(t, engine, "GET", "/admin/routing-costs", nil, true); code != 200 || len(listedCosts["routing_costs"].([]any)) != 1 {
+	if code, listedCosts := do(t, engine, "GET", "/admin/routing-costs", nil, true); code != 200 || len(listedCosts["routing_costs"].([]any)) != 2 {
 		t.Fatalf("list routing costs: code=%d body=%v", code, listedCosts)
 	}
 

@@ -28,12 +28,14 @@ func (s *stubCosts) GetActive(_ context.Context, id int64) (*domain.RoutingCostP
 
 type stubTelemetry struct {
 	models map[string][]EndpointTelemetry
+	err    error
 	calls  int
 }
 
 func (s *stubTelemetry) ForModel(_ context.Context, model, _ string) ([]EndpointTelemetry, error) {
 	s.calls++
-	return s.models[model], nil
+
+	return s.models[model], s.err
 }
 
 func (s stubPolicies) GetEffective(context.Context, string, string, string) (*domain.RoutingPolicy, error) {
@@ -314,5 +316,64 @@ func TestResolveAllIneligibleSkipsObjectiveDependencies(t *testing.T) {
 	}
 	if resolution.Decision.Reason != domain.RoutingReasonNoEligibleCandidate || costs.calls != 0 || telemetry.calls != 0 {
 		t.Fatalf("resolution=%+v cost_calls=%d telemetry_calls=%d", resolution, costs.calls, telemetry.calls)
+	}
+}
+
+func TestResolveObjectiveDependencyFailuresAreFailClosed(t *testing.T) {
+	policy := basePolicy()
+	policy.Candidates = []domain.RoutingPolicyCandidate{{Model: "small"}}
+	models := stubCatalog{models: map[string]*domain.ModelService{"small": {ID: 1, Model: "small"}}}
+	subscriptions := stubSubscriptions{allowed: map[int64]bool{1: true}}
+
+	tests := map[string]Option{
+		"telemetry": WithObjectives(nil, &stubTelemetry{err: errors.New("telemetry unavailable")}),
+		"cost":      WithObjectives(&stubCosts{err: errors.New("cost unavailable")}, nil),
+	}
+	for name, option := range tests {
+		t.Run(name, func(t *testing.T) {
+			policyCopy := *policy
+			if name == "telemetry" {
+				policyCopy.Objectives = domain.RoutingObjectives{LatencyWeight: 1, TargetLatencyMs: 100}
+			} else {
+				policyCopy.Objectives = domain.RoutingObjectives{CostWeight: 1, TargetCostMicrousd: 1, EstimatedInputTokens: 1}
+			}
+			resolution, err := NewResolver(stubPolicies{policy: &policyCopy}, models, subscriptions, option).
+				Resolve(context.Background(), Input{RequestedModel: "fast-chat", Modality: domain.ModalityChat})
+			if err == nil || resolution.Decision.Reason != domain.RoutingReasonPolicyUnavailable {
+				t.Fatalf("resolution=%+v err=%v", resolution, err)
+			}
+		})
+	}
+}
+
+func TestValidateObjectivesRejectsIncompleteConfiguration(t *testing.T) {
+	tests := map[string]domain.RoutingObjectives{
+		"exploration overflow": {ExplorationPermille: 1001},
+		"latency target":       {LatencyWeight: 1},
+		"cost target":          {CostWeight: 1, EstimatedInputTokens: 1},
+		"cost estimate":        {CostWeight: 1, TargetCostMicrousd: 1},
+	}
+	for name, objectives := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := validateObjectives(objectives); err == nil {
+				t.Fatal("validateObjectives succeeded")
+			}
+		})
+	}
+
+	if err := validateObjectives(domain.RoutingObjectives{
+		LatencyWeight: 1, CostWeight: 1, TargetLatencyMs: 100,
+		TargetCostMicrousd: 1, EstimatedOutputTokens: 1, ExplorationPermille: 1000,
+	}); err != nil {
+		t.Fatalf("valid objectives rejected: %v", err)
+	}
+}
+
+func TestObjectiveScoreBounds(t *testing.T) {
+	if ratioScore(10, 0) != 1 || ratioScore(10, 20) != 0.5 {
+		t.Fatal("ratioScore boundary behavior changed")
+	}
+	if clamp01(-1) != 0 || clamp01(2) != 1 || clamp01(0.25) != 0.25 {
+		t.Fatal("clamp01 boundary behavior changed")
 	}
 }

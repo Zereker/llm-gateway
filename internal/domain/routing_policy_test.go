@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestModelRoutingDecisionRepresentsExistingConcreteFallback(t *testing.T) {
 	decision := ModelRoutingDecision{
@@ -106,6 +109,52 @@ func TestModelRoutingDecisionRejectsMalformedResolverOutput(t *testing.T) {
 			mutate(&decision)
 			if err := decision.Validate(); err == nil {
 				t.Fatal("Validate() succeeded for malformed decision")
+			}
+		})
+	}
+}
+
+func TestModelRoutingDecisionValidatesScoreExplanation(t *testing.T) {
+	newDecision := func() ModelRoutingDecision {
+		return ModelRoutingDecision{
+			RequestedModel: "fast-chat", VirtualModel: true,
+			Outcome: RoutingOutcomeResolved, Reason: RoutingReasonVirtualPolicyMatched,
+			Policy: &RoutingPolicyRef{ID: "rp_fast", Version: 2},
+			Candidates: []RoutingCandidateDecision{{
+				Model: "small", Source: RoutingCandidatePolicy, Eligible: true,
+				Reason: RoutingReasonVirtualPolicyMatched,
+				Score: &RoutingScoreExplanation{
+					LatencySource: RoutingSignalObserved, CostSource: RoutingSignalConfigured,
+					LatencyScore: 0.8, CostScore: 0.7, TotalScore: 0.75,
+					CostProfile: &RoutingCostProfileRef{ID: "rcp_small", Version: 3},
+				},
+			}},
+		}
+	}
+
+	if err := newDecision().Validate(); err != nil {
+		t.Fatalf("valid score rejected: %v", err)
+	}
+
+	tests := map[string]func(*RoutingScoreExplanation){
+		"missing latency source": func(s *RoutingScoreExplanation) { s.LatencySource = "" },
+		"missing cost source":    func(s *RoutingScoreExplanation) { s.CostSource = "" },
+		"negative latency":       func(s *RoutingScoreExplanation) { s.LatencyScore = -0.1 },
+		"cost above one":         func(s *RoutingScoreExplanation) { s.CostScore = 1.1 },
+		"total NaN":              func(s *RoutingScoreExplanation) { s.TotalScore = math.NaN() },
+		"total infinity":         func(s *RoutingScoreExplanation) { s.TotalScore = math.Inf(1) },
+		"missing profile ID":     func(s *RoutingScoreExplanation) { s.CostProfile.ID = "" },
+		"missing profile version": func(s *RoutingScoreExplanation) {
+			s.CostProfile.Version = 0
+		},
+	}
+
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			decision := newDecision()
+			mutate(decision.Candidates[0].Score)
+			if err := decision.Validate(); err == nil {
+				t.Fatal("Validate() accepted an invalid score")
 			}
 		})
 	}
