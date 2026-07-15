@@ -1,3 +1,5 @@
+[English](03-endpoint-scheduling.md) | [简体中文](03-endpoint-scheduling.zh-CN.md)
+
 # 03 — Endpoint Scheduling
 
 This document records the M7 endpoint scheduling boundary. The scheduling layer's goal is not to build a generic policy framework, but to reliably deliver a request to one qualified endpoint:

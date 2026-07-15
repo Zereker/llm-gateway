@@ -11,7 +11,7 @@ routing, quota, moderation, metering, audit, and observability across hosted and
 self-hosted models. It is designed as a control plane plus data plane, not as a
 thin reverse proxy.
 
-[Quick start](#quick-start) · [Architecture](docs/architecture/) ·
+[Quick start](#quick-start) · [Documentation](docs/) · [Architecture](docs/architecture/) ·
 [Roadmap](docs/ROADMAP.md) · [Examples](examples/) · [Benchmark](examples/benchmark/) ·
 [中文说明](README.zh-CN.md)
 

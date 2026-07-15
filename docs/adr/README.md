@@ -1,3 +1,5 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 # Architecture Decision Records (ADR)
 
 This directory records **architecture-level** decisions for llm-gateway. Bug fixes / implementation details go through commit messages + PR descriptions; architectural choices, component boundaries, and backward-incompatible changes go through ADRs.

@@ -1,3 +1,5 @@
+[English](02-protocol-translation.md) | [简体中文](02-protocol-translation.zh-CN.md)
+
 # 02 — Protocol Translation
 
 This document records the abstraction and composition of protocol translation: client
