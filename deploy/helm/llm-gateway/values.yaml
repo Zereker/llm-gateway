@@ -27,7 +27,7 @@ gateway:
     type: ClusterIP
     port: 8080
 
-  # Required only for usage_events.driver=file or file_and_kafka. With more
+  # Required only for usage_events.driver=file. With more
   # than one replica, the claim and storage class must support ReadWriteMany.
   usagePersistence:
     enabled: false
@@ -68,8 +68,8 @@ gateway:
       timeout: 120s
     # database / redis are injected from secrets (DSN includes the password)
     usage_events:
-      # The chart does not treat an ephemeral per-Pod file as a durable source
-      # of truth. File-based modes require an explicit persistent volume design;
+      # The chart does not treat an ephemeral per-Pod file as durable storage.
+      # File mode requires an explicit persistent volume design;
       # synchronous Kafka is the safe deployment default here.
       driver: kafka
       file:

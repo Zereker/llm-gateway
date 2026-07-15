@@ -50,19 +50,16 @@ vendors:
 data_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 usage_events:
-  # Downstream channel for usage events (Transactional Outbox Pattern implementation, internal/usage.DualWriteOutbox).
-  # Production recommendation: file_and_kafka — file is the source of truth, Kafka broadcasts asynchronously; no data loss if the broker goes down.
-  # Other available drivers: file (local only) / kafka (Kafka only, not recommended) / async_kafka (Kafka + retry + DLQ)
-  driver: file_and_kafka
-  file:
-    path: /var/log/llm-gateway/usage.jsonl
+  # Available drivers: file (local JSONL) and kafka. kafka.async=false waits
+  # for broker acknowledgement; true uses an in-memory retry queue and optional DLQ.
+  driver: kafka
   kafka:
     brokers: ["kafka-1.internal:9092", "kafka-2.internal:9092", "kafka-3.internal:9092"]
     # Topic naming follows "domain.entity.event.version", decoupled from the producer service name
     topic: billing.usage.recorded.v1
-    async: true
+    async: false
     dlq_topic: billing.usage.recorded.v1.dlq
-  # To switch back to file, just comment out driver and set it to file:
+  # File mode does not mirror or replay to Kafka:
   # driver: file
   # file:
   #   path: /var/log/llm-gateway/usage.log

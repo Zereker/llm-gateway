@@ -36,6 +36,10 @@ const DriverNone = "none"
 // several independent driver: fields (usage_events, content_log).
 const DriverFile = "file"
 
+// DriverKafka is the acknowledged or optionally asynchronous usage-event
+// publisher selected by UsageEvents.Kafka.Async.
+const DriverKafka = "kafka"
+
 // DriverOpenAI is the shared "real OpenAI-compatible API" driver value across
 // the config's several independent driver: fields (moderation, embedder).
 // Exported so internal/app/gateway's wiring switch (which must construct the
@@ -294,20 +298,14 @@ type PathsConfig struct{}
 // pattern name and isn't exposed on the yaml surface.
 //
 //	driver:
-//	  file            — writes only local JSONL, no downstream broadcast (dev / fallback)
-//	  kafka           — writes only Kafka, no local copy (not recommended: broker down = data lost)
-//	  async_kafka     — Kafka + in-memory buffer + retry + DLQ (survives short broker
-//	                    blips, still loses data on a prolonged outage)
-//	  file_and_kafka  — **recommended for production**: file is the source of
-//	                    truth (sync commit), Kafka is a best-effort async
-//	                    broadcast; a broker outage loses no data, since an
-//	                    external replay tool can read the file and resend to Kafka
+//	  file  — appends local JSONL; storage durability and collection belong to the operator
+//	  kafka — publishes to Kafka; kafka.async selects synchronous acknowledgement
+//	          or an in-memory best-effort queue with retry and optional DLQ
 //
 // Field usage:
 //
-//	driver=file               → reads file.path
-//	driver=kafka|async_kafka  → reads kafka.{brokers, topic, ...}
-//	driver=file_and_kafka     → reads both file.path and kafka.{brokers, topic, ...}
+//	driver=file  → reads file.path
+//	driver=kafka → reads kafka.{brokers, topic, async, ...}
 //
 // Fields belonging to the other branches are ignored.
 type UsageEventsConfig struct {
@@ -339,7 +337,7 @@ type FileOutboxSection struct {
 type KafkaOutboxSection struct {
 	infra.KafkaConfig `yaml:",inline"`
 	Topic             string        `yaml:"topic"`
-	Async             bool          `yaml:"async"`        // true = use AsyncKafkaOutbox (recommended for production)
+	Async             bool          `yaml:"async"`        // true = in-memory best-effort queue; false = wait for broker acknowledgement
 	BufferSize        int           `yaml:"buffer_size"`  // channel capacity in async mode; 0 = default 1024
 	MaxRetries        int           `yaml:"max_retries"`  // max retries per event in async mode; 0 = default 3
 	BackoffBase       time.Duration `yaml:"backoff_base"` // exponential backoff starting point; 0 = default 200ms
@@ -533,29 +531,16 @@ func (c *Config) Validate() error {
 	switch c.UsageEvents.Driver {
 	case "", DriverFile:
 		// the file driver doesn't need the kafka section; file.path is backstopped by ApplyDefaults
-	case "kafka", "async_kafka":
+	case DriverKafka:
 		if len(c.UsageEvents.Kafka.Brokers) == 0 {
-			return errors.New("usage_events.driver=" + c.UsageEvents.Driver + " requires kafka.brokers non-empty")
+			return errors.New("usage_events.driver=kafka requires kafka.brokers non-empty")
 		}
 
 		if c.UsageEvents.Kafka.Topic == "" {
-			return errors.New("usage_events.driver=" + c.UsageEvents.Driver + " requires kafka.topic")
-		}
-	case "file_and_kafka":
-		// dual-write: requires both file and kafka to be configured
-		if c.UsageEvents.File.Path == "" {
-			return errors.New("usage_events.driver=file_and_kafka requires file.path non-empty (source of truth)")
-		}
-
-		if len(c.UsageEvents.Kafka.Brokers) == 0 {
-			return errors.New("usage_events.driver=file_and_kafka requires kafka.brokers non-empty")
-		}
-
-		if c.UsageEvents.Kafka.Topic == "" {
-			return errors.New("usage_events.driver=file_and_kafka requires kafka.topic")
+			return errors.New("usage_events.driver=kafka requires kafka.topic")
 		}
 	default:
-		return fmt.Errorf("usage_events.driver=%q not supported (use file|kafka|async_kafka|file_and_kafka)", c.UsageEvents.Driver)
+		return fmt.Errorf("usage_events.driver=%q not supported (use file|kafka)", c.UsageEvents.Driver)
 	}
 
 	switch c.ContentLog.Driver {

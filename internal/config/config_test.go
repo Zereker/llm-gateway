@@ -190,6 +190,38 @@ func TestValidate_RejectsUnknownDrivers(t *testing.T) {
 	}
 }
 
+func TestValidate_UsageDriverContract(t *testing.T) {
+	tests := []struct {
+		name    string
+		driver  string
+		brokers []string
+		topic   string
+		wantErr bool
+	}{
+		{name: "file", driver: DriverFile},
+		{name: "kafka", driver: DriverKafka, brokers: []string{"broker:9092"}, topic: "usage.v1"},
+		{name: "kafka requires brokers", driver: DriverKafka, topic: "usage.v1", wantErr: true},
+		{name: "kafka requires topic", driver: DriverKafka, brokers: []string{"broker:9092"}, wantErr: true},
+		{name: "legacy async alias rejected", driver: "async_kafka", wantErr: true},
+		{name: "false transactional dual write rejected", driver: "file_and_kafka", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg Config
+			cfg.ApplyDefaults()
+			cfg.UsageEvents.Driver = tt.driver
+			cfg.UsageEvents.Kafka.Brokers = tt.brokers
+			cfg.UsageEvents.Kafka.Topic = tt.topic
+
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestBundledGatewayConfigsParseStrictly(t *testing.T) {
 	for _, path := range []string{
 		"../../examples/local/configs/gateway.yaml",

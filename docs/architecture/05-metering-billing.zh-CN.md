@@ -102,7 +102,7 @@ gateway ──→ content.jsonl ──→ fluent-bit / vector ──┬─→ S3
 |尺寸|使用事件 (§3-5) |内容日志（本节）|
 |------|---------------------|---------------------|
 |自然 |财务对账所依赖的商业事件 |日志/审计 |
-|后端 | `file` / `kafka` / `async_kafka` | `file`（网关唯一出口）|
+|后端 | `file` / `kafka` | `file`（网关唯一出口）|
 |下游|计费平台（单一消费者）|多个接收器，由 fluid-bit 呈扇形分布 |
 |损失成本|严重（错过账单）|采样/丢弃最旧的是可以容忍的 |
 |架构演变| `schema_version` + 双写切换主题 |由 JSONL 字段演变而来；消费者容忍未知领域|
@@ -246,39 +246,31 @@ type UsageEvent struct {
 
 M10 使用 `context.Background()` 进行发布并设置超时，以避免客户端断开连接而导致用量被写出。发布失败不影响业务响应。
 
-实施：
+实现：
 
-- `file`：JSONL追加，仅适合本地开发/单机部署。
-- `kafka`：同步生产者，没有本地副本（如果代理宕机，它就会丢失；不推荐）。
-- `async_kafka`：缓冲、重试、退避、DLQ 主题；短暂的经纪商信号可以被挽救，但在长时间的停机期间它仍然会丢失。
-- `file_and_kafka`：**建议用于生产** - 事务Outbox模式。文件是真相的来源
-  （同步提交），Kafka是异步广播（尽力而为）。代理故障域与
-  磁盘故障域，因此它们不会同时发生故障；当代理关闭时，文件已经被
-  已提交，并且外部重播工具读取该文件以将丢失的事件重新发送到
-  Kafka（消费端通过`event_id`进行幂等去重）。
+- `file`：JSONL 追加，适合本地、单机或明确配置持久卷的部署。
+- `kafka` 且 `async: false`：Publish 返回前等待 Broker 确认。
+- `kafka` 且 `async: true`：使用内存缓冲、重试、退避与可选 DLQ；可以吸收短暂抖动，但进程故障或 Broker 长时间不可用时仍可能丢失队列中的事件。
+
+文件 Sink 不是事务 Outbox：它没有数据库事务、投递游标、确认状态或重放 Worker。
+需要财务级投递保证时，应使用同步 Kafka 并正确配置 Broker 持久性，或者在计费系统
+边界内引入数据库事务 Outbox。
 
 失败语义：
 
 |司机 |失效模式|默认行为 |可观察性|
 |--------|----------|----------|--------|
 | `file` |磁盘已满/IO错误|删除事件+错误日志| `llm_gateway_usage_publish_total{backend="file",result="error"}` |
-| `kafka` |经纪人/领导者/网络不可用|重试直到发布超时，然后在失败时删除事件+错误日志 | `llm_gateway_usage_publish_total{backend="kafka",result="error"}` |
-| `async_kafka` |缓冲区已满 |默认删除最旧的；可以配置为阻塞，但必须有超时 | `llm_gateway_outbox_dropped_total{driver="async_kafka"}` / 缓冲区深度 |
-| `async_kafka` |重试已用尽|写入DLQ主题；如果 DLQ 失败，错误日志 + 指标 | `llm_gateway_outbox_dlq_total` |
-| `file_and_kafka` |经纪人/网络不可用|文件已提交； Kafka 异步重试，然后在重试次数耗尽后写入 DLQ（如果已配置）或仅写入一个指标； **无数据丢失** | `llm_gateway_outbox_kafka_publish_error_total` |
-| `file_and_kafka` |磁盘已满/IO错误| **严重** — 文件提交失败；仍然尝试 Kafka 但返回错误； M10 计数 `usage.publish.error` | `llm_gateway_outbox_file_error_total` |
-| `file_and_kafka` |双重失败|文件错误返回M10； Kafka 错误被纳入指标 |上述两个指标同时递增 |
-
-为什么不重用 `async_kafka + DLQ` 而不是 `file_and_kafka`：DLQ 位于与主要主题**相同的代理集群**上，因此如果代理完全关闭，则也无法写入 DLQ。 `file_and_kafka` 将文件和代理放在不同的故障域中，因此代理故障不会丢失数据。在双写下，DLQ 降级为“单消息级错误回退”（broker 在线，但消息本身有问题——太大、schema 无效、ACL 拒绝等），这是可选的，不是必需的。
+| `kafka`、`async: false` | Broker、Leader 或网络不可用 | Producer 超时后返回错误，M10 记录失败 | `llm_gateway_usage_publish_total{backend="kafka",result="error"}` |
+| `kafka`、`async: true` | 缓冲区已满 | 阻塞到队列有空间或发布 Context 超时 | 队列深度 Gauge 与发布错误指标 |
+| `kafka`、`async: true` | 重试耗尽 | 写入可选 DLQ；DLQ 也失败时记录日志并增加丢弃指标 | `llm_gateway_outbox_dlq_total` / `llm_gateway_outbox_dropped_total{driver="kafka_async"}` |
 
 可靠性要求：
 
-- 使用事件是计费输入，并且必须优先考虑可补偿。
-- 网关不得因为短暂的Outbox故障而阻止用户响应。
-- `file`驱动仅适合本地开发或临时故障排除。
-- 生产必须使用`file_and_kafka`：文件提供持久性回退，Kafka提供低延迟广播；并监控
-  `outbox_file_error_total`（严重，磁盘问题），`outbox_kafka_publish_error_total`（数据
-  安全但需要重播），以及 Kafka 消费者滞后。
+- 用量事件是计费输入，因此生产默认值应优先选择有确认的投递，而不是最低延迟。
+- `file` 驱动要求部署方明确设计持久化、轮转、采集与重放。
+- 异步 Kafka 是 best-effort，不能描述为无损；必须监控队列深度、丢弃事件、DLQ 与消费延迟。
+- 未来的事务 Outbox 必须在同一个数据库事务中原子提交业务状态和投递状态。
 
 ## 6. 定价
 
@@ -331,7 +323,7 @@ M10目前记录：
 |资格过滤持续时间|型号|资格过滤性能|
 |策略缓存命中|层，结果 |配额策略缓存命中率|
 |Outbox发布延迟 |驱动程序，结果 |Outbox写入延迟 |
-|Outbox缓冲区深度 |司机 | `async_kafka` 缓冲区占用 |
+|Outbox缓冲区深度 |司机 | `kafka_async` 缓冲区占用 |
 |限速收费结果|维度，结果 |了解 TPM 充电后故障 |
 | tpm 溢出 |层、维度 | TPM 后充电超过配置上限的次数 |
 

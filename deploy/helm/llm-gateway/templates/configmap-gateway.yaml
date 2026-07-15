@@ -21,11 +21,11 @@ data:
       db: 0
     usage_events:
       driver: {{ $cfg.usage_events.driver | quote }}
-      {{- if or (eq $cfg.usage_events.driver "file") (eq $cfg.usage_events.driver "file_and_kafka") }}
+      {{- if eq $cfg.usage_events.driver "file" }}
       file:
         path: {{ $cfg.usage_events.file.path | quote }}
       {{- end }}
-      {{- if or (eq $cfg.usage_events.driver "kafka") (eq $cfg.usage_events.driver "async_kafka") (eq $cfg.usage_events.driver "file_and_kafka") }}
+      {{- if eq $cfg.usage_events.driver "kafka" }}
       kafka:
         brokers: {{ $cfg.usage_events.kafka.brokers | toJson }}
         topic: {{ $cfg.usage_events.kafka.topic | quote }}

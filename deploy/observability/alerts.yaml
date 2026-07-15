@@ -138,10 +138,6 @@ groups:
           sum(rate(llm_gateway_usage_publish_total{result=~"error|exhausted"}[5m]))
             +
           sum(rate(llm_gateway_outbox_dropped_total[5m]))
-            +
-          sum(rate(llm_gateway_outbox_file_error_total[5m]))
-            +
-          sum(rate(llm_gateway_outbox_kafka_publish_error_total[5m]))
             > 1
         for: 5m
         labels:

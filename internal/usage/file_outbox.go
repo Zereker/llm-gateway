@@ -11,8 +11,9 @@ import (
 
 // FileOutbox appends OutboxEvent.Payload to a local file in JSONL format.
 //
-// Design goals: source of truth (write failures must be transparently
-// propagated) + high throughput (target 10k+ QPS).
+// Design goals: transparent write failures + high throughput (target 10k+ QPS).
+// This is an append sink, not a transactional outbox: it has no acknowledgement
+// cursor, replay worker, or atomic relationship with application state.
 //
 // Performance notes:
 //
@@ -31,8 +32,7 @@ import (
 //
 // Not written via log/slog: slog's `Handler.Handle()` error is swallowed by
 // `_ = ...`, so the caller has no way to know whether the write actually
-// succeeded — which violates the observability requirement of being a
-// source of truth. See docs/05 §5 for details.
+// succeeded. See docs/05 §5 for details.
 type FileOutbox struct {
 	mu sync.RWMutex // guards f against Close racing with concurrent Publish
 	// (on the shutdown-timeout path a handler goroutine may still be in

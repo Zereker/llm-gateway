@@ -57,7 +57,10 @@ repo interface -> middleware-only contract leakage
 | OTel 采集器 |当跟踪驱动程序为 `otel` 时使用可选|
 | OpenAI 审核 API |当审核驱动程序为 `openai` 时使用 |可选|
 
-数据库模式的真实来源是 `internal/infra/schema.sql`。网关仅运行 `repo.CheckSchema` — 它不会自动迁移，也不会创建表。
+数据库 Schema 来源是 `internal/infra/schema.sql`。Gateway 启动时先运行
+`infra.Migrate`，校验已记录的 Schema 版本，再在接收流量前运行
+`repo.CheckSchema`。因此启动阶段需要 DDL 权限；Schema 演进方式与当前限制见
+[07 §3](./07-configuration.zh-CN.md#3架构迁移)。
 
 定价不会在网关的热路径上进行主动价格查找；价格匹配和金额计算由下游计费平台根据请求发生的时间进行。
 
@@ -445,20 +448,21 @@ M8的主要扩展点是`policy.Engine`，注入
 
 ## 11. 记录/使用事件
 
-使用事件通过 `usage_events.driver` 选择，这是四个互斥的驱动程序（通过Outbox模式、`internal/usage.OutboxPublisher` 接口实现）：
+使用事件通过 `usage_events.driver` 选择，目前有两个互斥驱动（通过 `internal/usage.OutboxPublisher` 接口实现）：
 
-- `file`：本地JSONL追加；仅适用于本地开发或临时故障排除。
-- `kafka`：同步Kafka生产者；仅在发布完成后返回 - 延迟较高，没有本地副本。
-- `async_kafka`：异步缓冲区+重试+退避+DLQ主题；可以承受经纪商短暂的波动。
-- `file_and_kafka`：**推荐用于生产**——事务Outbox模式；文件的来源是
-  真相（同步提交），Kafka是异步广播（尽力而为，重用AsyncKafkaOutbox）。
-  如果经纪商宕机，仍然可以提交；外部重播工具读取文件以重新发布。
+- `file`：本地 JSONL 追加；持久化、采集和重放由部署方负责。
+- `kafka`：`async: false` 等待 Broker 确认；`async: true` 使用内存 best-effort 重试队列与可选 DLQ。
+
+两种模式都不是数据库事务 Outbox。文件实现没有投递状态或重放 Worker，异步 Kafka
+队列也可能在进程故障时丢失缓冲事件。
 
 有关完整配置模式，请参阅 [07-configuration §2 `usage_events`](./07-configuration.zh-CN.md#2-gatewayyaml)，有关故障语义，请参阅 [05-metering-billing §5](./05-metering-billing.zh-CN.md#5-usage-outbox)。
 
 内容日志是一个单独的通道，并且不重用使用事件架构。内容记录器可以通过 `upstream.WithHooks(...)` 连接。
 
-`async_kafka`的缓冲区、最大重试次数、回退和DLQ主题在`usage_events.kafka.*`配置块中声明（`file_and_kafka`重用这些字段来配置Kafka端）。生产者关闭由 `internal/server` 集中管理（请参阅§12 优雅关闭命令）。
+Kafka 的异步缓冲区、最大重试次数、退避和 DLQ 主题在
+`usage_events.kafka.*` 配置块中声明。Producer 关闭由 `internal/server`
+集中管理（请参阅 §12 优雅关闭顺序）。
 
 ## 12. 追踪
 
@@ -507,7 +511,7 @@ OTel属性命名优先遵循OpenTelemetry `gen_ai.*` / HTTP semconv标准；当
 
 1. 收到SIGTERM/SIGINT后，HTTP服务器停止接受新请求。
 2.等待正在进行的请求完成，以`server.shutdown_timeout`为界，默认30秒。
-3. 冲洗并关闭`async_kafka`生产者/Outbox。
+3. 启用异步 Kafka 时，排空并关闭其 Producer / Publisher。
 4. 关闭Redis 客户端。
 5. 关闭数据库池。
 

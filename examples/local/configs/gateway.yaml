@@ -133,22 +133,17 @@ health:
   recover_cooldown: false
 
 usage_events:
-  # Transactional Outbox Pattern: file is the source of truth (sync commit),
-  # Kafka is the best-effort async broadcast. Commits still succeed even if the
-  # broker is down; an external replay tool reads the file to redeliver missing
-  # events to Kafka (see docs/05 §5 for details).
-  # Name topics as "domain.entity.event.version", decoupled from the producer service name.
-  driver: file_and_kafka
+  # Local JSONL sink. This does not mirror to Kafka or provide replay state;
+  # production deployments can select driver=kafka explicitly.
+  driver: file
   file:
-    path: /tmp/llm-gateway-usage.jsonl   # source of truth; rotation handled by external logrotate
+    path: /tmp/llm-gateway-usage.jsonl
   kafka:
     brokers: ["localhost:9092"]
     topic: billing.usage.recorded.v1
-    async: true
+    async: false
     buffer_size: 1024
     max_retries: 3
-    # dlq_topic is optional: file is already the source of truth, DLQ is only for
-    # per-message issues (msg too large / schema invalid)
     dlq_topic: billing.usage.recorded.v1.dlq
 
 content_log:

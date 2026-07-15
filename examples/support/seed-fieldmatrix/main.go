@@ -41,6 +41,8 @@ import (
 	"github.com/zereker/llm-gateway/internal/repo"
 )
 
+const fixtureGroup = "e2e-multivendor"
+
 func main() {
 	dsn := flag.String("dsn", "", "MySQL DSN")
 	dataKey := flag.String("data-key", "", "endpoints.auth KEK (hex 32 bytes)")
@@ -113,7 +115,7 @@ func seedOne(ctx context.Context, db *sqlx.DB, sc vendorfixture.Scenario, mockBa
 		Vendor:   sc.Vendor,
 		Protocol: sc.Protocol,
 		Model:    sc.Model,
-		Group:    "default",
+		Group:    fixtureGroup,
 		Weight:   100,
 		Enabled:  true,
 		Auth:     auth,
@@ -127,7 +129,8 @@ func seedOne(ctx context.Context, db *sqlx.DB, sc vendorfixture.Scenario, mockBa
 		  (:name, :vendor, :protocol, :model, :group_name, :weight, :enabled,
 		   :auth, :routing, :quota, :capabilities, :quirks, :extra)
 		ON DUPLICATE KEY UPDATE
-		  protocol=VALUES(protocol), model=VALUES(model), enabled=VALUES(enabled),
+		  protocol=VALUES(protocol), model=VALUES(model), group_name=VALUES(group_name),
+		  weight=VALUES(weight), enabled=VALUES(enabled),
 		  auth=VALUES(auth), routing=VALUES(routing)`, ep); err != nil {
 		return fmt.Errorf("endpoints: %w", err)
 	}
@@ -138,9 +141,9 @@ func seedOne(ctx context.Context, db *sqlx.DB, sc vendorfixture.Scenario, mockBa
 		  (account_id, api_key_hash, api_key_prefix, api_key_id,
 		   sub_account_id, group_name, enabled)
 		VALUES
-		  ('e2e-multivendor', ?, ?, ?, ?, 'default', 1)
-		ON DUPLICATE KEY UPDATE account_id=account_id`,
-		hash, apiKeyPrefix(sc.ClientAPIKey), "ak_mv_"+sc.Vendor, sc.Vendor+"@e2e-multivendor"); err != nil {
+		  ('e2e-multivendor', ?, ?, ?, ?, ?, 1)
+		ON DUPLICATE KEY UPDATE account_id=VALUES(account_id), group_name=VALUES(group_name), enabled=1`,
+		hash, apiKeyPrefix(sc.ClientAPIKey), "ak_mv_"+sc.Vendor, sc.Vendor+"@e2e-multivendor", fixtureGroup); err != nil {
 		if !isDuplicateErr(err) {
 			return fmt.Errorf("api_keys: %w", err)
 		}

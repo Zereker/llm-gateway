@@ -57,7 +57,11 @@ Target startup dependencies of `cmd/gateway`:
 | OTel collector | used when trace driver is `otel` | Optional |
 | OpenAI moderation API | used when moderation driver is `openai` | Optional |
 
-The DB schema source of truth is `internal/infra/schema.sql`. gateway only runs `repo.CheckSchema` — it does not AutoMigrate and does not create tables.
+The DB schema source is `internal/infra/schema.sql`. Gateway startup runs
+`infra.Migrate`, verifies the recorded schema version, and then runs
+`repo.CheckSchema` before accepting traffic. This requires DDL permission during
+startup; schema evolution and its current limitations are described in
+[07 §3](./07-configuration.md#3-schema-migration).
 
 Pricing does not do active price lookups on the gateway's hot path; price matching and amount calculation are done by the downstream billing platform based on when the request occurred.
 
@@ -442,20 +446,22 @@ supplied policy engine takes precedence over the legacy moderator.
 
 ## 11. Recording / Usage Events
 
-Usage events are selected via `usage_events.driver`, four mutually exclusive drivers (implementation goes through the Outbox Pattern, `internal/usage.OutboxPublisher` interface):
+Usage events are selected via `usage_events.driver`, with two mutually exclusive drivers (implemented through `internal/usage.OutboxPublisher`):
 
-- `file`: local JSONL append; suitable only for local development or ad-hoc troubleshooting.
-- `kafka`: synchronous Kafka producer; only returns once publishing completes — higher latency, no local copy.
-- `async_kafka`: async buffer + retry + backoff + DLQ topic; can survive brief broker jitter.
-- `file_and_kafka`: **recommended for production** — Transactional Outbox Pattern; file is the source of
-  truth (sync commit), Kafka is the async broadcast (best-effort, reuses AsyncKafkaOutbox).
-  Still able to commit if the broker is down; an external replay tool reads the file to re-publish.
+- `file`: local JSONL append; persistence, collection, and replay are operator responsibilities.
+- `kafka`: `async: false` waits for broker acknowledgement; `async: true` uses an in-memory best-effort retry queue and optional DLQ.
+
+Neither mode is a database Transactional Outbox. The file implementation does
+not contain delivery state or a replay worker, and the async Kafka queue can
+lose buffered events on process failure.
 
 See [07-configuration §2 `usage_events`](./07-configuration.md#2-gatewayyaml) for the full config schema, and [05-metering-billing §5](./05-metering-billing.md#5-usage-outbox) for failure semantics.
 
 Content Log is a separate channel, and does not reuse the Usage Event schema. A content recorder can be wired up via `upstream.WithHooks(...)`.
 
-`async_kafka`'s buffer, max retries, backoff, and DLQ topic are declared in the `usage_events.kafka.*` config block (`file_and_kafka` reuses these fields to configure the Kafka side). Producer shutdown is centrally managed by `internal/server` (see §12 graceful shutdown order).
+Kafka's async buffer, max retries, backoff, and DLQ topic are declared in the
+`usage_events.kafka.*` config block. Producer shutdown is centrally managed by
+`internal/server` (see §12 graceful shutdown order).
 
 ## 12. Tracing
 
@@ -504,7 +510,7 @@ Graceful shutdown order:
 
 1. Upon receiving SIGTERM/SIGINT, the HTTP server stops accepting new requests.
 2. Wait for in-flight requests to finish, bounded by `server.shutdown_timeout`, default 30s.
-3. Flush and close the `async_kafka` producer / outbox.
+3. Flush and close the asynchronous Kafka producer / publisher when enabled.
 4. Close the Redis client.
 5. Close the DB pool.
 

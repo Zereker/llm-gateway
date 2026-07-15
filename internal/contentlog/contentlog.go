@@ -66,7 +66,8 @@ type Record struct {
 
 // Publisher is the backend implementation: async buffer + the actual write-out.
 //
-// Same pluggable model as OutboxPublisher: file / kafka / async_kafka.
+// Same pluggable interface style as OutboxPublisher; the supported content-log
+// backend is local JSONL, with downstream fan-out delegated to log collectors.
 type Publisher interface {
 	Publish(ctx context.Context, r *Record) error
 }

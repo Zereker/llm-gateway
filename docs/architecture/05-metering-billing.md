@@ -101,7 +101,7 @@ Comparison with Usage Event:
 | Dimension | Usage Event (§3-5) | Content Log (this section) |
 |------|---------------------|---------------------|
 | Nature | Business event, relied on for financial reconciliation | Log/audit |
-| Backend | `file` / `kafka` / `async_kafka` | `file` (gateway's sole exit) |
+| Backend | `file` / `kafka` | `file` (gateway's sole exit) |
 | Downstream | Billing platform (single consumer) | Multiple sinks, fanned out by fluent-bit |
 | Cost of loss | Severe (missed billing) | Sampling / dropping the oldest is tolerable |
 | Schema evolution | `schema_version` + dual-write to switch topics | Evolves by JSONL field; consumers tolerate unknown fields |
@@ -246,37 +246,31 @@ M10 publishes using `context.Background()` with a timeout, to avoid client disco
 
 Implementations:
 
-- `file`: JSONL append, suitable only for local development / single-machine deployment.
-- `kafka`: synchronous producer, no local copy (if the broker goes down it's simply lost; not recommended).
-- `async_kafka`: buffer, retry, backoff, DLQ topic; short broker blips can be rescued, but it's still lost during a long outage.
-- `file_and_kafka`: **recommended for production** — Transactional Outbox Pattern. file is the source of truth
-  (sync commit), Kafka is an asynchronous broadcast (best-effort). The broker failure domain is orthogonal to the
-  disk failure domain, so they won't fail simultaneously; when the broker is down, the file has already been
-  committed, and an external replay tool reads the file to resend the missing events to
-  Kafka (the consumer side deduplicates idempotently by `event_id`).
+- `file`: JSONL append for local, single-machine, or explicitly managed persistent-volume deployments.
+- `kafka` with `async: false`: waits for broker acknowledgement before Publish returns.
+- `kafka` with `async: true`: uses an in-memory buffer, retry, backoff, and optional DLQ. It can absorb brief broker jitter but can lose queued events on process failure or a prolonged broker outage.
+
+The file sink is not a Transactional Outbox: it has no database transaction,
+delivery cursor, acknowledgement state, or replay worker. Operators that need
+financial-grade delivery should use synchronous Kafka with broker durability
+configured appropriately, or introduce a database-backed outbox in the billing
+system boundary.
 
 Failure semantics:
 
 | Driver | Failure mode | Default behavior | Observability |
 |--------|----------|----------|--------|
 | `file` | Disk full / IO error | drop event + error log | `llm_gateway_usage_publish_total{backend="file",result="error"}` |
-| `kafka` | broker / leader / network unavailable | retry until publish timeout, then drop event + error log on failure | `llm_gateway_usage_publish_total{backend="kafka",result="error"}` |
-| `async_kafka` | buffer full | drop-oldest by default; can be configured to block, but must have a timeout | `llm_gateway_outbox_dropped_total{driver="async_kafka"}` / buffer depth |
-| `async_kafka` | retries exhausted | write to DLQ topic; if DLQ fails, error log + metric | `llm_gateway_outbox_dlq_total` |
-| `file_and_kafka` | broker / network unavailable | file already committed; Kafka retries asynchronously, then writes to DLQ (if configured) or just a metric after retries are exhausted; **no data loss** | `llm_gateway_outbox_kafka_publish_error_total` |
-| `file_and_kafka` | disk full / IO error | **severe** — file commit fails; still attempts Kafka but returns an error; M10 counts `usage.publish.error` | `llm_gateway_outbox_file_error_total` |
-| `file_and_kafka` | double failure | file error returned to M10; Kafka error swallowed into a metric | both metrics above increment simultaneously |
-
-Why not reuse `async_kafka + DLQ` instead of `file_and_kafka`: the DLQ sits on the **same broker cluster** as the main topic, so if the broker is entirely down the DLQ can't be written either. `file_and_kafka` puts file and broker in different failure domains, so a broker failure doesn't lose data. Under dual-write, the DLQ degrades to a "single-message-level error fallback" (broker online, but the message itself has a problem — too large, invalid schema, ACL rejection, etc.), which is optional, not required.
+| `kafka`, `async: false` | broker / leader / network unavailable | return an error after the producer timeout; M10 records the failure | `llm_gateway_usage_publish_total{backend="kafka",result="error"}` |
+| `kafka`, `async: true` | buffer full | block until queue space is available or the publish context expires | queue-depth gauge and publish error metric |
+| `kafka`, `async: true` | retries exhausted | write to the optional DLQ; if DLQ also fails, log and increment the dropped metric | `llm_gateway_outbox_dlq_total` / `llm_gateway_outbox_dropped_total{driver="kafka_async"}` |
 
 Reliability requirements:
 
-- Usage events are billing input, and must prioritize being compensable.
-- The gateway must not block the user response because of a brief outbox failure.
-- The `file` driver is only suitable for local development or temporary troubleshooting.
-- Production must use `file_and_kafka`: file provides a durability fallback, Kafka provides low-latency broadcast; and monitor
-  `outbox_file_error_total` (severe, disk issue), `outbox_kafka_publish_error_total` (data
-  safe but needs replay), and Kafka consumer lag.
+- Usage events are billing input, so production defaults prioritize acknowledged delivery over latency.
+- The `file` driver requires an explicit persistence, rotation, collection, and replay design from the operator.
+- Async Kafka is best-effort and must never be described as lossless; monitor queue depth, dropped events, DLQ writes, and consumer lag.
+- A future transactional outbox must atomically commit business state and delivery state in the same database transaction.
 
 ## 6. Pricing
 
@@ -329,7 +323,7 @@ Recommended metric dimensions:
 | eligibility filter duration | model | eligibility filtering performance |
 | policy cache hit | layer, result | quota policy cache hit rate |
 | outbox publish latency | driver, result | outbox write latency |
-| outbox buffer depth | driver | `async_kafka` buffer occupancy |
+| outbox buffer depth | driver | `kafka_async` buffer occupancy |
 | ratelimit charge result | dimension, result | visibility into TPM post-charge failures |
 | tpm overflow | layer, dimension | number of times TPM post-charge exceeds the configured cap |
 

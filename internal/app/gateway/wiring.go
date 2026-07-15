@@ -401,7 +401,7 @@ func buildOutbox(srv *appRuntime.Runtime, cfg config.UsageEventsConfig) (usage.O
 		srv.AddCloser("file-outbox", ob.Close)
 
 		return ob, nil
-	case "kafka":
+	case config.DriverKafka:
 		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
 		if err != nil {
 			return nil, err
@@ -421,34 +421,7 @@ func buildOutbox(srv *appRuntime.Runtime, cfg config.UsageEventsConfig) (usage.O
 		}
 
 		return usage.NewKafkaOutbox(producer, cfg.Kafka.Topic), nil
-	case "file_and_kafka":
-		// dual-write: file is the source of truth (sync commit), Kafka is a
-		// best-effort async broadcast. Commits still succeed even if the broker
-		// is down; an external replay tool reads the file to resend (see docs/05 §5).
-		fileSink, err := usage.NewFileOutbox(cfg.File.Path)
-		if err != nil {
-			return nil, fmt.Errorf("file_and_kafka: file sink: %w", err)
-		}
-
-		producer, err := srv.NewKafkaProducer(cfg.Kafka.KafkaConfig)
-		if err != nil {
-			return nil, fmt.Errorf("file_and_kafka: kafka producer: %w", err)
-		}
-		// The kafka side always goes through async: in dual-write mode Kafka is
-		// best-effort and must not block the file commit
-		kafkaSink := usage.NewAsyncKafkaOutbox(producer, cfg.Kafka.Topic, usage.AsyncOptions{
-			BufferSize:  cfg.Kafka.BufferSize,
-			MaxRetries:  cfg.Kafka.MaxRetries,
-			BackoffBase: cfg.Kafka.BackoffBase,
-			DLQTopic:    cfg.Kafka.DLQTopic, // optional; file is already the truth, DLQ is just a per-message fallback
-			Logger:      slog.Default(),
-		})
-		srv.AddCloser("dual-kafka-async", kafkaSink.Close)
-		ob := usage.NewDualWriteOutbox(fileSink, kafkaSink, slog.Default())
-		srv.AddCloser("dual-file-outbox", ob.Close) // only closes file; kafka is managed by the line above
-
-		return ob, nil
 	default:
-		return nil, fmt.Errorf("unknown usage_events driver %q (want file|kafka|async_kafka|file_and_kafka)", cfg.Driver)
+		return nil, fmt.Errorf("unknown usage_events driver %q (want file|kafka)", cfg.Driver)
 	}
 }
