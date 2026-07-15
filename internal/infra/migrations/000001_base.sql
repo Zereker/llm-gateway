@@ -1,4 +1,6 @@
--- v0.3 schema: MySQL 8.0+ dialect.
+-- Immutable v1 baseline schema: MySQL 8.0+ dialect.
+-- This repository has not released a stable package yet, so all pre-release
+-- schema work is intentionally squashed into this single clean baseline.
 -- All DDL uses IF NOT EXISTS to keep Migrate idempotent, safe to re-run.
 -- charset / collation unified to utf8mb4 / utf8mb4_unicode_ci.
 --
@@ -288,11 +290,9 @@ CREATE TABLE IF NOT EXISTS endpoints (
     INDEX idx_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Note: this file only contains CREATE TABLE IF NOT EXISTS statements. Adding columns to
--- existing tables goes through ensureColumn in infra.Migrate (which ALTERs after checking
--- information_schema) -- MySQL does **not** support `ADD COLUMN IF NOT EXISTS` (that's
--- MariaDB syntax); writing it here would cause a syntax error on mysql:8.0 and prevent
--- the gateway from starting.
+-- After the first release, changes to existing tables must be introduced by a
+-- new numbered migration; this baseline file is append-only history and must
+-- never be edited in place.
 
 -- =====================================================================
 -- api_keys: credential lookup table for the M2 Auth middleware

@@ -226,11 +226,17 @@ Field descriptions:
 ## 3. Schema migration
 
 Gateway startup applies pending versions and records them in `schema_migrations`.
-Migration operations are idempotent and safe when replicas start concurrently. The gateway database
-user therefore requires DDL permissions. Migration plus schema validation is bounded by a 30-second
-startup deadline, so metadata-lock contention fails startup instead of hanging indefinitely.
-Destructive changes still use an expand/migrate/contract
-rollout and must complete before incompatible application code -- see
+Before the first release, all schema work is intentionally squashed into
+`internal/infra/migrations/000001_base.sql`; databases carrying an older
+pre-release history must be recreated. Once a release exists, migration files
+are immutable and schema evolution only adds the next numbered file. CI rejects
+changes or deletion of an already merged migration.
+
+Migration operations are idempotent and safe when replicas start concurrently.
+The gateway database user therefore requires DDL permissions. Migration plus
+schema validation is bounded by a 30-second startup deadline, so metadata-lock
+contention fails startup instead of hanging indefinitely. Destructive changes
+use an expand/migrate/contract rollout and must complete before incompatible application code -- see
 [00 §3 process startup order](./00-overview.md#3-running-processes).
 
 ## 4. Environment variable overrides

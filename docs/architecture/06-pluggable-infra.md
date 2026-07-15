@@ -57,7 +57,7 @@ Target startup dependencies of `cmd/gateway`:
 | OTel collector | used when trace driver is `otel` | Optional |
 | OpenAI moderation API | used when moderation driver is `openai` | Optional |
 
-The DB schema source is `internal/infra/schema.sql`. Gateway startup runs
+The DB schema source is the append-only files in `internal/infra/migrations/`. Gateway startup runs
 `infra.Migrate`, verifies the recorded schema version, and then runs
 `repo.CheckSchema` before accepting traffic. This requires DDL permission during
 startup; schema evolution and its current limitations are described in
@@ -332,7 +332,7 @@ Option pattern rules:
   `func(c) { c.Next() }` at construction time — **not even the tracer is turned on** — saving one
   `Tracer()` call at startup and one span Start/End per request.
 - options only do wiring, no IO; the constructor must not open a DB / Redis connection (resources are
-  managed by `cmd/gateway` or `internal/server`).
+  managed by `internal/app/runtime`).
 - All `WithXxx*` options of the same middleware must share the same `XxxOptionFunc` adapter
   type; do not introduce a separate struct option type for a single option.
 
@@ -377,7 +377,7 @@ deployer --SQL INSERT/UPDATE--> MySQL
 
 | Layer | Role | Implementation |
 |----|------|------|
-| MySQL | source of truth | `internal/infra/schema.sql` |
+| MySQL | source of truth | `internal/infra/migrations/*.sql` |
 | `repo.TTLCache[K, V]` | in-process LRU + TTL; does not cache not-found | `internal/repo/cache.go` |
 | `repo.CachedXxxReader` | cached wrapper for the 5 SQL Readers/Providers | `internal/repo/cached.go` |
 
@@ -461,7 +461,7 @@ Content Log is a separate channel, and does not reuse the Usage Event schema. A 
 
 Kafka's async buffer, max retries, backoff, and DLQ topic are declared in the
 `usage_events.kafka.*` config block. Producer shutdown is centrally managed by
-`internal/server` (see §12 graceful shutdown order).
+`internal/app/runtime` (see §13 graceful shutdown order).
 
 ## 12. Tracing
 

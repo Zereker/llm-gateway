@@ -12,7 +12,7 @@ import (
 // models.go defines the "business entities" — used by the gateway (sqlx
 // Reader); writes are maintained by the deployer via SQL.
 //
-// **The schema of record lives in internal/infra/schema.sql**; the `db:` tags here
+// **The schema of record lives in internal/infra/migrations/**; the `db:` tags here
 // only describe column names for sqlx. No gorm tags — the gateway is a
 // read-only repository layer; schema evolution is owned by gateway startup.
 //

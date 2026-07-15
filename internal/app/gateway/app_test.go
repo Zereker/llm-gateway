@@ -395,7 +395,7 @@ func seedDB(t *testing.T, dsn, upstreamURL string) {
 		t.Fatalf("re-enable FK checks: %v", err)
 	}
 
-	// accounts("default") must exist first (FK anchor; schema.sql's seed already
+	// accounts("default") must exist first (FK anchor; the baseline migration already
 	// does INSERT IGNORE, but TRUNCATE wiped it out)
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO accounts (pin, name) VALUES (?, ?)`,

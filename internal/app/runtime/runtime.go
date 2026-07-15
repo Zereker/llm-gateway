@@ -103,6 +103,13 @@ func (r *Runtime) Serve(addr string, handler http.Handler, readTimeout, shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	return r.serveContext(ctx, addr, handler, readTimeout, shutdownTimeout)
+}
+
+// serveContext contains the lifecycle implementation behind Serve. Keeping
+// signal acquisition at the public boundary makes graceful shutdown directly
+// testable with a cancelable context.
+func (r *Runtime) serveContext(ctx context.Context, addr string, handler http.Handler, readTimeout, shutdownTimeout time.Duration) error {
 	server := &http.Server{
 		Addr: addr, Handler: h2c.NewHandler(handler, &http2.Server{}),
 		ReadHeaderTimeout: readTimeout,
@@ -127,6 +134,7 @@ func (r *Runtime) Serve(addr string, handler http.Handler, readTimeout, shutdown
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
+	//nolint:contextcheck // ctx triggered shutdown and is already canceled; draining needs a fresh bounded context.
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		r.log.Warn("http shutdown", "err", err)
 		metric.Inc(metric.RequestAbortedByShutdown, "route", "*")

@@ -87,24 +87,29 @@ func Open(cfg DBConfig) (*sqlx.DB, error) {
 	return db, nil
 }
 
-//go:embed schema.sql
-var schemaFS embed.FS
+// Migration files are append-only. Once merged, an existing file must never be
+// edited or deleted; schema evolution adds the next numbered file.
+//
+//go:embed migrations/*.sql
+var migrationFS embed.FS
 
-const latestSchemaVersion = 5
+const latestSchemaVersion = 1
+
+type schemaMigration struct {
+	version int
+	file    string
+}
+
+var schemaMigrations = []schemaMigration{
+	{version: 1, file: "migrations/000001_base.sql"},
+}
 
 // Migrate applies pending, versioned schema migrations during gateway startup.
 //
-// schema.sql is written entirely with IF NOT EXISTS / DEFAULT so it can
-// be run repeatedly; a single call at boot is enough.
-//
 // The MySQL go-sql-driver does not allow multiple statements in a single
 // Exec by default (multiStatements=false), so we strip line comments first,
-// then split on `;` and execute each statement one at a time; schema.sql
+// then split on `;` and execute each statement one at a time; migration files
 // must not use constructs like "a string literal containing ;".
-//
-// v0.1 does not introduce golang-migrate / goose; upgrade to those once
-// schema evolution needs real versioning (multi-version rollout, rollback
-// support, schema shared across services).
 func Migrate(ctx context.Context, db *sqlx.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version BIGINT NOT NULL PRIMARY KEY,
@@ -124,56 +129,16 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 		applied[version] = true
 	}
 
-	if !applied[1] {
-		if err := applyBaseSchema(ctx, db); err != nil {
-			return err
+	for _, migration := range schemaMigrations {
+		if applied[migration.version] {
+			continue
 		}
 
-		if err := recordMigration(ctx, db, 1); err != nil {
-			return err
-		}
-	}
-
-	if !applied[2] {
-		if err := ensureColumn(ctx, db, columnMigration{
-			tableEndpoints, "quirks", "ALTER TABLE " + tableEndpoints + " ADD COLUMN quirks JSON DEFAULT NULL",
-		}); err != nil {
-			return err
+		if err := applyMigration(ctx, db, migration); err != nil {
+			return fmt.Errorf("infra: apply schema migration %d: %w", migration.version, err)
 		}
 
-		if err := recordMigration(ctx, db, 2); err != nil {
-			return err
-		}
-	}
-
-	if !applied[3] {
-		// schema.sql is idempotent. Reapplying it creates tables added after the
-		// original base migration without duplicating existing business data.
-		if err := applyBaseSchema(ctx, db); err != nil {
-			return err
-		}
-
-		if err := recordMigration(ctx, db, 3); err != nil {
-			return err
-		}
-	}
-
-	if !applied[4] {
-		if err := applyBaseSchema(ctx, db); err != nil {
-			return err
-		}
-
-		if err := recordMigration(ctx, db, 4); err != nil {
-			return err
-		}
-	}
-
-	if !applied[5] {
-		if err := applyBaseSchema(ctx, db); err != nil {
-			return err
-		}
-
-		if err := recordMigration(ctx, db, 5); err != nil {
+		if err := recordMigration(ctx, db, migration.version); err != nil {
 			return err
 		}
 	}
@@ -181,15 +146,15 @@ func Migrate(ctx context.Context, db *sqlx.DB) error {
 	return nil
 }
 
-func applyBaseSchema(ctx context.Context, db *sqlx.DB) error {
-	raw, err := schemaFS.ReadFile("schema.sql")
+func applyMigration(ctx context.Context, db *sqlx.DB, migration schemaMigration) error {
+	raw, err := migrationFS.ReadFile(migration.file)
 	if err != nil {
-		return fmt.Errorf("infra: read schema: %w", err)
+		return fmt.Errorf("read %s: %w", migration.file, err)
 	}
 
 	for _, stmt := range splitSQL(string(raw)) {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("infra: apply schema: %w\n--- stmt ---\n%s", err, stmt)
+			return fmt.Errorf("execute %s: %w\n--- stmt ---\n%s", migration.file, err, stmt)
 		}
 	}
 
@@ -207,60 +172,20 @@ func recordMigration(ctx context.Context, db *sqlx.DB, version int) error {
 // CheckMigrationVersion ensures the database was migrated before the service
 // starts. It deliberately performs no DDL.
 func CheckMigrationVersion(ctx context.Context, db *sqlx.DB) error {
-	var version int
-	if err := db.GetContext(ctx, &version, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`); err != nil {
+	var versions []int
+	if err := db.SelectContext(ctx, &versions, `SELECT version FROM schema_migrations ORDER BY version`); err != nil {
 		return fmt.Errorf("infra: schema migration state unavailable: %w", err)
 	}
-	// Require the DB to be at least this binary's version; a NEWER DB is fine.
-	// Migrations are additive (expand-contract: new tables/columns via
-	// IF NOT EXISTS / ensureColumn, old fields kept), so an old gateway replica
-	// runs correctly against a schema migrated ahead of it. This is what makes
-	// zero-downtime rolling upgrades possible: migrate to vN+1 first, old vN
-	// pods keep serving, new vN+1 pods roll in — neither crashes.
-	if version < latestSchemaVersion {
-		return fmt.Errorf("infra: schema version %d is older than required %d", version, latestSchemaVersion)
+
+	if len(versions) != len(schemaMigrations) {
+		return fmt.Errorf("infra: schema migration history %v does not match required versions 1..%d; recreate this pre-release database", versions, latestSchemaVersion)
 	}
 
-	return nil
-}
-
-// tableEndpoints names the endpoints table — shared between a columnMigration's
-// table field (used to probe information_schema.columns) and its embedded DDL
-// text, so the two can't silently name different tables.
-const tableEndpoints = "endpoints"
-
-// columnMigration is a single "add the column if the table is missing it" migration.
-type columnMigration struct {
-	table, column, ddl string
-}
-
-// ensureColumn runs the DDL when the column doesn't exist yet; a no-op otherwise.
-//
-// **Multi-replica race**: if two replicas both determine the column is
-// missing and both ALTER, the one that lands second gets "Duplicate
-// column name" (MySQL errno 1060) — at that point the column is already
-// in place, so we treat it as success.
-func ensureColumn(ctx context.Context, db *sqlx.DB, m columnMigration) error {
-	var n int
-
-	err := db.GetContext(ctx, &n,
-		`SELECT COUNT(*) FROM information_schema.columns
-		 WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
-		m.table, m.column)
-	if err != nil {
-		return fmt.Errorf("infra: check column %s.%s: %w", m.table, m.column, err)
-	}
-
-	if n > 0 {
-		return nil
-	}
-
-	if _, err := db.ExecContext(ctx, m.ddl); err != nil {
-		if strings.Contains(err.Error(), "Duplicate column name") {
-			return nil // a concurrent replica added it first; the target state is already reached
+	for i, version := range versions {
+		want := schemaMigrations[i].version
+		if version != want {
+			return fmt.Errorf("infra: schema migration history %v does not match required versions 1..%d; recreate this pre-release database", versions, latestSchemaVersion)
 		}
-
-		return fmt.Errorf("infra: add column %s.%s: %w", m.table, m.column, err)
 	}
 
 	return nil
@@ -268,7 +193,7 @@ func ensureColumn(ctx context.Context, db *sqlx.DB, m columnMigration) error {
 
 // splitSQL splits statements on ; and filters out whitespace-only / comment-only
 // lines. Simple implementation: it does not parse string literals, so
-// schema.sql must not contain a string literal that includes ;.
+// Migration files must not contain a string literal that includes ;.
 // splitSQL strips line comments first and only then splits on `;`, so a
 // semicolon inside a comment is never mistaken for a statement separator.
 func splitSQL(raw string) []string {
