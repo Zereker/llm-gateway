@@ -15,7 +15,7 @@ The repository Dockerfile's `gateway` target contains the production data-plane
 binary. Schema migration is part of gateway startup:
 
 ```dockerfile
-FROM golang:1.22 AS builder
+FROM golang:1.25 AS builder
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/gateway ./cmd/gateway
@@ -28,22 +28,40 @@ USER 65532:65532
 ## Installation
 
 ```bash
-# 1. Prepare secret values (**do not commit**)
+# 1. Create a Secret outside the chart (**do not commit real values**).
+kubectl create secret generic llm-gateway-production-secrets \
+  --from-literal=database-dsn='user:pwd@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4' \
+  --from-literal=redis-addr='redis:6379' \
+  --from-literal=redis-password='redis-pwd' \
+  --from-literal=data-key="$(openssl rand -hex 32)" \
+  --from-literal=moderation-api-key=''
+
+# 2. Reference it from non-secret values.
 cat > my-values.yaml <<EOF
 secrets:
-  databaseDSN: "user:pwd@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
-  redisAddr:   "redis:6379"
-  redisPassword: "redis-pwd"
-  dataKey:     "$(openssl rand -hex 32)"
+  existingSecret: llm-gateway-production-secrets
+image:
+  tag: "1.0.0"
 EOF
 
-# 2. install
+# 3. Install.
 helm install ai-gw ./deploy/helm/llm-gateway -f my-values.yaml
 
-# 3. check
+# 4. Check.
 kubectl get pods -l app.kubernetes.io/name=llm-gateway
 kubectl logs -l app.kubernetes.io/component=gateway --tail=50
 ```
+
+For local evaluation, `secrets.databaseDSN` and `secrets.dataKey` can be
+provided inline instead. They have no defaults and rendering fails when
+neither inline values nor `secrets.existingSecret` is configured.
+
+The chart defaults to synchronous Kafka usage-event publishing. Selecting
+`file` or `file_and_kafka` also requires either
+`gateway.usagePersistence.enabled=true` or an explicit
+`gateway.usagePersistence.existingClaim`. Multi-replica file modes require
+shared `ReadWriteMany` storage; an ephemeral `emptyDir` is never treated as a
+durable source of truth.
 
 ## Business data management
 
@@ -73,8 +91,9 @@ ConfigMap / Secret changes trigger a deployment rolling restart (`checksum/confi
 
 ```bash
 helm uninstall ai-gw
-# Note: the secret is not deleted automatically (to prevent accidental deletion)
-kubectl delete secret ai-gw-llm-gateway-secrets
+# A Secret referenced through secrets.existingSecret is external to the release
+# and is not deleted by Helm.
+kubectl delete secret llm-gateway-production-secrets
 ```
 
 ## Production recommendations
@@ -82,7 +101,8 @@ kubectl delete secret ai-gw-llm-gateway-secrets
 | Dimension | Recommendation |
 |---|---|
 | Image tag | Use a version number (e.g. `1.0.0`); do not use `latest` |
-| Secret management | Use ExternalSecrets / Sealed Secrets / vault sidecar; do not use plaintext values.yaml |
+| Secret management | Use `secrets.existingSecret` with ExternalSecrets / Sealed Secrets / Vault; do not use plaintext values.yaml |
+| Usage file storage | File-based drivers require persistent RWX storage for multi-replica deployments; the default is Kafka |
 | Resource limits | gateway streaming consumes more goroutines than CPU; start with cpu=2 / mem=2Gi based on QPS and tune from there |
 | HPA metrics | CPU is suboptimal; custom metrics (in-flight requests / queue depth) work better |
 | Ingress | Use nginx ingress + cert-manager for automatic TLS; set body limit to 10MiB+ |

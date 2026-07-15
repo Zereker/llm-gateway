@@ -19,6 +19,7 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway && \
 FROM ${BASE_IMAGE_REGISTRY}/alpine:3.20 AS gateway
 WORKDIR /app
 COPY --from=builder /out/gateway /app/gateway
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/app/gateway"]
 CMD ["-config", "/etc/llm-gateway/gateway.yaml"]
@@ -26,6 +27,7 @@ CMD ["-config", "/etc/llm-gateway/gateway.yaml"]
 FROM ${BASE_IMAGE_REGISTRY}/alpine:3.20 AS console
 WORKDIR /app
 COPY --from=builder /out/console /app/console
+USER 65532:65532
 EXPOSE 8081
 ENTRYPOINT ["/app/console"]
 CMD ["-config", "/etc/llm-gateway/console.yaml"]

@@ -20,3 +20,12 @@ app.kubernetes.io/name: {{ include "llm-gateway.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: gateway
 {{- end -}}
+
+{{- define "llm-gateway.secretName" -}}
+{{- default (printf "%s-secrets" (include "llm-gateway.fullname" .)) .Values.secrets.existingSecret -}}
+{{- end -}}
+
+{{- define "llm-gateway.image" -}}
+{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
+{{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}

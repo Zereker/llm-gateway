@@ -38,7 +38,11 @@ type Validator struct{ Catalog Catalog }
 // reasonMetadataEndpoint is the validation-failure reason shared by both
 // detection paths in validateRoutingURL (well-known hostname vs. resolved
 // metadata IP) — same classification either way.
-const reasonMetadataEndpoint = "metadata_endpoint"
+const (
+	reasonMetadataEndpoint            = "metadata_endpoint"
+	reasonInvalidRoutingScheme        = "invalid_routing_scheme"
+	reasonHealthProbeMetadataEndpoint = "health_probe_metadata_endpoint"
+)
 
 // Validate returns all misconfiguration reasons for one endpoint (empty slice = healthy).
 //
@@ -78,7 +82,14 @@ func (v Validator) Validate(ep *domain.Endpoint) []string {
 		reasons = append(reasons, r)
 	}
 
-	// 5) quirks compilability: surface typo'd fields here, rather than erroring only at
+	// 5) Health probes are a second outbound HTTP surface. Apply the same
+	// scheme/metadata checks as routing.url; the runtime prober also uses the
+	// invoker's dial-time guard to stop DNS rebinding.
+	if r := validateHealthProbeURL(ep.Capabilities.HealthProbeEndpoint); r != "" {
+		reasons = append(reasons, r)
+	}
+
+	// 6) quirks compilability: surface typo'd fields here, rather than erroring only at
 	// request-time PhaseQuirks.
 	if len(ep.Quirks) > 0 {
 		if _, err := quirks.CompileJSON(ep.Quirks); err != nil {
@@ -87,6 +98,23 @@ func (v Validator) Validate(ep *domain.Endpoint) []string {
 	}
 
 	return reasons
+}
+
+func validateHealthProbeURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+
+	switch validateRoutingURL(raw) {
+	case "":
+		return ""
+	case reasonMetadataEndpoint:
+		return reasonHealthProbeMetadataEndpoint
+	case reasonInvalidRoutingScheme:
+		return "invalid_health_probe_scheme"
+	default:
+		return "invalid_health_probe_url"
+	}
 }
 
 // validateRoutingURL validates the upstream URL; returns a misconfiguration reason (empty = pass).
@@ -108,7 +136,7 @@ func validateRoutingURL(raw string) string {
 	}
 
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "invalid_routing_scheme"
+		return reasonInvalidRoutingScheme
 	}
 
 	host := strings.ToLower(u.Hostname())

@@ -47,7 +47,7 @@
 
 | 领域 | 已实现能力 |
 |---|---|
-| API | OpenAI Chat/Responses、Anthropic Messages、Embedding、图片、音频 |
+| API | OpenAI Chat/Responses、Anthropic Messages、Embedding |
 | 上游 | OpenAI 兼容服务、Anthropic、Gemini/Vertex、Bedrock、Cohere、Azure OpenAI |
 | 路由 | weighted/P2C、并发感知、冷却、动态评分、重试、显式模型 fallback |
 | 治理 | API Key 认证、账号订阅、双层配额、moderation chain、内容日志、写操作审计 |
@@ -198,12 +198,9 @@ Gateway 默认监听 `:8080`。用仓库自带的配置时：
 | `/v1/chat/completions` | POST | OpenAI Chat Completions |
 | `/v1/messages` | POST | Anthropic 风格 chat |
 | `/v1/embeddings` | POST | OpenAI Embeddings |
-| `/v1/images/{generations,edits,variations}` | POST | OpenAI Images |
-| `/v1/audio/{speech,transcriptions,translations}` | POST | TTS + ASR |
 
-路由按 modality 定义在 [`internal/router/`](internal/router/) 下——每个 modality 文件
-（`chat.go` / `image.go` / `audio.go` / `embedding.go`）注册自己的路径，并显式
-列出自己的 middleware 链。
+路由按 modality 定义在 [`internal/router/`](internal/router/) 下。图片生成与音频路由会等到
+multipart、协议适配器和黑盒兼容性链路完整后再对外声明。
 
 ### 配置文件
 

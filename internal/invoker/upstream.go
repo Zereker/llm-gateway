@@ -220,6 +220,18 @@ func defaultHTTPClient() *http.Client {
 	}
 }
 
+// NewHTTPClient returns the hardened HTTP client used for gateway-controlled
+// outbound calls. Besides bounded connection phases and a reusable pool, it
+// refuses redirects that could leak credentials and blocks cloud metadata IPs
+// at dial time after DNS resolution.
+//
+// Background subsystems such as active health probing must use this client as
+// well as the main invocation path; otherwise a separately configured URL
+// could bypass the gateway's SSRF boundary.
+func NewHTTPClient() *http.Client {
+	return defaultHTTPClient()
+}
+
 // errRedirectRefused is returned by CheckRedirect; the message is intentionally
 // generic (no hosts) since it can surface in a client-facing failure reason.
 var errRedirectRefused = errors.New("upstream redirect refused (would leak upstream credentials)")

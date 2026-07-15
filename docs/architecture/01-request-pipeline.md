@@ -10,11 +10,13 @@ This document records the request chain for `internal/router` + `internal/middle
 
 - ops routes: `/healthz`, `/readyz`, `/metrics`, etc., maintained in `helpers.go`.
 - chat: `/v1/chat/completions`, `/v1/messages`, `/v1/responses`.
-- image: `/v1/images/{generations,edits,variations}`.
-- audio: `/v1/audio/{speech,transcriptions,translations}`.
 - embedding: `/v1/embeddings`.
 
-Each route file declares its own complete `/v1/...` path; a global `/v1` group is not used. The shared security / quota / observability middleware order lives in `internal/router/pipeline.go` (`llmRouteGroup` + `registerLLMRoute`); each modality file supplies only how it differs — path, source protocol, modality, and its Cache stage — via a `routeSpec`. Modality-specific stages (e.g. a future image multipart parser) are added as `routeSpec` fields rather than by re-inlining a whole chain.
+Each route file declares its own complete `/v1/...` path; a global `/v1` group is not used. The shared security / quota / observability middleware order lives in `internal/router/pipeline.go` (`llmRouteGroup` + `registerLLMRoute`); each modality file supplies only how it differs — path, source protocol, modality, and its Cache stage — via a `routeSpec`.
+
+Image-generation and audio paths are intentionally not registered yet. They
+become supported only when multipart parsing, protocol adapters, usage
+extraction, and black-box compatibility tests are delivered together.
 
 ## 2. RequestContext Storage
 

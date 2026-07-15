@@ -48,7 +48,7 @@ Applications / SDKs
 
 | Area | Included today |
 |---|---|
-| APIs | OpenAI Chat/Responses, Anthropic Messages, embeddings, images, audio |
+| APIs | OpenAI Chat/Responses, Anthropic Messages, embeddings |
 | Upstreams | OpenAI-compatible providers, Anthropic, Gemini/Vertex, Bedrock, Cohere, Azure OpenAI |
 | Routing | weighted/P2C selection, inflight awareness, cooldown, runtime scoring, retry, explicit model fallback |
 | Governance | API-key auth, account subscriptions, layered quota, moderation chain, content log, write audit |
@@ -206,12 +206,10 @@ The gateway listens on `:8080` by default. With the bundled config:
 | `/v1/chat/completions` | POST | OpenAI Chat Completions |
 | `/v1/messages` | POST | Anthropic-style chat |
 | `/v1/embeddings` | POST | OpenAI Embeddings |
-| `/v1/images/{generations,edits,variations}` | POST | OpenAI Images |
-| `/v1/audio/{speech,transcriptions,translations}` | POST | TTS + ASR |
 
-Routes are defined per-modality under [`internal/router/`](internal/router/) — each
-modality file (`chat.go` / `image.go` / `audio.go` / `embedding.go`) registers
-its own paths and explicitly lists its middleware chain.
+Routes are defined per modality under [`internal/router/`](internal/router/).
+Image generation and audio routes are not advertised until their multipart,
+protocol-adapter, and black-box compatibility paths are complete.
 
 ### Configuration files
 

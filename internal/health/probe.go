@@ -42,6 +42,7 @@ import (
 
 	"github.com/zereker/llm-gateway/internal/domain"
 	"github.com/zereker/llm-gateway/internal/failure"
+	"github.com/zereker/llm-gateway/internal/invoker"
 	"github.com/zereker/llm-gateway/internal/metric"
 )
 
@@ -82,7 +83,7 @@ type Config struct {
 	Source     EndpointSource
 	Feedback   Feedback      // receives probe results
 	Recovery   Recovery      // optional; enables probe-gated cooldown recovery
-	Client     HTTPDoer      // nil = http.DefaultClient
+	Client     HTTPDoer      // nil = hardened gateway outbound client
 	Interval   time.Duration // default 30s
 	Timeout    time.Duration // per-probe timeout; default 5s
 	Concurrent int           // max concurrent probes; default 8
@@ -112,7 +113,7 @@ func New(cfg Config) *Prober {
 	}
 
 	if cfg.Client == nil {
-		cfg.Client = http.DefaultClient
+		cfg.Client = invoker.NewHTTPClient()
 	}
 
 	logger := cfg.Logger

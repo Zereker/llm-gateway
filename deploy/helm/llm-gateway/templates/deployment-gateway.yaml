@@ -1,3 +1,8 @@
+{{- $usageDriver := .Values.gateway.config.usage_events.driver }}
+{{- $fileUsage := or (eq $usageDriver "file") (eq $usageDriver "file_and_kafka") }}
+{{- if and $fileUsage (not .Values.gateway.usagePersistence.enabled) (not .Values.gateway.usagePersistence.existingClaim) }}
+{{- fail "gateway.usagePersistence.enabled or existingClaim is required for file-based usage_events drivers" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,7 +30,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: gateway
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "llm-gateway.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
@@ -34,28 +39,28 @@ spec:
             - name: LLM_GATEWAY_DATABASE_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "llm-gateway.fullname" . }}-secrets
+                  name: {{ include "llm-gateway.secretName" . }}
                   key: database-dsn
             - name: LLM_GATEWAY_REDIS_ADDR
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "llm-gateway.fullname" . }}-secrets
+                  name: {{ include "llm-gateway.secretName" . }}
                   key: redis-addr
             - name: LLM_GATEWAY_REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "llm-gateway.fullname" . }}-secrets
+                  name: {{ include "llm-gateway.secretName" . }}
                   key: redis-password
             - name: LLM_GATEWAY_DATA_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "llm-gateway.fullname" . }}-secrets
+                  name: {{ include "llm-gateway.secretName" . }}
                   key: data-key
             {{- if eq .Values.gateway.config.moderation.driver "openai" }}
             - name: LLM_GATEWAY_MODERATION_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "llm-gateway.fullname" . }}-secrets
+                  name: {{ include "llm-gateway.secretName" . }}
                   key: moderation-api-key
             {{- end }}
           ports:
@@ -72,14 +77,19 @@ spec:
             - name: config
               mountPath: /etc/llm-gateway/gateway.yaml
               subPath: gateway.yaml
+            {{- if $fileUsage }}
             - name: usage
               mountPath: /var/log/llm-gateway
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "llm-gateway.fullname" . }}-gateway
+        {{- if $fileUsage }}
         - name: usage
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-usage" (include "llm-gateway.fullname" .)) .Values.gateway.usagePersistence.existingClaim }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

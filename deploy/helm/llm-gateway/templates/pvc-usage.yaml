@@ -1,0 +1,19 @@
+{{- $usageDriver := .Values.gateway.config.usage_events.driver }}
+{{- $fileUsage := or (eq $usageDriver "file") (eq $usageDriver "file_and_kafka") }}
+{{- if and $fileUsage .Values.gateway.usagePersistence.enabled (not .Values.gateway.usagePersistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-usage
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.gateway.usagePersistence.accessModes | nindent 4 }}
+  {{- if .Values.gateway.usagePersistence.storageClass }}
+  storageClassName: {{ .Values.gateway.usagePersistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.gateway.usagePersistence.size }}
+{{- end }}

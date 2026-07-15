@@ -136,26 +136,17 @@ func TestNewEngine_OpsEndpointsBypassMiddleware(t *testing.T) {
 	}
 }
 
-// TestNewEngine_AllModalityRoutes verifies that all modality-split routes are
+// TestNewEngine_AllSupportedRoutes verifies that every advertised API route is
 // registered.
 // No Authorization -> expect 401 (proving the request entered the middleware
 // chain; not a 404).
-func TestNewEngine_AllModalityRoutes(t *testing.T) {
+func TestNewEngine_AllSupportedRoutes(t *testing.T) {
 	engine := NewEngine(minDeps())
 
 	paths := []string{
-		// chat
 		"/v1/chat/completions",
 		"/v1/messages",
-		// image
-		"/v1/images/generations",
-		"/v1/images/edits",
-		"/v1/images/variations",
-		// audio
-		"/v1/audio/speech",
-		"/v1/audio/transcriptions",
-		"/v1/audio/translations",
-		// embedding
+		"/v1/responses",
 		"/v1/embeddings",
 	}
 
@@ -174,7 +165,20 @@ func TestNewEngine_AllModalityRoutes(t *testing.T) {
 	}
 }
 
+func TestNewEngine_UnsupportedPlaceholderRoutesAreNotAdvertised(t *testing.T) {
+	engine := NewEngine(minDeps())
+
+	for _, path := range []string{"/v1/images/generations", "/v1/audio/speech"} {
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader(`{"model":"x"}`)))
+
+		if w.Code != 404 {
+			t.Errorf("%s: status = %d, want 404 until the modality has a complete adapter", path, w.Code)
+		}
+	}
+}
+
 // TestBuildChain_* removed: buildChain is deprecated (each modality lists its
-// own middleware). TestNewEngine_AllModalityRoutes indirectly verifies that
+// own middleware). TestNewEngine_AllSupportedRoutes indirectly verifies that
 // each modality registers its middleware (no Authorization -> 401 rather
 // than 404, proving the Auth middleware ran).

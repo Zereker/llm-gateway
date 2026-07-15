@@ -276,6 +276,12 @@ func TestLoggerDefaultsAndFormatInt(t *testing.T) {
 
 func TestFilePublisherWritesJSONLAndClosesIdempotently(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "content.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	publisher, err := NewFilePublisher(path)
 	if err != nil {
 		t.Fatal(err)
@@ -299,6 +305,13 @@ func TestFilePublisherWritesJSONLAndClosesIdempotently(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[0], `"request_id":"one"`) || !strings.Contains(lines[1], `"request_id":"two"`) {
 		t.Fatalf("jsonl=%s", raw)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("content log permissions = %o, want 600", got)
 	}
 
 	if _, err := NewFilePublisher(filepath.Join(t.TempDir(), "missing", "content.jsonl")); err == nil {
