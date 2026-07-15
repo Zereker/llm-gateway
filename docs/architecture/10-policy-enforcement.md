@@ -26,10 +26,9 @@ policy reference. It returns `allow`, `deny`, or `redact` with a policy version,
 stable rule ID, and reason code. Engine errors, malformed decisions, invalid
 mutations, unsupported structures, and buffer overflow all fail closed.
 
-Content bytes, replacements, and internal causes are excluded from JSON and
-`AuditRecord`. Mutation audit contains only ID, kind, and RFC 6901 target.
-Explicit engines never expose `Decision.Cause` to clients; the legacy adapter
-alone preserves the old input-moderation error message for compatibility.
+Content bytes and replacements are excluded from JSON and `AuditRecord`.
+Mutation audit contains only ID, kind, and RFC 6901 target. Engine and detector
+errors are never part of a decision or client response.
 
 M8 owns the audit in its onion return phase. It collects input and output
 records while downstream runs, then emits `policy_decision` after `c.Next()`.
@@ -75,11 +74,11 @@ mutation is never forwarded.
 The Console simulation endpoint accepts a synthetic decision and body. It
 executes this same adapter without calling a detector or upstream model:
 
-- `GET/POST /admin/policies`
-- `DELETE /admin/policies/:policyID`
-- `GET/POST /admin/policy-bindings`
-- `DELETE /admin/policy-bindings/:scopeKind?scope_id=...`
-- `POST /admin/policies/simulate`
+- `GET/POST /api/v1/policies`
+- `DELETE /api/v1/policies/:policyID`
+- `GET/POST /api/v1/policy-bindings`
+- `DELETE /api/v1/policy-bindings/:scopeKind?scope_id=...`
+- `POST /api/v1/policies/simulate`
 
 ## Response modes
 
@@ -103,10 +102,10 @@ client byte. Thus strict-mode failures remain normal JSON errors. After a
 best-effort stream commits, errors are recorded as truncated usage and cannot
 trigger retry or fallback.
 
-## Compatibility and extension
+## Extension
 
 The denylist, OpenAI moderator, `Moderator`, guard chain, and stream decorator
-remain supported through `moderation.LegacyEngine`. A new integration should
+are normalized through `moderation.ModeratorEngine`. A new integration should
 implement `policy.Engine` and inject it with `middleware.WithPolicyEngine` (or
 `router.Deps.PolicyEngine`) while leaving detection and vendor credentials
 outside the gateway's policy domain.

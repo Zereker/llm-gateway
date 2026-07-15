@@ -61,8 +61,8 @@ moderation:
     check_output: false   # when true, also scans the response chunk by chunk
 
 selector:
-  # M7 endpoint routing Filter chain (order is execution order; weighted_random must be last)
-  filters: [cooldown, limit_read, weighted_random]
+  # M7 endpoint eligibility filter chain (order is execution order)
+  filters: [cooldown, limit_read]
 
   # Final pick strategy after filters + scoring:
   #   weighted_random (default) = pure EffectiveWeight-weighted random

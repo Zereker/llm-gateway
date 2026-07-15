@@ -139,8 +139,8 @@ func TestModeration_CheckInputReject_400_Invalid(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "content rejected") {
 		t.Errorf("body=%s", w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "profanity") {
-		t.Errorf("body should wrap moderator err: %s", w.Body.String())
+	if strings.Contains(w.Body.String(), "profanity") {
+		t.Errorf("body leaked moderator detail: %s", w.Body.String())
 	}
 }
 
@@ -215,19 +215,16 @@ func TestModerationPolicyEngineDeniesWithoutLeakingInternalReason(t *testing.T) 
 	}
 }
 
-func TestModerationExplicitEngineDoesNotExposeDecisionCause(t *testing.T) {
+func TestModerationEngineErrorDoesNotExposeCause(t *testing.T) {
 	secret := "detector matched customer card 4111"
 	engine := policyEngineFunc(func(context.Context, policy.EvaluationInput) (policy.Decision, error) {
-		decision := middlewarePolicyDecision(policy.ActionDeny)
-		decision.Cause = errors.New(secret)
-
-		return decision, nil
+		return policy.Decision{}, errors.New(secret)
 	})
 	r := newGinTest(TraceContext(), Recover(), attachEnvelopeFor("x"), Moderation(WithPolicyEngine(engine)))
 	r.POST("/x", func(c *gin.Context) { c.Status(200) })
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/x", nil))
-	if w.Code != 400 || strings.Contains(w.Body.String(), secret) || !strings.Contains(w.Body.String(), "content rejected by policy") {
+	if w.Code != 503 || strings.Contains(w.Body.String(), secret) || !strings.Contains(w.Body.String(), "policy engine unavailable") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }

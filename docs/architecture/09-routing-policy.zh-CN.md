@@ -136,14 +136,14 @@ total_score   = weighted_mean(latency_score, cost_score)
 
 ## 控制台API
 
-- `GET /admin/routing-policies` 列出所有版本。
-- `POST /admin/routing-policies` 验证并发布新的活动版本。
-- `DELETE /admin/routing-policies/:policyID` 禁用活动版本。
-- `POST /admin/routing-policies/dry-run` 评估综合账户、区域、
+- `GET /api/v1/routing-policies` 列出所有版本。
+- `POST /api/v1/routing-policies` 验证并发布新的活动版本。
+- `DELETE /api/v1/routing-policies/:policyID` 禁用活动版本。
+- `POST /api/v1/routing-policies/dry-run` 评估综合账户、区域、
   模态、请求模型、决策关键和可选遥测快照
   无需调度上游流量。回应比较了每个候选项
   及其完整的分数解释。
-- `GET /admin/routing-costs` 列出仅路由成本配置文件版本。
-- `POST /admin/routing-costs` 发布了新的不可变主动成本版本。
+- `GET /api/v1/routing-costs` 列出仅路由成本配置文件版本。
+- `POST /api/v1/routing-costs` 发布了新的不可变主动成本版本。
 
 写入由控制台的现有管理员角色和写入审核涵盖。

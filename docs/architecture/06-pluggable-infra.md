@@ -435,14 +435,14 @@ M8's primary extension point is `policy.Engine`, injected with
 `middleware.WithPolicyEngine`. It returns explicit `allow`, `deny`, or
 `redact` decisions; see [policy enforcement](10-policy-enforcement.md).
 
-The existing moderation configuration remains replaceable and compatible:
+The built-in moderation configuration remains replaceable:
 
 - `none`: default, skips moderation.
 - `openai`: calls the OpenAI moderation API, requires `moderation.api_key`.
 
-Legacy `Moderator` implementations are wrapped by `moderation.LegacyEngine`.
+`Moderator` implementations are normalized through `moderation.ModeratorEngine`.
 When neither engine nor moderator is supplied, M8 is pass-through. A directly
-supplied policy engine takes precedence over the legacy moderator.
+supplied policy engine takes precedence over the moderator adapter.
 
 ## 11. Recording / Usage Events
 

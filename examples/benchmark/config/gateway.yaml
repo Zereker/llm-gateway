@@ -24,7 +24,7 @@ moderation:
   driver: none
 
 selector:
-  filters: [cooldown, limit_read, weighted_random]
+  filters: [cooldown, limit_read]
   max_attempts: 1
 
 usage_events:

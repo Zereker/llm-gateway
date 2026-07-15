@@ -96,7 +96,7 @@ usage_events:
     # is constructed
 
 selector:
-  filters: [cooldown, limit_read, weighted_random]
+  filters: [cooldown, limit_read]
   # picker: final pick strategy after filters + scoring.
   #   weighted_random (default) = pure EffectiveWeight-weighted random
   #   p2c = power-of-two-choices: sample two candidates by weight, take the
@@ -213,10 +213,10 @@ Field descriptions:
 | `redis.addr` | Yes | Redis connection; depended on by M6 rate limiting and scheduler cooldown |
 | `data_key` | Yes | KEK used to decrypt endpoint auth ciphertext; the deployer must use the same KEK when encrypting for SQL INSERT |
 | `usage_events.driver` | Yes | usage event output backend (`file` / `kafka`) |
-| `scheduler.filters` | Yes | endpoint selection chain; `weighted_random` must run last |
+| `selector.filters` | No | ordered eligibility filters: `cooldown`, `limit_read`, `prefix_cache`, `busy`; defaults to `cooldown`, `limit_read` |
 | `selector.picker` | No | final pick strategy: `weighted_random` (default) / `p2c` (power-of-two-choices by pending calls) |
-| `scheduler.max_attempts` | Yes | max endpoint attempts for the same model within a single request; can be lowered via header |
-| `scheduler.cooldown.*` | Yes | mapping from `ErrorClass` to cooldown TTL; an upstream `Retry-After` / rate-limit reset hint overrides the static TTL, clamped to `[1s, 10m]` |
+| `selector.max_attempts` | No | max endpoint attempts for the same model within a single request; defaults to 3 and can be lowered via header |
+| `selector.cooldown.*` | No | mapping from `ErrorClass` to cooldown TTL; defaults are applied per class, while an upstream `Retry-After` / rate-limit reset hint overrides the static TTL, clamped to `[1s, 10m]` |
 | `health.*` | No | active probing of self-hosted endpoints (default off); `health.recover_cooldown` enables probe-gated early cooldown release |
 | `selector.session_affinity.*` | No | sticky routing via `X-Gateway-Session` (default off); `ttl` is the session→endpoint mapping lifetime |
 | `cache.*` | No | response cache for chat + embedding modalities (default off); `cache.semantic.*` switches chat to similarity-based caching |
@@ -276,8 +276,8 @@ Fail-fast is split into two layers, each covering a different class of error:
 
 - `database.dsn` / `redis.addr` have local-dev defaults (filled in by ApplyDefaults, so never empty);
   misconfiguration is exposed via the actual connection + ping fail-fast in `OpenDB` / `OpenRedis`.
-- A typo in `scheduler.filters` names causes a panic in `buildSchedulerFilters` (unknown filter name
-  fails fast); missing cooldown entries per class are filled in by ApplyDefaults.
+- Unknown `selector.filters` names are rejected by `Validate` before runtime assembly;
+  missing cooldown entries per class are filled in by ApplyDefaults.
 - Endpoint business-data misconfiguration (protocol typo / unregistered vendor / metadata URL / quirks
   compile failure) is surfaced by the startup endpoint scan as a warning +
   `llm_gateway_endpoint_misconfigured_total` (does not block startup; see

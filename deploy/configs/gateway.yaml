@@ -24,6 +24,9 @@ database:
   driver: mysql
   dsn: "llm_gateway:CHANGE_ME@tcp(db:3306)/llm_gateway?parseTime=true&charset=utf8mb4&tls=preferred"
 
+# Required at startup and intentionally omitted from this production template.
+# Inject a 32-byte hex-encoded KEK through LLM_GATEWAY_DATA_KEY.
+
 usage_events:
   # Synchronous Kafka acknowledges the event before Publish returns. Set async
   # to true only when best-effort in-memory buffering is an acceptable tradeoff.

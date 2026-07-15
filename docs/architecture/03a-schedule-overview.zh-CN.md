@@ -375,8 +375,9 @@ Dispatcher: dispatcher,
 | `limit_read` | `NewLimitReadFilter(rateStore)` |
 | `prefix_cache` | `NewPrefixCacheFilter(0)` (vnodes=64) |
 | `busy` | `NewBusyFilter(0)`（阈值=0.85）|
-| `weighted_random` |忽略（它已经是选择器，单独配置）|
-|还有什么吗| **恐慌**（快速失败以暴露配置错误）|
+
+`weighted_random` 和 `p2c` 是通过 `selector.picker` 配置的最终选择策略，
+不是过滤器。未知过滤器名称会在运行时装配前被 `config.Validate` 拒绝。
 
 ## 13. 配置 YAML 快速参考
 
@@ -387,7 +388,8 @@ selector:
     - cooldown              # cheapest filter, put it first
     - limit_read            # endpoint quota read-only filter
     # - busy                # optional: self-hosted load threshold
-    # - prefix_cache        # optional: pick either this or weighted_random
+    # - prefix_cache        # optional: promotes likely prefix-cache hits
+  picker: weighted_random  # final pick strategy: weighted_random or p2c
   cooldown:
     transient: 30s
     capacity:  10s

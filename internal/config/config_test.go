@@ -3,16 +3,19 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/zereker/llm-gateway/internal/infra"
 )
 
+const testDataKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func TestLoad_AppliesDefaults(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "gateway.yaml")
-	if err := os.WriteFile(p, []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte("data_key: "+testDataKey+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,6 +61,7 @@ usage_events:
   kafka:
     brokers: ["broker1:9092","broker2:9092"]
     topic: billing.usage.recorded.v1
+data_key: ` + testDataKey + `
 `
 	if err := os.WriteFile(p, []byte(yamlBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -97,7 +101,7 @@ usage_events:
 func TestLoad_OutboxDefaultsToFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "gateway.yaml")
-	_ = os.WriteFile(p, []byte(""), 0o644)
+	_ = os.WriteFile(p, []byte("data_key: "+testDataKey+"\n"), 0o644)
 
 	cfg, err := Load(p)
 	if err != nil {
@@ -143,6 +147,34 @@ func TestLoad_RejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestLoad_RejectsRemovedPathsSection(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "removed.yaml")
+	_ = os.WriteFile(p, []byte("paths: {}\n"), 0o644)
+
+	if _, err := Load(p); err == nil {
+		t.Fatal("want removed paths section to be rejected")
+	}
+}
+
+func TestValidate_RejectsNonHexDataKey(t *testing.T) {
+	cfg := Config{DataKey: "zz" + strings.Repeat("0", 62)}
+	cfg.ApplyDefaults()
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("want non-hex data key to be rejected")
+	}
+}
+
+func TestValidate_RequiresDataKey(t *testing.T) {
+	var cfg Config
+	cfg.ApplyDefaults()
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("want missing data key to be rejected")
+	}
+}
+
 func TestLoad_AppliesEnvironmentOverrides(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "gateway.yaml")
@@ -182,6 +214,7 @@ func TestValidate_RejectsUnknownDrivers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var c Config
 			c.ApplyDefaults()
+			c.DataKey = testDataKey
 			tt.set(&c)
 			if err := c.Validate(); err == nil {
 				t.Fatal("want validation error")
@@ -210,6 +243,7 @@ func TestValidate_UsageDriverContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var cfg Config
 			cfg.ApplyDefaults()
+			cfg.DataKey = testDataKey
 			cfg.UsageEvents.Driver = tt.driver
 			cfg.UsageEvents.Kafka.Brokers = tt.brokers
 			cfg.UsageEvents.Kafka.Topic = tt.topic
@@ -223,6 +257,10 @@ func TestValidate_UsageDriverContract(t *testing.T) {
 }
 
 func TestBundledGatewayConfigsParseStrictly(t *testing.T) {
+	// The production template intentionally omits secrets and requires this
+	// deployment-time override; applying it here also verifies that contract.
+	t.Setenv("LLM_GATEWAY_DATA_KEY", testDataKey)
+
 	for _, path := range []string{
 		"../../examples/local/configs/gateway.yaml",
 		"../../deploy/configs/gateway.yaml",
@@ -255,6 +293,7 @@ func TestApplyDefaults_OnZeroConfig(t *testing.T) {
 func TestValidate_RateLimitDriver(t *testing.T) {
 	var c Config
 	c.ApplyDefaults()
+	c.DataKey = testDataKey
 
 	if c.RateLimit.Driver != "redis" {
 		t.Fatalf("default rate_limit.driver = %q, want redis", c.RateLimit.Driver)
@@ -275,6 +314,7 @@ func TestValidate_VendorsOpenAICompatible(t *testing.T) {
 	base := func() Config {
 		var c Config
 		c.ApplyDefaults()
+		c.DataKey = testDataKey
 
 		return c
 	}

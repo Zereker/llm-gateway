@@ -119,9 +119,9 @@ type RoutingPolicyCandidate struct {
 type RoutingCandidateSource string
 
 const (
-	RoutingCandidateRequested    RoutingCandidateSource = "requested_model"
-	RoutingCandidatePolicy       RoutingCandidateSource = "route_policy"
-	RoutingCandidateLegacyHeader RoutingCandidateSource = "legacy_fallback_header"
+	RoutingCandidateRequested      RoutingCandidateSource = "requested_model"
+	RoutingCandidatePolicy         RoutingCandidateSource = "route_policy"
+	RoutingCandidateFallbackHeader RoutingCandidateSource = "fallback_header"
 )
 
 // RoutingOutcome is deliberately small so it is safe as a metric label.
@@ -141,8 +141,7 @@ type RoutingReasonCode string
 const (
 	RoutingReasonConcreteModel             RoutingReasonCode = "concrete_model"
 	RoutingReasonVirtualPolicyMatched      RoutingReasonCode = "virtual_policy_matched"
-	RoutingReasonLegacyFallbackAccepted    RoutingReasonCode = "legacy_fallback_accepted"
-	RoutingReasonLegacyFallbackIgnored     RoutingReasonCode = "legacy_fallback_ignored"
+	RoutingReasonFallbackAccepted          RoutingReasonCode = "fallback_accepted"
 	RoutingReasonCandidateNotFound         RoutingReasonCode = "candidate_not_found"
 	RoutingReasonCandidateNotSubscribed    RoutingReasonCode = "candidate_not_subscribed"
 	RoutingReasonCandidateRegionMismatch   RoutingReasonCode = "candidate_region_mismatch"

@@ -85,7 +85,7 @@ function connect(){
   TOKEN=$("#token").value.trim();
   if(!TOKEN){toast("enter a token","bad");return}
   sessionStorage.setItem("tok",TOKEN);
-  api("GET","/admin/endpoints").then(()=>{
+  api("GET","/api/v1/endpoints").then(()=>{
     $("#status").textContent="connected"; $("#status").className="ok";
     renderNav(); show(active);
   }).catch(e=>{$("#status").textContent="auth failed"; $("#status").className="bad"; toast(e.message,"bad")});
@@ -112,7 +112,7 @@ const onoff = b => el("span",{class:"pill "+(b?"on":"off")}, b?"enabled":"disabl
 
 // ---- Endpoints ----
 async function viewEndpoints(){
-  const {endpoints}=await api("GET","/admin/endpoints");
+  const {endpoints}=await api("GET","/api/v1/endpoints");
   const v=$("#view"); v.innerHTML="";
   const form=el("div",{class:"card"},el("h2",{},"Create endpoint"));
   const g=el("div",{class:"grid"});
@@ -122,7 +122,7 @@ async function viewEndpoints(){
   form.append(g);
   form.append(el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
     try{
-      await api("POST","/admin/endpoints",{name:f.name.value,vendor:f.vendor.value,protocol:f.protocol.value,model:f.model.value,
+      await api("POST","/api/v1/endpoints",{name:f.name.value,vendor:f.vendor.value,protocol:f.protocol.value,model:f.model.value,
         routing:{url:f.url.value},auth:{type:f.authType.value||"bearer",payload:{api_key:f.apiKey.value}}});
       toast("endpoint created","ok"); show("Endpoints");
     }catch(e){toast(e.message,"bad")}
@@ -134,13 +134,13 @@ async function viewEndpoints(){
     el("td",{class:"mono"},String(e.id)),el("td",{},e.name),el("td",{},e.vendor),el("td",{},e.protocol),el("td",{},e.model),
     el("td",{},e.group),el("td",{},String(e.weight)),el("td",{},onoff(e.enabled)),el("td",{},e.auth_type),
     el("td",{class:"mono"},e.routing_url||""),
-    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete endpoint "+e.name+"?")){try{await api("DELETE","/admin/endpoints/"+e.id);toast("deleted","ok");show("Endpoints")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete endpoint "+e.name+"?")){try{await api("DELETE","/api/v1/endpoints/"+e.id);toast("deleted","ok");show("Endpoints")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
   v.append(list);
 }
 
 // ---- API Keys ----
 async function viewKeys(){
-  const {accounts}=await api("GET","/admin/accounts");
+  const {accounts}=await api("GET","/api/v1/accounts");
   const v=$("#view"); v.innerHTML="";
   const form=el("div",{class:"card"},el("h2",{},"Mint API key"));
   const g=el("div",{class:"grid"});
@@ -148,31 +148,31 @@ async function viewKeys(){
   const sub=el("input",{placeholder:"sub_account_id (operator)"}), name=el("input",{placeholder:"name (prod/ci)"});
   g.append(el("label",{},"account",acct),el("label",{},"sub_account_id",sub),el("label",{},"name",name));
   form.append(g,el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
-    try{const r=await api("POST","/admin/api-keys",{account_id:acct.value,sub_account_id:sub.value,name:name.value});
+    try{const r=await api("POST","/api/v1/api-keys",{account_id:acct.value,sub_account_id:sub.value,name:name.value});
       toast("API key created — copy it now, shown only once:","ok",r.api_key); show("API Keys");
     }catch(e){toast(e.message,"bad")}
   }},"Mint key")),el("div",{class:"hint"},"The plaintext key is returned once and never again — copy it from the toast."));
   v.append(form);
 
   for(const a of (accounts||[])){
-    const {api_keys}=await api("GET","/admin/accounts/"+encodeURIComponent(a.pin)+"/api-keys");
+    const {api_keys}=await api("GET","/api/v1/accounts/"+encodeURIComponent(a.pin)+"/api-keys");
     if(!api_keys||!api_keys.length)continue;
     const card=el("div",{class:"card"},el("h2",{},"Keys · "+a.pin));
     card.append(table(["Key ID","Prefix","Name","Sub-acct","Enabled","Created",""],api_keys,k=>el("tr",{},
       el("td",{class:"mono"},k.api_key_id),el("td",{class:"mono"},k.api_key_prefix),el("td",{},k.name||""),el("td",{},k.sub_account_id),
       el("td",{},onoff(k.enabled)),el("td",{class:"mono"},(k.created_at||"").slice(0,19)),
-      el("td",{},k.enabled?el("button",{class:"danger",onclick:async()=>{if(confirm("Revoke "+k.api_key_id+"?")){try{await api("DELETE","/admin/accounts/"+encodeURIComponent(a.pin)+"/api-keys/"+k.api_key_id);toast("revoked (data plane invalidated)","ok");show("API Keys")}catch(x){toast(x.message,"bad")}}}},"Revoke"):el("span",{class:"pill off"},"revoked")))));
+      el("td",{},k.enabled?el("button",{class:"danger",onclick:async()=>{if(confirm("Revoke "+k.api_key_id+"?")){try{await api("DELETE","/api/v1/accounts/"+encodeURIComponent(a.pin)+"/api-keys/"+k.api_key_id);toast("revoked (data plane invalidated)","ok");show("API Keys")}catch(x){toast(x.message,"bad")}}}},"Revoke"):el("span",{class:"pill off"},"revoked")))));
     v.append(card);
   }
 }
 
 // ---- Accounts ----
 async function viewAccounts(){
-  const {accounts}=await api("GET","/admin/accounts");
+  const {accounts}=await api("GET","/api/v1/accounts");
   const v=$("#view"); v.innerHTML="";
   const pin=el("input",{placeholder:"pin"}), name=el("input",{placeholder:"display name"});
   v.append(el("div",{class:"card"},el("h2",{},"Create account"),el("div",{class:"grid"},el("label",{},"pin",pin),el("label",{},"name",name)),
-    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/admin/accounts",{pin:pin.value,name:name.value});toast("account created","ok");show("Accounts")}catch(e){toast(e.message,"bad")}}},"Create"))));
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/api/v1/accounts",{pin:pin.value,name:name.value});toast("account created","ok");show("Accounts")}catch(e){toast(e.message,"bad")}}},"Create"))));
   const card=el("div",{class:"card"},el("h2",{},"Accounts ("+(accounts||[]).length+")"));
   card.append(table(["Pin","Name","Enabled","Quota Policy","Created"],accounts,a=>el("tr",{},
     el("td",{class:"mono"},a.pin),el("td",{},a.name),el("td",{},onoff(a.enabled)),el("td",{},a.quota_policy_id?String(a.quota_policy_id):"—"),el("td",{class:"mono"},(a.created_at||"").slice(0,19)))));
@@ -181,17 +181,17 @@ async function viewAccounts(){
 
 // ---- Models ----
 async function viewModels(){
-  const {model_services}=await api("GET","/admin/model-services");
-  const {accounts}=await api("GET","/admin/accounts");
+  const {model_services}=await api("GET","/api/v1/model-services");
+  const {accounts}=await api("GET","/api/v1/accounts");
   const v=$("#view"); v.innerHTML="";
   const sid=el("input",{placeholder:"service_id (openai/gpt-4o)"}), model=el("input",{placeholder:"model (gpt-4o)"});
   v.append(el("div",{class:"card"},el("h2",{},"Create model service"),el("div",{class:"grid"},el("label",{},"service_id",sid),el("label",{},"model",model)),
-    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/admin/model-services",{service_id:sid.value,model:model.value});toast("model created","ok");show("Models")}catch(e){toast(e.message,"bad")}}},"Create"))));
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/api/v1/model-services",{service_id:sid.value,model:model.value});toast("model created","ok");show("Models")}catch(e){toast(e.message,"bad")}}},"Create"))));
 
   const sacc=el("select"); (accounts||[]).forEach(a=>sacc.append(el("option",{value:a.pin},a.pin)));
   const smod=el("select"); (model_services||[]).forEach(m=>smod.append(el("option",{value:m.id},m.model)));
   v.append(el("div",{class:"card"},el("h2",{},"Subscribe account → model"),el("div",{class:"grid"},el("label",{},"account",sacc),el("label",{},"model",smod)),
-    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/admin/subscriptions",{account_id:sacc.value,model_service_id:Number(smod.value)});toast("subscribed","ok")}catch(e){toast(e.message,"bad")}}},"Subscribe"))));
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/api/v1/subscriptions",{account_id:sacc.value,model_service_id:Number(smod.value)});toast("subscribed","ok")}catch(e){toast(e.message,"bad")}}},"Subscribe"))));
 
   const card=el("div",{class:"card"},el("h2",{},"Model services ("+(model_services||[]).length+")"));
   card.append(table(["ID","Service ID","Model","Created"],model_services,m=>el("tr",{},
@@ -201,8 +201,8 @@ async function viewModels(){
 
 // ---- Model Aliases ----
 async function viewAliases(){
-  const {model_services}=await api("GET","/admin/model-services");
-  const {model_aliases}=await api("GET","/admin/model-aliases");
+  const {model_services}=await api("GET","/api/v1/model-services");
+  const {model_aliases}=await api("GET","/api/v1/model-aliases");
   const v=$("#view"); v.innerHTML="";
   const alias=el("input",{placeholder:"alias (fast)"});
   const model=el("select"); (model_services||[]).forEach(m=>model.append(el("option",{value:m.model},m.model)));
@@ -210,18 +210,18 @@ async function viewAliases(){
     el("div",{class:"hint",style:"margin-bottom:8px"},"client requests the alias → gateway resolves to the canonical model (transparent downstream)"),
     el("div",{class:"grid"},el("label",{},"alias",alias),el("label",{},"canonical model",model)),
     el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
-      try{await api("POST","/admin/model-aliases",{alias:alias.value,model:model.value});toast("alias created","ok");show("Aliases")}catch(e){toast(e.message,"bad")}
+      try{await api("POST","/api/v1/model-aliases",{alias:alias.value,model:model.value});toast("alias created","ok");show("Aliases")}catch(e){toast(e.message,"bad")}
     }},"Create"))));
   const card=el("div",{class:"card"},el("h2",{},"Aliases ("+(model_aliases||[]).length+")"));
   card.append(table(["Alias","→ Canonical model","Enabled",""],model_aliases,a=>el("tr",{},
     el("td",{class:"mono"},a.alias),el("td",{class:"mono"},a.model),el("td",{},onoff(a.enabled)),
-    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete alias "+a.alias+"?")){try{await api("DELETE","/admin/model-aliases/"+encodeURIComponent(a.alias));toast("deleted","ok");show("Aliases")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete alias "+a.alias+"?")){try{await api("DELETE","/api/v1/model-aliases/"+encodeURIComponent(a.alias));toast("deleted","ok");show("Aliases")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
   v.append(card);
 }
 
 // ---- Quota Policies ----
 async function viewPolicies(){
-  const {quota_policies}=await api("GET","/admin/quota-policies");
+  const {quota_policies}=await api("GET","/api/v1/quota-policies");
   const v=$("#view"); v.innerHTML="";
   const name=el("input",{placeholder:"name (tier1)"}), desc=el("input",{placeholder:"description"});
   const rule=el("textarea",{rows:"5",style:"width:100%;font-family:ui-monospace,monospace",placeholder:'{"default":{"rpm":60,"tpm":100000},"per_model":{"gpt-4o":{"rpm":10}}}'});
@@ -230,20 +230,20 @@ async function viewPolicies(){
     el("div",{style:"margin-top:10px"},el("div",{class:"hint",style:"margin-bottom:4px"},"rule JSON (default / per_model with rpm·tpm·rps)"),rule),
     el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
       let parsed; try{parsed=JSON.parse(rule.value)}catch(e){toast("rule is not valid JSON","bad");return}
-      try{await api("POST","/admin/quota-policies",{name:name.value,description:desc.value,rule:parsed});toast("policy created","ok");show("Policies")}catch(e){toast(e.message,"bad")}
+      try{await api("POST","/api/v1/quota-policies",{name:name.value,description:desc.value,rule:parsed});toast("policy created","ok");show("Policies")}catch(e){toast(e.message,"bad")}
     }},"Create"))));
 
   const card=el("div",{class:"card"},el("h2",{},"Quota policies ("+(quota_policies||[]).length+")"));
   card.append(table(["ID","Name","Description","Rule","Enabled",""],quota_policies,p=>el("tr",{},
     el("td",{class:"mono"},String(p.id)),el("td",{},p.name),el("td",{},p.description||""),
     el("td",{class:"mono"},JSON.stringify(p.rule)),el("td",{},onoff(p.enabled)),
-    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete policy "+p.name+"?")){try{await api("DELETE","/admin/quota-policies/"+p.id);toast("deleted","ok");show("Policies")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete policy "+p.name+"?")){try{await api("DELETE","/api/v1/quota-policies/"+p.id);toast("deleted","ok");show("Policies")}catch(x){toast(x.message,"bad")}}}},"Delete")))));
   v.append(card);
 }
 
 // ---- Prompt / response governance ----
 async function viewGovernance(){
-  const [{policies},{policy_bindings}]=await Promise.all([api("GET","/admin/policies"),api("GET","/admin/policy-bindings")]);
+  const [{policies},{policy_bindings}]=await Promise.all([api("GET","/api/v1/policies"),api("GET","/api/v1/policy-bindings")]);
   const v=$("#view"); v.innerHTML="";
 
   const pid=el("input",{placeholder:"policy_id (blank creates a new policy)"}), name=el("input",{placeholder:"name"});
@@ -253,13 +253,13 @@ async function viewGovernance(){
   v.append(el("div",{class:"card"},el("h2",{},"Publish enforcement policy"),
     el("div",{class:"hint",style:"margin-bottom:8px"},"Definitions are immutable. Reusing policy_id publishes the next version."),
     el("div",{class:"grid"},el("label",{},"policy_id",pid),el("label",{},"name",name),el("label",{},"input enforcement",input),el("label",{},"output guarantee",mode),el("label",{},"strict buffer bytes",max)),
-    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/admin/policies",{policy_id:pid.value,name:name.value,input_enabled:input.value==="true",output_mode:mode.value,max_buffer_bytes:Number(max.value)});toast("policy published","ok");show("Governance")}catch(e){toast(e.message,"bad")}}},"Publish"))));
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{await api("POST","/api/v1/policies",{policy_id:pid.value,name:name.value,input_enabled:input.value==="true",output_mode:mode.value,max_buffer_bytes:Number(max.value)});toast("policy published","ok");show("Governance")}catch(e){toast(e.message,"bad")}}},"Publish"))));
 
   const defs=el("div",{class:"card"},el("h2",{},"Enforcement policies ("+(policies||[]).length+")"));
   defs.append(table(["Policy","Version","Name","Input","Output","Buffer","Enabled",""],policies,p=>el("tr",{},
     el("td",{class:"mono"},p.policy_id),el("td",{class:"mono"},String(p.version)),el("td",{},p.name),el("td",{},p.input_enabled?"enforce":"skip"),
     el("td",{class:"mono"},p.output_mode),el("td",{class:"mono"},String(p.max_buffer_bytes)),el("td",{},onoff(p.enabled)),
-    el("td",{},p.enabled?el("button",{class:"danger",onclick:async()=>{if(confirm("Disable every active version of "+p.policy_id+"?")){try{await api("DELETE","/admin/policies/"+encodeURIComponent(p.policy_id));toast("disabled","ok");show("Governance")}catch(e){toast(e.message,"bad")}}}},"Disable"):""))));
+    el("td",{},p.enabled?el("button",{class:"danger",onclick:async()=>{if(confirm("Disable every active version of "+p.policy_id+"?")){try{await api("DELETE","/api/v1/policies/"+encodeURIComponent(p.policy_id));toast("disabled","ok");show("Governance")}catch(e){toast(e.message,"bad")}}}},"Disable"):""))));
   v.append(defs);
 
   const scope=el("select",{},...[["global","global"],["account","account"],["api_key","API key"]].map(x=>el("option",{value:x[0]},x[1])));
@@ -268,11 +268,11 @@ async function viewGovernance(){
   v.append(el("div",{class:"card"},el("h2",{},"Bind policy"),
     el("div",{class:"hint",style:"margin-bottom:8px"},"Runtime precedence: API key → project (reserved) → account → global. Bindings select a complete policy; they are not merged."),
     el("div",{class:"grid"},el("label",{},"scope",scope),el("label",{},"scope ID",scopeID),el("label",{},"policy version",selected)),
-    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{const [id,version]=(selected.value||"").split("|");await api("POST","/admin/policy-bindings",{scope:{kind:scope.value,id:scope.value==="global"?"":scopeID.value},policy_id:id,policy_version:Number(version)});toast("policy bound","ok");show("Governance")}catch(e){toast(e.message,"bad")}}},"Bind"))));
+    el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{const [id,version]=(selected.value||"").split("|");await api("POST","/api/v1/policy-bindings",{scope:{kind:scope.value,id:scope.value==="global"?"":scopeID.value},policy_id:id,policy_version:Number(version)});toast("policy bound","ok");show("Governance")}catch(e){toast(e.message,"bad")}}},"Bind"))));
 
   const bindings=el("div",{class:"card"},el("h2",{},"Active bindings ("+(policy_bindings||[]).length+")"));
   bindings.append(table(["Scope","Scope ID","Policy","Version",""],policy_bindings,b=>el("tr",{},el("td",{class:"mono"},b.scope.kind),el("td",{class:"mono"},b.scope.id||"—"),el("td",{class:"mono"},b.policy_id),el("td",{class:"mono"},String(b.policy_version)),
-    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete this binding?")){try{await api("DELETE","/admin/policy-bindings/"+encodeURIComponent(b.scope.kind)+"?scope_id="+encodeURIComponent(b.scope.id||""));toast("binding deleted","ok");show("Governance")}catch(e){toast(e.message,"bad")}}}},"Delete")))));
+    el("td",{},el("button",{class:"danger",onclick:async()=>{if(confirm("Delete this binding?")){try{await api("DELETE","/api/v1/policy-bindings/"+encodeURIComponent(b.scope.kind)+"?scope_id="+encodeURIComponent(b.scope.id||""));toast("binding deleted","ok");show("Governance")}catch(e){toast(e.message,"bad")}}}},"Delete")))));
   v.append(bindings);
 
   const proto=el("select",{},...[["openai","OpenAI"],["responses","Responses"],["anthropic","Anthropic"],["gemini","Gemini"]].map(x=>el("option",{value:x[0]},x[1])));
@@ -283,13 +283,13 @@ async function viewGovernance(){
   v.append(el("div",{class:"card"},el("h2",{},"Simulate synthetic decision"),
     el("div",{class:"hint",style:"margin-bottom:8px"},"Runs the gateway mutation executor only; it does not send content to an external detector or upstream model."),
     el("div",{class:"grid"},el("label",{},"protocol",proto),el("label",{},"decision",action),el("label",{},"mutation target",target),el("label",{},"replacement",replacement)),
-    el("div",{style:"margin-top:10px"},body),el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{const parsed=JSON.parse(body.value), d={action:action.value,policy:{id:"console/simulation",version:1,scope:{kind:"global"}},rule_id:"synthetic",reason_code:"console_simulation"};if(action.value==="redact")d.mutations=[{id:"synthetic-mask",kind:"redact",target:target.value,replacement:replacement.value}];const r=await api("POST","/admin/policies/simulate",{protocol:proto.value,modality:"chat",stage:"input",body:parsed,decision:d});result.value=JSON.stringify(r.result,null,2)}catch(e){toast(e.message,"bad")}}},"Simulate")),result));
+    el("div",{style:"margin-top:10px"},body),el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{try{const parsed=JSON.parse(body.value), d={action:action.value,policy:{id:"console/simulation",version:1,scope:{kind:"global"}},rule_id:"synthetic",reason_code:"console_simulation"};if(action.value==="redact")d.mutations=[{id:"synthetic-mask",kind:"redact",target:target.value,replacement:replacement.value}];const r=await api("POST","/api/v1/policies/simulate",{protocol:proto.value,modality:"chat",stage:"input",body:parsed,decision:d});result.value=JSON.stringify(r.result,null,2)}catch(e){toast(e.message,"bad")}}},"Simulate")),result));
 }
 
 // ---- Pricing (append-only) ----
 async function viewPricing(){
-  const {accounts}=await api("GET","/admin/accounts");
-  const {model_services}=await api("GET","/admin/model-services");
+  const {accounts}=await api("GET","/api/v1/accounts");
+  const {model_services}=await api("GET","/api/v1/model-services");
   const v=$("#view"); v.innerHTML="";
   const acc=el("select"); (accounts||[]).forEach(a=>acc.append(el("option",{value:a.pin},a.pin)));
   const mod=el("select"); (model_services||[]).forEach(m=>mod.append(el("option",{value:m.id},m.model)));
@@ -300,10 +300,10 @@ async function viewPricing(){
     el("div",{style:"margin-top:10px"},el("div",{class:"hint",style:"margin-bottom:4px"},"rule JSON (opaque to the gateway — billing engine defines the schema)"),rule),
     el("div",{class:"row"},el("button",{class:"primary",onclick:async()=>{
       let parsed; try{parsed=JSON.parse(rule.value)}catch(e){toast("rule is not valid JSON","bad");return}
-      try{await api("POST","/admin/pricing",{account_id:acc.value,model_service_id:Number(mod.value),rule_class:cls.value,rule:parsed,created_by:by.value});toast("price published","ok");show("Pricing")}catch(e){toast(e.message,"bad")}
+      try{await api("POST","/api/v1/pricing",{account_id:acc.value,model_service_id:Number(mod.value),rule_class:cls.value,rule:parsed,created_by:by.value});toast("price published","ok");show("Pricing")}catch(e){toast(e.message,"bad")}
     }},"Publish"))));
 
-  const {pricing}=await api("GET","/admin/pricing");
+  const {pricing}=await api("GET","/api/v1/pricing");
   const card=el("div",{class:"card"},el("h2",{},"Price versions ("+(pricing||[]).length+")"));
   card.append(table(["ID","Account","Model#","Class","From","To","Rule","By"],pricing,p=>el("tr",{},
     el("td",{class:"mono"},String(p.id)),el("td",{class:"mono"},p.account_id),el("td",{class:"mono"},String(p.model_service_id)),
@@ -317,7 +317,7 @@ async function viewPricing(){
 async function viewAudit(){
   const v=$("#view"); v.innerHTML="";
   let data;
-  try{ data=await api("GET","/admin/audit?limit=200"); }
+  try{ data=await api("GET","/api/v1/audit?limit=200"); }
   catch(e){ v.append(el("div",{class:"card"},el("div",{class:"empty"},"audit is admin-only ("+esc(e.message)+")"))); return; }
   const card=el("div",{class:"card"},el("h2",{},"Audit log — recent writes ("+(data.audit||[]).length+")"),
     el("div",{class:"hint",style:"margin-bottom:8px"},"actor · method · path · status — request bodies are never recorded (no secrets)"));

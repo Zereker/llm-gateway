@@ -1,7 +1,10 @@
 package console
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
+	"mime"
 	"net/http"
 	"strconv"
 
@@ -17,8 +20,16 @@ const statusKey = "status"
 // statusDeleted is the outcome value shared by every hard-delete handler.
 const statusDeleted = "deleted"
 
+// apiPrefix is versioned before the first release so future incompatible
+// control-plane changes can coexist with existing clients.
+const apiPrefix = "/api/v1"
+
+const maxJSONBodyBytes int64 = 1 << 20 // Control-plane mutations never need bodies larger than 1 MiB.
+
+const apiJSONMediaType = "application/json"
+
 // NewEngine assembles the control-plane gin.Engine: the ops route (/healthz) is
-// public, everything under /admin/* goes through adminAuth (authenticate +
+// public, everything under /api/v1/* goes through adminAuth (authenticate +
 // resolve role). Write routes (POST/DELETE) additionally attach
 // requireAdmin — the viewer role can only read. All business handlers depend
 // only on *Store.
@@ -28,15 +39,15 @@ func NewEngine(store *Store, tokens []Token) *gin.Engine {
 
 	engine.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{statusKey: "ok"}) })
 
-	// Web UI (Phase 3): single-file admin console. The page itself carries no
-	// secrets; auth happens on the /admin/* API calls it issues (the browser
+	// Web UI: single-file admin console. The page itself carries no
+	// secrets; auth happens on the /api/v1/* API calls it issues (the browser
 	// attaches the admin token).
 	engine.GET("/", func(c *gin.Context) { c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML) })
 
 	api := &api{store: store}
 	// adminAuth authenticates + resolves role/actor first; auditWrites then
 	// records the write-operation audit (this order must not be reversed).
-	admin := engine.Group("/admin", adminAuth(tokens), requireAdminForWrites, auditWrites(store))
+	admin := engine.Group(apiPrefix, adminAuth(tokens), requireAdminForWrites, auditWrites(store))
 	{
 		// Reads: both admin and viewer are allowed
 		admin.GET("/accounts", api.listAccounts)
@@ -393,9 +404,8 @@ func (a *api) createEndpoint(c *gin.Context) {
 	if err != nil {
 		var invalid *InvalidEndpointError
 		if errors.As(err, &invalid) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": gin.H{"code": "endpoint_invalid", "message": "endpoint failed validation", "reasons": invalid.Reasons},
-			})
+			abortErrorDetails(c, http.StatusBadRequest, "endpoint_invalid", "endpoint failed validation",
+				map[string]any{"reasons": invalid.Reasons})
 
 			return
 		}
@@ -567,11 +577,28 @@ func (a *api) publishPrice(c *gin.Context) {
 }
 
 func (a *api) listPricing(c *gin.Context) {
-	q := PricingQuery{AccountID: c.Query("account_id"), ActiveOnly: c.Query("active") == "true"}
-	if v := c.Query("model_service_id"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			q.ModelServiceID = n
+	q := PricingQuery{AccountID: c.Query("account_id")}
+	if value, present := c.GetQuery("active"); present {
+		switch value {
+		case "true":
+			q.ActiveOnly = true
+		case "false":
+		default:
+			abortError(c, http.StatusBadRequest, "invalid_argument", "active must be true or false")
+
+			return
 		}
+	}
+
+	if v := c.Query("model_service_id"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			abortError(c, http.StatusBadRequest, "invalid_argument", "model_service_id must be a positive integer")
+
+			return
+		}
+
+		q.ModelServiceID = n
 	}
 
 	rows, err := a.store.ListPricing(c.Request.Context(), q)
@@ -634,9 +661,14 @@ func (a *api) deleteModelAlias(c *gin.Context) {
 func (a *api) listAudit(c *gin.Context) {
 	limit := 100
 	if v := c.Query("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			limit = n
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			abortError(c, http.StatusBadRequest, "invalid_argument", "limit must be an integer between 1 and 1000")
+
+			return
 		}
+
+		limit = n
 	}
 
 	rows, err := a.store.ListAudit(c.Request.Context(), limit)
@@ -652,11 +684,30 @@ func (a *api) listAudit(c *gin.Context) {
 // helpers
 // =============================================================================
 
-// bind parses the JSON body; on failure it has already written a 400 and
-// returns false.
+// bind parses one strict JSON value. Unknown fields, trailing JSON values,
+// oversized bodies, and non-JSON media types are rejected rather than silently
+// changing the meaning of a control-plane mutation.
 func bind(c *gin.Context, dst any) bool {
-	if err := c.ShouldBindJSON(dst); err != nil {
+	mediaType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if err != nil || mediaType != apiJSONMediaType {
+		abortError(c, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be "+apiJSONMediaType)
+
+		return false
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxJSONBodyBytes)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
 		abortError(c, 400, "invalid_json", err.Error())
+
+		return false
+	}
+
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		abortError(c, 400, "invalid_json", "request body must contain exactly one JSON value")
+
 		return false
 	}
 
@@ -735,7 +786,21 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
-// abortError writes the unified error response body {"error":{"code","message"}}.
+type apiErrorResponse struct {
+	Error apiErrorBody `json:"error"`
+}
+
+type apiErrorBody struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
+// abortError writes the stable control-plane error envelope.
 func abortError(c *gin.Context, status int, code, message string) {
-	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": message}})
+	abortErrorDetails(c, status, code, message, nil)
+}
+
+func abortErrorDetails(c *gin.Context, status int, code, message string, details map[string]any) {
+	c.AbortWithStatusJSON(status, apiErrorResponse{Error: apiErrorBody{Code: code, Message: message, Details: details}})
 }

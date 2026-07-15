@@ -92,8 +92,8 @@ type EvaluationInput struct {
 	Segments []TextSegment   `json:"-"`
 	Policy   *PolicyRef      `json:"policy,omitempty"`
 
-	// Request preserves the typed, protocol-neutral envelope for legacy
-	// adapters. New engines should consume Content and typed metadata.
+	// Request preserves the typed, protocol-neutral envelope for Moderator
+	// adapters. Native policy engines should consume Content and typed metadata.
 	Request *domain.RequestEnvelope `json:"-"`
 }
 
@@ -116,10 +116,6 @@ type Decision struct {
 	RuleID     string     `json:"rule_id"`
 	ReasonCode string     `json:"reason_code"`
 	Mutations  []Mutation `json:"-"`
-
-	// Cause exists only for compatibility/error attribution in-process. It is
-	// excluded from JSON and SafeAudit because it may contain sensitive text.
-	Cause error `json:"-"`
 }
 
 type AuditMutation struct {

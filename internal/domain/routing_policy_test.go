@@ -5,15 +5,15 @@ import (
 	"testing"
 )
 
-func TestModelRoutingDecisionRepresentsExistingConcreteFallback(t *testing.T) {
+func TestModelRoutingDecisionRepresentsConcreteFallback(t *testing.T) {
 	decision := ModelRoutingDecision{
 		RequestedModel: "gpt-4o",
 		Outcome:        RoutingOutcomeResolved,
 		Reason:         RoutingReasonConcreteModel,
 		Candidates: []RoutingCandidateDecision{
 			{ModelServiceID: 1, Model: "gpt-4o", Source: RoutingCandidateRequested, Eligible: true, Reason: RoutingReasonConcreteModel, Order: 0},
-			{ModelServiceID: 2, Model: "claude-sonnet", Source: RoutingCandidateLegacyHeader, Eligible: true, Reason: RoutingReasonLegacyFallbackAccepted, Order: 1},
-			{Model: "missing", Source: RoutingCandidateLegacyHeader, Eligible: false, Reason: RoutingReasonCandidateNotFound, Order: 2},
+			{ModelServiceID: 2, Model: "claude-sonnet", Source: RoutingCandidateFallbackHeader, Eligible: true, Reason: RoutingReasonFallbackAccepted, Order: 1},
+			{Model: "missing", Source: RoutingCandidateFallbackHeader, Eligible: false, Reason: RoutingReasonCandidateNotFound, Order: 2},
 		},
 		MaxAttempts: 3,
 	}

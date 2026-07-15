@@ -16,6 +16,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -54,10 +55,7 @@ const (
 	DriverInMemory = "inmemory"
 )
 
-// selectorFilterWeightedRandom is the default/always-available selector
-// filter name, referenced both in the driver switch and in the default
-// filter chain below.
-const selectorFilterWeightedRandom = "weighted_random"
+const selectorPickerWeightedRandom = "weighted_random"
 
 // validSelectorFilters is the allowlist Validate enforces for
 // selector.filters. It MUST stay in sync with the switch in
@@ -65,8 +63,7 @@ const selectorFilterWeightedRandom = "weighted_random"
 // unknown there panics at startup. That sync is guarded by a test in the
 // gateway package via ValidSelectorFilters.
 var validSelectorFilters = map[string]bool{
-	"cooldown": true, "limit_read": true, selectorFilterWeightedRandom: true,
-	"prefix_cache": true, "busy": true,
+	"cooldown": true, "limit_read": true, "prefix_cache": true, "busy": true,
 }
 
 // ValidSelectorFilters returns the selector.filters allowlist, for the
@@ -89,7 +86,6 @@ func ValidSelectorFilters() []string {
 type Config struct {
 	Server      ServerConfig      `yaml:"server"`
 	Request     RequestConfig     `yaml:"request"`
-	Paths       PathsConfig       `yaml:"paths"`
 	Database    infra.DBConfig    `yaml:"database"`   // schema lives in internal/infra
 	Redis       infra.RedisConfig `yaml:"redis"`      // shared by M6 RateLimit + future cache layers
 	RateLimit   RateLimitConfig   `yaml:"rate_limit"` // M6 rate-limit counter store driver
@@ -281,14 +277,6 @@ type RequestConfig struct {
 	Timeout        time.Duration `yaml:"timeout"`
 }
 
-// PathsConfig holds file-based data paths.
-//
-// v0.1: apikeys / model_services / endpoints have all moved to the DB
-// (maintained via direct SQL), and usage output moved to the outbox section.
-// This struct is currently empty but kept around — if a resource that "must
-// be a file" comes along in the future (e.g. TLS certificates), add it here.
-type PathsConfig struct{}
-
 // UsageEventsConfig selects the downstream channel M10 Tracing publishes usage
 // events to.
 //
@@ -346,10 +334,11 @@ type KafkaOutboxSection struct {
 
 // SelectorConfig configures M7 endpoint routing + cooldown + retry.
 //
-// **filters**: execution order matches array order; available values (v0.5):
+// **filters**: execution order matches array order; available values:
 //   - `cooldown`         excludes endpoints currently in cooldown
 //   - `limit_read`       excludes endpoints over their quota
-//   - `weighted_random`  makes the final pick (must be last; runs after the other filters)
+//   - `prefix_cache`      promotes endpoints likely to hold a matching prefix
+//   - `busy`              excludes endpoints over the configured busy threshold
 //
 // **cooldown.<class>**: cooldown duration after an endpoint fails, keyed by
 // ErrorClass. 0 = no cooldown.
@@ -513,8 +502,9 @@ func splitNonEmpty(value string) []string {
 //
 // A startup-time failure exits immediately, so a config error never reaches runtime.
 func (c *Config) Validate() error {
-	if c.DataKey != "" && len(c.DataKey) != 64 {
-		return fmt.Errorf("data_key must be 64 hex chars (32 bytes); got %d", len(c.DataKey))
+	key, err := hex.DecodeString(c.DataKey)
+	if err != nil || len(key) != 32 {
+		return fmt.Errorf("data_key is required and must be exactly 64 hexadecimal characters (32 bytes)")
 	}
 
 	switch c.Trace.Driver {
@@ -595,7 +585,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Selector.Picker {
-	case "", selectorFilterWeightedRandom, "p2c":
+	case "", selectorPickerWeightedRandom, "p2c":
 	default:
 		return fmt.Errorf("selector.picker=%q not supported (use weighted_random|p2c)", c.Selector.Picker)
 	}
@@ -685,7 +675,7 @@ func (c *Config) ApplyDefaults() {
 
 	// Scheduler defaults
 	if len(c.Selector.Filters) == 0 {
-		c.Selector.Filters = []string{"cooldown", "limit_read", selectorFilterWeightedRandom}
+		c.Selector.Filters = []string{"cooldown", "limit_read"}
 	}
 
 	if c.Selector.MaxAttempts == 0 {

@@ -40,7 +40,7 @@ func (s *stubVirtualResolver) Resolve(_ context.Context, in routingpolicy.Input)
 	return s.resolution, s.err
 }
 
-func TestModelServiceResolvesVirtualModelAndIgnoresLegacyFallbackHeader(t *testing.T) {
+func TestModelServiceResolvesVirtualModelAndIgnoresFallbackHeader(t *testing.T) {
 	policy := domain.RoutingPolicyRef{ID: "rp_fast", Version: 2, Scope: domain.RoutingScope{Kind: domain.RoutingScopeAccount, ID: "acc1"}}
 	resolver := &stubVirtualResolver{resolution: routingpolicy.Resolution{
 		Decision: domain.ModelRoutingDecision{

@@ -76,15 +76,15 @@ func newTestEngine(t *testing.T) (*gin.Engine, *sqlx.DB) {
 func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	engine, _ := newTestEngine(t)
 
-	if code, body := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
+	if code, body := do(t, engine, "POST", "/api/v1/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
 		t.Fatalf("create account: code=%d body=%v", code, body)
 	}
-	_, first := do(t, engine, "POST", "/admin/model-services", ModelServiceInput{ServiceID: "local/small", Model: "small"}, true)
+	_, first := do(t, engine, "POST", "/api/v1/model-services", ModelServiceInput{ServiceID: "local/small", Model: "small"}, true)
 	modelID := int64(first["id"].(float64))
-	if code, body := do(t, engine, "POST", "/admin/subscriptions", SubscriptionInput{AccountID: "a1", ModelServiceID: modelID}, true); code != 201 {
+	if code, body := do(t, engine, "POST", "/api/v1/subscriptions", SubscriptionInput{AccountID: "a1", ModelServiceID: modelID}, true); code != 201 {
 		t.Fatalf("subscribe: code=%d body=%v", code, body)
 	}
-	code, cost := do(t, engine, "POST", "/admin/routing-costs", RoutingCostInput{
+	code, cost := do(t, engine, "POST", "/api/v1/routing-costs", RoutingCostInput{
 		ModelServiceID: modelID, InputMicrousdPerMillionToken: 100, OutputMicrousdPerMillionToken: 200,
 	}, true)
 	if code != 201 || cost["routing_cost"].(map[string]any)["version"].(float64) != 1 {
@@ -98,13 +98,13 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 		"wrong owner ID": {ProfileID: "rcp_other", ModelServiceID: modelID, InputMicrousdPerMillionToken: 1},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if code, body := do(t, engine, "POST", "/admin/routing-costs", input, true); code != 400 {
+			if code, body := do(t, engine, "POST", "/api/v1/routing-costs", input, true); code != 400 {
 				t.Fatalf("code=%d body=%v", code, body)
 			}
 		})
 	}
 
-	code, cost = do(t, engine, "POST", "/admin/routing-costs", RoutingCostInput{
+	code, cost = do(t, engine, "POST", "/api/v1/routing-costs", RoutingCostInput{
 		ProfileID: profileID, ModelServiceID: modelID,
 		InputMicrousdPerMillionToken: 90, OutputMicrousdPerMillionToken: 180,
 	}, true)
@@ -126,7 +126,7 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			input := basePolicy
 			input.Objectives = objectives
-			if code, body := do(t, engine, "POST", "/admin/routing-policies", input, true); code != 400 {
+			if code, body := do(t, engine, "POST", "/api/v1/routing-policies", input, true); code != 400 {
 				t.Fatalf("code=%d body=%v", code, body)
 			}
 		})
@@ -140,7 +140,7 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 			TargetCostMicrousd: 1, EstimatedInputTokens: 1000, EstimatedOutputTokens: 500,
 			MinTelemetrySamples: 1, TelemetryMaxAgeSeconds: 60},
 	}
-	code, created := do(t, engine, "POST", "/admin/routing-policies", policy, true)
+	code, created := do(t, engine, "POST", "/api/v1/routing-policies", policy, true)
 	if code != 201 {
 		t.Fatalf("publish: code=%d body=%v", code, created)
 	}
@@ -152,19 +152,19 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 
 	policy.PolicyID = policyID
 	policy.MaxAttempts = 1
-	code, created = do(t, engine, "POST", "/admin/routing-policies", policy, true)
+	code, created = do(t, engine, "POST", "/api/v1/routing-policies", policy, true)
 	if code != 201 || created["routing_policy"].(map[string]any)["version"].(float64) != 2 {
 		t.Fatalf("publish v2: code=%d body=%v", code, created)
 	}
 
 	chat := domain.ModalityChat
-	if code, body := do(t, engine, "POST", "/admin/routing-policies/dry-run", RoutingDryRunInput{
+	if code, body := do(t, engine, "POST", "/api/v1/routing-policies/dry-run", RoutingDryRunInput{
 		AccountID: "a1", RequestedModel: "fast-chat",
 	}, true); code != 400 {
 		t.Fatalf("invalid dry-run: code=%d body=%v", code, body)
 	}
 
-	code, dryRun := do(t, engine, "POST", "/admin/routing-policies/dry-run", RoutingDryRunInput{
+	code, dryRun := do(t, engine, "POST", "/api/v1/routing-policies/dry-run", RoutingDryRunInput{
 		AccountID: "a1", RequestedModel: "fast-chat", Modality: &chat,
 		Telemetry: map[string][]routingpolicy.EndpointTelemetry{"small": {{
 			LatencyMs: 80, SuccessRate: 1, SampleCount: 10, Updated: time.Now().UTC(),
@@ -182,25 +182,25 @@ func TestConsoleRoutingPolicyLifecycleAndDryRun(t *testing.T) {
 	if score["latency_source"] != "observed" || score["cost_source"] != "configured" {
 		t.Fatalf("dry-run score=%v", score)
 	}
-	if code, listedCosts := do(t, engine, "GET", "/admin/routing-costs", nil, true); code != 200 || len(listedCosts["routing_costs"].([]any)) != 2 {
+	if code, listedCosts := do(t, engine, "GET", "/api/v1/routing-costs", nil, true); code != 200 || len(listedCosts["routing_costs"].([]any)) != 2 {
 		t.Fatalf("list routing costs: code=%d body=%v", code, listedCosts)
 	}
 
-	code, listed := do(t, engine, "GET", "/admin/routing-policies", nil, true)
+	code, listed := do(t, engine, "GET", "/api/v1/routing-policies", nil, true)
 	if code != 200 || len(listed["routing_policies"].([]any)) != 2 {
 		t.Fatalf("list: code=%d body=%v", code, listed)
 	}
-	if code, body := do(t, engine, "DELETE", "/admin/routing-policies/"+policyID, nil, true); code != 200 {
+	if code, body := do(t, engine, "DELETE", "/api/v1/routing-policies/"+policyID, nil, true); code != 200 {
 		t.Fatalf("disable: code=%d body=%v", code, body)
 	}
 }
 
 func TestConsoleEnforcementPolicyLifecycleBindingAndSimulation(t *testing.T) {
 	engine, _ := newTestEngine(t)
-	if code, body := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
+	if code, body := do(t, engine, "POST", "/api/v1/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
 		t.Fatalf("create account: code=%d body=%v", code, body)
 	}
-	code, created := do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{
+	code, created := do(t, engine, "POST", "/api/v1/policies", EnforcementPolicyInput{
 		Name: "PII strict", InputEnabled: true, OutputMode: policy.OutputStrictBuffered, MaxBufferBytes: 2048,
 	}, true)
 	if code != 201 {
@@ -208,12 +208,12 @@ func TestConsoleEnforcementPolicyLifecycleBindingAndSimulation(t *testing.T) {
 	}
 	view := created["policy"].(map[string]any)
 	policyID := view["policy_id"].(string)
-	if code, body := do(t, engine, "POST", "/admin/policy-bindings", PolicyBindingInput{
+	if code, body := do(t, engine, "POST", "/api/v1/policy-bindings", PolicyBindingInput{
 		Scope: policy.Scope{Kind: policy.ScopeAccount, ID: "a1"}, PolicyID: policyID, PolicyVersion: 1,
 	}, true); code != 201 {
 		t.Fatalf("bind: code=%d body=%v", code, body)
 	}
-	if code, listed := do(t, engine, "GET", "/admin/policy-bindings", nil, true); code != 200 || len(listed["policy_bindings"].([]any)) != 1 {
+	if code, listed := do(t, engine, "GET", "/api/v1/policy-bindings", nil, true); code != 200 || len(listed["policy_bindings"].([]any)) != 1 {
 		t.Fatalf("bindings: code=%d body=%v", code, listed)
 	}
 
@@ -223,7 +223,7 @@ func TestConsoleEnforcementPolicyLifecycleBindingAndSimulation(t *testing.T) {
 		RuleID: "pii.card", ReasonCode: "card_detected",
 		Mutations: []PolicySimulationMutation{{ID: "m1", Kind: policy.MutationRedact, Target: "/messages/0/content", Replacement: "[MASKED]"}},
 	}
-	code, simulated := do(t, engine, "POST", "/admin/policies/simulate", PolicySimulationInput{
+	code, simulated := do(t, engine, "POST", "/api/v1/policies/simulate", PolicySimulationInput{
 		Protocol: domain.ProtoOpenAI, Modality: domain.ModalityChat, Stage: policy.StageInput,
 		Body: json.RawMessage(`{"model":"x","messages":[{"content":"4111"}]}`), Decision: decision,
 	}, true)
@@ -235,42 +235,42 @@ func TestConsoleEnforcementPolicyLifecycleBindingAndSimulation(t *testing.T) {
 		t.Fatalf("simulation=%v", result)
 	}
 
-	if code, body := do(t, engine, "DELETE", "/admin/policies/"+policyID, nil, true); code != 200 {
+	if code, body := do(t, engine, "DELETE", "/api/v1/policies/"+policyID, nil, true); code != 200 {
 		t.Fatalf("disable: code=%d body=%v", code, body)
 	}
-	if code, listed := do(t, engine, "GET", "/admin/policy-bindings", nil, true); code != 200 || len(listed["policy_bindings"].([]any)) != 0 {
+	if code, listed := do(t, engine, "GET", "/api/v1/policy-bindings", nil, true); code != 200 || len(listed["policy_bindings"].([]any)) != 0 {
 		t.Fatalf("disable must remove active bindings: code=%d body=%v", code, listed)
 	}
 }
 
 func TestConsoleEnforcementPolicyValidationVersioningAndDelete(t *testing.T) {
 	engine, _ := newTestEngine(t)
-	if code, body := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
+	if code, body := do(t, engine, "POST", "/api/v1/accounts", AccountInput{Pin: "a1", Name: "Account 1"}, true); code != 201 {
 		t.Fatalf("create account: code=%d body=%v", code, body)
 	}
 
-	if code, body := do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{}, true); code != 400 {
+	if code, body := do(t, engine, "POST", "/api/v1/policies", EnforcementPolicyInput{}, true); code != 400 {
 		t.Fatalf("invalid definition: code=%d body=%v", code, body)
 	}
-	if code, body := do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{
+	if code, body := do(t, engine, "POST", "/api/v1/policies", EnforcementPolicyInput{
 		Name: "oversized", OutputMode: policy.OutputStrictBuffered, MaxBufferBytes: policy.MaxBufferBytes + 1,
 	}, true); code != 400 {
 		t.Fatalf("oversized definition: code=%d body=%v", code, body)
 	}
 
-	code, created := do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{
+	code, created := do(t, engine, "POST", "/api/v1/policies", EnforcementPolicyInput{
 		PolicyID: "governance", Name: "v1", InputEnabled: true, OutputMode: policy.OutputDisabled,
 	}, true)
 	if code != 201 || created["policy"].(map[string]any)["version"] != float64(1) {
 		t.Fatalf("publish v1: code=%d body=%v", code, created)
 	}
-	code, created = do(t, engine, "POST", "/admin/policies", EnforcementPolicyInput{
+	code, created = do(t, engine, "POST", "/api/v1/policies", EnforcementPolicyInput{
 		PolicyID: "governance", Name: "v2", OutputMode: policy.OutputBestEffortStreaming,
 	}, true)
 	if code != 201 || created["policy"].(map[string]any)["version"] != float64(2) {
 		t.Fatalf("publish v2: code=%d body=%v", code, created)
 	}
-	if code, listed := do(t, engine, "GET", "/admin/policies", nil, true); code != 200 || len(listed["policies"].([]any)) != 2 {
+	if code, listed := do(t, engine, "GET", "/api/v1/policies", nil, true); code != 200 || len(listed["policies"].([]any)) != 2 {
 		t.Fatalf("list versions: code=%d body=%v", code, listed)
 	}
 
@@ -284,22 +284,22 @@ func TestConsoleEnforcementPolicyValidationVersioningAndDelete(t *testing.T) {
 		{Scope: policy.Scope{Kind: policy.ScopeGlobal}},
 	}
 	for _, binding := range invalidBindings {
-		if code, body := do(t, engine, "POST", "/admin/policy-bindings", binding, true); code != 400 {
+		if code, body := do(t, engine, "POST", "/api/v1/policy-bindings", binding, true); code != 400 {
 			t.Fatalf("invalid binding %+v: code=%d body=%v", binding, code, body)
 		}
 	}
 
 	binding := PolicyBindingInput{Scope: policy.Scope{Kind: policy.ScopeGlobal}, PolicyID: "governance", PolicyVersion: 2}
-	if code, body := do(t, engine, "POST", "/admin/policy-bindings", binding, true); code != 201 {
+	if code, body := do(t, engine, "POST", "/api/v1/policy-bindings", binding, true); code != 201 {
 		t.Fatalf("bind global: code=%d body=%v", code, body)
 	}
-	if code, body := do(t, engine, "DELETE", "/admin/policy-bindings/global", nil, true); code != 200 {
+	if code, body := do(t, engine, "DELETE", "/api/v1/policy-bindings/global", nil, true); code != 200 {
 		t.Fatalf("delete global binding: code=%d body=%v", code, body)
 	}
-	if code, body := do(t, engine, "DELETE", "/admin/policy-bindings/global", nil, true); code != 404 {
+	if code, body := do(t, engine, "DELETE", "/api/v1/policy-bindings/global", nil, true); code != 404 {
 		t.Fatalf("delete missing binding: code=%d body=%v", code, body)
 	}
-	if code, body := do(t, engine, "DELETE", "/admin/policies/missing", nil, true); code != 404 {
+	if code, body := do(t, engine, "DELETE", "/api/v1/policies/missing", nil, true); code != 404 {
 		t.Fatalf("disable missing policy: code=%d body=%v", code, body)
 	}
 }
@@ -310,7 +310,7 @@ func TestConsoleEnforcementPolicySimulationActionsAndValidation(t *testing.T) {
 	body := json.RawMessage(`{"messages":[{"content":"secret"}]}`)
 
 	for _, action := range []policy.Action{policy.ActionAllow, policy.ActionDeny} {
-		code, response := do(t, engine, "POST", "/admin/policies/simulate", PolicySimulationInput{
+		code, response := do(t, engine, "POST", "/api/v1/policies/simulate", PolicySimulationInput{
 			Protocol: domain.ProtoOpenAI, Modality: domain.ModalityChat, Stage: policy.StageOutput, Body: body,
 			Decision: PolicySimulationDecision{Action: action, Policy: ref, RuleID: "r", ReasonCode: "synthetic"},
 		}, true)
@@ -319,7 +319,7 @@ func TestConsoleEnforcementPolicySimulationActionsAndValidation(t *testing.T) {
 		}
 	}
 
-	code, response := do(t, engine, "POST", "/admin/policies/simulate", PolicySimulationInput{
+	code, response := do(t, engine, "POST", "/api/v1/policies/simulate", PolicySimulationInput{
 		Protocol: domain.ProtoOpenAI, Modality: domain.ModalityChat, Stage: policy.StageOutput, Body: body,
 		Decision: PolicySimulationDecision{
 			Action: policy.ActionRedact, Policy: ref, RuleID: "r", ReasonCode: "synthetic",
@@ -334,12 +334,12 @@ func TestConsoleEnforcementPolicySimulationActionsAndValidation(t *testing.T) {
 		Protocol: domain.ProtoOpenAI, Modality: domain.ModalityChat, Stage: policy.Stage("invalid"), Body: body,
 		Decision: PolicySimulationDecision{Action: policy.ActionAllow, Policy: ref, RuleID: "r", ReasonCode: "synthetic"},
 	}
-	if code, response := do(t, engine, "POST", "/admin/policies/simulate", invalid, true); code != 400 {
+	if code, response := do(t, engine, "POST", "/api/v1/policies/simulate", invalid, true); code != 400 {
 		t.Fatalf("invalid simulation stage: code=%d body=%v", code, response)
 	}
 	invalid.Stage = policy.StageInput
 	invalid.Decision.Action = policy.ActionRedact
-	if code, response := do(t, engine, "POST", "/admin/policies/simulate", invalid, true); code != 400 {
+	if code, response := do(t, engine, "POST", "/api/v1/policies/simulate", invalid, true); code != 400 {
 		t.Fatalf("invalid redact decision: code=%d body=%v", code, response)
 	}
 }
@@ -355,10 +355,10 @@ func TestConsoleEnforcementPolicyStorageFailuresReturn500(t *testing.T) {
 		path   string
 		body   any
 	}{
-		{"GET", "/admin/policies", nil},
-		{"GET", "/admin/policy-bindings", nil},
-		{"POST", "/admin/policies", EnforcementPolicyInput{Name: "p", OutputMode: policy.OutputDisabled}},
-		{"POST", "/admin/policy-bindings", PolicyBindingInput{Scope: policy.Scope{Kind: policy.ScopeGlobal}, PolicyID: "p", PolicyVersion: 1}},
+		{"GET", "/api/v1/policies", nil},
+		{"GET", "/api/v1/policy-bindings", nil},
+		{"POST", "/api/v1/policies", EnforcementPolicyInput{Name: "p", OutputMode: policy.OutputDisabled}},
+		{"POST", "/api/v1/policy-bindings", PolicyBindingInput{Scope: policy.Scope{Kind: policy.ScopeGlobal}, PolicyID: "p", PolicyVersion: 1}},
 	} {
 		if code, response := do(t, engine, request.method, request.path, request.body, true); code != 500 {
 			t.Fatalf("%s %s: code=%d body=%v", request.method, request.path, code, response)
@@ -398,11 +398,11 @@ func do(t *testing.T, engine *gin.Engine, method, path string, body any, withAut
 func TestConsole_AuthRequired(t *testing.T) {
 	engine, _ := newTestEngine(t)
 
-	if code, _ := do(t, engine, "GET", "/admin/accounts", nil, false); code != 401 {
-		t.Errorf("no-token GET /admin/accounts = %d, want 401", code)
+	if code, _ := do(t, engine, "GET", "/api/v1/accounts", nil, false); code != 401 {
+		t.Errorf("no-token GET /api/v1/accounts = %d, want 401", code)
 	}
 	// wrong token
-	req := httptest.NewRequest("GET", "/admin/accounts", nil)
+	req := httptest.NewRequest("GET", "/api/v1/accounts", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
@@ -428,7 +428,7 @@ func TestConsole_EndpointCrossPlaneContract(t *testing.T) {
 		Auth:    AuthInput{Type: "bearer", Payload: json.RawMessage(`{"api_key":"sk-secret-upstream"}`)},
 		Routing: repo.RoutingConfig{URL: "https://api.openai.com/v1/chat/completions"},
 	}
-	code, resp := do(t, engine, "POST", "/admin/endpoints", body, true)
+	code, resp := do(t, engine, "POST", "/api/v1/endpoints", body, true)
 	if code != 201 {
 		t.Fatalf("create endpoint = %d, resp=%v", code, resp)
 	}
@@ -448,7 +448,7 @@ func TestConsole_EndpointCrossPlaneContract(t *testing.T) {
 	}
 
 	// The LIST view must never contain the secret
-	code, list := do(t, engine, "GET", "/admin/endpoints", nil, true)
+	code, list := do(t, engine, "GET", "/api/v1/endpoints", nil, true)
 	if code != 200 {
 		t.Fatalf("list = %d", code)
 	}
@@ -465,7 +465,7 @@ func TestConsole_EndpointValidationRejectsMetadata(t *testing.T) {
 		Auth:    AuthInput{Type: "bearer", Payload: json.RawMessage(`{"api_key":"x"}`)},
 		Routing: repo.RoutingConfig{URL: "http://169.254.169.254/latest/meta-data/"},
 	}
-	code, resp := do(t, engine, "POST", "/admin/endpoints", body, true)
+	code, resp := do(t, engine, "POST", "/api/v1/endpoints", body, true)
 	if code != 400 {
 		t.Fatalf("metadata URL should be 400, got %d resp=%v", code, resp)
 	}
@@ -478,12 +478,12 @@ func TestConsole_APIKeyCrossPlaneLifecycle(t *testing.T) {
 	engine, db := newTestEngine(t)
 
 	// Create the primary account first (FK)
-	if code, resp := do(t, engine, "POST", "/admin/accounts",
+	if code, resp := do(t, engine, "POST", "/api/v1/accounts",
 		AccountInput{Pin: "default", Name: "Default"}, true); code != 201 {
 		t.Fatalf("create account = %d resp=%v", code, resp)
 	}
 
-	code, resp := do(t, engine, "POST", "/admin/api-keys",
+	code, resp := do(t, engine, "POST", "/api/v1/api-keys",
 		APIKeyInput{AccountID: "default", SubAccountID: "alice", Name: "prod"}, true)
 	if code != 201 {
 		t.Fatalf("create key = %d resp=%v", code, resp)
@@ -505,7 +505,7 @@ func TestConsole_APIKeyCrossPlaneLifecycle(t *testing.T) {
 	}
 
 	// after revocation the resolver rejects it
-	if code, _ := do(t, engine, "DELETE", "/admin/accounts/default/api-keys/"+keyID, nil, true); code != 200 {
+	if code, _ := do(t, engine, "DELETE", "/api/v1/accounts/default/api-keys/"+keyID, nil, true); code != 200 {
 		t.Fatalf("revoke = %d", code)
 	}
 	if _, err := provider.Resolve(context.Background(), &repo.Credentials{APIKey: plain}); !errors.Is(err, domain.ErrInvalidCredentials) {
@@ -554,10 +554,10 @@ func TestConsole_RevokeEvictsDataPlaneCache(t *testing.T) {
 	api := NewEngine(store, []Token{{Value: testToken, Role: RoleAdmin}})
 
 	// Create account + issue key.
-	if code, resp := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
+	if code, resp := do(t, engine, "POST", "/api/v1/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
 		t.Fatalf("create account = %d %v", code, resp)
 	}
-	_, resp := do(t, engine, "POST", "/admin/api-keys", APIKeyInput{AccountID: "default", SubAccountID: "eve"}, true)
+	_, resp := do(t, engine, "POST", "/api/v1/api-keys", APIKeyInput{AccountID: "default", SubAccountID: "eve"}, true)
 	plain, _ := resp["api_key"].(string)
 	keyID, _ := resp["api_key_id"].(string)
 
@@ -568,7 +568,7 @@ func TestConsole_RevokeEvictsDataPlaneCache(t *testing.T) {
 
 	// Control plane revokes (via the store with a publisher) -> DB is set to
 	// revoked + a cachebus invalidation is published.
-	if code, _ := doOn(t, api, "DELETE", "/admin/accounts/default/api-keys/"+keyID, nil, true); code != 200 {
+	if code, _ := doOn(t, api, "DELETE", "/api/v1/accounts/default/api-keys/"+keyID, nil, true); code != 200 {
 		t.Fatalf("revoke via store-with-publisher failed")
 	}
 
@@ -607,19 +607,19 @@ func TestConsole_ViewerRoleReadOnly(t *testing.T) {
 	}
 
 	// viewer read OK
-	if code := req("GET", "/admin/endpoints", viewerTok); code != 200 {
-		t.Errorf("viewer GET /admin/endpoints = %d, want 200", code)
+	if code := req("GET", "/api/v1/endpoints", viewerTok); code != 200 {
+		t.Errorf("viewer GET /api/v1/endpoints = %d, want 200", code)
 	}
 	// viewer write -> 403
-	if code := req("POST", "/admin/accounts", viewerTok); code != 403 {
-		t.Errorf("viewer POST /admin/accounts = %d, want 403", code)
+	if code := req("POST", "/api/v1/accounts", viewerTok); code != 403 {
+		t.Errorf("viewer POST /api/v1/accounts = %d, want 403", code)
 	}
-	if code := req("DELETE", "/admin/endpoints/1", viewerTok); code != 403 {
+	if code := req("DELETE", "/api/v1/endpoints/1", viewerTok); code != 403 {
 		t.Errorf("viewer DELETE = %d, want 403", code)
 	}
 	// admin write OK
-	if code := req("POST", "/admin/accounts", testToken); code != 201 {
-		t.Errorf("admin POST /admin/accounts = %d, want 201", code)
+	if code := req("POST", "/api/v1/accounts", testToken); code != 201 {
+		t.Errorf("admin POST /api/v1/accounts = %d, want 201", code)
 	}
 }
 
@@ -631,17 +631,17 @@ func TestConsole_ModelAliasCrossPlane(t *testing.T) {
 	engine, db := newTestEngine(t)
 
 	// canonical model
-	if code, _ := do(t, engine, "POST", "/admin/model-services",
+	if code, _ := do(t, engine, "POST", "/api/v1/model-services",
 		ModelServiceInput{ServiceID: "openai/gpt-4o-mini", Model: "gpt-4o-mini"}, true); code != 201 {
 		t.Fatal("create model")
 	}
 	// alias fast -> gpt-4o-mini
-	if code, resp := do(t, engine, "POST", "/admin/model-aliases",
+	if code, resp := do(t, engine, "POST", "/api/v1/model-aliases",
 		ModelAliasInput{Alias: "fast", Model: "gpt-4o-mini"}, true); code != 201 {
 		t.Fatalf("create alias = %d %v", code, resp)
 	}
 	// pointing at a nonexistent model -> 400
-	if code, _ := do(t, engine, "POST", "/admin/model-aliases",
+	if code, _ := do(t, engine, "POST", "/api/v1/model-aliases",
 		ModelAliasInput{Alias: "bad", Model: "no-such-model"}, true); code != 400 {
 		t.Errorf("dead alias = %d, want 400", code)
 	}
@@ -662,7 +662,7 @@ func TestConsole_ModelAliasCrossPlane(t *testing.T) {
 	}
 
 	// after deleting the alias, resolution misses
-	if code, _ := do(t, engine, "DELETE", "/admin/model-aliases/fast", nil, true); code != 200 {
+	if code, _ := do(t, engine, "DELETE", "/api/v1/model-aliases/fast", nil, true); code != 200 {
 		t.Fatal("delete alias")
 	}
 	if ms4, _ := reader.GetByModel(context.Background(), "fast"); ms4 != nil {
@@ -675,17 +675,17 @@ func TestConsole_QuotaPolicyCRUD(t *testing.T) {
 	engine, _ := newTestEngine(t)
 
 	// missing name -> 400
-	if code, _ := do(t, engine, "POST", "/admin/quota-policies",
+	if code, _ := do(t, engine, "POST", "/api/v1/quota-policies",
 		QuotaPolicyInput{Rule: json.RawMessage(`{"default":{"rpm":60}}`)}, true); code != 400 {
 		t.Errorf("missing name = %d, want 400", code)
 	}
 	// empty policy (no default/per_model) -> 400
-	if code, _ := do(t, engine, "POST", "/admin/quota-policies",
+	if code, _ := do(t, engine, "POST", "/api/v1/quota-policies",
 		QuotaPolicyInput{Name: "empty", Rule: json.RawMessage(`{}`)}, true); code != 400 {
 		t.Errorf("empty rule = %d, want 400", code)
 	}
 	// valid -> 201
-	code, resp := do(t, engine, "POST", "/admin/quota-policies",
+	code, resp := do(t, engine, "POST", "/api/v1/quota-policies",
 		QuotaPolicyInput{Name: "tier1", Description: "60rpm", Rule: json.RawMessage(`{"default":{"rpm":60,"tpm":100000},"per_model":{"gpt-4o":{"rpm":10}}}`)}, true)
 	if code != 201 {
 		t.Fatalf("create policy = %d resp=%v", code, resp)
@@ -693,7 +693,7 @@ func TestConsole_QuotaPolicyCRUD(t *testing.T) {
 	id := int64(resp["id"].(float64))
 
 	// list includes tier1
-	code, list := do(t, engine, "GET", "/admin/quota-policies", nil, true)
+	code, list := do(t, engine, "GET", "/api/v1/quota-policies", nil, true)
 	if code != 200 {
 		t.Fatalf("list = %d", code)
 	}
@@ -702,7 +702,7 @@ func TestConsole_QuotaPolicyCRUD(t *testing.T) {
 	}
 
 	// delete
-	if code, _ := do(t, engine, "DELETE", "/admin/quota-policies/"+itoa(id), nil, true); code != 200 {
+	if code, _ := do(t, engine, "DELETE", "/api/v1/quota-policies/"+itoa(id), nil, true); code != 200 {
 		t.Errorf("delete = %d, want 200", code)
 	}
 }
@@ -712,14 +712,14 @@ func TestConsole_QuotaPolicyCRUD(t *testing.T) {
 func TestConsole_PricingAppendOnly(t *testing.T) {
 	engine, db := newTestEngine(t)
 	// Prerequisite: account + model_service (FK)
-	if code, _ := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
+	if code, _ := do(t, engine, "POST", "/api/v1/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
 		t.Fatal("account")
 	}
-	_, resp := do(t, engine, "POST", "/admin/model-services", ModelServiceInput{ServiceID: "openai/gpt-4o", Model: "gpt-4o"}, true)
+	_, resp := do(t, engine, "POST", "/api/v1/model-services", ModelServiceInput{ServiceID: "openai/gpt-4o", Model: "gpt-4o"}, true)
 	msID := int64(resp["id"].(float64))
 
 	pub := func(rate float64) int {
-		code, _ := do(t, engine, "POST", "/admin/pricing", PricingInput{
+		code, _ := do(t, engine, "POST", "/api/v1/pricing", PricingInput{
 			AccountID: "default", ModelServiceID: msID,
 			Rule:      json.RawMessage(`{"unit":"tokens_per_1m","currency":"USD","rates":{"input":` + ftoa(rate) + `}}`),
 			CreatedBy: "test",
@@ -743,7 +743,7 @@ func TestConsole_PricingAppendOnly(t *testing.T) {
 		t.Errorf("active version count = %d, want 1 (append-only should leave only one active)", active)
 	}
 	// Two versions total (v1 closed out, v2 active)
-	code, list := do(t, engine, "GET", "/admin/pricing?account_id=default", nil, true)
+	code, list := do(t, engine, "GET", "/api/v1/pricing?account_id=default", nil, true)
 	if code != 200 {
 		t.Fatal("list pricing")
 	}
@@ -752,7 +752,7 @@ func TestConsole_PricingAppendOnly(t *testing.T) {
 		t.Errorf("total version count = %d, want 2", len(arr))
 	}
 	// active-only filter should return just 1 row
-	_, list = do(t, engine, "GET", "/admin/pricing?account_id=default&active=true", nil, true)
+	_, list = do(t, engine, "GET", "/api/v1/pricing?account_id=default&active=true", nil, true)
 	arr, _ = list["pricing"].([]any)
 	if len(arr) != 1 {
 		t.Errorf("active-only version count = %d, want 1", len(arr))
@@ -784,16 +784,16 @@ func TestConsole_AuditLog(t *testing.T) {
 
 	// admin creates an endpoint (body contains the upstream secret)
 	secret := `{"name":"e","vendor":"openai","protocol":"openai","model":"m","auth":{"type":"bearer","payload":{"api_key":"sk-should-not-be-audited"}},"routing":{"url":"https://api.openai.com/v1"}}`
-	if code, _ := send("POST", "/admin/endpoints", testToken, secret); code != 201 {
+	if code, _ := send("POST", "/api/v1/endpoints", testToken, secret); code != 201 {
 		t.Fatalf("create endpoint = %d", code)
 	}
 
 	// admin reads the audit log
-	code, body := send("GET", "/admin/audit", testToken, "")
+	code, body := send("GET", "/api/v1/audit", testToken, "")
 	if code != 200 {
 		t.Fatalf("audit read = %d", code)
 	}
-	if !bytes.Contains(body, []byte(`"alice-admin"`)) || !bytes.Contains(body, []byte(`/admin/endpoints`)) || !bytes.Contains(body, []byte(`"POST"`)) {
+	if !bytes.Contains(body, []byte(`"alice-admin"`)) || !bytes.Contains(body, []byte(`/api/v1/endpoints`)) || !bytes.Contains(body, []byte(`"POST"`)) {
 		t.Errorf("audit log missing entry: %s", body)
 	}
 	// Key point: the audit entry must never contain the upstream secret
@@ -801,8 +801,8 @@ func TestConsole_AuditLog(t *testing.T) {
 		t.Error("audit log leaked the secret from the request body!")
 	}
 	// viewer cannot view the audit log
-	if code, _ := send("GET", "/admin/audit", "viewer-tok", ""); code != 403 {
-		t.Errorf("viewer GET /admin/audit = %d, want 403", code)
+	if code, _ := send("GET", "/api/v1/audit", "viewer-tok", ""); code != 403 {
+		t.Errorf("viewer GET /api/v1/audit = %d, want 403", code)
 	}
 }
 
@@ -811,10 +811,10 @@ func TestConsole_AuditLog(t *testing.T) {
 // GET_LOCK serialization.
 func TestConsole_PricingConcurrentSingleActive(t *testing.T) {
 	engine, db := newTestEngine(t)
-	if code, _ := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
+	if code, _ := do(t, engine, "POST", "/api/v1/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
 		t.Fatal("account")
 	}
-	_, resp := do(t, engine, "POST", "/admin/model-services", ModelServiceInput{ServiceID: "o/m", Model: "cm"}, true)
+	_, resp := do(t, engine, "POST", "/api/v1/model-services", ModelServiceInput{ServiceID: "o/m", Model: "cm"}, true)
 	msID := int64(resp["id"].(float64))
 
 	store := newTestStore(db)
@@ -844,11 +844,11 @@ func TestConsole_PricingConcurrentSingleActive(t *testing.T) {
 // TestConsole_FKViolationIs400: referencing a nonexistent resource (FK 1452) -> 400, not 500.
 func TestConsole_FKViolationIs400(t *testing.T) {
 	engine, _ := newTestEngine(t)
-	if code, _ := do(t, engine, "POST", "/admin/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
+	if code, _ := do(t, engine, "POST", "/api/v1/accounts", AccountInput{Pin: "default", Name: "D"}, true); code != 201 {
 		t.Fatal("account")
 	}
 	// subscribe to a nonexistent model_service_id -> FK failure -> 400
-	code, _ := do(t, engine, "POST", "/admin/subscriptions",
+	code, _ := do(t, engine, "POST", "/api/v1/subscriptions",
 		SubscriptionInput{AccountID: "default", ModelServiceID: 999999}, true)
 	if code != 400 {
 		t.Errorf("subscribe to nonexistent model = %d, want 400 (invalid_reference)", code)

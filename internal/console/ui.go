@@ -2,7 +2,7 @@ package console
 
 import _ "embed"
 
-// indexHTML is the control plane's single-file Web UI (Phase 3), embedded
+// indexHTML is the control plane's single-file Web UI, embedded
 // into the binary at compile time — zero external resources, no build step,
 // served same-origin from the same process as the API (no CORS needed).
 //

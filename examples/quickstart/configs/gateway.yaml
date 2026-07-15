@@ -25,7 +25,7 @@ moderation:
   driver: none
 
 selector:
-  filters: [cooldown, limit_read, weighted_random]
+  filters: [cooldown, limit_read]
   cooldown:
     transient: 5s
     capacity: 10s

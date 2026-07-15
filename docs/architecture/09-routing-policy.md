@@ -136,14 +136,14 @@ metadata records requested and routed models plus policy ID/version/reason.
 
 ## Console API
 
-- `GET /admin/routing-policies` lists all versions.
-- `POST /admin/routing-policies` validates and publishes a new active version.
-- `DELETE /admin/routing-policies/:policyID` disables the active version.
-- `POST /admin/routing-policies/dry-run` evaluates synthetic account, region,
+- `GET /api/v1/routing-policies` lists all versions.
+- `POST /api/v1/routing-policies` validates and publishes a new active version.
+- `DELETE /api/v1/routing-policies/:policyID` disables the active version.
+- `POST /api/v1/routing-policies/dry-run` evaluates synthetic account, region,
   modality, requested-model, decision key, and optional telemetry snapshots
   without dispatching upstream traffic. The response compares every candidate
   with its complete score explanation.
-- `GET /admin/routing-costs` lists routing-only cost-profile versions.
-- `POST /admin/routing-costs` publishes a new immutable active cost version.
+- `GET /api/v1/routing-costs` lists routing-only cost-profile versions.
+- `POST /api/v1/routing-costs` publishes a new immutable active cost version.
 
 Writes are covered by the Console's existing admin role and write audit.
