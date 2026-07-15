@@ -1,0 +1,68 @@
+name: Distribution Readiness
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .dockerignore
+      - .github/workflows/distribution-readiness.yml
+      - .github/workflows/release.yml
+      - Dockerfile
+      - Makefile
+      - cmd/**
+      - deploy/configs/**
+      - deploy/helm/**
+      - docs/INSTALL.md
+      - docs/INSTALL.zh-CN.md
+      - docs/RELEASE.md
+      - docs/RELEASE.zh-CN.md
+      - internal/version/**
+  pull_request:
+    paths:
+      - .dockerignore
+      - .github/workflows/distribution-readiness.yml
+      - .github/workflows/release.yml
+      - Dockerfile
+      - Makefile
+      - cmd/**
+      - deploy/configs/**
+      - deploy/helm/**
+      - docs/INSTALL.md
+      - docs/INSTALL.zh-CN.md
+      - docs/RELEASE.md
+      - docs/RELEASE.zh-CN.md
+      - internal/version/**
+
+permissions:
+  contents: read
+
+jobs:
+  distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: azure/setup-helm@v5
+      - name: Build and verify distribution artifacts
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          VERSION="v$(awk '$1 == "version:" {print $2}' deploy/helm/llm-gateway/Chart.yaml)"
+          BUILD_DATE="$(git show -s --format=%cI HEAD)"
+          export VERSION BUILD_DATE
+          make build release-snapshot
+          ./bin/llm-gateway -version | grep -F "version=${VERSION} commit=${COMMIT} date=${BUILD_DATE}"
+          ./bin/llm-gateway-console -version | grep -F "version=${VERSION} commit=${COMMIT} date=${BUILD_DATE}"
+          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 5
+          (cd dist && sha256sum --check SHA256SUMS)
+          test "$(awk '$1 == "version:" {print $2}' deploy/helm/llm-gateway/Chart.yaml)" = "${VERSION#v}"
+          test "$(awk '$1 == "appVersion:" {gsub(/\"/, "", $2); print $2}' deploy/helm/llm-gateway/Chart.yaml)" = "$VERSION"
+          helm lint deploy/helm/llm-gateway \
+            --set-string secrets.databaseDSN='ci:@tcp(mysql:3306)/llm_gateway' \
+            --set-string secrets.dataKey='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+          helm package deploy/helm/llm-gateway --destination dist

@@ -12,11 +12,12 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Verify migration files are immutable
         if: github.event_name == 'pull_request'
         run: |
@@ -83,11 +84,12 @@ jobs:
       KAFKA_BROKERS: 127.0.0.1:9092
       KAFKA_TOPIC: llm-gateway-ci
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Wait for Kafka
         # The kafka service has no docker-level healthcheck (the image doesn't ship a
         # lightweight CLI probe we could confidently name without risking a wrong
@@ -150,7 +152,7 @@ jobs:
           go test -p 1 -coverprofile=coverage.txt -covermode=atomic \
             ./internal/...
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: ./coverage.txt
           disable_search: true
@@ -162,11 +164,12 @@ jobs:
   race:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Race detector
         # Service-backed integration cases self-skip here. The main `go` job
         # covers those dependencies; this job keeps the complete in-process
@@ -177,43 +180,16 @@ jobs:
   vulnerability:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - name: Scan reachable vulnerabilities
         run: govulncheck ./...
-
-  release-readiness:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: azure/setup-helm@v4
-      - name: Build and verify release artifacts
-        env:
-          COMMIT: ${{ github.sha }}
-        run: |
-          VERSION="v$(awk '$1 == "version:" {print $2}' deploy/helm/llm-gateway/Chart.yaml)"
-          BUILD_DATE="$(git show -s --format=%cI HEAD)"
-          export VERSION BUILD_DATE
-          make build release-snapshot
-          ./bin/llm-gateway -version | grep -F "version=${VERSION} commit=${COMMIT} date=${BUILD_DATE}"
-          ./bin/llm-gateway-console -version | grep -F "version=${VERSION} commit=${COMMIT} date=${BUILD_DATE}"
-          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 5
-          (cd dist && sha256sum --check SHA256SUMS)
-          test "$(awk '$1 == "version:" {print $2}' deploy/helm/llm-gateway/Chart.yaml)" = "${VERSION#v}"
-          test "$(awk '$1 == "appVersion:" {gsub(/\"/, "", $2); print $2}' deploy/helm/llm-gateway/Chart.yaml)" = "$VERSION"
-          helm lint deploy/helm/llm-gateway \
-            --set-string secrets.databaseDSN='ci:@tcp(mysql:3306)/llm_gateway' \
-            --set-string secrets.dataKey='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
-          helm package deploy/helm/llm-gateway --destination dist
 
   smoke-multivendor:
     runs-on: ubuntu-latest
@@ -253,18 +229,19 @@ jobs:
           --health-timeout=3s
           --health-retries=20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - name: Multi-vendor smoke test
         run: ./examples/support/e2e/smoke-multivendor.sh --no-docker-stack
 
   product-quickstart:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Start and verify the documented quickstart with observability
         run: make -C examples/quickstart observe
       - name: Tear down quickstart
@@ -274,7 +251,7 @@ jobs:
   product-benchmark:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Measure gateway overhead and check the reference baseline
         run: make benchmark
       - name: Publish benchmark summary
@@ -282,7 +259,7 @@ jobs:
         run: test ! -f examples/benchmark/results/summary.md || cat examples/benchmark/results/summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: benchmark-report
           path: |
@@ -296,8 +273,8 @@ jobs:
   deployment:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v5
       - name: Build production images
         run: |
           docker build --target gateway -t llm-gateway:ci .
