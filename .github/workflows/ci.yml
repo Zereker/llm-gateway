@@ -187,6 +187,34 @@ jobs:
       - name: Scan reachable vulnerabilities
         run: govulncheck ./...
 
+  release-readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v4
+      - name: Build and verify release artifacts
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          VERSION="v$(awk '$1 == "version:" {print $2}' deploy/helm/llm-gateway/Chart.yaml)"
+          BUILD_DATE="$(git show -s --format=%cI HEAD)"
+          export VERSION BUILD_DATE
+          make build release-snapshot
+          ./bin/llm-gateway -version | grep -F "version=${VERSION} commit=${COMMIT} date=${BUILD_DATE}"
+          ./bin/llm-gateway-console -version | grep -F "version=${VERSION} commit=${COMMIT} date=${BUILD_DATE}"
+          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 5
+          (cd dist && sha256sum --check SHA256SUMS)
+          test "$(awk '$1 == "version:" {print $2}' deploy/helm/llm-gateway/Chart.yaml)" = "${VERSION#v}"
+          test "$(awk '$1 == "appVersion:" {gsub(/\"/, "", $2); print $2}' deploy/helm/llm-gateway/Chart.yaml)" = "$VERSION"
+          helm lint deploy/helm/llm-gateway \
+            --set-string secrets.databaseDSN='ci:@tcp(mysql:3306)/llm_gateway' \
+            --set-string secrets.dataKey='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+          helm package deploy/helm/llm-gateway --destination dist
+
   smoke-multivendor:
     runs-on: ubuntu-latest
     # Real-binary, black-box integration test: actual compiled cmd/gateway +
@@ -270,8 +298,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
-      - name: Build gateway image
-        run: docker build --target gateway -t llm-gateway:ci .
+      - name: Build production images
+        run: |
+          docker build --target gateway -t llm-gateway:ci .
+          docker build --target console -t llm-gateway-console:ci .
       - name: Helm lint
         run: >-
           helm lint deploy/helm/llm-gateway
@@ -299,6 +329,10 @@ jobs:
             --set-string gateway.config.usage_events.driver=file \
             --set gateway.usagePersistence.enabled=true >/dev/null
       - name: Image runs as non-root
-        run: test "$(docker inspect --format '{{.Config.User}}' llm-gateway:ci)" = "65532:65532"
+        run: |
+          test "$(docker inspect --format '{{.Config.User}}' llm-gateway:ci)" = "65532:65532"
+          test "$(docker inspect --format '{{.Config.User}}' llm-gateway-console:ci)" = "65532:65532"
       - name: Image command smoke test
-        run: docker run --rm --entrypoint /app/gateway llm-gateway:ci -h
+        run: |
+          docker run --rm llm-gateway:ci -version | grep -F 'llm-gateway version=dev'
+          docker run --rm llm-gateway-console:ci -version | grep -F 'llm-gateway-console version=dev'

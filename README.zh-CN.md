@@ -10,7 +10,8 @@
 集中处理认证、路由、配额、内容治理、计量、审计和可观测性。它采用控制面与
 数据面分离的设计，而不是一个简单的反向代理。
 
-[快速开始](#快速开始) · [文档](docs/README.zh-CN.md) · [架构文档](docs/architecture/README.zh-CN.md) ·
+[快速开始](#快速开始) · [安装](docs/INSTALL.zh-CN.md) · [文档](docs/README.zh-CN.md) ·
+[架构文档](docs/architecture/README.zh-CN.md) · [变更日志](docs/CHANGELOG.zh-CN.md) ·
 [演进路线](docs/ROADMAP.zh-CN.md) · [性能基准](examples/benchmark/) ·
 [English](README.md)
 
@@ -49,12 +50,12 @@
 |---|---|
 | API | OpenAI Chat/Responses、Anthropic Messages、Embedding |
 | 上游 | OpenAI 兼容服务、Anthropic、Gemini/Vertex、Bedrock、Cohere、Azure OpenAI |
-| 路由 | weighted/P2C、并发感知、冷却、动态评分、重试、显式模型 fallback |
-| 治理 | API Key 认证、账号订阅、双层配额、moderation chain、内容日志、写操作审计 |
+| 路由 | 基于规则的 Virtual Model、延迟/成本目标、weighted/P2C、冷却、重试、显式模型 fallback |
+| 治理 | API Key 认证、账号订阅、分层配额、带作用域的策略执行/脱敏、内容日志、写操作审计 |
 | 运维 | Admin API + Web Console、Prometheus、OTel/slog Trace、用量事件发布、Helm 示例 |
 
-规则驱动的 Virtual Model、带作用域的 Prompt Policy 和企业身份体系仍属于演进
-路线，不作为当前已完成功能宣传。
+基于规则的 Virtual Model 与带作用域的 Prompt Policy 已经实现。企业身份、OIDC
+和多租户自服务仍然延后，直到部署方的授权模型经过真实需求验证。
 
 ## 快速开始
 
@@ -90,6 +91,8 @@ Quickstart 使用仓库自带的 Mock 上游和仅供开发的固定凭据，不
 核心数据面、控制面和多供应商协议路径已经实现。架构契约记录在
 [`docs/architecture`](docs/architecture/) 中；产品演进与验收标准记录在
 [`roadmap`](docs/ROADMAP.md) 中。
+首个公开发布契约为 `v0.1.0`；详见[安装指南](docs/INSTALL.zh-CN.md)、
+[变更日志](docs/CHANGELOG.zh-CN.md)与[发布流程](docs/RELEASE.zh-CN.md)。
 
 ## 数据面内部结构
 
@@ -137,7 +140,7 @@ cmd/gateway           ── 精简的数据面进程入口
 cmd/console           ── 可选控制面 Admin API
 examples/             ── Quickstart、本地环境、性能基准、配置与配套程序
 deploy/               ── 正式支持的 Helm、生产配置与可观测性资产
-docs/architecture/    ── 设计文档（00-overview 至 08-observability）
+docs/architecture/    ── 设计文档与公共契约（00 至 11）
 ```
 
 ## 本地开发流程
@@ -196,6 +199,7 @@ Gateway 默认监听 `:8080`。用仓库自带的配置时：
 | `/readyz` | GET | 就绪探针 |
 | `/metrics` | GET | Prometheus 抓取端点 |
 | `/v1/chat/completions` | POST | OpenAI Chat Completions |
+| `/v1/responses` | POST | OpenAI Responses |
 | `/v1/messages` | POST | Anthropic 风格 chat |
 | `/v1/embeddings` | POST | OpenAI Embeddings |
 

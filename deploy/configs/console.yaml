@@ -1,0 +1,30 @@
+# console.yaml — production control-plane template
+#
+# Secrets are intentionally absent. Inject them through:
+#   LLM_GATEWAY_DATABASE_DSN
+#   LLM_GATEWAY_DATA_KEY              (the same KEK used by the gateway)
+#   LLM_GATEWAY_CONSOLE_TOKENS        (comma-separated admin tokens)
+# Optional fast API-key revocation uses LLM_GATEWAY_REDIS_ADDR and
+# LLM_GATEWAY_REDIS_PASSWORD.
+
+server:
+  addr: ":8081"
+  read_header_timeout: 10s
+  shutdown_timeout: 30s
+
+database:
+  driver: mysql
+  dsn: ""
+
+redis:
+  addr: ""
+  password: ""
+
+data_key: ""
+
+admin:
+  tokens: []
+
+# Keep custom OpenAI-compatible vendor names synchronized with gateway.yaml.
+vendors:
+  openai_compatible: []

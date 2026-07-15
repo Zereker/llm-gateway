@@ -4,6 +4,12 @@
 DEV_COMPOSE = docker compose -p llm-gateway-dev -f examples/local/compose.yaml
 MYSQL_DSN ?= root:@tcp(localhost:3306)/llm_gateway_test?parseTime=true&charset=utf8mb4
 BASE_IMAGE_REGISTRY ?= docker.io/library
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION_PACKAGE = github.com/zereker/llm-gateway/internal/version
+LDFLAGS = -s -w -X $(VERSION_PACKAGE).Version=$(VERSION) -X $(VERSION_PACKAGE).Commit=$(COMMIT) -X $(VERSION_PACKAGE).BuildDate=$(BUILD_DATE)
+RELEASE_TARGETS = linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
 .PHONY: dev-up dev-stop dev-clean
 dev-up: ## Start local MySQL, Redis, and Redpanda
@@ -24,13 +30,30 @@ cover: ## Generate coverage for all internal packages
 	go test -coverprofile=coverage.txt ./internal/...
 	go tool cover -func=coverage.txt | tail -1
 
-.PHONY: build docker-build
+.PHONY: build docker-build release-snapshot
 build: ## Build the two production commands
 	mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway ./cmd/gateway
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-console ./cmd/console
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/llm-gateway ./cmd/gateway
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/llm-gateway-console ./cmd/console
 docker-build: ## Build the production gateway image
-	docker build --build-arg BASE_IMAGE_REGISTRY="$(BASE_IMAGE_REGISTRY)" --build-arg GOPROXY="$$(go env GOPROXY)" --target gateway -t llm-gateway:local .
+	docker build --build-arg BASE_IMAGE_REGISTRY="$(BASE_IMAGE_REGISTRY)" --build-arg GOPROXY="$$(go env GOPROXY)" --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg BUILD_DATE="$(BUILD_DATE)" --target gateway -t llm-gateway:local .
+release-snapshot: ## Build checksummed gateway + console archives for every release platform
+	rm -rf dist
+	mkdir -p dist
+	@set -eu; for target in $(RELEASE_TARGETS); do \
+		os=$${target%/*}; arch=$${target#*/}; \
+		name="llm-gateway_$(VERSION)_$${os}_$${arch}"; dir="dist/$${name}"; ext=""; \
+		if [ "$${os}" = windows ]; then ext=.exe; fi; \
+		mkdir -p "$${dir}"; \
+		CGO_ENABLED=0 GOOS="$${os}" GOARCH="$${arch}" go build -trimpath -ldflags="$(LDFLAGS)" -o "$${dir}/llm-gateway$${ext}" ./cmd/gateway; \
+		CGO_ENABLED=0 GOOS="$${os}" GOARCH="$${arch}" go build -trimpath -ldflags="$(LDFLAGS)" -o "$${dir}/llm-gateway-console$${ext}" ./cmd/console; \
+		cp LICENSE "$${dir}/LICENSE"; \
+		mkdir -p "$${dir}/configs"; cp deploy/configs/*.yaml "$${dir}/configs/"; \
+		cp docs/INSTALL.md docs/INSTALL.zh-CN.md "$${dir}/"; \
+		if [ "$${os}" = windows ]; then (cd dist && zip -qr "$${name}.zip" "$${name}"); else tar -C dist -czf "dist/$${name}.tar.gz" "$${name}"; fi; \
+		rm -rf "$${dir}"; \
+	done
+	@cd dist && if command -v sha256sum >/dev/null 2>&1; then sha256sum *.tar.gz *.zip > SHA256SUMS; else shasum -a 256 *.tar.gz *.zip > SHA256SUMS; fi
 
 .PHONY: run-gateway run-console run-mockupstream
 run-gateway: ## Run the data plane with the local development config

@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v4
+      - name: Verify release version contract
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
+          version="${tag#v}"
+          chart_version="$(awk '$1 == "version:" {print $2}' deploy/helm/llm-gateway/Chart.yaml)"
+          app_version="$(awk '$1 == "appVersion:" {gsub(/\"/, "", $2); print $2}' deploy/helm/llm-gateway/Chart.yaml)"
+          test "$chart_version" = "$version"
+          test "$app_version" = "$tag"
+          grep -F "## [$version] - " docs/CHANGELOG.md
+          grep -F "## [$version] - " docs/CHANGELOG.zh-CN.md
+      - name: Test release source
+        run: |
+          go vet ./...
+          go test ./internal/...
+      - name: Build release archives
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          BUILD_DATE="$(git show -s --format=%cI HEAD)"
+          export BUILD_DATE
+          make build release-snapshot
+          ./bin/llm-gateway -version | grep -F "version=${VERSION} commit=${COMMIT}"
+          ./bin/llm-gateway-console -version | grep -F "version=${VERSION} commit=${COMMIT}"
+          helm package deploy/helm/llm-gateway --destination dist
+          (cd dist && sha256sum *.tar.gz *.zip *.tgz > SHA256SUMS)
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}" dist/*
+          --verify-tag
+          --draft
+          --title "${GITHUB_REF_NAME}"
+          --generate-notes
+
+  images:
+    needs: assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - target: gateway
+            image: ghcr.io/zereker/llm-gateway
+          - target: console
+            image: ghcr.io/zereker/llm-gateway-console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve build date
+        id: build
+        run: echo "date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ matrix.image }}:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.build.outputs.date }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
