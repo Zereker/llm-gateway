@@ -5,7 +5,7 @@ package middleware
 // These headers let clients override gateway default behavior on a per-request basis:
 //
 //	X-Gateway-Timeout:           per-request timeout (duration string, e.g. "30s"); can only be stricter than cfg.timeout
-//	X-Gateway-Max-Attempts:      M7 cross-endpoint retry cap (int); can only be smaller than cfg.scheduler.max_attempts
+//	X-Gateway-Max-Attempts:      M7 cross-endpoint retry cap (int); can only be smaller than cfg.selector.max_attempts
 //	X-Gateway-Fallback-Models:   L3 cross-model fallback sequence (comma-separated model names); when all
 //	                             endpoints for the current model fail, retries with the next model in the list. Empty = L3 disabled.
 //	X-Gateway-Region:            optional region preference evaluated by virtual-model policy; cannot bypass subscriptions or allow/deny rules.

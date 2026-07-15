@@ -53,7 +53,7 @@ Most changes propagate by TTL. API-key revocation can additionally use console c
 |---|---|---|
 | outbox | file (JSONL append) | kafka |
 | middleware.timeout | 60s | 120s |
-| scheduler.max_attempts | 3 | 3 |
+| selector.max_attempts | 3 | 3 |
 | seed data | none | multiple accounts/models/pricing |
 | MySQL host | localhost | mysql.internal (production hostname) |
 

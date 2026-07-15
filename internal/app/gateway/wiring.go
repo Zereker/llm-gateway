@@ -71,11 +71,6 @@ func buildSchedulerFilters(names []string, store ratelimit.Store, cd selector.Co
 			out = append(out, selector.NewCooldownFilter(cd))
 		case "limit_read":
 			out = append(out, selector.NewLimitReadFilter(endpointCapacityAdapter{store: store}))
-		case "weighted_random":
-			// weighted_random is a Selector, not a Filter; it's configured
-			// separately under cfg.Selector, so it's ignored here (kept only for
-			// backward compatibility with older yaml lists).
-			continue
 		case "prefix_cache":
 			out = append(out, selector.NewPrefixCacheFilter(0)) // 0 = default vnodes=64
 		case "busy":

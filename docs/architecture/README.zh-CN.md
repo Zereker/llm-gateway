@@ -19,7 +19,8 @@
 | 07| [配置](07-configuration.zh-CN.md) |网关配置架构、环境变量覆盖、验证规则 |
 | 08 | [可观测性](08-observability.zh-CN.md) |日志记录、指标、跟踪、使用事件、内容日志可观察性合同 |
 | 09| [路由策略](09-routing-policy.zh-CN.md) |虚拟模型、确定性约束、策略缓存、控制台 API |
-| 10 | [策略执行](10-policy-enforcement.zh-CN.md) | 可插拔决策、作用域优先级、安全审计、旧版兼容性 |
+| 10 | [策略执行](10-policy-enforcement.zh-CN.md) | 可插拔决策、作用域优先级、安全执行与审计 |
+| 11 | [公共契约](11-public-contracts.zh-CN.md) | API 版本、严格输入、错误结构、配置/schema/事件稳定性 |
 
 ## 架构亮点
 

@@ -107,17 +107,18 @@ subscription checks. Virtual-model requests are default-deny: without an active
 effective policy they fail with `virtual_model_policy_not_found`. Account
 subscription is always a hard constraint and cannot be widened by any policy.
 
-### Legacy fallback header
+### Explicit fallback header
 
 For a concrete-model request, `X-Gateway-Fallback-Models` retains its current
 ordered, de-duplicated, maximum-three behavior. Each accepted fallback is
-recorded with `legacy_fallback_accepted`; missing or unauthorized candidates may
+recorded with `fallback_accepted`; missing or unauthorized candidates may
 be recorded as rejected evaluations but never enter dispatch.
 
-For a virtual-model request, the policy is the complete authority. The legacy
-header is ignored and recorded as `legacy_fallback_ignored`; it cannot append a
-model or widen policy. This prevents a caller-controlled header from bypassing
-allow/deny constraints.
+For a virtual-model request, the policy is the complete authority. The fallback
+header is ignored; it cannot append a model or widen policy. The routing decision
+continues to report the policy outcome rather than inventing a second reason for
+an input that had no effect. This prevents a caller-controlled header from
+bypassing allow/deny constraints.
 
 ### Deterministic constraints and attempts
 
@@ -193,7 +194,7 @@ Migration is additive:
 3. add decision metadata to traces, usage, and Console dry-run output;
 4. later add project scope only with trusted identity and RBAC.
 
-Rollback disables virtual-policy resolution. Concrete requests and the legacy
+Rollback disables virtual-policy resolution. Concrete requests and the explicit
 fallback header continue on their existing path; policy tables may remain
 unused without affecting dispatch.
 

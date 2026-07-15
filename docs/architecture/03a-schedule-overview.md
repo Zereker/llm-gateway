@@ -375,8 +375,10 @@ Dispatcher: dispatcher,
 | `limit_read` | `NewLimitReadFilter(rateStore)` |
 | `prefix_cache` | `NewPrefixCacheFilter(0)` (vnodes=64) |
 | `busy` | `NewBusyFilter(0)` (threshold=0.85) |
-| `weighted_random` | ignored (it's already the Selector, configured separately) |
-| anything else | **panic** (fail-fast to expose config errors) |
+
+`weighted_random` and `p2c` are final pick strategies configured by
+`selector.picker`; they are not filters. Unknown filter names are rejected by
+`config.Validate` before runtime assembly.
 
 ## 13. Config YAML quick reference
 
@@ -387,7 +389,8 @@ selector:
     - cooldown              # cheapest filter, put it first
     - limit_read            # endpoint quota read-only filter
     # - busy                # optional: self-hosted load threshold
-    # - prefix_cache        # optional: pick either this or weighted_random
+    # - prefix_cache        # optional: promotes likely prefix-cache hits
+  picker: weighted_random  # final pick strategy: weighted_random or p2c
   cooldown:
     transient: 30s
     capacity:  10s

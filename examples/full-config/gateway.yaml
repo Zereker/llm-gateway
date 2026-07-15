@@ -79,10 +79,10 @@ moderation:
   # base_url: "https://api.openai.com"
 
 selector:
-  # Production recommendation for the filter chain: cooldown (isolate failing endpoints) -> limit_read (read-only, avoids already-throttled endpoints)
-  #                       -> weighted_random (weighted sampling).
-  # weighted_random must come last (the other filters prune candidates; this one selects).
-  filters: [cooldown, limit_read, weighted_random]
+  # Production recommendation for the filter chain: cooldown (isolate failing endpoints)
+  # -> limit_read (read-only, avoids already-throttled endpoints).
+  filters: [cooldown, limit_read]
+  picker: weighted_random # final selection after filtering; alternatively p2c
 
   cooldown:
     transient: 30s    # Upstream 5xx / network error / timeout

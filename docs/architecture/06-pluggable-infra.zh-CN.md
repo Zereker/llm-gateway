@@ -437,14 +437,14 @@ M8的主要扩展点是`policy.Engine`，注入
 `middleware.WithPolicyEngine`。它显式返回 `allow`、`deny`，或者
 `redact`决定；请参阅[策略执行](10-policy-enforcement.zh-CN.md)。
 
-现有的审核配置仍然是可替换和兼容的：
+内置 moderation 配置仍然可以替换：
 
 - `none`：默认，跳过审核。
 - `openai`：调用OpenAI审核API，需要`moderation.api_key`。
 
-旧版 `Moderator` 实现由 `moderation.LegacyEngine` 包装。
-当引擎和慢化器均未供电时，M8 为直通。直接一个
-提供的策略引擎优先于旧版仲裁器。
+`Moderator` 实现统一通过 `moderation.ModeratorEngine` 转换。
+未提供引擎或 moderator 时，M8 直接放行。显式提供的策略引擎优先于
+moderator adapter。
 
 ## 11. 记录/使用事件
 

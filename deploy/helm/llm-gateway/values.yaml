@@ -80,7 +80,7 @@ gateway:
         async: false
         dlq_topic: billing.usage.recorded.v1.dlq
     selector:
-      filters: [cooldown, limit_read, weighted_random]
+      filters: [cooldown, limit_read]
       max_attempts: 3
       cooldown:
         transient: 30s

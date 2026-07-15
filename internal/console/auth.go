@@ -10,12 +10,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Role is the coarse-grained permission level for a control-plane operator
-// (the RBAC primitive for Phase 4).
+// Role is the coarse-grained permission level for a control-plane operator.
 //
-// Phase 4 only has two tiers; true multi-tenant self-service + fine-grained
-// RBAC (per-tenant scoping / OIDC) is a bigger product decision left for
-// later.
+// The current control plane has two tiers. Multi-tenant self-service and
+// scoped OIDC/RBAC remain conditional on a validated deployment model.
 type Role string
 
 const (

@@ -286,10 +286,11 @@ Currently retained filters:
 
 - `cooldown`: excludes endpoints with recent short-term failures.
 - `limit_read`: excludes endpoints that are over endpoint quota.
-- `weighted_random`: picks an endpoint by weight.
+- `prefix_cache`: promotes endpoints likely to hold a matching prefix.
+- `busy`: excludes endpoints over the configured busy threshold.
 
-`prefix_cache` / `busy` are self-hosted optimizations; their implementations may be kept, but they must not add to
-the cost of understanding the main flow. They must be optional filters, placed after eligibility filtering.
+`prefix_cache` / `busy` are optional self-hosted optimizations placed after eligibility filtering.
+The final selection is not a filter: `selector.picker` chooses `weighted_random` or `p2c` after the filter chain.
 
 `limit_read` may only do read-only filtering based on `SnapshotBatch`. Endpoint RPM/RPS reservation must happen
 after the dispatcher has picked an endpoint (`EndpointQuota.Reserve`), not at the filter stage.
@@ -377,7 +378,7 @@ After selection:
 
 ## 9. Cooldown
 
-The gateway currently wires up a Redis cooldown manager, with durations coming from `scheduler.cooldown`
+The gateway currently wires up a Redis cooldown manager, with durations coming from `selector.cooldown`
 configuration:
 
 - transient

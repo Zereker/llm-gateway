@@ -97,7 +97,7 @@ usage_events:
     # is constructed
 
 selector:
-  filters: [cooldown, limit_read, weighted_random]
+  filters: [cooldown, limit_read]
   # picker: final pick strategy after filters + scoring.
   #   weighted_random (default) = pure EffectiveWeight-weighted random
   #   p2c = power-of-two-choices: sample two candidates by weight, take the
@@ -214,10 +214,10 @@ trace:
 | `redis.addr` |是的 | Redis连接；取决于M6速率限制和调度程序冷却时间|
 | `data_key` |是的 | KEK用于解密端点认证密文；部署者在加密 SQL INSERT 时必须使用相同的 KEK |
 | `usage_events.driver` |是的 |使用事件输出后端（`file` / `kafka`）|
-| `scheduler.filters` |是的 |端点选择链； `weighted_random` 必须最后运行 |
+| `selector.filters` | 否 | 有序资格过滤器：`cooldown`、`limit_read`、`prefix_cache`、`busy`；默认为 `cooldown`、`limit_read` |
 | `selector.picker` |没有 |最终选择策略：`weighted_random`（默认）/ `p2c`（待处理呼叫的两种选择）|
-| `scheduler.max_attempts` |是的 |单个请求中同一模型的最大端点尝试次数；可以通过 header | 降低
-| `scheduler.cooldown.*` |是的 |从 `ErrorClass` 映射到冷却 TTL；上游 `Retry-After` / 速率限制重置提示会覆盖静态 TTL，限制为 `[1s, 10m]` |
+| `selector.max_attempts` | 否 | 单个请求中同一模型的最大端点尝试次数；默认为 3，并可通过 header 降低 |
+| `selector.cooldown.*` | 否 | 从 `ErrorClass` 映射到冷却 TTL；各类别会应用默认值，上游 `Retry-After` / 速率限制重置提示会覆盖静态 TTL，并限制为 `[1s, 10m]` |
 | `health.*` |没有 |主动探测自托管端点（默认关闭）； `health.recover_cooldown` 启用探针门控早期冷却释放 |
 | `selector.session_affinity.*` |没有 |通过 `X-Gateway-Session` 的粘性路由（默认关闭）； `ttl` 是会话→端点映射生命周期 |
 | `cache.*` |没有 |聊天+嵌入模式的响应缓存（默认关闭）； `cache.semantic.*` 将聊天切换到基于相似性的缓存 |
@@ -274,8 +274,8 @@ CI 会拒绝修改或删除已有迁移。
 
 - `database.dsn` / `redis.addr` 具有本地开发默认值（由ApplyDefaults填充，因此永远不会为空）；
   错误配置通过 `OpenDB` / `OpenRedis` 中的实际连接 + ping 快速失败暴露出来。
-- `scheduler.filters` 名称中的拼写错误会导致 `buildSchedulerFilters` 出现恐慌（未知过滤器名称
-  快速失败）；每个类别缺少的冷却条目由ApplyDefaults 填充。
+- 未知的 `selector.filters` 名称会在运行时装配前被 `Validate` 拒绝；
+  每个类别缺少的冷却条目由 ApplyDefaults 填充。
 - 端点业务数据配置错误（协议拼写错误/未注册供应商/元数据 URL/Quirks
   编译失败）由启动端点扫描作为警告显示+
   `llm_gateway_endpoint_misconfigured_total`（不阻止启动；请参阅

@@ -14,8 +14,7 @@ import (
 	"github.com/zereker/llm-gateway/internal/policy"
 )
 
-// Moderator is an alias for moderation.Moderator, kept for the old import path.
-// New code should use internal/moderation.Moderator directly.
+// Moderator is the content-checking port accepted by the middleware.
 type Moderator = moderation.Moderator
 type PolicyEngine = policy.Engine
 
@@ -35,10 +34,10 @@ type moderationConfig struct {
 	documents   policy.DocumentAdapter
 }
 
-// WithModerator adapts the legacy Moderator contract to policy decisions.
-// Not passing a policy engine or legacy moderator means M8 passes through.
+// WithModerator adapts a Moderator to policy decisions.
+// Not passing a policy engine or moderator means M8 passes through.
 func WithModerator(m Moderator) ModerationOption {
-	return moderationOptionFunc(func(c *moderationConfig) { c.engine = moderation.NewLegacyEngine(m) })
+	return moderationOptionFunc(func(c *moderationConfig) { c.engine = moderation.NewModeratorEngine(m) })
 }
 
 // WithPolicyEngine injects the explicit policy-decision contract. When both
@@ -207,15 +206,8 @@ func Moderation(opts ...ModerationOption) gin.HandlerFunc {
 			switch decision.Action {
 			case policy.ActionDeny:
 				audits = append(audits, audit.WithEnforcement(policy.EnforcementDenied))
-				message := "content rejected by policy"
-				// Only the legacy adapter preserves its historical client message.
-				// New engines may place sensitive detector context in Cause, so it
-				// must never become part of the HTTP response.
-				if _, legacy := cfg.engine.(*moderation.LegacyEngine); legacy && decision.Cause != nil {
-					message = "content rejected: " + decision.Cause.Error()
-				}
 
-				abortWithCode(c, 400, domain.ErrInvalid, domain.ErrCodeContentRejected, message)
+				abortWithCode(c, 400, domain.ErrInvalid, domain.ErrCodeContentRejected, "content rejected by policy")
 
 				return
 			case policy.ActionRedact:

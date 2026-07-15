@@ -213,8 +213,8 @@ func concreteRoutingDecision(requested string, chain []*domain.ModelService) *do
 
 		reason := domain.RoutingReasonConcreteModel
 		if i > 0 {
-			source = domain.RoutingCandidateLegacyHeader
-			reason = domain.RoutingReasonLegacyFallbackAccepted
+			source = domain.RoutingCandidateFallbackHeader
+			reason = domain.RoutingReasonFallbackAccepted
 		}
 
 		candidates = append(candidates, domain.RoutingCandidateDecision{

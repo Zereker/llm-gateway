@@ -15,6 +15,7 @@ package console
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"time"
@@ -58,9 +59,9 @@ type ServerConfig struct {
 	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
 }
 
-// AdminConfig is static bearer-token auth + role (the RBAC primitive for
-// Phase 4; real OIDC/multi-tenancy is left for later). Each token in the yaml
-// carries a role (admin / viewer; empty = admin).
+// AdminConfig is static bearer-token auth + role. Each token in the YAML
+// carries a role (admin / viewer; empty = admin). OIDC and scoped tenancy are
+// deliberately deferred until their ownership model is validated.
 // VendorsConfig mirrors config.VendorsConfig (gateway side); see that type's
 // doc for semantics.
 type VendorsConfig struct {
@@ -159,14 +160,26 @@ func (c *Config) validate() error {
 		return fmt.Errorf("console: data_key required (must match gateway's KEK)")
 	}
 
+	key, err := hex.DecodeString(c.DataKey)
+	if err != nil || len(key) != 32 {
+		return fmt.Errorf("console: data_key must be exactly 64 hexadecimal characters (32 bytes)")
+	}
+
 	if len(c.Admin.Tokens) == 0 {
 		return fmt.Errorf("console: admin.tokens required (at least one bearer token; set LLM_GATEWAY_CONSOLE_TOKENS)")
 	}
 
+	seenTokens := make(map[string]struct{}, len(c.Admin.Tokens))
 	for i, t := range c.Admin.Tokens {
 		if t.Value == "" {
 			return fmt.Errorf("console: admin.tokens[%d].token is empty", i)
 		}
+
+		if _, exists := seenTokens[t.Value]; exists {
+			return fmt.Errorf("console: admin.tokens[%d].token duplicates an earlier credential", i)
+		}
+
+		seenTokens[t.Value] = struct{}{}
 
 		if t.Role == "" {
 			c.Admin.Tokens[i].Role = RoleAdmin // default to admin

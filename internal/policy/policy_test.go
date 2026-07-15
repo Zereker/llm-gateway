@@ -60,7 +60,6 @@ func TestSafeAuditNeverContainsRuntimeContent(t *testing.T) {
 	decision := validDecision()
 	decision.Action = ActionRedact
 	decision.ReasonCode = "sensitive_value"
-	decision.Cause = &secretError{value: secret}
 	decision.Mutations = []Mutation{{
 		ID: "mask-card", Kind: MutationRedact, Target: "request.messages",
 		Replacement: []byte(secret),
@@ -96,10 +95,6 @@ func TestSafeAuditNeverContainsRuntimeContent(t *testing.T) {
 		t.Fatalf("evaluation input leaked content: %s", inputJSON)
 	}
 }
-
-type secretError struct{ value string }
-
-func (e *secretError) Error() string { return e.value }
 
 func TestSelectBindingPrecedenceAndVersions(t *testing.T) {
 	subject := Subject{AccountID: "a1", ProjectID: "p1", APIKeyID: "key1"}

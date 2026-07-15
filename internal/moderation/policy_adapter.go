@@ -11,28 +11,29 @@ import (
 	"github.com/zereker/llm-gateway/internal/policy"
 )
 
-var legacyPolicyRef = policy.PolicyRef{
-	ID: "builtin/legacy-moderator", Version: 1,
+var moderatorPolicyRef = policy.PolicyRef{
+	ID: "builtin/moderator", Version: 1,
 	Scope: policy.Scope{Kind: policy.ScopeGlobal},
 }
 
-// LegacyEngine adapts the error-only Moderator contract to explicit policy
-// decisions. Existing moderator errors remain available only as Decision.Cause
-// and are never included in SafeAudit.
-type LegacyEngine struct{ moderator Moderator }
+const reasonModeratorRejected = "moderator_rejected"
 
-func NewLegacyEngine(moderator Moderator) policy.Engine {
+// ModeratorEngine adapts the error-only Moderator contract to explicit policy
+// decisions. Detector errors are reduced to a stable, non-secret reason code.
+type ModeratorEngine struct{ moderator Moderator }
+
+func NewModeratorEngine(moderator Moderator) policy.Engine {
 	if moderator == nil {
 		return nil
 	}
 
-	return &LegacyEngine{moderator: moderator}
+	return &ModeratorEngine{moderator: moderator}
 }
 
-func (e *LegacyEngine) Evaluate(ctx context.Context, input policy.EvaluationInput) (policy.Decision, error) {
+func (e *ModeratorEngine) Evaluate(ctx context.Context, input policy.EvaluationInput) (policy.Decision, error) {
 	decision := policy.Decision{
-		Action: policy.ActionAllow, Policy: legacyPolicyRef,
-		RuleID: "legacy_moderator", ReasonCode: "legacy_moderator_allowed",
+		Action: policy.ActionAllow, Policy: moderatorPolicyRef,
+		RuleID: "moderator", ReasonCode: "moderator_allowed",
 	}
 	if input.Policy != nil {
 		decision.Policy = *input.Policy
@@ -45,13 +46,12 @@ func (e *LegacyEngine) Evaluate(ctx context.Context, input policy.EvaluationInpu
 	case policy.StageOutput:
 		err = e.moderator.CheckOutput(ctx, input.Content.Bytes)
 	default:
-		return policy.Decision{}, fmt.Errorf("legacy moderator: unsupported stage %q", input.Stage)
+		return policy.Decision{}, fmt.Errorf("moderator: unsupported stage %q", input.Stage)
 	}
 
 	if err != nil {
 		decision.Action = policy.ActionDeny
-		decision.ReasonCode = "legacy_moderator_rejected"
-		decision.Cause = err
+		decision.ReasonCode = reasonModeratorRejected
 	}
 
 	return decision, nil
@@ -123,7 +123,7 @@ func (m *PolicyModerator) OutputMode() policy.OutputMode { return m.mode }
 func (m *PolicyModerator) MaxBufferBytes() int           { return m.maxBufferBytes }
 
 func (m *PolicyModerator) RecordOutputFailure(reasonCode string) {
-	ref := legacyPolicyRef
+	ref := moderatorPolicyRef
 	if m.base.Policy != nil {
 		ref = *m.base.Policy
 	}
@@ -342,5 +342,5 @@ func extractJSONText(payload []byte) []byte {
 	return []byte(strings.Join(parts, ""))
 }
 
-var _ policy.Engine = (*LegacyEngine)(nil)
+var _ policy.Engine = (*ModeratorEngine)(nil)
 var _ Moderator = (*PolicyModerator)(nil)

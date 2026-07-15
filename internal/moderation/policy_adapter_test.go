@@ -29,38 +29,38 @@ func policyDecision(action policy.Action) policy.Decision {
 	return decision
 }
 
-func TestLegacyEngineCompatibility(t *testing.T) {
-	if NewLegacyEngine(nil) != nil {
+func TestModeratorEngine(t *testing.T) {
+	if NewModeratorEngine(nil) != nil {
 		t.Fatal("nil moderator should produce nil engine")
 	}
 
-	blocked := errors.New("legacy blocked")
-	engine := NewLegacyEngine(stubGuard{inErr: blocked, outErr: blocked})
+	blocked := errors.New("blocked with sensitive detector context")
+	engine := NewModeratorEngine(stubGuard{inErr: blocked, outErr: blocked})
 	inputDecision, err := engine.Evaluate(context.Background(), policy.EvaluationInput{
 		Stage: policy.StageInput, Request: &domain.RequestEnvelope{RawBytes: []byte("secret")},
 	})
-	if err != nil || inputDecision.Action != policy.ActionDeny || !errors.Is(inputDecision.Cause, blocked) {
+	if err != nil || inputDecision.Action != policy.ActionDeny || inputDecision.ReasonCode != reasonModeratorRejected {
 		t.Fatalf("input decision=%+v err=%v", inputDecision, err)
 	}
 	outputDecision, err := engine.Evaluate(context.Background(), policy.EvaluationInput{
 		Stage: policy.StageOutput, Content: policy.Content{Bytes: []byte("secret")},
 	})
-	if err != nil || outputDecision.Action != policy.ActionDeny || !errors.Is(outputDecision.Cause, blocked) {
+	if err != nil || outputDecision.Action != policy.ActionDeny || outputDecision.ReasonCode != reasonModeratorRejected {
 		t.Fatalf("output decision=%+v err=%v", outputDecision, err)
 	}
 	if _, err := engine.Evaluate(context.Background(), policy.EvaluationInput{Stage: "other"}); err == nil {
 		t.Fatal("unsupported stage succeeded")
 	}
 
-	allow, err := NewLegacyEngine(stubGuard{}).Evaluate(context.Background(), policy.EvaluationInput{Stage: policy.StageInput})
+	allow, err := NewModeratorEngine(stubGuard{}).Evaluate(context.Background(), policy.EvaluationInput{Stage: policy.StageInput})
 	if err != nil || allow.Action != policy.ActionAllow {
 		t.Fatalf("allow=%+v err=%v", allow, err)
 	}
 }
 
-func TestLegacyEngineAttributesDecisionToResolvedPolicy(t *testing.T) {
+func TestModeratorEngineAttributesDecisionToResolvedPolicy(t *testing.T) {
 	selected := policy.PolicyRef{ID: "pii", Version: 3, Scope: policy.Scope{Kind: policy.ScopeAccount, ID: "acct"}}
-	decision, err := NewLegacyEngine(stubGuard{}).Evaluate(context.Background(), policy.EvaluationInput{
+	decision, err := NewModeratorEngine(stubGuard{}).Evaluate(context.Background(), policy.EvaluationInput{
 		Stage: policy.StageInput, Policy: &selected,
 	})
 	if err != nil {
