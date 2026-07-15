@@ -1,5 +1,5 @@
 {{- $usageDriver := .Values.gateway.config.usage_events.driver }}
-{{- $fileUsage := or (eq $usageDriver "file") (eq $usageDriver "file_and_kafka") }}
+{{- $fileUsage := eq $usageDriver "file" }}
 {{- if and $fileUsage .Values.gateway.usagePersistence.enabled (not .Values.gateway.usagePersistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim

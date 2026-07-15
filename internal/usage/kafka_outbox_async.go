@@ -182,15 +182,15 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 		}
 
 		metric.Observe(metric.OutboxPublishDurationSeconds, time.Since(writeStart).Seconds(),
-			"driver", "async_kafka", "result", result)
+			"driver", "kafka_async", "result", result)
 
 		if err == nil {
-			metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "ok")
+			metric.Inc(metric.UsagePublishTotal, "backend", "kafka_async", "result", "ok")
 			return
 		}
 
 		if attempt < o.maxRetries {
-			metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "retry")
+			metric.Inc(metric.UsagePublishTotal, "backend", "kafka_async", "result", "retry")
 			time.Sleep(delay)
 			delay *= 2
 
@@ -199,7 +199,7 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 		// retries exhausted
 		o.logger.Warn("usage outbox: publish exhausted retries",
 			"topic", o.topic, "key", evt.Key, "err", err)
-		metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "exhausted")
+		metric.Inc(metric.UsagePublishTotal, "backend", "kafka_async", "result", "exhausted")
 		o.toDLQ(evt, err)
 
 		return
@@ -210,7 +210,7 @@ func (o *AsyncKafkaOutbox) publishOne(evt *OutboxEvent) {
 func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 	if o.dlqTopic == "" {
 		o.dropped.Add(1)
-		metric.Inc(metric.OutboxDroppedTotal, "driver", "async_kafka", "reason", "no_dlq")
+		metric.Inc(metric.OutboxDroppedTotal, "driver", "kafka_async", "reason", "no_dlq")
 
 		return
 	}
@@ -222,16 +222,16 @@ func (o *AsyncKafkaOutbox) toDLQ(evt *OutboxEvent, originalErr error) {
 		o.topic, originalErr.Error(), string(evt.Payload)))
 	if err := o.inner.Write(ctx, o.dlqTopic, []byte(evt.Key), dlqPayload); err != nil {
 		o.dropped.Add(1)
-		metric.Inc(metric.OutboxDroppedTotal, "driver", "async_kafka", "reason", "dlq_failed")
-		metric.Inc(metric.OutboxDLQTotal, "driver", "async_kafka", "result", "error")
+		metric.Inc(metric.OutboxDroppedTotal, "driver", "kafka_async", "reason", "dlq_failed")
+		metric.Inc(metric.OutboxDLQTotal, "driver", "kafka_async", "result", "error")
 		o.logger.Error("usage outbox: DLQ also failed; event lost",
 			"dlq_topic", o.dlqTopic, "key", evt.Key, "err", err)
 
 		return
 	}
 	// docs/08 §3: outbox_dlq_total{driver,result=ok}
-	metric.Inc(metric.OutboxDLQTotal, "driver", "async_kafka", "result", "ok")
-	metric.Inc(metric.UsagePublishTotal, "backend", "async_kafka", "result", "dlq")
+	metric.Inc(metric.OutboxDLQTotal, "driver", "kafka_async", "result", "ok")
+	metric.Inc(metric.UsagePublishTotal, "backend", "kafka_async", "result", "dlq")
 }
 
 // Dropped returns the cumulative count of truly lost events (retries

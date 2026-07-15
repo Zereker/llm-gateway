@@ -51,7 +51,7 @@
 | 上游 | OpenAI 兼容服务、Anthropic、Gemini/Vertex、Bedrock、Cohere、Azure OpenAI |
 | 路由 | weighted/P2C、并发感知、冷却、动态评分、重试、显式模型 fallback |
 | 治理 | API Key 认证、账号订阅、双层配额、moderation chain、内容日志、写操作审计 |
-| 运维 | Admin API + Web Console、Prometheus、OTel/slog Trace、用量 Outbox、Helm 示例 |
+| 运维 | Admin API + Web Console、Prometheus、OTel/slog Trace、用量事件发布、Helm 示例 |
 
 规则驱动的 Virtual Model、带作用域的 Prompt Policy 和企业身份体系仍属于演进
 路线，不作为当前已完成功能宣传。

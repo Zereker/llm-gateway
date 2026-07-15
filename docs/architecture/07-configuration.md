@@ -15,8 +15,8 @@ The repo has two binaries, each with its own config: `cmd/gateway` (the data pla
 scheduling, and plugin drivers; and `cmd/console` (the control plane), a separate Admin API for managing
 business data. This document describes `gateway.yaml`; the console carries its own config.
 
-The gateway requires a SQL DB and Redis to start. Kafka is only required when the outbox driver is set
-to `kafka` / `async_kafka` / `file_and_kafka`. Gateway startup applies pending versioned migrations
+The gateway requires a SQL DB and Redis to start. Kafka is only required when the usage-event driver is
+set to `kafka`. Gateway startup applies pending versioned migrations
 before validating the resulting schema.
 
 The repo layer uses an in-process TTL LRU cache (`internal/repo/cache.go` + `internal/repo/cached.go`). Most
@@ -72,23 +72,20 @@ redis:
 data_key: "<hex-encoded-32-byte-key>"
 
 usage_events:
-  # Downstream channel for usage events (implemented via the Outbox Pattern, internal/usage.OutboxPublisher).
+  # Downstream channel for usage events (implemented via internal/usage.OutboxPublisher).
   # The section is named by "purpose", consistent with the content_log: / trace: style; the internal
-  # implementation being called Outbox is a pattern name and is not exposed on the operational surface.
-  #
-  # file_and_kafka is recommended for production: file is the source of truth (sync commit), Kafka is
-  # an async broadcast; if the broker goes down no data is lost, an external replay tool reads the file
-  # to backfill (see docs/05 §5).
-  driver: file_and_kafka # file | kafka | async_kafka | file_and_kafka
+  # implementation interface name is not exposed on the operational surface.
+  # Synchronous Kafka is the acknowledged-delivery production default. Async
+  # mode is an in-memory best-effort queue, not a transactional outbox.
+  driver: kafka # file | kafka
   file:
-    path: /var/log/llm-gateway/usage.jsonl   # required when driver=file or file_and_kafka
+    path: /var/log/llm-gateway/usage.jsonl   # required when driver=file
   kafka:
     brokers: ["kafka:9092"]
     # topic is named "domain.entity.event.version", decoupled from the producer service name (see docs/05 §5)
     topic: billing.usage.recorded.v1
-    async: true
-    # dlq_topic: fallback for single-message-level errors (msg too large / schema invalid);
-    # optional under file_and_kafka -- file is already the source of truth
+    async: false               # true enables an in-memory best-effort queue
+    # dlq_topic is used only in async mode and normally shares the broker failure domain
     dlq_topic: billing.usage.recorded.v1.dlq
     buffer_size: 4096         # async channel capacity; 0 = default 1024
     max_retries: 5            # max retries per async event; 0 = default 3
@@ -215,7 +212,7 @@ Field descriptions:
 | `database.driver` / `dsn` | Yes | SQL DB connection; target driver is MySQL |
 | `redis.addr` | Yes | Redis connection; depended on by M6 rate limiting and scheduler cooldown |
 | `data_key` | Yes | KEK used to decrypt endpoint auth ciphertext; the deployer must use the same KEK when encrypting for SQL INSERT |
-| `usage_events.driver` | Yes | usage event output backend (`file` / `kafka` / `async_kafka` / `file_and_kafka`; `file_and_kafka` recommended for production) |
+| `usage_events.driver` | Yes | usage event output backend (`file` / `kafka`) |
 | `scheduler.filters` | Yes | endpoint selection chain; `weighted_random` must run last |
 | `selector.picker` | No | final pick strategy: `weighted_random` (default) / `p2c` (power-of-two-choices by pending calls) |
 | `scheduler.max_attempts` | Yes | max endpoint attempts for the same model within a single request; can be lowered via header |
@@ -262,8 +259,7 @@ Fail-fast is split into two layers, each covering a different class of error:
 
 - `data_key` must be hex-encoded 32 bytes; the deployer must use the same KEK when encrypting endpoints.auth -- if inconsistent, the gateway fails to decrypt and all endpoints become unavailable. In production, inject this uniformly via a secret manager.
 - `trace.driver` only accepts `slog|otel`; when `otel`, `endpoint` is required (the OTLP gRPC collector address).
-- When `usage_events.driver=kafka|async_kafka`, `brokers` and `topic` are required.
-- When `usage_events.driver=file_and_kafka`, **both** `file.path` must be non-empty (source of truth) **and** `kafka.brokers` and `kafka.topic` must be non-empty.
+- When `usage_events.driver=kafka`, `brokers` and `topic` are required; `async` selects acknowledged delivery or the in-memory best-effort queue.
 - `content_log.driver` only accepts `none|file`; other values (including the legacy `kafka`) fail fast at startup.
 - When `content_log.driver=file`, `file.path` is required.
 - When `content_log.backpressure=block`, `block_timeout > 0` must be configured, to avoid blocking the response path indefinitely.

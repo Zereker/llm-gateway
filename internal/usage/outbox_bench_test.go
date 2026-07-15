@@ -3,11 +3,9 @@ package usage
 import (
 	"bufio"
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -172,57 +170,3 @@ func BenchmarkSlog_JSONFileParallel(b *testing.B) {
 		}
 	})
 }
-
-// =============================================================================
-// Benchmark: DualWriteOutbox (file + a no-op Kafka stub)
-// =============================================================================
-
-// noopKafka simulates AsyncKafkaOutbox.Publish's "return as soon as
-// enqueued" semantics — the real AsyncKafkaOutbox does a channel send,
-// which is the same order of magnitude of overhead as a no-op on the hot path.
-type noopKafka struct{}
-
-func (noopKafka) Publish(_ context.Context, _ *OutboxEvent) error { return nil }
-func (noopKafka) Close() error                                    { return nil }
-
-var _ io.Closer = noopKafka{}
-
-func BenchmarkDualWriteOutbox_Publish(b *testing.B) {
-	dir := b.TempDir()
-	file, _ := NewFileOutbox(filepath.Join(dir, "u.log"))
-	defer file.Close()
-
-	dual := NewDualWriteOutbox(file, noopKafka{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-
-	evt := &OutboxEvent{Key: "acct1", Payload: samplePayload}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		if err := dual.Publish(context.Background(), evt); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkDualWriteOutbox_PublishParallel(b *testing.B) {
-	dir := b.TempDir()
-	file, _ := NewFileOutbox(filepath.Join(dir, "u.log"))
-	defer file.Close()
-
-	dual := NewDualWriteOutbox(file, noopKafka{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	b.RunParallel(func(pb *testing.PB) {
-		evt := &OutboxEvent{Key: "k", Payload: samplePayload}
-		for pb.Next() {
-			if err := dual.Publish(context.Background(), evt); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-}
-
-// avoid unused
-var _ = strings.Contains

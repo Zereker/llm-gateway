@@ -15,8 +15,8 @@
 调度和插件驱动程序；和 `cmd/console`（控制平面），用于管理的单独管理 API
 业务数据。本文档描述了`gateway.yaml`；控制台有自己的配置。
 
-网关需要 SQL DB 和 Redis 才能启动。仅当设置了Outbox驱动程序时才需要 Kafka
-到 `kafka` / `async_kafka` / `file_and_kafka`。网关启动应用挂起的版本化迁移
+网关需要 SQL DB 和 Redis 才能启动。仅当用量事件驱动设置为 `kafka` 时才需要 Kafka。
+网关启动应用挂起的版本化迁移
 在验证结果模式之前。
 
 存储库层使用进程内 TTL LRU 缓存 (`internal/repo/cache.go` + `internal/repo/cached.go`)。大多数
@@ -73,23 +73,20 @@ redis:
 data_key: "<hex-encoded-32-byte-key>"
 
 usage_events:
-  # Downstream channel for usage events (implemented via the Outbox Pattern, internal/usage.OutboxPublisher).
+  # Downstream channel for usage events (implemented via internal/usage.OutboxPublisher).
   # The section is named by "purpose", consistent with the content_log: / trace: style; the internal
-  # implementation being called Outbox is a pattern name and is not exposed on the operational surface.
-  #
-  # file_and_kafka is recommended for production: file is the source of truth (sync commit), Kafka is
-  # an async broadcast; if the broker goes down no data is lost, an external replay tool reads the file
-  # to backfill (see docs/05 §5).
-  driver: file_and_kafka # file | kafka | async_kafka | file_and_kafka
+  # implementation interface name is not exposed on the operational surface.
+  # 同步 Kafka 是生产环境默认的确认投递方式。异步模式是内存 best-effort 队列，
+  # 不是事务 Outbox。
+  driver: kafka # file | kafka
   file:
-    path: /var/log/llm-gateway/usage.jsonl   # required when driver=file or file_and_kafka
+    path: /var/log/llm-gateway/usage.jsonl   # required when driver=file
   kafka:
     brokers: ["kafka:9092"]
     # topic is named "domain.entity.event.version", decoupled from the producer service name (see docs/05 §5)
     topic: billing.usage.recorded.v1
-    async: true
-    # dlq_topic: fallback for single-message-level errors (msg too large / schema invalid);
-    # optional under file_and_kafka -- file is already the source of truth
+    async: false               # true enables an in-memory best-effort queue
+    # dlq_topic 只用于异步模式，通常与主 Topic 共享 Broker 故障域
     dlq_topic: billing.usage.recorded.v1.dlq
     buffer_size: 4096         # async channel capacity; 0 = default 1024
     max_retries: 5            # max retries per async event; 0 = default 3
@@ -216,7 +213,7 @@ trace:
 | `database.driver` / `dsn` |是的 | SQL数据库连接；目标驱动程序是MySQL |
 | `redis.addr` |是的 | Redis连接；取决于M6速率限制和调度程序冷却时间|
 | `data_key` |是的 | KEK用于解密端点认证密文；部署者在加密 SQL INSERT 时必须使用相同的 KEK |
-| `usage_events.driver` |是的 |使用事件输出后端（`file` / `kafka` / `async_kafka` / `file_and_kafka`； `file_and_kafka` 推荐用于生产）|
+| `usage_events.driver` |是的 |使用事件输出后端（`file` / `kafka`）|
 | `scheduler.filters` |是的 |端点选择链； `weighted_random` 必须最后运行 |
 | `selector.picker` |没有 |最终选择策略：`weighted_random`（默认）/ `p2c`（待处理呼叫的两种选择）|
 | `scheduler.max_attempts` |是的 |单个请求中同一模型的最大端点尝试次数；可以通过 header | 降低
@@ -263,8 +260,7 @@ trace:
 
 - `data_key` 必须是十六进制编码的32字节；部署者在加密端点时必须使用相同的 KEK。auth - 如果不一致，网关将无法解密并且所有端点将变得不可用。在生产中，通过秘密管理器统一注入。
 - `trace.driver`仅接受`slog|otel`；当需要 `otel` 时，需要 `endpoint`（OTLP gRPC 收集器地址）。
-- 当需要 `usage_events.driver=kafka|async_kafka`、`brokers` 和 `topic` 时。
-- 当 `usage_events.driver=file_and_kafka` 时，**两者** `file.path` 必须非空（事实来源）**和** `kafka.brokers` 和`kafka.topic` 必须非空。
+- 当 `usage_events.driver=kafka` 时，`brokers` 和 `topic` 必填；`async` 用于选择确认投递或内存 best-effort 队列。
 - `content_log.driver`仅接受`none|file`；其他值（包括旧版 `kafka`）在启动时会快速失败。
 - 当需要 `content_log.driver=file` 时，`file.path` 是必需的。
 - 当必须配置`content_log.backpressure=block`时，必须配置`block_timeout > 0`，以避免无限期阻塞响应路径。

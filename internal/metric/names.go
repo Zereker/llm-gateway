@@ -78,12 +78,6 @@ const (
 	OutboxPublishDurationSeconds = "llm_gateway_outbox_publish_duration_seconds" // driver / result
 	OutboxDroppedTotal           = "llm_gateway_outbox_dropped_total"            // driver / reason
 	OutboxDLQTotal               = "llm_gateway_outbox_dlq_total"                // driver / result
-	// dual-write mode (driver=file_and_kafka): file is the source of truth, Kafka is the async broadcast.
-	// The two sinks' failures are counted separately to make alerting clearer: a rise in file_error means
-	// a disk problem (severe); a rise in kafka_publish_error means a broker problem (data is still safe,
-	// covered by the replay tool).
-	OutboxFileErrorTotal         = "llm_gateway_outbox_file_error_total"          // dual-write: file sink failure count
-	OutboxKafkaPublishErrorTotal = "llm_gateway_outbox_kafka_publish_error_total" // dual-write: kafka sink failure count (file already committed)
 	UsageExtractorSessionTotal   = "llm_gateway_usage_extractor_session_total"
 )
 

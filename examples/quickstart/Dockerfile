@@ -8,7 +8,7 @@
 # Build args:
 #   GO_VERSION  Go toolchain version (defaults to match go.mod)
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.25.12
 ARG BASE_IMAGE_REGISTRY=docker.io/library
 
 # =============================================================================

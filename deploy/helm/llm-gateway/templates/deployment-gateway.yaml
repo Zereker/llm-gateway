@@ -1,5 +1,8 @@
 {{- $usageDriver := .Values.gateway.config.usage_events.driver }}
-{{- $fileUsage := or (eq $usageDriver "file") (eq $usageDriver "file_and_kafka") }}
+{{- if not (has $usageDriver (list "file" "kafka")) }}
+{{- fail "gateway.config.usage_events.driver must be file or kafka" }}
+{{- end }}
+{{- $fileUsage := eq $usageDriver "file" }}
 {{- if and $fileUsage (not .Values.gateway.usagePersistence.enabled) (not .Values.gateway.usagePersistence.existingClaim) }}
 {{- fail "gateway.usagePersistence.enabled or existingClaim is required for file-based usage_events drivers" }}
 {{- end }}

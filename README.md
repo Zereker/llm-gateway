@@ -52,7 +52,7 @@ Applications / SDKs
 | Upstreams | OpenAI-compatible providers, Anthropic, Gemini/Vertex, Bedrock, Cohere, Azure OpenAI |
 | Routing | weighted/P2C selection, inflight awareness, cooldown, runtime scoring, retry, explicit model fallback |
 | Governance | API-key auth, account subscriptions, layered quota, moderation chain, content log, write audit |
-| Operations | Admin API + Web Console, Prometheus, OTel/slog tracing, usage outbox, Helm example |
+| Operations | Admin API + Web Console, Prometheus, OTel/slog tracing, usage-event publishing, Helm example |
 
 Rule-based virtual models, scoped prompt policies, and enterprise identity are
 roadmap items; they are not presented as completed features.

@@ -25,21 +25,16 @@ database:
   dsn: "llm_gateway:CHANGE_ME@tcp(db:3306)/llm_gateway?parseTime=true&charset=utf8mb4&tls=preferred"
 
 usage_events:
-  # dual-write (Transactional Outbox Pattern) is recommended for prod: file is the
-  # source of truth, Kafka is the async broadcast. The broker failure domain is
-  # orthogonal to the disk failure domain, so both won't be lost at once; if the
-  # broker goes down, an external replay tool reads the file to redeliver
-  # (see docs/05 §5 for details).
-  # Name topics as "domain.entity.event.version", decoupled from the producer service name.
-  driver: file_and_kafka
-  file:
-    path: /var/log/llm-gateway/usage.jsonl   # mount a PV / EBS volume in prod; rotation handled by external logrotate
+  # Synchronous Kafka acknowledges the event before Publish returns. Set async
+  # to true only when best-effort in-memory buffering is an acceptable tradeoff.
+  driver: kafka
   kafka:
     brokers: ["broker1:9092", "broker2:9092", "broker3:9092"]
+    # Name topics as "domain.entity.event.version", decoupled from the producer service name.
     topic: billing.usage.recorded.v1
-    async: true
+    async: false
     dlq_topic: billing.usage.recorded.v1.dlq
-  # To get started locally you can also use file:
+  # Local file mode is an independent sink, not a transactional Kafka outbox:
   # driver: file
   # file:
   #   path: /var/log/llm-gateway/usage.log

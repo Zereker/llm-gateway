@@ -1,7 +1,7 @@
 # Production images. Development, quickstart, and benchmark images live with
 # their owning scenarios rather than in this file.
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.25.12
 ARG BASE_IMAGE_REGISTRY=docker.io/library
 
 FROM ${BASE_IMAGE_REGISTRY}/golang:${GO_VERSION}-alpine AS builder

@@ -17,7 +17,7 @@ import (
 // UsageOutbox is the port for M10 metering-event publishing — middleware-owned.
 //
 // Implementers (internal/usage.FileOutbox / KafkaOutbox / AsyncKafkaOutbox /
-// DualWriteOutbox) write code for their own domain and happen to satisfy this
+// AsyncKafkaOutbox) write code for their own domain and happen to satisfy this
 // port. usage.OutboxEvent is a value type, kept in the usage package.
 type UsageOutbox interface {
 	Publish(ctx context.Context, evt *usage.OutboxEvent) error

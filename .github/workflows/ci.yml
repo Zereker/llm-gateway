@@ -138,10 +138,39 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.txt
+          disable_search: true
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+          fail_ci_if_error: true
       - name: Build commands
         run: go build ./cmd/...
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Race detector
+        # Service-backed integration cases self-skip here. The main `go` job
+        # covers those dependencies; this job keeps the complete in-process
+        # concurrency surface under the race detector without duplicating the
+        # full MySQL/Redis/Kafka stack.
+        run: go test -race ./internal/...
+
+  vulnerability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: Scan reachable vulnerabilities
+        run: govulncheck ./...
 
   smoke-multivendor:
     runs-on: ubuntu-latest
@@ -180,62 +209,12 @@ jobs:
           --health-interval=5s
           --health-timeout=3s
           --health-retries=20
-      kafka:
-        # gateway.yaml's usage_events driver is file_and_kafka; file is the
-        # commit-path source of truth (async Kafka failures don't block a
-        # request), but a real broker here keeps this job's shape faithful to
-        # an actual deployment instead of exercising a permanently-degraded one.
-        image: apache/kafka:latest
-        ports:
-          - 9092:9092
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Wait for Kafka
-        run: |
-          for i in $(seq 1 30); do
-            if bash -c 'exec 3<>/dev/tcp/127.0.0.1/9092' 2>/dev/null; then
-              echo "Kafka port open after ${i}s"; exit 0
-            fi
-            sleep 1
-          done
-          echo "Kafka never opened port 9092" >&2; exit 1
-      - name: Create Kafka topics
-        # apache/kafka:latest defaults to auto.create.topics.enable=false (see
-        # the `go` job's identical note) -- pre-create the topic + DLQ topic
-        # gateway.yaml's usage_events.kafka section names.
-        run: |
-          cat > /tmp/create_kafka_topics.go << 'EOF'
-          package main
-
-          import (
-                  "log"
-
-                  "github.com/segmentio/kafka-go"
-          )
-
-          func main() {
-                  conn, err := kafka.Dial("tcp", "127.0.0.1:9092")
-                  if err != nil {
-                          log.Fatalf("dial: %v", err)
-                  }
-                  defer conn.Close()
-                  for _, topic := range []string{"billing.usage.recorded.v1", "billing.usage.recorded.v1.dlq"} {
-                          if err := conn.CreateTopics(kafka.TopicConfig{
-                                  Topic:             topic,
-                                  NumPartitions:     1,
-                                  ReplicationFactor: 1,
-                          }); err != nil {
-                                  log.Fatalf("create topic %s: %v", topic, err)
-                          }
-                  }
-                  log.Println("topics ready")
-          }
-          EOF
-          go run /tmp/create_kafka_topics.go
       - name: Multi-vendor smoke test
         run: ./examples/support/e2e/smoke-multivendor.sh --no-docker-stack
 
@@ -297,6 +276,9 @@ jobs:
           ! helm template file-without-pvc deploy/helm/llm-gateway \
             --set-string secrets.existingSecret=production-secret \
             --set-string gateway.config.usage_events.driver=file >/dev/null
+          ! helm template unsupported-usage-driver deploy/helm/llm-gateway \
+            --set-string secrets.existingSecret=production-secret \
+            --set-string gateway.config.usage_events.driver=file_and_kafka >/dev/null
           helm template file-with-pvc deploy/helm/llm-gateway \
             --set-string secrets.existingSecret=production-secret \
             --set-string gateway.config.usage_events.driver=file \

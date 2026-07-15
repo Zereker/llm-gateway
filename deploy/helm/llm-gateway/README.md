@@ -15,7 +15,7 @@ The repository Dockerfile's `gateway` target contains the production data-plane
 binary. Schema migration is part of gateway startup:
 
 ```dockerfile
-FROM golang:1.25 AS builder
+FROM golang:1.25.12 AS builder
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/gateway ./cmd/gateway
@@ -57,11 +57,11 @@ provided inline instead. They have no defaults and rendering fails when
 neither inline values nor `secrets.existingSecret` is configured.
 
 The chart defaults to synchronous Kafka usage-event publishing. Selecting
-`file` or `file_and_kafka` also requires either
+`file` also requires either
 `gateway.usagePersistence.enabled=true` or an explicit
 `gateway.usagePersistence.existingClaim`. Multi-replica file modes require
-shared `ReadWriteMany` storage; an ephemeral `emptyDir` is never treated as a
-durable source of truth.
+shared `ReadWriteMany` storage; an ephemeral `emptyDir` is never treated as
+durable storage.
 
 ## Business data management
 
