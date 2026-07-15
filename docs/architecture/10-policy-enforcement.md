@@ -1,3 +1,5 @@
+[English](10-policy-enforcement.md) | [简体中文](10-policy-enforcement.zh-CN.md)
+
 # Pluggable policy enforcement
 
 The gateway is a vendor-neutral enforcement point, not a content-safety or DLP

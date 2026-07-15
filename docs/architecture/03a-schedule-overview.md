@@ -1,3 +1,5 @@
+[English](03a-schedule-overview.md) | [简体中文](03a-schedule-overview.zh-CN.md)
+
 # 03a — Schedule Quick Reference / Onboarding Companion
 
 This is the beginner's-eye view of [03-endpoint-scheduling.md](./03-endpoint-scheduling.md): first walk through

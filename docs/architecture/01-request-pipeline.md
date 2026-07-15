@@ -1,3 +1,5 @@
+[English](01-request-pipeline.md) | [简体中文](01-request-pipeline.zh-CN.md)
+
 # 01 — Request Pipeline
 
 This document records the request chain for `internal/router` + `internal/middleware`, along with `internal/requeststate.State`.

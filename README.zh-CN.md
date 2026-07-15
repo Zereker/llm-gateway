@@ -10,8 +10,8 @@
 集中处理认证、路由、配额、内容治理、计量、审计和可观测性。它采用控制面与
 数据面分离的设计，而不是一个简单的反向代理。
 
-[快速开始](#快速开始) · [架构文档](docs/architecture/) ·
-[演进路线](docs/ROADMAP.md) · [性能基准](examples/benchmark/) ·
+[快速开始](#快速开始) · [文档](docs/README.zh-CN.md) · [架构文档](docs/architecture/README.zh-CN.md) ·
+[演进路线](docs/ROADMAP.zh-CN.md) · [性能基准](examples/benchmark/) ·
 [English](README.md)
 
 ## 为什么选择 llm-gateway

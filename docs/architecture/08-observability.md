@@ -1,3 +1,5 @@
+[English](08-observability.md) | [简体中文](08-observability.zh-CN.md)
+
 # 08. Observability
 
 This document defines the observability contract for gateway logs, metrics, traces, Usage Events, and Content Log.

@@ -1,3 +1,5 @@
+[English](04-rate-limiting.md) | [简体中文](04-rate-limiting.zh-CN.md)
+
 # 04 — Rate Limiting
 
 This document records the design goals for rate limiting. Rate limiting is split into two categories:

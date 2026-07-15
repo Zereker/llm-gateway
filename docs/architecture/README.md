@@ -1,3 +1,5 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 # Architecture
 
 This directory is the single source of truth for `llm-gateway`'s architecture and interface contracts. The code implements what is documented here; if an implementation needs to change the boundaries described here, update this directory first, then change the code.

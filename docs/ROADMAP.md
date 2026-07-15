@@ -1,3 +1,5 @@
+[English](ROADMAP.md) | [简体中文](ROADMAP.zh-CN.md)
+
 # Product Evolution Roadmap
 
 This roadmap evolves `llm-gateway` from a capable infrastructure component into
@@ -19,8 +21,14 @@ not count as delivery.
 | M1.1 Routing policy ADR and domain contract | Complete |
 | M1.2 Rule-based virtual models | Complete |
 | M1.3 Latency and cost objectives | Complete |
-| M2 Governed prompt and response policy | Complete |
-| M3 Enterprise identity and hierarchy | Deferred pending product need |
+| M2.1 Policy decision contract | Complete |
+| M2.2 Request enforcement and mutation execution | Complete |
+| M2.3 Response enforcement modes | Complete |
+| M3.1 Identity and tenancy ADR | Deferred — no validated vendor/operator demand |
+| M3.2 OIDC and scoped RBAC | Deferred — no validated vendor/operator demand |
+
+M0 through M2 form the delivered product baseline. There is currently no active
+roadmap milestone after M2. M3 is a conditional direction, not committed work.
 
 ## Product position
 
@@ -283,20 +291,32 @@ Acceptance gates:
 - authorization cannot be bypassed by calling the Admin API directly;
 - audit identifies both human actor and affected resource scope.
 
-## Delivery order
+## Delivered sequence
 
-Work proceeds in this order:
+M0 through M2 were delivered in this order:
 
 1. M0.1 product narrative
 2. M0.2 one-command demo
 3. M0.3 dashboard and M0.4 benchmark harness
 4. M1.1 routing ADR
 5. M1.2 rule-based virtual models
-6. M2.1 governance contract
+6. M1.3 latency and cost objectives
+7. M2.1 policy decision contract
+8. M2.2 request enforcement and mutation execution
+9. M2.3 response enforcement modes
 
-Milestone 3 is not started until a concrete multi-tenant product requirement
-exists. M0 through M2 are complete; subsequent work is prioritized using
-production feedback.
+## Next planning gate
+
+Milestone 3 will not start until a real vendor or production operator brings a
+concrete multi-tenant requirement that defines the deployment model, ownership
+boundaries, and authorization needs. Hypothetical enterprise completeness is
+not sufficient justification.
+
+Semantic or quality-based routing likewise remains deferred until production
+traces, evaluation data, and an agreed quality signal exist.
+
+Until one of those gates is satisfied, subsequent work is selected from
+production feedback and does not imply a new committed milestone.
 
 ## Definition of done for roadmap work
 

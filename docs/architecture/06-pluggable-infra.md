@@ -1,3 +1,5 @@
+[English](06-pluggable-infra.md) | [简体中文](06-pluggable-infra.zh-CN.md)
+
 # 06 — Pluggable Infrastructure
 
 This document records the pluggable boundaries of the infrastructure, and the dependency direction among domain / middleware / repo. This document is the target boundary — it does not describe legacy implementations for compatibility; code should converge toward this document.

@@ -1,31 +1,32 @@
 [English](07-configuration.md) | [简体中文](07-configuration.zh-CN.md)
 
-# 07. Configuration
+# 07. 配置
 
-This file defines the target configuration contract for the gateway. Code implementation, example configs, and deployment templates should all treat this as the source of truth.
+该文件定义网关的目标配置合约。代码实现、示例配置和部署模板都应将此视为事实来源。
 
-Configuration only describes process startup and infrastructure dependencies; business data such as
-accounts, API keys, model services, subscriptions, endpoints, and quota policies are written directly
-via SQL by the deployer, **not stored in `gateway.yaml`**.
+配置仅描述进程启动和基础设施依赖关系；业务数据，例如
+账户、API密钥、模型服务、订阅、端点和配额策略直接写入
+部署者通过 SQL，**不存储在 `gateway.yaml`**。
 
-## 1. Process configuration boundary
+## 1.进程配置边界
 
-The repo has two binaries, each with its own config: `cmd/gateway` (the data plane), with config file
-`gateway.yaml`, responsible for the HTTP server, per-request defaults, DB/Redis/Kafka/OTel connections,
-scheduling, and plugin drivers; and `cmd/console` (the control plane), a separate Admin API for managing
-business data. This document describes `gateway.yaml`; the console carries its own config.
+该仓库有两个二进制文件，每个都有自己的配置：`cmd/gateway`（数据平面），带有配置文件
+`gateway.yaml`，负责HTTP服务器，每个请求默认值，DB/Redis/Kafka/OTel连接，
+调度和插件驱动程序；和 `cmd/console`（控制平面），用于管理的单独管理 API
+业务数据。本文档描述了`gateway.yaml`；控制台有自己的配置。
 
-The gateway requires a SQL DB and Redis to start. Kafka is only required when the outbox driver is set
-to `kafka` / `async_kafka` / `file_and_kafka`. Gateway startup applies pending versioned migrations
-before validating the resulting schema.
+网关需要 SQL DB 和 Redis 才能启动。仅当设置了Outbox驱动程序时才需要 Kafka
+到 `kafka` / `async_kafka` / `file_and_kafka`。网关启动应用挂起的版本化迁移
+在验证结果模式之前。
 
-The repo layer uses an in-process TTL LRU cache (`internal/repo/cache.go` + `internal/repo/cached.go`). Most
-records rely on TTL; API-key revocation optionally uses best-effort cachebus invalidation. See
-[06 §8](./06-pluggable-infra.md#8-repo-cache-deployer-sql--gateway-data-propagation) for details.
+存储库层使用进程内 TTL LRU 缓存 (`internal/repo/cache.go` + `internal/repo/cached.go`)。大多数
+记录依赖于TTL； API 密钥撤销可以选择使用尽力而为的缓存总线失效。参见
+[06 §8](./06-pluggable-infra.zh-CN.md#8-repo-cache-deployer-sql--gateway-data-propagation) 了解详细信息。
 
+<a id="2-gatewayyaml"></a>
 ## 2. gateway.yaml
 
-Full structure:
+完整结构：
 
 ```yaml
 server:
@@ -205,43 +206,43 @@ trace:
   endpoint: "" # required when driver=otel (OTLP gRPC collector address)
 ```
 
-Field descriptions:
+字段说明：
 
-| Field | Required | Description |
+|领域|必填 |描述 |
 |------|------|------|
-| `server.addr` | Yes | gateway HTTP listen address |
-| `request.body_limit_bytes` | Yes | per-request body size limit; oversized bodies are rejected at the router/server layer before M1 |
-| `request.timeout` | Yes | total per-request processing timeout; implemented via gin TimeoutMiddleware wrapping the entire M1-M10 chain as a global fallback (used as the default when an upstream doesn't override its own timeout) |
-| `database.driver` / `dsn` | Yes | SQL DB connection; target driver is MySQL |
-| `redis.addr` | Yes | Redis connection; depended on by M6 rate limiting and scheduler cooldown |
-| `data_key` | Yes | KEK used to decrypt endpoint auth ciphertext; the deployer must use the same KEK when encrypting for SQL INSERT |
-| `usage_events.driver` | Yes | usage event output backend (`file` / `kafka` / `async_kafka` / `file_and_kafka`; `file_and_kafka` recommended for production) |
-| `scheduler.filters` | Yes | endpoint selection chain; `weighted_random` must run last |
-| `selector.picker` | No | final pick strategy: `weighted_random` (default) / `p2c` (power-of-two-choices by pending calls) |
-| `scheduler.max_attempts` | Yes | max endpoint attempts for the same model within a single request; can be lowered via header |
-| `scheduler.cooldown.*` | Yes | mapping from `ErrorClass` to cooldown TTL; an upstream `Retry-After` / rate-limit reset hint overrides the static TTL, clamped to `[1s, 10m]` |
-| `health.*` | No | active probing of self-hosted endpoints (default off); `health.recover_cooldown` enables probe-gated early cooldown release |
-| `selector.session_affinity.*` | No | sticky routing via `X-Gateway-Session` (default off); `ttl` is the session→endpoint mapping lifetime |
-| `cache.*` | No | response cache for chat + embedding modalities (default off); `cache.semantic.*` switches chat to similarity-based caching |
-| `content_log.*` | No | request/response content logging channel; can be disabled |
-| `trace.*` | Yes | slog / OTel driver and trace base fields |
+| `server.addr` |是的 |网关HTTP监听地址|
+| `request.body_limit_bytes` |是的 |每个请求的正文大小限制；过大的实体在 M1 之前在路由器/服务器层被拒绝 |
+| `request.timeout` |是的 |每个请求处理总超时；通过 gin TimeoutMiddleware 实现，将整个 M1-M10 链包装为全局回退（当上游不覆盖其自己的超时时用作默认值） |
+| `database.driver` / `dsn` |是的 | SQL数据库连接；目标驱动程序是MySQL |
+| `redis.addr` |是的 | Redis连接；取决于M6速率限制和调度程序冷却时间|
+| `data_key` |是的 | KEK用于解密端点认证密文；部署者在加密 SQL INSERT 时必须使用相同的 KEK |
+| `usage_events.driver` |是的 |使用事件输出后端（`file` / `kafka` / `async_kafka` / `file_and_kafka`； `file_and_kafka` 推荐用于生产）|
+| `scheduler.filters` |是的 |端点选择链； `weighted_random` 必须最后运行 |
+| `selector.picker` |没有 |最终选择策略：`weighted_random`（默认）/ `p2c`（待处理呼叫的两种选择）|
+| `scheduler.max_attempts` |是的 |单个请求中同一模型的最大端点尝试次数；可以通过 header | 降低
+| `scheduler.cooldown.*` |是的 |从 `ErrorClass` 映射到冷却 TTL；上游 `Retry-After` / 速率限制重置提示会覆盖静态 TTL，限制为 `[1s, 10m]` |
+| `health.*` |没有 |主动探测自托管端点（默认关闭）； `health.recover_cooldown` 启用探针门控早期冷却释放 |
+| `selector.session_affinity.*` |没有 |通过 `X-Gateway-Session` 的粘性路由（默认关闭）； `ttl` 是会话→端点映射生命周期 |
+| `cache.*` |没有 |聊天+嵌入模式的响应缓存（默认关闭）； `cache.semantic.*` 将聊天切换到基于相似性的缓存 |
+| `content_log.*` |没有 |请求/响应内容记录通道；可以禁用 |
+| `trace.*` |是的 | slog / OTel 驱动程序和跟踪基本字段 |
 
-## 3. Schema migration
+## 3.架构迁移
 
-Gateway startup applies pending versions and records them in `schema_migrations`.
-Migration operations are idempotent and safe when replicas start concurrently. The gateway database
-user therefore requires DDL permissions. Migration plus schema validation is bounded by a 30-second
-startup deadline, so metadata-lock contention fails startup instead of hanging indefinitely.
-Destructive changes still use an expand/migrate/contract
-rollout and must complete before incompatible application code -- see
-[00 §3 process startup order](./00-overview.md#3-running-processes).
+网关启动应用挂起版本并将其记录在 `schema_migrations` 中。
+当副本同时启动时，迁移操作是幂等且安全的。网关数据库
+因此用户需要 DDL 权限。迁移加架构验证的时间限制为 30 秒
+启动截止时间，因此元数据锁争用会导致启动失败，而不是无限期挂起。
+破坏性更改仍然使用扩展/迁移/收缩
+推出并且必须在不兼容的应用程序代码之前完成 - 请参阅
+[00 §3进程启动顺序](./00-overview.zh-CN.md#3-running-processes)。
 
-## 4. Environment variable overrides
+## 4.环境变量覆盖
 
-The target implementation should support overriding sensitive fields and deployment-specific fields via
-environment variables. Recommended naming:
+目标实现应支持通过覆盖敏感字段和特定于部署的字段
+环境变量。推荐命名：
 
-| Config field | Environment variable |
+|配置字段|环境变量|
 |----------|----------|
 | `database.dsn` | `LLM_GATEWAY_DATABASE_DSN` |
 | `redis.addr` | `LLM_GATEWAY_REDIS_ADDR` |
@@ -251,44 +252,44 @@ environment variables. Recommended naming:
 | `moderation.api_key` | `LLM_GATEWAY_MODERATION_API_KEY` |
 | `trace.endpoint` | `LLM_GATEWAY_OTEL_ENDPOINT` |
 
-Environment variable overrides are applied after reading the YAML, and before default-value filling
-and validation.
+环境变量覆盖在读取 YAML 之后、默认值填充之前应用
+和验证。
 
-## 5. Validation rules
+## 5. 验证规则
 
-Fail-fast is split into two layers, each covering a different class of error:
+快速失败分为两层，每层涵盖不同类别的错误：
 
-**Validate() (inside Load, after ApplyDefaults)** -- validates constraints "that defaults can't fill in and must be supplied correctly by a human":
+**Validate()（在 Load 内部，ApplyDefaults 之后）** -- 验证“默认值无法填写且必须由人类正确提供”的约束：
 
-- `data_key` must be hex-encoded 32 bytes; the deployer must use the same KEK when encrypting endpoints.auth -- if inconsistent, the gateway fails to decrypt and all endpoints become unavailable. In production, inject this uniformly via a secret manager.
-- `trace.driver` only accepts `slog|otel`; when `otel`, `endpoint` is required (the OTLP gRPC collector address).
-- When `usage_events.driver=kafka|async_kafka`, `brokers` and `topic` are required.
-- When `usage_events.driver=file_and_kafka`, **both** `file.path` must be non-empty (source of truth) **and** `kafka.brokers` and `kafka.topic` must be non-empty.
-- `content_log.driver` only accepts `none|file`; other values (including the legacy `kafka`) fail fast at startup.
-- When `content_log.driver=file`, `file.path` is required.
-- When `content_log.backpressure=block`, `block_timeout > 0` must be configured, to avoid blocking the response path indefinitely.
-- `rate_limit.driver` only accepts `redis|inmemory`.
-- `vendors.openai_compatible` entries must be non-empty, whitespace-free, and unique; collisions with a built-in **non-OpenAI** vendor (anthropic / gemini / cohere / bedrock / azureopenai) are caught at assembly time (`builtin.NewLookup` panics).
+- `data_key` 必须是十六进制编码的32字节；部署者在加密端点时必须使用相同的 KEK。auth - 如果不一致，网关将无法解密并且所有端点将变得不可用。在生产中，通过秘密管理器统一注入。
+- `trace.driver`仅接受`slog|otel`；当需要 `otel` 时，需要 `endpoint`（OTLP gRPC 收集器地址）。
+- 当需要 `usage_events.driver=kafka|async_kafka`、`brokers` 和 `topic` 时。
+- 当 `usage_events.driver=file_and_kafka` 时，**两者** `file.path` 必须非空（事实来源）**和** `kafka.brokers` 和`kafka.topic` 必须非空。
+- `content_log.driver`仅接受`none|file`；其他值（包括旧版 `kafka`）在启动时会快速失败。
+- 当需要 `content_log.driver=file` 时，`file.path` 是必需的。
+- 当必须配置`content_log.backpressure=block`时，必须配置`block_timeout > 0`，以避免无限期阻塞响应路径。
+- `rate_limit.driver` 仅接受 `redis|inmemory`。
+- `vendors.openai_compatible` 条目必须非空、无空格且唯一；与内置**非 OpenAI** 供应商（anthropic / gemini / cohere / bedrock / azureopenai）的冲突在组装时被捕获（`builtin.NewLookup` 恐慌）。
 
-**Real connections at startup (inside buildEngine)** -- validates errors "that string checks can't catch":
+**启动时的真实连接（在 buildEngine 内）** -- 验证“字符串检查无法捕获”的错误：
 
-- `database.dsn` / `redis.addr` have local-dev defaults (filled in by ApplyDefaults, so never empty);
-  misconfiguration is exposed via the actual connection + ping fail-fast in `OpenDB` / `OpenRedis`.
-- A typo in `scheduler.filters` names causes a panic in `buildSchedulerFilters` (unknown filter name
-  fails fast); missing cooldown entries per class are filled in by ApplyDefaults.
-- Endpoint business-data misconfiguration (protocol typo / unregistered vendor / metadata URL / quirks
-  compile failure) is surfaced by the startup endpoint scan as a warning +
-  `llm_gateway_endpoint_misconfigured_total` (does not block startup; see
-  [00 §3](./00-overview.md#3-running-processes) step 6).
+- `database.dsn` / `redis.addr` 具有本地开发默认值（由ApplyDefaults填充，因此永远不会为空）；
+  错误配置通过 `OpenDB` / `OpenRedis` 中的实际连接 + ping 快速失败暴露出来。
+- `scheduler.filters` 名称中的拼写错误会导致 `buildSchedulerFilters` 出现恐慌（未知过滤器名称
+  快速失败）；每个类别缺少的冷却条目由ApplyDefaults 填充。
+- 端点业务数据配置错误（协议拼写错误/未注册供应商/元数据 URL/Quirks
+  编译失败）由启动端点扫描作为警告显示+
+  `llm_gateway_endpoint_misconfigured_total`（不阻止启动；请参阅
+  [00§3](./00-overview.zh-CN.md#3-running-processes)步骤6)。
 
-## 6. Evolution rules
+## 6.演进规则
 
-Adding a new config field requires synchronized changes to:
+添加新的配置字段需要同步更改：
 
-- The struct, defaults, and validation in `internal/config`.
-- `examples/local/configs`, `deploy/configs`, K8s values / configmap.
-- This document.
-- Any architecture chapters covering the related behavior, e.g. scheduler, rate limit, metering.
+- `internal/config` 中的结构、默认值和验证。
+- `examples/local/configs`、`deploy/configs`、K8s 值/configmap。
+- 本文件。
+- 涵盖相关行为的任何架构章节，例如调度程序、速率限制、计量。
 
-Deleting or renaming config fields does not need to preserve backward compatibility; the project is
-still in its design phase.
+删除或重命名配置字段不需要保留向后兼容性；该项目是
+仍处于设计阶段。
