@@ -73,10 +73,10 @@ through SQL or managed by a separately deployed `cmd/console` control plane.
 - Or have the business team write directly to the DB via their own management system (CRM / billing system)
 
 Every gateway replica runs the idempotent, versioned migration routine before
-becoming ready. Migration records use insert-if-absent semantics and column
-changes tolerate concurrent replicas. The database user therefore needs the
-DDL permissions required by the checked-in migrations. Migration and schema
-validation must finish within the gateway's 30-second startup deadline.
+becoming ready. Migration records use insert-if-absent semantics. The database
+user therefore needs the DDL permissions required by the checked-in immutable
+migrations. Migration and schema validation must finish within the gateway's
+30-second startup deadline.
 
 ## Upgrade / Rollback
 

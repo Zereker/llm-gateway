@@ -127,7 +127,7 @@ internal/repo              ── data access：sqlx Reader/Provider + TTL LRU c
                          （5 个 cached wrapper：APIKey / ModelService / Endpoint /
                          QuotaPolicy / Subscription；llm_gateway_repo_cache_total
                          metric 上报 hit/miss）
-internal/infra             ── DB / Redis / Kafka adapters + schema.sql + Migrate
+internal/infra             ── DB / Redis / Kafka 适配器 + 不可变 SQL 迁移
 internal/domain            ── 跨包共享 typed structs（RequestContext / Endpoint / ...）
 internal/config            ── gateway.yaml loader
 

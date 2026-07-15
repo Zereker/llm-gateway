@@ -17,6 +17,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Verify migration files are immutable
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
+          changed=""
+          while IFS= read -r file; do
+            if ! git diff --quiet "origin/$GITHUB_BASE_REF" HEAD -- "$file"; then
+              changed="${changed}${file}"$'\n'
+            fi
+          done < <(git ls-tree -r --name-only "origin/$GITHUB_BASE_REF" internal/infra/migrations)
+          if [ -n "$changed" ]; then
+            echo "Existing migration files are immutable; add a new numbered migration instead:" >&2
+            echo "$changed" >&2
+            exit 1
+          fi
       - uses: golangci/golangci-lint-action@v9
         with:
           # Keep in sync with the version .golangci.yml was verified against.

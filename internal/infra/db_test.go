@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,9 +45,33 @@ func TestOpen_UnknownDriver(t *testing.T) {
 	}
 }
 
+func TestSchemaMigrationCatalogIsSequential(t *testing.T) {
+	entries, err := migrationFS.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != len(schemaMigrations) {
+		t.Fatalf("embedded migration files = %d, catalog entries = %d", len(entries), len(schemaMigrations))
+	}
+
+	for i, migration := range schemaMigrations {
+		wantVersion := i + 1
+		if migration.version != wantVersion {
+			t.Fatalf("migration[%d].version = %d, want %d", i, migration.version, wantVersion)
+		}
+		wantPrefix := fmt.Sprintf("%06d_", wantVersion)
+		if !strings.HasPrefix(entries[i].Name(), wantPrefix) || migration.file != "migrations/"+entries[i].Name() {
+			t.Fatalf("migration[%d] file = %q, embedded file = %q", i, migration.file, entries[i].Name())
+		}
+	}
+
+	if schemaMigrations[len(schemaMigrations)-1].version != latestSchemaVersion {
+		t.Fatalf("latestSchemaVersion = %d, catalog ends at %d", latestSchemaVersion, schemaMigrations[len(schemaMigrations)-1].version)
+	}
+}
+
 func TestMigrate_Idempotent(t *testing.T) {
-	dsn := mysqlDSN(t)
-	db, err := Open(DBConfig{Driver: DriverMySQL, DSN: dsn})
+	db, err := Open(isolatedMySQLConfig(t, "idempotent"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -85,6 +110,58 @@ func TestMigrate_Idempotent(t *testing.T) {
 			t.Errorf("table %q not created (got %v)", n, tables)
 		}
 	}
+}
+
+func TestCheckMigrationVersionRejectsPreReleaseHistory(t *testing.T) {
+	db, err := Open(isolatedMySQLConfig(t, "old_history"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (5)`); err != nil {
+		t.Fatalf("insert old pre-release version: %v", err)
+	}
+
+	err = CheckMigrationVersion(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "recreate this pre-release database") {
+		t.Fatalf("CheckMigrationVersion() error = %v, want pre-release recreation guidance", err)
+	}
+}
+
+func isolatedMySQLConfig(t *testing.T, suffix string) DBConfig {
+	t.Helper()
+
+	parsed, err := mysql.ParseDSN(mysqlDSN(t))
+	if err != nil {
+		t.Fatalf("parse MYSQL_DSN: %v", err)
+	}
+
+	adminCfg := *parsed
+	adminCfg.DBName = ""
+	admin, err := sqlx.Connect("mysql", adminCfg.FormatDSN())
+	if err != nil {
+		t.Fatalf("connect without database: %v", err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+
+	database := fmt.Sprintf("llm_gateway_%s_%d", suffix, time.Now().UnixNano())
+	if _, err := admin.Exec("CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
+		t.Fatalf("create isolated migration database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec("DROP DATABASE `" + database + "`"); err != nil {
+			t.Errorf("drop isolated migration database: %v", err)
+		}
+	})
+
+	parsed.DBName = database
+
+	return DBConfig{Driver: DriverMySQL, DSN: parsed.FormatDSN()}
 }
 
 func TestMigrate_ConcurrentReplicas(t *testing.T) {

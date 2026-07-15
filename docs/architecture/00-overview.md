@@ -97,7 +97,7 @@ Note: M6 uses gin's onion model, executing the user-side TPM `ChargeBatch` after
 ```text
 cmd/gateway
   -> config.Load
-  -> server.OpenDB/OpenRedis/NewKafkaProducer
+  -> runtime.OpenDB/OpenRedis/NewKafkaProducer
   -> repo SQL readers/providers
   -> router.NewEngine
 

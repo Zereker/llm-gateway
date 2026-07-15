@@ -98,7 +98,7 @@ HTTP response
 ```text
 cmd/gateway
   -> config.Load
-  -> server.OpenDB/OpenRedis/NewKafkaProducer
+  -> runtime.OpenDB/OpenRedis/NewKafkaProducer
   -> repo SQL readers/providers
   -> router.NewEngine
 

@@ -57,7 +57,7 @@ repo interface -> middleware-only contract leakage
 | OTel 采集器 |当跟踪驱动程序为 `otel` 时使用可选|
 | OpenAI 审核 API |当审核驱动程序为 `openai` 时使用 |可选|
 
-数据库 Schema 来源是 `internal/infra/schema.sql`。Gateway 启动时先运行
+数据库 Schema 来源是 `internal/infra/migrations/` 下只增不改的文件。Gateway 启动时先运行
 `infra.Migrate`，校验已记录的 Schema 版本，再在接收流量前运行
 `repo.CheckSchema`。因此启动阶段需要 DDL 权限；Schema 演进方式与当前限制见
 [07 §3](./07-configuration.zh-CN.md#3架构迁移)。
@@ -332,7 +332,7 @@ r.Use(middleware.Auth(
   `func(c) { c.Next() }` 在构建时 - **甚至没有打开跟踪器** - 保存一个
   `Tracer()` 在启动时调用，每个请求一次跨度开始/结束。
 - 选项只做装配，不做IO；构造函数不得打开 DB/Redis 连接（资源是
-  由 `cmd/gateway` 或 `internal/server` 管理）。
+  由 `internal/app/runtime` 管理）。
 - 同一中间件的所有 `WithXxx*` 选项必须共享相同的 `XxxOptionFunc` 适配器
   类型；不要为单个选项引入单独的结构选项类型。
 
@@ -378,7 +378,7 @@ deployer --SQL INSERT/UPDATE--> MySQL
 
 |层|角色 |实施|
 |----|------|------|
-| MySQL |真相来源| `internal/infra/schema.sql` |
+| MySQL |真相来源| `internal/infra/migrations/*.sql` |
 | `repo.TTLCache[K, V]` |进程内LRU + TTL；不缓存未找到| `internal/repo/cache.go` |
 | `repo.CachedXxxReader` | 5 个 SQL 读取器/提供程序的缓存包装器 | `internal/repo/cached.go` |
 
@@ -461,7 +461,7 @@ M8的主要扩展点是`policy.Engine`，注入
 内容日志是一个单独的通道，并且不重用使用事件架构。内容记录器可以通过 `upstream.WithHooks(...)` 连接。
 
 Kafka 的异步缓冲区、最大重试次数、退避和 DLQ 主题在
-`usage_events.kafka.*` 配置块中声明。Producer 关闭由 `internal/server`
+`usage_events.kafka.*` 配置块中声明。Producer 关闭由 `internal/app/runtime`
 集中管理（请参阅 §12 优雅关闭顺序）。
 
 ## 12. 追踪
@@ -494,7 +494,7 @@ OTel属性命名优先遵循OpenTelemetry `gen_ai.*` / HTTP semconv标准；当
 
 - 打开 DB/Redis/Kafka 生产者。
 - 注册关闭器。
-- 发球。
+- 启动 HTTP 服务。
 - 捕获 SIGTERM/SIGINT。
 - 正常关闭。
 - 以相反的顺序关闭资源。
