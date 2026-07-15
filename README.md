@@ -187,8 +187,9 @@ The badge above is the live, per-file coverage from CI (`go` job in
 that job runs with MySQL/Redis/Kafka up, so it also covers the SQL/Redis-backed
 suites `make cover` skips locally by default. For a local number before
 pushing, run `make cover` (unit tests only, no `MYSQL_DSN`/`REDIS_ADDR`,
-scoped to `internal/...` packages that have their own test files); `go tool
-cover -html=coverage.txt` renders a per-line breakdown in the browser.
+scoped to the complete `internal/...` tree; executable code without tests
+remains visible at 0%); `go tool cover -html=coverage.txt` renders a per-line
+breakdown in the browser.
 
 `gateway.yaml` controls server settings (addr, timeouts, body limit), the
 database connection, outbox driver, and middleware tunables. Defaults are

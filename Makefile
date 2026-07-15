@@ -20,8 +20,8 @@ test-integration: dev-up ## Run tests with the local SQL infrastructure
 	@until $(DEV_COMPOSE) exec -T mysql mysqladmin ping -h localhost -uroot --silent; do sleep 1; done
 	@$(DEV_COMPOSE) exec -T mysql mysql -uroot -e "CREATE DATABASE IF NOT EXISTS llm_gateway_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 	MYSQL_DSN='$(MYSQL_DSN)' go test -p 1 ./...
-cover: ## Generate coverage for internal packages containing tests
-	go test -coverprofile=coverage.txt $$(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./internal/...)
+cover: ## Generate coverage for all internal packages
+	go test -coverprofile=coverage.txt ./internal/...
 	go tool cover -func=coverage.txt | tail -1
 
 .PHONY: build docker-build

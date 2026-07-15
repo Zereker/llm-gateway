@@ -181,8 +181,8 @@ make cover              # 单元测试 + 覆盖率统计（MYSQL_DSN/REDIS_ADDR 
 [codecov.io/gh/Zereker/llm-gateway](https://codecov.io/gh/Zereker/llm-gateway)）——
 那个 job 起了 MySQL/Redis/Kafka，所以也覆盖了 `make cover` 本地默认跳过的
 SQL/Redis 相关测试。想在推送前先看一下本地数字，跑 `make cover`（只测单元测试，
-不设 `MYSQL_DSN`/`REDIS_ADDR`，只统计 `internal/...` 下自己有测试文件的包）；
-`go tool cover -html=coverage.txt` 能在浏览器里看逐行的覆盖情况。
+不设 `MYSQL_DSN`/`REDIS_ADDR`，统计完整的 `internal/...` 目录，没有测试的可执行代码会如实
+显示为 0%）；`go tool cover -html=coverage.txt` 能在浏览器里看逐行的覆盖情况。
 
 `gateway.yaml` 控制 server 设置（监听地址、超时、body 大小限制）、数据库连接、
 outbox driver 以及各 middleware 的可调参数。默认值是合理的开箱即用值——

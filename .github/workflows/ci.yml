@@ -127,17 +127,13 @@ jobs:
         # -p 1: the SQL suite TRUNCATEs shared tables between cases,
         # so packages must not run concurrently against the same database.
         #
-        # Coverage is scoped to internal/... packages with their own test
-        # files (matches `make cover`; see its comment) rather than a plain
-        # ./... pattern -- cmd/* and examples/support/* have none by design, and a
-        # package with zero test files of its own can only get attributed
-        # coverage via a covdata merge across other packages' test binaries,
-        # which isn't worth the fragility for packages that were never
-        # meant to be measured here. go vet (above) + go build ./cmd/...
-        # (below) already guard compilation of the packages this excludes.
+        # Coverage is scoped to the complete internal/... tree. Executable code
+        # without tests remains visible at 0% instead of being silently
+        # excluded. cmd/* and examples/* are compiled separately and are not
+        # part of the core-code coverage baseline.
         run: |
           go test -p 1 -coverprofile=coverage.txt -covermode=atomic \
-            $(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./internal/...)
+            ./internal/...
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
