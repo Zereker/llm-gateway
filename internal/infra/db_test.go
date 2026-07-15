@@ -112,24 +112,103 @@ func TestMigrate_Idempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateReportsMigrationFileError(t *testing.T) {
+	db, err := Open(isolatedMySQLConfig(t, "missing_migration"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	original := schemaMigrations
+	schemaMigrations = []schemaMigration{{version: 1, file: "migrations/missing.sql"}}
+	t.Cleanup(func() { schemaMigrations = original })
+
+	err = Migrate(context.Background(), db)
+	if err == nil || !strings.Contains(err.Error(), "apply schema migration 1") || !strings.Contains(err.Error(), "migrations/missing.sql") {
+		t.Fatalf("Migrate() error = %v, want migration version and file context", err)
+	}
+}
+
+func TestApplyMigrationReportsExecutionError(t *testing.T) {
+	db, err := Open(DBConfig{Driver: DriverMySQL, DSN: mysqlDSN(t)})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = applyMigration(ctx, db, schemaMigrations[0])
+	if err == nil || !strings.Contains(err.Error(), "execute migrations/000001_base.sql") || !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("applyMigration() error = %v, want statement and cancellation context", err)
+	}
+}
+
+func TestRecordMigrationReportsDatabaseError(t *testing.T) {
+	db, err := Open(DBConfig{Driver: DriverMySQL, DSN: mysqlDSN(t)})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	err = recordMigration(context.Background(), db, 1)
+	if err == nil || !strings.Contains(err.Error(), "record schema migration 1") {
+		t.Fatalf("recordMigration() error = %v, want migration version context", err)
+	}
+}
+
 func TestCheckMigrationVersionRejectsPreReleaseHistory(t *testing.T) {
-	db, err := Open(isolatedMySQLConfig(t, "old_history"))
+	tests := []struct {
+		name     string
+		versions []int
+	}{
+		{name: "extra old versions", versions: []int{1, 5}},
+		{name: "wrong baseline version", versions: []int{2}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := Open(isolatedMySQLConfig(t, "old_history"))
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			ctx := context.Background()
+			if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (
+				version BIGINT NOT NULL PRIMARY KEY,
+				applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`); err != nil {
+				t.Fatalf("create schema_migrations: %v", err)
+			}
+			for _, version := range tt.versions {
+				if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+					t.Fatalf("insert pre-release version %d: %v", version, err)
+				}
+			}
+
+			err = CheckMigrationVersion(ctx, db)
+			if err == nil || !strings.Contains(err.Error(), "recreate this pre-release database") {
+				t.Fatalf("CheckMigrationVersion() error = %v, want pre-release recreation guidance", err)
+			}
+		})
+	}
+}
+
+func TestCheckMigrationVersionReportsUnavailableState(t *testing.T) {
+	db, err := Open(isolatedMySQLConfig(t, "missing_history"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (5)`); err != nil {
-		t.Fatalf("insert old pre-release version: %v", err)
-	}
-
 	err = CheckMigrationVersion(ctx, db)
-	if err == nil || !strings.Contains(err.Error(), "recreate this pre-release database") {
-		t.Fatalf("CheckMigrationVersion() error = %v, want pre-release recreation guidance", err)
+	if err == nil || !strings.Contains(err.Error(), "schema migration state unavailable") {
+		t.Fatalf("CheckMigrationVersion() error = %v, want unavailable-state context", err)
 	}
 }
 
