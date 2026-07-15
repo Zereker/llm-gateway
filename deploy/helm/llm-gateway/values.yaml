@@ -7,7 +7,8 @@
 
 image:
   repository: ghcr.io/zereker/llm-gateway
-  tag: "latest"
+  # Empty uses Chart.appVersion. Override with an immutable release tag.
+  tag: ""
   pullPolicy: IfNotPresent
 
 # Gateway data plane
@@ -25,6 +26,15 @@ gateway:
   service:
     type: ClusterIP
     port: 8080
+
+  # Required only for usage_events.driver=file or file_and_kafka. With more
+  # than one replica, the claim and storage class must support ReadWriteMany.
+  usagePersistence:
+    enabled: false
+    existingClaim: ""
+    storageClass: ""
+    accessModes: [ReadWriteMany]
+    size: 10Gi
 
   # HPA scales based on CPU; long-lived streaming chat connections don't use much CPU but do consume goroutines — consider adding a custom metric
   autoscaling:
@@ -58,13 +68,16 @@ gateway:
       timeout: 120s
     # database / redis are injected from secrets (DSN includes the password)
     usage_events:
-      driver: file_and_kafka  # Production recommendation: file is the source of truth + Kafka broadcasts asynchronously
+      # The chart does not treat an ephemeral per-Pod file as a durable source
+      # of truth. File-based modes require an explicit persistent volume design;
+      # synchronous Kafka is the safe deployment default here.
+      driver: kafka
       file:
         path: /var/log/llm-gateway/usage.jsonl
       kafka:
         brokers: ["kafka:9092"]
         topic: billing.usage.recorded.v1
-        async: true
+        async: false
         dlq_topic: billing.usage.recorded.v1.dlq
     selector:
       filters: [cooldown, limit_read, weighted_random]
@@ -100,16 +113,20 @@ ingress:
     # - secretName: llm-gateway-tls
     #   hosts: [llm-gateway.example.com]
 
-# Secret fields — values must be provided before deployment (override via --set or a separate secret yaml)
-# **Do not commit real values into this file**
+# Secret fields. Prefer existingSecret in production. When it is empty, both
+# databaseDSN and dataKey are required explicitly; the chart never installs a
+# known credential or encryption key.
 secrets:
+  # Existing Secret keys: database-dsn, redis-password, redis-addr, data-key,
+  # and moderation-api-key. When set, inline values below are ignored.
+  existingSecret: ""
   # MySQL DSN: root:pwd@tcp(mysql:3306)/llm_gateway?...
-  databaseDSN: "root:CHANGEME@tcp(mysql:3306)/llm_gateway?parseTime=true&charset=utf8mb4"
+  databaseDSN: ""
   # Redis password (empty = no password)
   redisPassword: ""
   redisAddr: "redis:6379"
   # AES-256-GCM KEK, hex 32 bytes (the deployer must use this same KEK when writing endpoints.auth)
-  dataKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  dataKey: ""
   # OpenAI moderation key (needed when moderation.driver=openai)
   moderationApiKey: ""
 

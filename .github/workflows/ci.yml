@@ -279,8 +279,29 @@ jobs:
       - name: Build gateway image
         run: docker build --target gateway -t llm-gateway:ci .
       - name: Helm lint
-        run: helm lint deploy/helm/llm-gateway
+        run: >-
+          helm lint deploy/helm/llm-gateway
+          --set-string secrets.databaseDSN='ci:@tcp(mysql:3306)/llm_gateway'
+          --set-string secrets.dataKey='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
       - name: Render Helm chart
-        run: helm template test deploy/helm/llm-gateway > /tmp/llm-gateway.yaml
+        run: >-
+          helm template test deploy/helm/llm-gateway
+          --set-string secrets.databaseDSN='ci:@tcp(mysql:3306)/llm_gateway'
+          --set-string secrets.dataKey='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+          > /tmp/llm-gateway.yaml
+      - name: Verify Helm safety gates
+        run: |
+          ! helm template no-secrets deploy/helm/llm-gateway >/dev/null
+          helm template external-secret deploy/helm/llm-gateway \
+            --set-string secrets.existingSecret=production-secret >/dev/null
+          ! helm template file-without-pvc deploy/helm/llm-gateway \
+            --set-string secrets.existingSecret=production-secret \
+            --set-string gateway.config.usage_events.driver=file >/dev/null
+          helm template file-with-pvc deploy/helm/llm-gateway \
+            --set-string secrets.existingSecret=production-secret \
+            --set-string gateway.config.usage_events.driver=file \
+            --set gateway.usagePersistence.enabled=true >/dev/null
+      - name: Image runs as non-root
+        run: test "$(docker inspect --format '{{.Config.User}}' llm-gateway:ci)" = "65532:65532"
       - name: Image command smoke test
         run: docker run --rm --entrypoint /app/gateway llm-gateway:ci -h

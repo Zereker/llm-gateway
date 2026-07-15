@@ -10,11 +10,12 @@
 
 - 运营路由：`/healthz`、`/readyz`、`/metrics`等，维护于`helpers.go`。
 - 聊天：`/v1/chat/completions`、`/v1/messages`、`/v1/responses`。
-- 图片：`/v1/images/{generations,edits,variations}`。
-- 音频：`/v1/audio/{speech,transcriptions,translations}`。
 - 嵌入：`/v1/embeddings`。
 
-每个路由文件声明自己完整的`/v1/...`路径；未使用全局 `/v1` 组。共享安全/配额/可观察性中间件订单位于 `internal/router/pipeline.go` (`llmRouteGroup` + `registerLLMRoute`)；每个模态文件仅通过 `routeSpec` 提供其不同之处 - 路径、源协议、模态及其缓存阶段。特定于模态的阶段（例如未来的图像多部分解析器）被添加为 `routeSpec` 字段，而不是通过重新内联整个链。
+每个路由文件声明自己完整的`/v1/...`路径；未使用全局 `/v1` 组。共享安全/配额/可观察性中间件顺序位于 `internal/router/pipeline.go` (`llmRouteGroup` + `registerLLMRoute`)；每个模态文件仅通过 `routeSpec` 提供路径、源协议、模态和缓存阶段。
+
+图片生成与音频路径目前刻意不注册。它们只会在 multipart 解析、协议适配、
+用量提取和黑盒兼容性测试一起交付后才成为已支持能力。
 
 ## 2.RequestContext 存储
 

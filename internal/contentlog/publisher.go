@@ -29,9 +29,18 @@ type FilePublisher struct {
 
 // NewFilePublisher opens (or creates) the file at the given path for append writes.
 func NewFilePublisher(path string) (*FilePublisher, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// Content logs can contain prompts, responses, identifiers, and policy
+	// metadata. New files are owner-readable only; operators that deliberately
+	// share them with a collector can widen permissions outside the process.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("contentlog: open file: %w", err)
+	}
+
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+
+		return nil, fmt.Errorf("contentlog: secure file permissions: %w", err)
 	}
 
 	return &FilePublisher{w: f}, nil

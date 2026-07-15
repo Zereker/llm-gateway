@@ -109,8 +109,6 @@ func NewEngine(deps Deps) *gin.Engine {
 
 	registerOpsRoutes(engine, deps.Readiness)
 	registerChatRoutes(engine, deps)
-	registerImageRoutes(engine, deps)
-	registerAudioRoutes(engine, deps)
 	registerEmbeddingRoutes(engine, deps)
 
 	return engine

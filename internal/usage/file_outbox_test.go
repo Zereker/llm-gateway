@@ -11,6 +11,12 @@ import (
 func TestFileOutbox_PublishAppendsJSONL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "usage.log")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	o, err := NewFileOutbox(path)
 	if err != nil {
 		t.Fatalf("NewFileOutbox: %v", err)
@@ -34,6 +40,13 @@ func TestFileOutbox_PublishAppendsJSONL(t *testing.T) {
 	}
 	if strings.Count(got, "\n") != 2 {
 		t.Errorf("want 2 newlines, got: %q", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("usage outbox permissions = %o, want 600", got)
 	}
 }
 

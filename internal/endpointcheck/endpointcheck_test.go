@@ -63,3 +63,30 @@ func TestValidate_UnknownProtocolAndBadQuirks(t *testing.T) {
 		}
 	}
 }
+
+func TestValidate_HealthProbeURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "empty is disabled", url: "", want: ""},
+		{name: "public HTTPS", url: "https://model.example.com/healthz", want: ""},
+		{name: "private self-hosted", url: "http://10.0.3.7:8000/healthz", want: ""},
+		{name: "invalid scheme", url: "file:///etc/passwd", want: "invalid_health_probe_scheme"},
+		{name: "AWS metadata", url: "http://169.254.169.254/latest/meta-data/", want: "health_probe_metadata_endpoint"},
+		{name: "metadata hostname", url: "http://metadata.google.internal/", want: "health_probe_metadata_endpoint"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := validateHealthProbeURL(tt.url); got != tt.want {
+				t.Fatalf("validateHealthProbeURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}

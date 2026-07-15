@@ -62,12 +62,18 @@ func NewFileOutbox(path string) (*FileOutbox, error) {
 		return nil, errors.New("usage: FileOutbox path is empty")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+
 		return nil, err
 	}
 
