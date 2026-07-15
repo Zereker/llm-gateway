@@ -29,12 +29,20 @@ import (
 	"github.com/zereker/llm-gateway/internal/endpointcheck"
 	"github.com/zereker/llm-gateway/internal/repo"
 	"github.com/zereker/llm-gateway/internal/trace"
+	"github.com/zereker/llm-gateway/internal/version"
 )
 
 func main() {
 	configPath := flag.String("config", "./examples/local/configs/console.yaml", "path to console YAML config")
+	showVersion := flag.Bool("version", false, "print version and build metadata")
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String("llm-gateway-console"))
+
+		return
+	}
 
 	slog.SetDefault(slog.New(trace.NewCtxHandler(slog.NewJSONHandler(os.Stderr, nil))))
 

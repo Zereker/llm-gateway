@@ -1,0 +1,17 @@
+*
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!examples/
+!examples/quickstart/
+!examples/quickstart/Dockerfile
+!examples/benchmark/
+!examples/benchmark/**
+!examples/support/
+!examples/support/mockupstream/
+!examples/support/mockupstream/**
+!examples/support/seed-demo/
+!examples/support/seed-demo/**

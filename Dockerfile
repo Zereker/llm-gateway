@@ -6,6 +6,9 @@ ARG BASE_IMAGE_REGISTRY=docker.io/library
 
 FROM ${BASE_IMAGE_REGISTRY}/golang:${GO_VERSION}-alpine AS builder
 ARG GOPROXY=https://proxy.golang.org,direct
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
 ENV GOPROXY=${GOPROXY}
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -13,8 +16,16 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 ENV CGO_ENABLED=0
-RUN go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway && \
-    go build -trimpath -ldflags="-s -w" -o /out/console ./cmd/console
+RUN go build -trimpath -ldflags="-s -w \
+      -X github.com/zereker/llm-gateway/internal/version.Version=${VERSION} \
+      -X github.com/zereker/llm-gateway/internal/version.Commit=${COMMIT} \
+      -X github.com/zereker/llm-gateway/internal/version.BuildDate=${BUILD_DATE}" \
+      -o /out/gateway ./cmd/gateway && \
+    go build -trimpath -ldflags="-s -w \
+      -X github.com/zereker/llm-gateway/internal/version.Version=${VERSION} \
+      -X github.com/zereker/llm-gateway/internal/version.Commit=${COMMIT} \
+      -X github.com/zereker/llm-gateway/internal/version.BuildDate=${BUILD_DATE}" \
+      -o /out/console ./cmd/console
 
 FROM ${BASE_IMAGE_REGISTRY}/alpine:3.20 AS gateway
 WORKDIR /app

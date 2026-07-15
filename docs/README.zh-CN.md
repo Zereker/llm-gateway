@@ -8,6 +8,8 @@
 
 | 领域 | English | 简体中文 |
 |---|---|---|
+| 安装 | [Installation](INSTALL.md) | [安装](INSTALL.zh-CN.md) |
+| 发布 | [Release process](RELEASE.md) · [Changelog](CHANGELOG.md) | [发布流程](RELEASE.zh-CN.md) · [变更日志](CHANGELOG.zh-CN.md) |
 | 产品演进 | [Roadmap](ROADMAP.md) | [产品演进路线图](ROADMAP.zh-CN.md) |
 | 架构与接口契约 | [Architecture index](architecture/README.md) | [架构索引](architecture/README.zh-CN.md) |
 | 架构决策 | [ADR index](adr/README.md) | [架构决策记录索引](adr/README.zh-CN.md) |

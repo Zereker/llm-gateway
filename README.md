@@ -11,8 +11,9 @@ routing, quota, moderation, metering, audit, and observability across hosted and
 self-hosted models. It is designed as a control plane plus data plane, not as a
 thin reverse proxy.
 
-[Quick start](#quick-start) · [Documentation](docs/) · [Architecture](docs/architecture/) ·
-[Roadmap](docs/ROADMAP.md) · [Examples](examples/) · [Benchmark](examples/benchmark/) ·
+[Quick start](#quick-start) · [Installation](docs/INSTALL.md) · [Documentation](docs/) ·
+[Architecture](docs/architecture/) · [Changelog](docs/CHANGELOG.md) · [Roadmap](docs/ROADMAP.md) ·
+[Examples](examples/) · [Benchmark](examples/benchmark/) ·
 [中文说明](README.zh-CN.md)
 
 ## Why llm-gateway
@@ -50,12 +51,13 @@ Applications / SDKs
 |---|---|
 | APIs | OpenAI Chat/Responses, Anthropic Messages, embeddings |
 | Upstreams | OpenAI-compatible providers, Anthropic, Gemini/Vertex, Bedrock, Cohere, Azure OpenAI |
-| Routing | weighted/P2C selection, inflight awareness, cooldown, runtime scoring, retry, explicit model fallback |
-| Governance | API-key auth, account subscriptions, layered quota, moderation chain, content log, write audit |
+| Routing | rule-based virtual models, latency/cost objectives, weighted/P2C selection, cooldown, retry, explicit model fallback |
+| Governance | API-key auth, account subscriptions, layered quota, scoped policy enforcement/redaction, content log, write audit |
 | Operations | Admin API + Web Console, Prometheus, OTel/slog tracing, usage-event publishing, Helm example |
 
-Rule-based virtual models, scoped prompt policies, and enterprise identity are
-roadmap items; they are not presented as completed features.
+Rule-based virtual models and scoped prompt policies are implemented. Enterprise
+identity, OIDC, and multi-tenant self-service remain deferred until there is a
+validated operator authorization model.
 
 ## Quick start
 
@@ -93,6 +95,9 @@ The core data plane, control plane, and multi-vendor protocol paths are
 implemented. Architecture contracts are tracked in
 [`docs/architecture`](docs/architecture/); product evolution and acceptance
 gates are tracked in the outcome-based [`roadmap`](docs/ROADMAP.md).
+The first public release contract is `v0.1.0`; see the
+[installation guide](docs/INSTALL.md), [changelog](docs/CHANGELOG.md), and
+[release process](docs/RELEASE.md).
 
 ## Data plane internals
 
@@ -141,7 +146,7 @@ cmd/gateway           ── thin data-plane process entry
 cmd/console           ── optional control-plane Admin API
 examples/             ── quickstart, local stack, benchmark, configs, and support programs
 deploy/               ── supported Helm, production config, and observability assets
-docs/architecture/    ── design docs (00-overview through 08-observability)
+docs/architecture/    ── design docs and public contracts (00 through 11)
 ```
 
 ## Manual local development
@@ -204,6 +209,7 @@ The gateway listens on `:8080` by default. With the bundled config:
 | `/readyz` | GET | readiness probe |
 | `/metrics` | GET | Prometheus scrape |
 | `/v1/chat/completions` | POST | OpenAI Chat Completions |
+| `/v1/responses` | POST | OpenAI Responses |
 | `/v1/messages` | POST | Anthropic-style chat |
 | `/v1/embeddings` | POST | OpenAI Embeddings |
 

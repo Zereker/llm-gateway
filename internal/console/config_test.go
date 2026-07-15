@@ -52,3 +52,18 @@ func TestLoadConfigRejectsInvalidDataKeyAndDuplicateToken(t *testing.T) {
 		})
 	}
 }
+
+func TestBundledProductionConsoleConfigParsesWithSecretEnvironment(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_DATABASE_DSN", "console:secret@tcp(db:3306)/llm_gateway?parseTime=true")
+	t.Setenv("LLM_GATEWAY_DATA_KEY", strings.Repeat("a", 64))
+	t.Setenv("LLM_GATEWAY_CONSOLE_TOKENS", "admin-one,admin-two")
+	t.Setenv("LLM_GATEWAY_REDIS_ADDR", "redis:6379")
+
+	cfg, err := Load("../../deploy/configs/console.yaml")
+	if err != nil {
+		t.Fatalf("Load production template: %v", err)
+	}
+	if cfg.Server.Addr != ":8081" || cfg.Redis.Addr != "redis:6379" || len(cfg.Admin.Tokens) != 2 {
+		t.Fatalf("production template overrides not applied: %+v", cfg)
+	}
+}

@@ -41,7 +41,7 @@ cat > my-values.yaml <<EOF
 secrets:
   existingSecret: llm-gateway-production-secrets
 image:
-  tag: "1.0.0"
+  tag: "v0.1.0"
 EOF
 
 # 3. Install.
@@ -100,7 +100,7 @@ kubectl delete secret llm-gateway-production-secrets
 
 | Dimension | Recommendation |
 |---|---|
-| Image tag | Use a version number (e.g. `1.0.0`); do not use `latest` |
+| Image tag | Use an immutable release tag (e.g. `v0.1.0`); do not use `latest` |
 | Secret management | Use `secrets.existingSecret` with ExternalSecrets / Sealed Secrets / Vault; do not use plaintext values.yaml |
 | Usage file storage | File-based drivers require persistent RWX storage for multi-replica deployments; the default is Kafka |
 | Resource limits | gateway streaming consumes more goroutines than CPU; start with cpu=2 / mem=2Gi based on QPS and tune from there |
